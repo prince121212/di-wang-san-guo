@@ -1,0 +1,5 @@
+sourceCaptureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402
+sourceAnalyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402/analyzed_wide_httpclient_20260708_023040
+flows: 030, 038
+operatorTimeline: 02:10:59 点击批量补兵然后出征；02:12:20 第二次点击批量补兵/出征
+notes: 两个响应均包含“批量补满成功”。flow030 ids=6b4dac/686b99；flow038 ids=6b4dae/6b4d9a。

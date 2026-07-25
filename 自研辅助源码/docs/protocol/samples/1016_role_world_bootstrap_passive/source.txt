@@ -1,0 +1,3 @@
+sourceCapture=/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+flowIndex=1
+collectedAt=2026-07-07 23:49-23:58 passive bridge100 tcpdump

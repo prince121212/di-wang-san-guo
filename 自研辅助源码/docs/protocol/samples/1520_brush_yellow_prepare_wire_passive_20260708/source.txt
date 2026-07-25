@@ -1,0 +1,6 @@
+captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+promotedAt: 2026-07-08 01:22:44
+flowIndices: [35]
+opcode: 1520
+id: brush_yellow_prepare_wire_1520

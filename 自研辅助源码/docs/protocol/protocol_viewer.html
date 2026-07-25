@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>帝王三国协议视图</title>
+<style>
+body{margin:0;background:#eef2f7;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",Arial,sans-serif}
+header{background:#0f3f8f;color:white;padding:22px 28px} h1{margin:0;font-size:26px} header p{margin:8px 0 0;color:#dbeafe}
+main{max-width:1180px;margin:0 auto;padding:18px} .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+input,select{height:36px;border:1px solid #cbd5e1;border-radius:8px;padding:0 10px;background:white}
+.card{background:white;border:1px solid #d8e0ea;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(15,23,42,.06)}
+.card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start} h2{margin:0;font-size:19px} .card p{margin:5px 0;color:#64748b}
+.opcode{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;padding:8px 10px;font-weight:800}
+.meta{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0} .meta span{background:#f8fafc;border:1px solid #e2e8f0;border-radius:999px;padding:5px 9px;font-size:12px}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px} th,td{border-bottom:1px solid #e5e7eb;text-align:left;padding:8px;vertical-align:top} th{background:#f8fafc;color:#475569}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px} summary{cursor:pointer;font-weight:700;margin-top:8px}
+.pill{border-radius:999px;padding:3px 7px;font-size:11px} .pill.ok{background:#dcfce7;color:#166534} .pill.warn{background:#fff7ed;color:#9a3412} .pill.bad{background:#fee2e2;color:#991b1b} .pill.muted{background:#f1f5f9;color:#64748b}
+.tag{display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:5px 8px;margin:3px;font-size:12px} .muted{color:#64748b} .section-title{margin:24px 0 8px;font-size:23px}
+.footer{color:#64748b;font-size:12px;margin:24px 0} .hidden{display:none}
+</style></head><body>
+<header><h1>帝王三国协议视图</h1><p>数据源：<code>protocol_requests.yaml</code> + <code>protocol_field_dictionary.yaml</code>。本 HTML 由 <code>tools/render_protocol_viewer.py</code> 生成。</p></header>
+<main>
+<div class="toolbar"><input id="q" placeholder="搜索 opcode / 名称 / 字段..." oninput="filterCards()"/><select id="kind" onchange="filterCards()"><option value="all">全部</option><option value="request">接口</option><option value="schema">字段字典</option></select></div>
+<h2 class="section-title">接口列表</h2>
+<div id="requests">
+        <section class="card" data-opcode="3110" data-status="live_capture_observed">
+          <div class="card-head">
+            <div><h2>心跳/在线状态/系统消息拉取</h2><p>heartbeat_or_status · <code>heartbeat_or_status_3110</code></p></div>
+            <div class="opcode">3110</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 4 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td><code>3110</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>名将--张苞被俘</span><span class='tag'>名将--简雍被俘</span><span class='tag'>国战/城战广播</span><span class='tag'>在线状态数值字段</span></div><p class="muted">parserStatus: partial</p></details>
+        </section>
+        <section class="card" data-opcode="041540" data-status="verified">
+          <div class="card-head">
+            <div><h2>找黄/找山贼</h2><p>find_yellow · <code>find_yellow_041540</code></p></div>
+            <div class="opcode">041540</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>verified</b></span>
+            <span>置信度：<b>high</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td><code>041540</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>search_x_or_area</td><td>疑似搜索坐标/区域字段</td><td>int_or_hex</td><td><code>005b</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>search_y_or_area</td><td>疑似搜索坐标/区域字段</td><td>int_or_hex</td><td><code>001a</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>3级山贼</span><span class='tag'>10级山贼</span><span class='tag'>5级山贼</span><span class='tag'>9级山贼</span><span class='tag'>1级山贼</span><span class='tag'>许多资源</span><span class='tag'>大量资源</span><span class='tag'>大批资源</span><span class='tag'>有宝箱</span><span class='tag'>有装备</span><span class='tag'>一些宝物</span></div><p class="muted">parserStatus: partial</p></details>
+        </section>
+        <section class="card" data-opcode="1520030" data-status="verified_by_reverse_and_runtime">
+          <div class="card-head">
+            <div><h2>刷黄 prepare</h2><p>brush_yellow_prepare · <code>brush_yellow_prepare_1520030</code></p></div>
+            <div class="opcode">1520030</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>verified_by_reverse_and_runtime</b></span>
+            <span>置信度：<b>high</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 0 / 报告 2</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>prefix</td><td>固定前缀</td><td></td><td><code>000000000000000000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>length_hex</td><td>payload 长度</td><td></td><td><code>ids.size * 8 + 0x0a</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>opcode</td><td></td><td></td><td><code>1520030</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>ids_count</td><td>将领/编队 id 数量</td><td>int</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>ids</td><td>将领/编队 id 列表</td><td>repeated_id</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>target_id</td><td>山贼/黄巾目标 id</td><td>id</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: minimal_success_failure</p></details>
+        </section>
+        <section class="card" data-opcode="1522030" data-status="verified_by_reverse_and_runtime">
+          <div class="card-head">
+            <div><h2>刷黄 expedition/出征</h2><p>brush_yellow_dispatch · <code>brush_yellow_dispatch_1522030</code></p></div>
+            <div class="opcode">1522030</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>verified_by_reverse_and_runtime</b></span>
+            <span>置信度：<b>high</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 0 / 报告 2</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>prefix</td><td>固定前缀</td><td></td><td><code>000000000000000000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>length_hex</td><td>payload 长度</td><td></td><td><code>ids.size * 8 + 0x15</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>opcode</td><td></td><td></td><td><code>1522030</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>ids_count</td><td>将领/编队 id 数量</td><td>int</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>ids</td><td>将领/编队 id 列表</td><td>repeated_id</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>target_id</td><td>山贼/黄巾目标 id</td><td>id</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>suffix</td><td>固定后缀</td><td></td><td><code>ffffffffffffffff000000</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: minimal_success_failure</p></details>
+        </section>
+        <section class="card" data-opcode="01190000" data-status="reverse_verified_capture_observed">
+          <div class="card-head">
+            <div><h2>闯关/副本状态查询</h2><p>dungeon_status_query · <code>dungeon_status_01190000</code></p></div>
+            <div class="opcode">01190000</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>reverse_verified_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 1</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td colspan='5' class='muted'>暂无 knownShape</td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: partial</p></details>
+        </section>
+        <section class="card" data-opcode="6202" data-status="live_capture_observed">
+          <div class="card-head">
+            <div><h2>签到/登录任务领奖：铜钱+10000、粮食+30000</h2><p>daily_sign_claim · <code>daily_sign_claim_6202</code></p></div>
+            <div class="opcode">6202</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>command_tail</td><td>签到领奖命令尾部</td><td>hex</td><td><code>62020000</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>种植技术</span><span class='tag'>建造弓兵营</span><span class='tag'>每日金钻宝箱</span><span class='tag'>铜钱:10000获得成功。粮食:30000获得成功。</span><span class='tag'>:10000</span><span class='tag'>:30000</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="6200" data-status="live_capture_observed_recurring">
+          <div class="card-head">
+            <div><h2>日常/签到任务列表与奖励定义</h2><p>daily_task_overview · <code>daily_task_overview_6200</code></p></div>
+            <div class="opcode">6200</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_recurring</b></span>
+            <span>置信度：<b>high</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 4 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>command_tail</td><td>日常任务列表命令尾部</td><td>hex</td><td><code>62000000</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>铜钱+10000</span><span class='tag'>粮食+30000</span><span class='tag'>登入游戏</span><span class='tag'>0/1</span><span class='tag'>1/1</span><span class='tag'>010000铜钱，10白银，10玉石，随机道具</span><span class='tag'>030000铜钱，20白银，10玉石，随机道具</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1130" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>成长/引导任务状态列表</h2><p>growth_task_status · <code>growth_task_status_1130</code></p></div>
+            <div class="opcode">1130</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>command_tail</td><td>成长任务状态命令尾部</td><td>hex</td><td><code>1130000000</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>种植技术</span><span class='tag'>建造弓兵营</span><span class='tag'>五谷丰登2</span><span class='tag'>威震四方6</span><span class='tag'>挑战山贼8</span><span class='tag'>使用鲁公手册</span><span class='tag'>剿匪英雄3</span><span class='tag'>开拓封地2</span><span class='tag'>招募将领12</span><span class='tag'>升级将领4</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="3940" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>活动列表</h2><p>activity_list · <code>activity_list_3940</code></p></div>
+            <div class="opcode">3940</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>command_tail</td><td>活动列表命令尾部</td><td>hex</td><td><code>39400000</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>攻敌城，抢豪礼-1</span><span class='tag'>攻敌城，抢豪礼-2</span><span class='tag'>攻敌城，抢豪礼-3</span><span class='tag'>攻敌城，抢豪礼-4</span><span class='tag'>烽火连城战无双</span><span class='tag'>冲级抢礼包-88级</span><span class='tag'>冲级抢礼包-66级</span><span class='tag'>激活码兑换道具</span><span class='tag'>平定山贼之乱</span><span class='tag'>争夺城主，争龙椅</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="3941" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>活动详情/奖励条件</h2><p>activity_detail · <code>activity_detail_3941</code></p></div>
+            <div class="opcode">3941</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000008</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>活动详情命令</td><td>hex</td><td><code>3941</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>activity_id_or_param</td><td>活动 ID/详情参数</td><td>hex</td><td><code>000000009b590093</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>活动期间内，在攻城战中获得一次胜利</span><span class='tag'>初级行军符</span><span class='tag'>80级高级兵武箱</span><span class='tag'>战鼓</span><span class='tag'>八阵图</span><span class='tag'>将神魂</span><span class='tag'>冰玉材料包</span><span class='tag'>仙芝材料包</span><span class='tag'>孟德新书</span><span class='tag'>北斗七星</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1008" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>地图/城池分页扫描</h2><p>map_city_page_scan · <code>map_city_page_scan_1008</code></p></div>
+            <div class="opcode">1008</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 3 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000002a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>地图分页扫描命令</td><td>hex</td><td><code>1008</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>page_or_window_params</td><td>分页/窗口参数列表</td><td>repeated_uint16_pair_or_grid</td><td><code>0000 000c, 0001 000c ... / 000a 000c ... / ffff sentinel</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>永泰</span><span class='tag'>永化</span><span class='tag'>宛川</span><span class='tag'>宛台</span><span class='tag'>吴川</span><span class='tag'>洛道</span><span class='tag'>洛安</span><span class='tag'>赊刀人c</span><span class='tag'>天勇星b</span><span class='tag'>南楚</span><span class='tag'>楚</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="6444" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>地图对象批量同步/确认</h2><p>map_object_batch_ack · <code>map_object_batch_ack_6444</code></p></div>
+            <div class="opcode">6444</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000109</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>批量同步/确认命令</td><td>hex</td><td><code>6444</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_count</td><td>对象数量</td><td>uint16_or_uint32</td><td><code>000021</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>object_ids</td><td>地图对象/城池 ID 列表</td><td>repeated_uint64_or_padded_id</td><td><code>0000000000000216, 000000000000023b ...</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: ack_only_unparsed</p></details>
+        </section>
+        <section class="card" data-opcode="1012" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>城池详情/地图对象详情批量查询</h2><p>city_detail_batch · <code>city_detail_batch_1012</code></p></div>
+            <div class="opcode">1012</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000348</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>城池/地图对象详情命令</td><td>hex</td><td><code>1012</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_count</td><td>对象数量</td><td>uint16_or_uint32</td><td><code>000023</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>object_records</td><td>对象记录：id + 名称 + 状态/归属参数</td><td>repeated_struct</td><td><code>0215 + 赊刀人 / 0213 + 献帝 / 0211 + 爱新游</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>洛阳</span><span class='tag'>献帝S</span><span class='tag'>大汉</span><span class='tag'>汉</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="3183+114c" data-status="live_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>成就/称号/角色扩展信息</h2><p>achievement_title · <code>achievement_title_3183_114c</code></p></div>
+            <div class="opcode">3183+114c</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>live_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>primary_opcode</td><td>主命令</td><td>hex</td><td><code>3183</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>embedded_session_or_role_id</td><td>嵌入 token/角色 id</td><td>bytes</td><td><code>aa4618be177f45d1</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>sub_opcode</td><td>子命令/追加命令</td><td>hex</td><td><code>114c</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>滑头</span><span class='tag'>张弛有道</span><span class='tag'>大丈夫能伸能屈，惹不起</span><span class='tag'>在战斗中撤退时伤兵数减少20</span><span class='tag'>完成成就任务：“张弛有道”后获得</span><span class='tag'>撤退次数1000次</span><span class='tag'>寨主</span><span class='tag'>崭露头角</span><span class='tag'>占地为王，我的地盘我做主</span><span class='tag'>灭敌时获得的战功增加10</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1003" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>登录/进服初始化</h2><p>login_bootstrap · <code>login_bootstrap_1003</code></p></div>
+            <div class="opcode">1003</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>client_timestamp_or_nonce</td><td>客户端时间戳/nonce</td><td>uint64_or_bytes</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>device_uuid_primary</td><td>设备/安装 UUID 1</td><td>ascii_uuid</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>device_uuid_secondary</td><td>设备/安装 UUID 2</td><td>ascii_uuid</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>role_or_server_code</td><td>角色/区服代码</td><td>ascii_or_numeric</td><td><code>0000480502</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>登录初始化命令</td><td>hex</td><td><code>1003</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>登录成功</span><span class='tag'>东方美6</span><span class='tag'>大汉</span><span class='tag'>汉</span><span class='tag'>开启后可获得：名将--少</span><span class='tag'>君王刘仁泽</span><span class='tag'>君王曹雄德</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1016" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>登录后角色/国家/封地初始化</h2><p>role_world_bootstrap · <code>role_world_bootstrap_1016</code></p></div>
+            <div class="opcode">1016</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>segment_length_or_param_len</td><td>段长度/参数长度</td><td>hex_or_int</td><td><code>00000008</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>初始化命令</td><td>hex</td><td><code>1016</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>trailing_param</td><td>尾部参数/分页或版本参数</td><td>uint32_or_hex</td><td><code>000002fc</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>欢迎加入</span><span class='tag'>本国政务繁多</span><span class='tag'>犯我强汉者，虽远必诛</span><span class='tag'>东方美基地</span><span class='tag'>太祥封地</span><span class='tag'>董全基地</span><span class='tag'>建业</span><span class='tag'>神农</span><span class='tag'>蚩尤</span><span class='tag'>风后</span><span class='tag'>伤兵治疗费用</span><span class='tag'>守军攻防提升10</span><span class='tag'>铜钱粮食产能提升30</span><span class='tag'>何颜鸥</span><span class='tag'>冯岚</span><span class='tag'>台达元</span><span class='tag'>尹诩静</span><span class='tag'>松翠岚</span><span class='tag'>栾寿</span></div><p class="muted">parserStatus: head_jiangling_inventory_status_partial_confirmed</p></details>
+        </section>
+        <section class="card" data-opcode="1800" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>登录后补充同步/未知短响应</h2><p>post_login_sync · <code>post_login_sync_1800</code></p></div>
+            <div class="opcode">1800</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知同步命令</td><td>hex</td><td><code>1800</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>麻子</span><span class='tag'>秋</span></div><p class="muted">parserStatus: mostly_binary_short_response</p></details>
+        </section>
+        <section class="card" data-opcode="6287" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>未知确认/操作成功</h2><p>unknown_ack_success · <code>unknown_ack_success_6287</code></p></div>
+            <div class="opcode">6287</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知确认命令</td><td>hex</td><td><code>6287</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>操作成功</span><span class='tag'>世界</span><span class='tag'>国家</span><span class='tag'>城池</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1114" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>战报详情/山贼战斗结果</h2><p>battle_report_detail · <code>battle_report_detail_1114</code></p></div>
+            <div class="opcode">1114</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>segment_length_or_param_len</td><td>段长度/参数长度</td><td>hex_or_int</td><td><code>00000008</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>战报详情命令</td><td>hex</td><td><code>1114</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>battle_report_id_or_timestamp</td><td>战报 id/时间戳</td><td>uint64_or_bytes</td><td><code>19f3d176ff20d972</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>1级山贼</span><span class='tag'>我军失败</span><span class='tag'>返回封地</span><span class='tag'>体力：99</span><span class='tag'>8台达元</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="111f" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>战报参战方摘要/进攻方信息</h2><p>battle_report_actor_summary · <code>battle_report_actor_summary_111f</code></p></div>
+            <div class="opcode">111f</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>战报参战方摘要命令</td><td>hex</td><td><code>111f</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>battle_report_id_or_timestamp</td><td>战报 id/时间戳</td><td>uint64_or_bytes</td><td><code>19f3d176ff20d972</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>进攻方</span><span class='tag'>东方美</span><span class='tag'>女54级</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1025" data-status="passive_capture_observed_error_only">
+          <div class="card-head">
+            <div><h2>未知请求/会话失效后返回 fffc0000</h2><p>unknown_after_session_invalid · <code>unknown_after_session_invalid_1025</code></p></div>
+            <div class="opcode">1025</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_error_only</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>stale_session_token_like</td><td>已失效 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知命令</td><td>hex</td><td><code>1025</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: error_code_only</p></details>
+        </section>
+        <section class="card" data-opcode="6300" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>六部/官职状态列表</h2><p>ministry_official_status · <code>ministry_official_status_6300</code></p></div>
+            <div class="opcode">6300</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000002</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>六部/官职状态命令</td><td>hex</td><td><code>6300</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>zero_param</td><td>空参数/保留参数</td><td>bytes</td><td><code>00000000</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>户部</span><span class='tag'>礼部</span><span class='tag'>吏部</span><span class='tag'>兵部</span><span class='tag'>工部</span><span class='tag'>刑部</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="6260" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>竞技场挑战记录/战报列表</h2><p>arena_challenge_log · <code>arena_challenge_log_6260</code></p></div>
+            <div class="opcode">6260</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>竞技场记录命令</td><td>hex</td><td><code>6260</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>竞技场挑战失败</span><span class='tag'>竞技场挑战胜利</span><span class='tag'>司马我8</span><span class='tag'>君王君B</span><span class='tag'>策士君B</span><span class='tag'>木子麟</span><span class='tag'>天路</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1226" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>未知对象参数操作</h2><p>unknown_id_param · <code>unknown_id_param_1226</code></p></div>
+            <div class="opcode">1226</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000000f</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>未知命令</td><td>hex</td><td><code>1226</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_id</td><td>对象 id</td><td>uint64_or_padded_id</td><td><code>00000000006b4d9a</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>param_pair</td><td>参数组</td><td>bytes_or_ints</td><td><code>0008 00000085</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: ack_or_short_struct_unparsed</p></details>
+        </section>
+        <section class="card" data-opcode="1214" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>对象/编队改名</h2><p>entity_rename · <code>entity_rename_1214</code></p></div>
+            <div class="opcode">1214</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 2 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000000e</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>改名命令</td><td>hex</td><td><code>1214</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>object_id</td><td>被改名对象 id</td><td>uint64_or_padded_id</td><td><code>00000000006b4dae / 00000000006b4d9a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>name_length</td><td>新名称字节长度</td><td>uint16_or_uint32</td><td><code>0004</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>new_name_utf8</td><td>新名称 UTF-8</td><td>string</td><td><code>车1 / 步1</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>改名成功</span><span class='tag'>车1</span><span class='tag'>步1</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1520" data-status="passive_capture_observed_variant">
+          <div class="card-head">
+            <div><h2>刷黄 prepare（bridge100 实包 wire 形态）</h2><p>brush_yellow_prepare_wire · <code>brush_yellow_prepare_wire_1520</code></p></div>
+            <div class="opcode">1520</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_variant</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000001a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>prepare wire 命令</td><td>hex</td><td><code>1520</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>subcode_or_count_block</td><td>疑似子码/数量块</td><td>bytes</td><td><code>00000302</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>actor_ids</td><td>出征将领/编队 id 列表</td><td>repeated_uint64_or_padded_id</td><td><code>6b4dae, 6b4d9a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>target_id</td><td>目标 id</td><td>uint64_or_padded_id</td><td><code>inf</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: short_struct_unparsed</p></details>
+        </section>
+        <section class="card" data-opcode="1522" data-status="passive_capture_observed_variant">
+          <div class="card-head">
+            <div><h2>刷黄出征/战斗 dispatch（bridge100 实包 wire 形态）</h2><p>brush_yellow_dispatch_wire · <code>brush_yellow_dispatch_wire_1522</code></p></div>
+            <div class="opcode">1522</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_variant</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000025</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>dispatch wire 命令</td><td>hex</td><td><code>1522</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>subcode_or_count_block</td><td>疑似子码/数量块</td><td>bytes</td><td><code>00000302</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>actor_ids</td><td>出征将领/编队 id 列表</td><td>repeated_uint64_or_padded_id</td><td><code>6b4dae, 6b4d9a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>target_id</td><td>目标 id</td><td>uint64_or_padded_id</td><td><code>inf</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>suffix</td><td>固定/保留后缀</td><td>bytes</td><td><code>ffffffffffffffff000000</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>何颜鸥返回东方美的封地</span><span class='tag'>冯岚返回东方美的封地</span><span class='tag'>台达元返回东方美的封地</span><span class='tag'>步1消灭5级山贼</span><span class='tag'>东方美基地</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1280" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>编组配置/出征编组列表</h2><p>formation_group_config · <code>formation_group_config_1280</code></p></div>
+            <div class="opcode">1280</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>000000d4</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>编组配置命令</td><td>hex</td><td><code>1280</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>group_count_or_mode</td><td>编组数量/模式</td><td>bytes_or_ints</td><td><code>00000205 0005</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>group_records</td><td>编组槽位记录</td><td>repeated_struct</td><td><code>slot + actor ids + ffffffff sentinel</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>编组1</span><span class='tag'>编组2</span><span class='tag'>编组3</span><span class='tag'>编组4</span><span class='tag'>编组5</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1702" data-status="passive_capture_observed_recurring">
+          <div class="card-head">
+            <div><h2>出征/战斗状态轮询</h2><p>expedition_state_poll · <code>expedition_state_poll_1702</code></p></div>
+            <div class="opcode">1702</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_recurring</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 10 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000009</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>状态轮询命令</td><td>hex</td><td><code>1702</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>poll_mode_or_state</td><td>轮询模式/状态参数</td><td>uint16_or_uint32</td><td><code>000000 / 000001</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>expedition_or_battle_id</td><td>出征/战斗 id</td><td>uint64_or_padded_id</td><td><code>000000000004ce281 / 000000000004415e</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>车1</span><span class='tag'>步1</span><span class='tag'>牧玥</span><span class='tag'>周程瑞</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1250" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>未知对象详情/状态查询</h2><p>unknown_object_detail · <code>unknown_object_detail_1250</code></p></div>
+            <div class="opcode">1250</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000008</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知对象详情命令</td><td>hex</td><td><code>1250</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_id</td><td>对象 id</td><td>uint64_or_padded_id</td><td><code>00000000006b4dac</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: short_struct_unparsed</p></details>
+        </section>
+        <section class="card" data-opcode="1200" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>科技/研究列表或详情</h2><p>research_or_tech_list · <code>research_or_tech_list_1200</code></p></div>
+            <div class="opcode">1200</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000000d</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>科技/研究列表命令</td><td>hex</td><td><code>1200</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>tech_or_building_id</td><td>科技/建筑 id</td><td>uint64_or_padded_id</td><td><code>00000000000755</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>params</td><td>参数组</td><td>bytes_or_ints</td><td><code>0008 0001</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: struct_list_unparsed</p></details>
+        </section>
+        <section class="card" data-opcode="1104" data-status="passive_capture_observed_recurring">
+          <div class="card-head">
+            <div><h2>背包/物品状态同步</h2><p>inventory_or_status_sync · <code>inventory_or_status_sync_1104</code></p></div>
+            <div class="opcode">1104</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_recurring</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 6 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000001</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>背包/物品状态同步命令</td><td>hex</td><td><code>1104</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='muted'>暂无</span></div><p class="muted">parserStatus: inventory_item_list_partial_confirmed</p></details>
+        </section>
+        <section class="card" data-opcode="1406" data-status="passive_capture_observed_unparsed">
+          <div class="card-head">
+            <div><h2>未知玩家/城池名称列表查询</h2><p>unknown_name_list · <code>unknown_name_list_1406</code></p></div>
+            <div class="opcode">1406</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_unparsed</b></span>
+            <span>置信度：<b>low</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000000b</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知名称列表命令</td><td>hex</td><td><code>1406</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>list_params</td><td>列表参数</td><td>bytes_or_ints</td><td><code>000000000000000001010001</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>爱新游</span><span class='tag'>南山雪</span><span class='tag'>不羡仙</span><span class='tag'>融问</span><span class='tag'>胖呼呼</span><span class='tag'>木子麟</span><span class='tag'>烟火清安久</span><span class='tag'>献帝</span><span class='tag'>临浮</span><span class='tag'>财哥</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1103" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>物品丢弃</h2><p>item_discard · <code>item_discard_1103</code></p></div>
+            <div class="opcode">1103</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>00000015</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>丢弃物品命令</td><td>hex</td><td><code>1103</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>item_id</td><td>物品 id</td><td>uint64_or_padded_id</td><td><code>000000000005d12c</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>count</td><td>数量</td><td>uint32</td><td><code>00000001</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>suffix</td><td>固定/保留后缀</td><td>bytes</td><td><code>ffffffffffffffff</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>丢弃成功</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="123f" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>科技研究/升级</h2><p>research_upgrade · <code>research_upgrade_123f</code></p></div>
+            <div class="opcode">123f</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 1 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0000000e</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>研究/升级命令</td><td>hex</td><td><code>123f</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>tech_or_building_id</td><td>科技/建筑 id</td><td>uint64_or_padded_id</td><td><code>00000000000755</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>research_params</td><td>研究参数</td><td>bytes_or_ints</td><td><code>030005020000</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>研究成功</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1229" data-status="passive_capture_observed_success_and_error">
+          <div class="card-head">
+            <div><h2>批量补兵/批量补满</h2><p>batch_refill_troops · <code>batch_refill_troops_1229</code></p></div>
+            <div class="opcode">1229</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed_success_and_error</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 3 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度</td><td>hex_or_int</td><td><code>0011</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>opcode</td><td>批量补兵命令</td><td>hex</td><td><code>1229</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>empty_signature_length</td><td>envelope 空签名长度</td><td>uint16</td><td><code>0000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>object_count_or_mode</td><td>对象数量/模式</td><td>uint8</td><td><code>02</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>formation_or_general_ids</td><td>将领/编队 id 列表</td><td>repeated_uint64_or_padded_id</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>批量补满成功</span></div><p class="muted">parserStatus: strings_confirmed_fields_unknown</p></details>
+        </section>
+        <section class="card" data-opcode="1170" data-status="passive_capture_observed">
+          <div class="card-head">
+            <div><h2>排行榜列表/分类排行</h2><p>rank_list · <code>rank_list_1170</code></p></div>
+            <div class="opcode">1170</div>
+          </div>
+          <div class="meta">
+            <span>状态：<b>passive_capture_observed</b></span>
+            <span>置信度：<b>medium</b></span>
+            <span>endpoint：<b>king_http_client</b></span>
+            <span>证据：抓包 2 / 报告 0</span>
+          </div>
+          <details open><summary>请求字段</summary><table><thead><tr><th>field</th><th>中文</th><th>类型</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token 字段</td><td>bytes</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td><code>0003</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>排行榜命令</td><td>hex</td><td><code>1170</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>empty_signature_length</td><td>envelope 空签名长度</td><td>uint16</td><td><code>0000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>rank_params</td><td>排行榜分类/分页参数</td><td>bytes_or_ints</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table></details>
+          <details><summary>响应关键内容</summary><div class="tags"><span class='tag'>仙女</span><span class='tag'>赶路人</span><span class='tag'>赊刀人</span><span class='tag'>爱新游</span><span class='tag'>怪咖</span><span class='tag'>康康</span><span class='tag'>天雄星</span><span class='tag'>天罡星</span></div><p class="muted">parserStatus: row_parser_added</p></details>
+        </section></div>
+<h2 class="section-title">字段字典</h2>
+<div id="schemas">
+        <section class="card schema" data-opcode="041540" data-status="partial">
+          <div class="card-head"><div><h2>find_yellow_041540_request</h2><p>request · partial</p></div><div class="opcode">041540</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>找黄命令</td><td>hex</td><td></td><td><code>041540</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>search_x_or_area</td><td>疑似搜索 X/区域</td><td>int_or_hex</td><td></td><td><code>005b</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>search_y_or_area</td><td>疑似搜索 Y/区域</td><td>int_or_hex</td><td></td><td><code>001a</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="041540" data-status="partial">
+          <div class="card-head"><div><h2>find_yellow_041540_response</h2><p>response · partial</p></div><div class="opcode">041540</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>target_id</td><td>目标 id</td><td>id</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>target_level</td><td>目标等级</td><td>int</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>target_name</td><td>目标名</td><td>string</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>reward_description</td><td>奖励描述</td><td>string</td><td>unknown</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1520030" data-status="formula_confirmed">
+          <div class="card-head"><div><h2>brush_yellow_prepare_1520030_request</h2><p>request · formula_confirmed</p></div><div class="opcode">1520030</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>prefix</td><td>固定前缀</td><td></td><td></td><td><code>000000000000000000</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>length_hex</td><td>payload 长度</td><td>hex</td><td></td><td><code>ids.size * 8 + 0x0a</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>opcode</td><td></td><td></td><td></td><td><code>1520030</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>ids_count</td><td>将领/编队 id 数量</td><td>int</td><td></td><td><code></code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>ids</td><td>将领/编队 id 列表</td><td>repeated_id</td><td></td><td><code></code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>delimiter</td><td>目标前分隔</td><td></td><td></td><td><code>0000</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>target_id</td><td>目标 id</td><td>id</td><td></td><td><code></code></td><td><span class='pill ok'>confirmed</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1522030" data-status="formula_confirmed">
+          <div class="card-head"><div><h2>brush_yellow_dispatch_1522030_request</h2><p>request · formula_confirmed</p></div><div class="opcode">1522030</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>prefix</td><td></td><td></td><td></td><td><code>000000000000000000</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>length_hex</td><td></td><td></td><td></td><td><code>ids.size * 8 + 0x15</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>opcode</td><td></td><td></td><td></td><td><code>1522030</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>ids_count</td><td></td><td>int</td><td></td><td><code></code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>ids</td><td></td><td>repeated_id</td><td></td><td><code></code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>delimiter</td><td></td><td></td><td></td><td><code>0000</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>target_id</td><td></td><td>id</td><td></td><td><code></code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>suffix</td><td>固定后缀</td><td></td><td></td><td><code>ffffffffffffffff000000</code></td><td><span class='pill ok'>confirmed</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="8004" data-status="jiangling_partial_confirmed">
+          <div class="card-head"><div><h2>status_sync_8004_response</h2><p>response · jiangling_partial_confirmed</p></div><div class="opcode">8004</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>monarch_name</td><td>君主名</td><td>string</td><td>head:utf</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>monarch_level</td><td>君主等级</td><td>int</td><td>head_after_role_name+1</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>money</td><td>铜钱</td><td>int</td><td>head_after_level:i64</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>food</td><td>粮食</td><td>int</td><td>head_after_money:i64</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>population</td><td>人口</td><td>int</td><td>head_after_rates:i64_pair</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>general_list</td><td>英雄/将领列表</td><td>repeated_group</td><td>after_8004_head; scan i64_id+u16_name+114_body</td><td><code>何颜鸥 / 冯岚 / 台达元</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.id</td><td>将领ID</td><td>uint64</td><td>record+0x00</td><td><code>00000000006bd24b</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.name</td><td>将领名</td><td>utf8_string</td><td>record+0x0a len=u16(record+0x08)</td><td><code>何颜鸥</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.body</td><td>将领记录体</td><td>bytes[114]</td><td>after_name</td><td><code>body[0x3a..0x41] 回显 id；body[0x70..0x71]=ffff</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.profession_code</td><td>将领分类/职业码</td><td>uint8</td><td>body+0x03</td><td><code>0=步将,1=弓将,2=骑将,4=勇士</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.progression</td><td>成长/成长值</td><td>uint16</td><td>body+0x06</td><td><code>69</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.level</td><td>将领等级</td><td>uint8</td><td>body+0x08</td><td><code>1 / 5 / 6 / 9 / 11 / 15</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.progression_raw_code</td><td>成长前置原始码</td><td>uint16</td><td>body+0x04</td><td><code>730</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>jiangling.exp</td><td>经验</td><td>uint32</td><td>body+0x09</td><td><code>0 / 7024 / 16468</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>jiangling.exp_limit</td><td>经验上限</td><td>uint32</td><td>body+0x0d</td><td><code>15 / 19965</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>jiangling.wuli</td><td>武力</td><td>uint16</td><td>body+0x11</td><td><code>63</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.zhili</td><td>智力</td><td>uint16</td><td>body+0x13</td><td><code>84</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.tongshuai</td><td>统帅</td><td>uint16</td><td>body+0x15</td><td><code>76</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.gongji</td><td>攻击</td><td>uint16</td><td>body+0x17</td><td><code>63</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.fangyu</td><td>防御</td><td>uint16</td><td>body+0x19</td><td><code>84</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>general_stamina</td><td>将领体力</td><td>uint16</td><td>body+0x1b</td><td><code>99</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.tili_limit</td><td>将领体力上限</td><td>uint16</td><td>body+0x1d</td><td><code>100</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.loyalty</td><td>忠诚度当前</td><td>uint8</td><td>body+0x27</td><td><code>48 / 60</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.loyalty_limit</td><td>忠诚度上限</td><td>uint8</td><td>body+0x28</td><td><code>100</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>general_state</td><td>将领状态：空闲/出征/驻防/被俘</td><td>enum</td><td>body+0x58</td><td><code>0=空闲,1=出征,2=驻防,3=被俘</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>max_soldier_count</td><td>最大统兵数/带兵上限</td><td>uint32</td><td>body+0x23</td><td><code>198 / 162 / 204</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.ao_breakout</td><td>突围能力/能力值候选（非忠诚）</td><td>uint16</td><td>body+0x2b</td><td><code>84 / 79 / 71 / 80</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>soldier_count</td><td>当前统兵数量</td><td>int32</td><td>Lo/a.S5 entry Qm</td><td><code>何颜鸥=1 / 骑1=200</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>soldier_type</td><td>所统兵种</td><td>uint8_scriptSoldierRowIndex</td><td>Lo/a.S5 entry Pm（scriptSoldier.sc 零基行号，不是兵种 id）</td><td><code>3=轻骑兵（scriptSoldier 第 4 行，id=9）</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling.place_id</td><td>所在地/封地ID候选</td><td>uint64</td><td>body+0x32</td><td><code>1877 / 2438</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="01190000" data-status="partial">
+          <div class="card-head"><div><h2>dungeon_status_01190000_response</h2><p>response · partial</p></div><div class="opcode">01190000</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>status_char</td><td>闯关状态码</td><td>char</td><td>[0x3f,0x40)</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>cooldown_ms_hex</td><td>冷却时间毫秒 hex</td><td>hex_int</td><td>[0x48,0x58)</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6202" data-status="partial_live_observed">
+          <div class="card-head"><div><h2>daily_sign_claim_6202_response</h2><p>response · partial_live_observed</p></div><div class="opcode">6202</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>reward_result_text</td><td>领奖结果文本</td><td>string</td><td>unknown</td><td><code>铜钱:10000获得成功。粮食:30000获得成功。</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>money_reward</td><td>铜钱奖励数量</td><td>int_or_string</td><td>unknown</td><td><code>10000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>food_reward</td><td>粮食奖励数量</td><td>int_or_string</td><td>unknown</td><td><code>30000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>task_name_list</td><td>任务名称列表</td><td>repeated_string</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6200" data-status="partial_live_observed">
+          <div class="card-head"><div><h2>daily_task_overview_6200_response</h2><p>response · partial_live_observed</p></div><div class="opcode">6200</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>daily_reward_definition</td><td>日常奖励定义</td><td>repeated_string</td><td>unknown</td><td><code>铜钱+10000 / 粮食+30000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>task_progress</td><td>任务进度</td><td>string_or_pair</td><td>unknown</td><td><code>0/1, 1/1, 0/5, 0/10</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>login_task</td><td>登入游戏任务</td><td>string</td><td>unknown</td><td><code>登入游戏</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>premium_reward_definition</td><td>金钻/高级奖励定义</td><td>string</td><td>unknown</td><td><code>010000铜钱，10白银，10玉石，随机道具</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="3110" data-status="partial_live_observed_resource_offsets">
+          <div class="card-head"><div><h2>heartbeat_or_status_3110_response</h2><p>response · partial_live_observed_resource_offsets</p></div><div class="opcode">3110</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>online_or_resource_status_block</td><td>在线/资源状态数值块</td><td>binary_struct</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>system_broadcast</td><td>系统/国战/名将广播文本</td><td>string</td><td>unknown</td><td><code>名将--张苞被俘</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>server_time_or_sequence</td><td>服务器时间/序号</td><td>int_or_long</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>money</td><td>当前铜钱</td><td>uint32_be</td><td>0x1f</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>food</td><td>当前粮食</td><td>uint32_be</td><td>0x27</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>unknown_resource_a</td><td>未知资源/数值 A</td><td>uint32_be</td><td>0x2b</td><td><code>0x000003ee = 1006</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>unknown_resource_b</td><td>未知资源/数值 B</td><td>uint32_be</td><td>0x2f</td><td><code>0x000002c3 = 707</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>unknown_resource_c</td><td>未知资源/数值 C</td><td>uint32_be</td><td>0x37</td><td><code>0x000003fc = 1020</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1130" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>growth_task_status_1130_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1130</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>task_list</td><td>成长/引导任务列表</td><td>repeated_group</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>task_name</td><td>任务名称</td><td>string</td><td>unknown</td><td><code>种植技术 / 建造弓兵营 / 挑战山贼 / 招募将领</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>task_level_or_stage</td><td>任务等级/阶段后缀</td><td>int_or_string_suffix</td><td>unknown</td><td><code>五谷丰登2 / 威震四方6 / 挑战山贼8</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>task_progress_or_state</td><td>任务进度/完成状态</td><td>int_or_pair_or_flag</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>guide_action</td><td>引导动作/任务入口</td><td>string_or_id</td><td>unknown</td><td><code>使用鲁公手册</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="3940" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>activity_list_3940_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">3940</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>activity_list</td><td>活动列表</td><td>repeated_group</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>activity_id</td><td>活动 ID</td><td>id_or_hex</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>activity_title</td><td>活动标题</td><td>string</td><td>unknown</td><td><code>攻敌城，抢豪礼-1 / 烽火连城战无双 / 冲级抢礼包-88级</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>image_url_or_path</td><td>活动图片 URL/路径</td><td>string</td><td>unknown</td><td><code>http...png</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>activity_sort_or_status</td><td>排序/状态/标签字段</td><td>int_or_flag</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="3941" data-status="partial">
+          <div class="card-head"><div><h2>activity_detail_3941_request</h2><p>request · partial</p></div><div class="opcode">3941</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td>after_common_header</td><td><code>00000008</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>活动详情命令</td><td>hex</td><td></td><td><code>3941</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>activity_id_or_param</td><td>活动 ID/详情参数</td><td>hex_or_id</td><td></td><td><code>000000009b590093</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="3941" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>activity_detail_3941_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">3941</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>condition_text</td><td>活动条件描述</td><td>string</td><td>unknown</td><td><code>活动期间内，在攻城战中获得一次胜利</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>reward_item_list</td><td>奖励物品列表</td><td>repeated_string_or_group</td><td>unknown</td><td><code>初级行军符 / 战鼓 / 八阵图 / 将神魂</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>reward_count</td><td>奖励数量</td><td>int</td><td>unknown</td><td><code>1 / 2</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>threshold_count</td><td>达成次数/条件阈值</td><td>int</td><td>unknown</td><td><code>一次/两次/七次/十五次</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1008" data-status="partial">
+          <div class="card-head"><div><h2>map_city_page_scan_1008_request</h2><p>request · partial</p></div><div class="opcode">1008</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td>after_common_header</td><td><code>0000002a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>地图分页扫描命令</td><td>hex</td><td></td><td><code>1008</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>map_layer_or_mode</td><td>地图层/扫描模式</td><td>uint16_or_flag</td><td></td><td><code>00000a0a</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>page_window_params</td><td>分页/窗口参数</td><td>repeated_uint16_pair_or_grid</td><td></td><td><code>0000:000c ... 0009:000c / 000a:000c ...</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>end_or_sentinel</td><td>结束/无更多数据哨兵</td><td>hex</td><td></td><td><code>ffffffff...000a0016</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1008" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>map_city_page_scan_1008_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1008</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>map_object_list</td><td>地图对象/城池列表</td><td>repeated_group</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_id</td><td>对象/城池 ID</td><td>id</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>city_name</td><td>城池名</td><td>string</td><td>unknown</td><td><code>永泰 / 永化 / 宛川 / 洛道 / 洛安</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>lord_or_player_name</td><td>玩家/君主名</td><td>string</td><td>unknown</td><td><code>赊刀人c / 天勇星b</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>kingdom_or_force</td><td>国家/势力</td><td>string_or_enum</td><td>unknown</td><td><code>南楚 / 楚</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>coordinate_or_page_index</td><td>坐标/分页索引</td><td>int_pair</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6444" data-status="partial">
+          <div class="card-head"><div><h2>map_object_batch_ack_6444_request</h2><p>request · partial</p></div><div class="opcode">6444</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000109</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>批量同步/确认命令</td><td>hex</td><td></td><td><code>6444</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_count</td><td>对象数量</td><td>uint16_or_uint32</td><td></td><td><code>000021</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>object_ids</td><td>对象 ID 列表</td><td>repeated_uint64_or_padded_id</td><td></td><td><code>0000000000000216, 000000000000023b</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1012" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>city_detail_batch_1012_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1012</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>city_detail</td><td>城池详情</td><td>group</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>city_name</td><td>城池名</td><td>string</td><td>unknown</td><td><code>洛阳</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>lord_or_npc_name</td><td>君主/NPC 名</td><td>string</td><td>unknown</td><td><code>献帝S</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>kingdom_name</td><td>国家/势力名</td><td>string</td><td>unknown</td><td><code>大汉 / 汉</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>state_flags</td><td>城池状态/归属/坐标等标志位</td><td>binary_struct</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="3183+114c" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>achievement_title_3183_114c_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">3183+114c</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>title_list</td><td>成就/称号列表</td><td>repeated_group</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>title_name</td><td>称号名</td><td>string</td><td>unknown</td><td><code>滑头 / 寨主</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>achievement_name</td><td>成就名</td><td>string</td><td>unknown</td><td><code>张弛有道 / 崭露头角</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>description</td><td>描述文本</td><td>string</td><td>unknown</td><td><code>大丈夫能伸能屈，惹不起</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>effect</td><td>称号/成就效果</td><td>string</td><td>unknown</td><td><code>在战斗中撤退时伤兵数减少20 / 灭敌时获得的战功增加10</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>unlock_condition</td><td>获得条件</td><td>string</td><td>unknown</td><td><code>撤退次数1000次</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="" data-status="mechanism_observed">
+          <div class="card-head"><div><h2>compound_request_body</h2><p>request · mechanism_observed</p></div><div class="opcode"></div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>compound_segments</td><td>单个 HTTP body 可串联多个命令段</td><td>mechanism</td><td>body</td><td><code>311000000100 + 62000000</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>segment_session_token_repeat</td><td>复合请求中每个命令段前可能重复 token/角色上下文</td><td>bytes</td><td>before_each_command</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>parser_rule</td><td>解析规则</td><td>note</td><td></td><td><code>不能只按 HTTP 请求数建模；要按 body 内命令段切分</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="" data-status="live_observed_error_code">
+          <div class="card-head"><div><h2>error_response_fffc_session_invalid</h2><p>response · live_observed_error_code</p></div><div class="opcode"></div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>common_response_prefix</td><td>响应公共前缀/上下文字段</td><td>bytes</td><td>0x00</td><td><code>0101 + session/token-like</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>error_code</td><td>错误码：疑似会话失效/被踢/登录态不可用</td><td>hex</td><td>tail</td><td><code>fffc0000</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>trigger_context</td><td>触发场景</td><td>note</td><td></td><td><code>代理抓包和 bridge100 被动 pcap 均观察到 3110 心跳或后续业务请求返回 27 bytes 且尾部 fffc0000，随后测试账号退出登录。</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1003" data-status="passive_capture_observed">
+          <div class="card-head"><div><h2>login_bootstrap_1003_request</h2><p>request · passive_capture_observed</p></div><div class="opcode">1003</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02</td><td><code>1660606`7054`0000480502</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>client_timestamp_or_nonce</td><td>客户端时间戳/nonce</td><td>uint64_or_bytes</td><td>after_account_prefix</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>command_length</td><td>命令段长度</td><td>uint32_be_or_hex</td><td></td><td><code>00000058</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>登录初始化命令</td><td>hex</td><td></td><td><code>1003</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>device_uuid_primary</td><td>设备/安装 UUID 1</td><td>ascii_uuid</td><td>after_opcode</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>device_uuid_secondary</td><td>设备/安装 UUID 2</td><td>ascii_uuid</td><td>after_device_uuid_primary</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>role_or_server_code</td><td>角色/区服代码</td><td>ascii_or_numeric</td><td></td><td><code>0000480502</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1003" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>login_bootstrap_1003_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1003</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>login_success_message</td><td>登录成功文本</td><td>utf8_string</td><td></td><td><code>登录成功</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>role_name_or_display_name</td><td>角色名/展示名</td><td>utf8_string</td><td></td><td><code>东方美6</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>country_or_kingdom</td><td>国家/势力</td><td>utf8_string</td><td></td><td><code>大汉 / 汉</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>card_pool_or_reward_text</td><td>奖励/卡池说明文本</td><td>utf8_string</td><td></td><td><code>开启后可获得：名将--少</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1016" data-status="passive_capture_observed">
+          <div class="card-head"><div><h2>role_world_bootstrap_1016_request</h2><p>request · passive_capture_observed</p></div><div class="opcode">1016</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>after_timestamp</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>segment_length_or_param_len</td><td>段长度/参数长度</td><td>uint32_be_or_hex</td><td></td><td><code>00000008</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>登录后初始化命令</td><td>hex</td><td></td><td><code>1016</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>trailing_param</td><td>尾部参数/分页或版本参数</td><td>uint32_or_hex</td><td></td><td><code>000002fc</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1016" data-status="head_jiangling_status_partial_confirmed">
+          <div class="card-head"><div><h2>role_world_bootstrap_1016_response</h2><p>response · head_jiangling_status_partial_confirmed</p></div><div class="opcode">1016</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>welcome_notice</td><td>欢迎/国家公告</td><td>utf8_string</td><td></td><td><code>欢迎加入 / 本国政务繁多</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>country_slogan</td><td>国家宣言/公告</td><td>utf8_string</td><td></td><td><code>犯我强汉者，虽远必诛</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>base_or_fief_name</td><td>基地/封地名称</td><td>utf8_string</td><td>state8004 utf scan</td><td><code>东方美基地 / 太祥封地 / 董全基地</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>policy_city_name</td><td>政策段前城池名</td><td>utf8_string</td><td>before policy_records</td><td><code>建业 / 洛阳</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>policy_record.name</td><td>政策/buff 名称</td><td>utf8_string</td><td>policy_record.name_utf</td><td><code>神农 / 蚩尤 / 风后</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>policy_or_buff_effect</td><td>政策/buff 效果文本</td><td>utf8_string</td><td>immediately after policy_record.name</td><td><code>降低20%伤兵治疗费用 / 守军攻防提升10% / 铜钱粮食产能提升30%</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>policy_record.index</td><td>政策序号</td><td>uint16</td><td>policy_record.name_utf_offset-0x04</td><td><code>1 / 2 / 3</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>policy_record.timer_raw</td><td>政策时间/状态原始码</td><td>uint16_hex</td><td>policy_record.name_utf_offset-0x02</td><td><code>2f0d / 2f0c / 2f0b</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>response_opcode</td><td>实际响应 opcode</td><td>hex</td><td></td><td><code>8004</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling_list</td><td>0x8004 tail 将领列表</td><td>repeated_group</td><td>after_8004_head; i64_id+u16_name+114_body</td><td><code>何颜鸥 / 冯岚 / 台达元 / 尹诩静</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>jiangling_status_level_tili_loyalty_troops</td><td>将领状态/等级/体力/忠诚/统兵数/兵种</td><td>struct_fields</td><td>status body+0x58; level body+0x08; growth body+0x06; tili body+0x1b; loyalty body+0x27/0x28; daiBingLimit body+0x23 uint32; currentTroopCount Lo/a.S5.Qm; troopType Lo/a.S5.Pm</td><td><code>status=0, level=1, growth=69, tili=99/100, loyalty=48/100, currentTroopCount=1, daiBingLimit=198, troopTypeCode=3=轻骑兵</code></td><td><span class='pill ok'>confirmed</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1800" data-status="passive_capture_observed_unparsed">
+          <div class="card-head"><div><h2>post_login_sync_1800_request</h2><p>request · passive_capture_observed_unparsed</p></div><div class="opcode">1800</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td></td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知登录后同步命令</td><td>hex</td><td></td><td><code>1800</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1800" data-status="mostly_binary_short_response">
+          <div class="card-head"><div><h2>post_login_sync_1800_response</h2><p>response · mostly_binary_short_response</p></div><div class="opcode">1800</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>unknown_short_struct</td><td>未知短结构</td><td>binary_struct</td><td>body</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>observed_name_like_text</td><td>观测到的名称类文本</td><td>utf8_string</td><td></td><td><code>麻子 / 秋</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6287" data-status="passive_capture_observed_unparsed">
+          <div class="card-head"><div><h2>unknown_ack_success_6287_request</h2><p>request · passive_capture_observed_unparsed</p></div><div class="opcode">6287</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td></td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知确认命令</td><td>hex</td><td></td><td><code>6287</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6287" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>unknown_ack_success_6287_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">6287</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>success_message</td><td>操作成功文本</td><td>utf8_string</td><td></td><td><code>操作成功</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>channel_or_scope_labels</td><td>频道/范围标签</td><td>utf8_string</td><td></td><td><code>世界 / 国家 / 城池</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1114" data-status="passive_capture_observed">
+          <div class="card-head"><div><h2>battle_report_detail_1114_request</h2><p>request · passive_capture_observed</p></div><div class="opcode">1114</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td></td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>segment_length_or_param_len</td><td>段长度/参数长度</td><td>uint32_be_or_hex</td><td></td><td><code>00000008</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>战报详情命令</td><td>hex</td><td></td><td><code>1114</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>battle_report_id_or_timestamp</td><td>战报 id/时间戳</td><td>uint64_or_bytes</td><td></td><td><code>19f3d176ff20d972</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1114" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>battle_report_detail_1114_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1114</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>battle_target</td><td>战斗目标</td><td>utf8_string</td><td></td><td><code>1级山贼</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>battle_result</td><td>战斗结果</td><td>utf8_string</td><td></td><td><code>我军失败</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>troop_return_state</td><td>部队返回状态</td><td>utf8_string</td><td></td><td><code>返回封地</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>stamina_after_battle</td><td>战斗后体力</td><td>numeric_text</td><td></td><td><code>体力：99</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>participant_or_hero_name</td><td>参战对象/将领名</td><td>utf8_string</td><td></td><td><code>8台达元</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="111f" data-status="passive_capture_observed">
+          <div class="card-head"><div><h2>battle_report_actor_summary_111f_request</h2><p>request · passive_capture_observed</p></div><div class="opcode">111f</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td></td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>战报参战方摘要命令</td><td>hex</td><td></td><td><code>111f</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>battle_report_id_or_timestamp</td><td>战报 id/时间戳</td><td>uint64_or_bytes</td><td></td><td><code>19f3d176ff20d972</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="111f" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>battle_report_actor_summary_111f_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">111f</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>attacker_side_label</td><td>进攻方标签</td><td>utf8_string</td><td></td><td><code>进攻方</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>role_name</td><td>角色名</td><td>utf8_string</td><td></td><td><code>东方美</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>gender_level_text</td><td>性别/等级文本</td><td>utf8_string</td><td></td><td><code>女54级</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1025" data-status="passive_capture_observed_error_only">
+          <div class="card-head"><div><h2>unknown_after_session_invalid_1025_request</h2><p>request · passive_capture_observed_error_only</p></div><div class="opcode">1025</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td></td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>stale_session_token_like</td><td>已失效 session/token</td><td>bytes</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>未知命令</td><td>hex</td><td></td><td><code>1025</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1025" data-status="error_code_only">
+          <div class="card-head"><div><h2>unknown_after_session_invalid_1025_response</h2><p>response · error_code_only</p></div><div class="opcode">1025</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>common_response_prefix</td><td>响应公共前缀/上下文字段</td><td>bytes</td><td>0x00</td><td><code>0101 + session/token-like</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>error_code</td><td>会话失效错误码</td><td>hex</td><td>tail</td><td><code>fffc0000</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6300" data-status="partial">
+          <div class="card-head"><div><h2>ministry_official_status_6300_request</h2><p>request · partial</p></div><div class="opcode">6300</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000002</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>6300</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>zero_param</td><td>空参数/保留参数</td><td>bytes</td><td></td><td><code>00000000</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6300" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>ministry_official_status_6300_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">6300</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>ministry_name</td><td>六部/官职名称</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>official_slots_or_counts</td><td>官职槽位/数量字段</td><td>int_or_struct</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6260" data-status="partial">
+          <div class="card-head"><div><h2>arena_challenge_log_6260_request</h2><p>request · partial</p></div><div class="opcode">6260</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>6260</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="6260" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>arena_challenge_log_6260_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">6260</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>result_text</td><td>胜负结果文本</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>role_or_opponent_name</td><td>角色/对手名</td><td>string</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>arena_score_or_rank</td><td>竞技场分数/排名/时间字段</td><td>int_or_struct</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1226" data-status="partial">
+          <div class="card-head"><div><h2>unknown_id_param_1226_request</h2><p>request · partial</p></div><div class="opcode">1226</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0000000f</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1226</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_id</td><td>对象 id</td><td>uint64_or_padded_id</td><td></td><td><code>00000000006b4d9a</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>param_pair</td><td>参数组</td><td>bytes_or_ints</td><td></td><td><code>0008 00000085</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1226" data-status="ack_or_short_struct_unparsed">
+          <div class="card-head"><div><h2>unknown_id_param_1226_response</h2><p>response · ack_or_short_struct_unparsed</p></div><div class="opcode">1226</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>echo_object_id</td><td>回显对象 id</td><td>uint64_or_padded_id</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>result_or_param_echo</td><td>结果/参数回显</td><td>bytes_or_ints</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1214" data-status="partial">
+          <div class="card-head"><div><h2>entity_rename_1214_request</h2><p>request · partial</p></div><div class="opcode">1214</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0000000e</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1214</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>object_id</td><td>对象 id</td><td>uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>name_length</td><td>名称字节长度</td><td>uint16_or_uint32</td><td></td><td><code>0004</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>new_name_utf8</td><td>新名称</td><td>utf8_string</td><td></td><td><code>车1 / 步1</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1214" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>entity_rename_1214_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1214</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>result_text</td><td>结果文本</td><td>string</td><td></td><td><code>改名成功</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>object_id</td><td>对象 id 回显</td><td>uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>new_name_utf8</td><td>新名称回显</td><td>utf8_string</td><td></td><td><code>车1 / 步1</code></td><td><span class='pill ok'>high</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1520" data-status="partial_variant_of_1520030">
+          <div class="card-head"><div><h2>brush_yellow_prepare_wire_1520_request</h2><p>request · partial_variant_of_1520030</p></div><div class="opcode">1520</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0000001a</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>wire_opcode</td><td>实包命令号</td><td>hex</td><td></td><td><code>1520</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>subcode_or_count_block</td><td>子码/数量块</td><td>bytes</td><td></td><td><code>00000302</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>actor_ids</td><td>将领/编队 id 列表</td><td>repeated_uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>target_id</td><td>目标 id</td><td>uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1522" data-status="partial_variant_of_1522030">
+          <div class="card-head"><div><h2>brush_yellow_dispatch_wire_1522_request</h2><p>request · partial_variant_of_1522030</p></div><div class="opcode">1522</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000025</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>wire_opcode</td><td>实包命令号</td><td>hex</td><td></td><td><code>1522</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>subcode_or_count_block</td><td>子码/数量块</td><td>bytes</td><td></td><td><code>00000302</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>actor_ids</td><td>将领/编队 id 列表</td><td>repeated_uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>target_id</td><td>目标 id</td><td>uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>suffix</td><td>固定/保留后缀</td><td>bytes</td><td></td><td><code>ffffffffffffffff000000</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1522" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>brush_yellow_dispatch_wire_1522_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1522</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>battle_event_text</td><td>战斗/返回事件文本</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>base_city_name</td><td>封地/基地名</td><td>string</td><td></td><td><code>东方美基地</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1280" data-status="partial">
+          <div class="card-head"><div><h2>formation_group_config_1280_request</h2><p>request · partial</p></div><div class="opcode">1280</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>000000d4</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1280</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>group_records</td><td>五个编组槽位记录</td><td>repeated_struct</td><td></td><td><code>编组 id/成员 id/ffffffff 空位哨兵</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1280" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>formation_group_config_1280_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1280</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>group_name</td><td>编组名</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>member_ids</td><td>成员/对象 id 列表</td><td>repeated_uint64_or_padded_id</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1702" data-status="partial">
+          <div class="card-head"><div><h2>expedition_state_poll_1702_request</h2><p>request · partial</p></div><div class="opcode">1702</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000009</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1702</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>poll_mode_or_state</td><td>轮询模式/状态参数</td><td>uint16_or_uint32</td><td></td><td><code>000000 / 000001</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>expedition_or_battle_id</td><td>出征/战斗 id</td><td>uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1702" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>expedition_state_poll_1702_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1702</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>actor_or_troop_name</td><td>将领/部队名</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>actor_ids</td><td>将领/部队 id</td><td>repeated_uint64_or_padded_id</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>progress_or_hp_values</td><td>进度/兵力/时间数值</td><td>int_or_struct</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1250" data-status="partial">
+          <div class="card-head"><div><h2>unknown_object_detail_1250_request</h2><p>request · partial</p></div><div class="opcode">1250</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000008</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1250</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>object_id</td><td>对象 id</td><td>uint64_or_padded_id</td><td></td><td><code>00000000006b4dac</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1250" data-status="short_struct_unparsed">
+          <div class="card-head"><div><h2>unknown_object_detail_1250_response</h2><p>response · short_struct_unparsed</p></div><div class="opcode">1250</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>object_id_or_slot_id</td><td>对象/槽位 id</td><td>uint64_or_padded_id</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>status_values</td><td>状态数值组</td><td>bytes_or_ints</td><td>unknown</td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1200" data-status="partial">
+          <div class="card-head"><div><h2>research_or_tech_list_1200_request</h2><p>request · partial</p></div><div class="opcode">1200</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0000000d</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1200</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>tech_or_building_id</td><td>科技/建筑 id</td><td>uint64_or_padded_id</td><td></td><td><code>00000000000755</code></td><td><span class='pill bad'>low</span></td></tr><tr><td>params</td><td>参数组</td><td>bytes_or_ints</td><td></td><td><code>0008 0001</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1200" data-status="struct_list_unparsed">
+          <div class="card-head"><div><h2>research_or_tech_list_1200_response</h2><p>response · struct_list_unparsed</p></div><div class="opcode">1200</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>record_id</td><td>记录 id</td><td>uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>level_or_state</td><td>等级/状态</td><td>int_or_struct</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>cost_or_timer</td><td>资源消耗/时间字段</td><td>int_or_struct</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1104" data-status="partial">
+          <div class="card-head"><div><h2>inventory_or_status_sync_1104_request</h2><p>request · partial</p></div><div class="opcode">1104</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000001</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1104</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1104" data-status="inventory_item_list_partial_confirmed">
+          <div class="card-head"><div><h2>inventory_or_status_sync_1104_response</h2><p>response · inventory_item_list_partial_confirmed</p></div><div class="opcode">1104</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>inventory.reserved_head</td><td>保留头部</td><td>bytes[14]</td><td>payload+0x00</td><td><code>0000000000000000000000000000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>inventory.capacity</td><td>背包容量</td><td>uint16</td><td>payload+0x0e</td><td><code>50 / 1020</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>inventory.item_record_count</td><td>物品记录数量</td><td>uint16</td><td>payload+0x10</td><td><code>5 / 44</code></td><td><span class='pill ok'>confirmed</span></td></tr><tr><td>inventory.unparsed_tail</td><td>物品列表后的尾部</td><td>bytes</td><td>payload+0x12+count*12</td><td><code>01f4000a05</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1406" data-status="partial">
+          <div class="card-head"><div><h2>unknown_name_list_1406_request</h2><p>request · partial</p></div><div class="opcode">1406</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0000000b</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1406</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>list_params</td><td>列表参数</td><td>bytes_or_ints</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1406" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>unknown_name_list_1406_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1406</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>display_name</td><td>显示名称</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>rank_or_score</td><td>排名/分数/附加数值</td><td>int_or_struct</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1103" data-status="partial">
+          <div class="card-head"><div><h2>item_discard_1103_request</h2><p>request · partial</p></div><div class="opcode">1103</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>00000015</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1103</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>item_id</td><td>物品 id</td><td>uint64_or_padded_id</td><td></td><td><code>000000000005d12c</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>count</td><td>数量</td><td>uint32</td><td></td><td><code>00000001</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>suffix</td><td>固定/保留后缀</td><td>bytes</td><td></td><td><code>ffffffffffffffff</code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1103" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>item_discard_1103_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1103</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>result_text</td><td>结果文本</td><td>string</td><td></td><td><code>丢弃成功</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>inventory_delta_or_state</td><td>背包变化/状态快照</td><td>struct</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="123f" data-status="partial">
+          <div class="card-head"><div><h2>research_upgrade_123f_request</h2><p>request · partial</p></div><div class="opcode">123f</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0000000e</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>123f</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>tech_or_building_id</td><td>科技/建筑 id</td><td>uint64_or_padded_id</td><td></td><td><code>00000000000755</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>research_params</td><td>研究参数</td><td>bytes_or_ints</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="123f" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>research_upgrade_123f_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">123f</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>result_text</td><td>结果文本</td><td>string</td><td></td><td><code>研究成功</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>resource_or_timer_state</td><td>资源/研究时间状态</td><td>struct</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1229" data-status="partial_success_observed">
+          <div class="card-head"><div><h2>batch_refill_troops_1229_request</h2><p>request · partial_success_observed</p></div><div class="opcode">1229</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度</td><td>hex_or_int</td><td></td><td><code>0011</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1229</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>empty_signature_length</td><td>envelope 空签名长度</td><td>uint16</td><td></td><td><code>0000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>object_count_or_mode</td><td>对象数量/模式</td><td>uint8</td><td></td><td><code>02</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>formation_or_general_ids</td><td>将领/编队 id 列表</td><td>repeated_uint64_or_padded_id</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1229" data-status="strings_confirmed_fields_unknown">
+          <div class="card-head"><div><h2>batch_refill_troops_1229_response</h2><p>response · strings_confirmed_fields_unknown</p></div><div class="opcode">1229</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>result_text</td><td>结果文本</td><td>string</td><td></td><td><code>批量补满成功</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>formation_or_troop_state_delta</td><td>编队/兵力状态变化</td><td>struct</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr><tr><td>error_code</td><td>错误/拒绝码（旧失败样本）</td><td>hex</td><td></td><td><code>fffc0000</code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1170" data-status="partial">
+          <div class="card-head"><div><h2>rank_list_1170_request</h2><p>request · partial</p></div><div class="opcode">1170</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>account_prefix</td><td>账号/区服前缀</td><td>ascii</td><td>0x02?</td><td><code></code></td><td><span class='pill ok'>high</span></td></tr><tr><td>session_token_like</td><td>疑似 session/token</td><td>bytes</td><td>unknown</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>payload_length</td><td>payload 长度/段长度</td><td>hex_or_int</td><td></td><td><code>0003</code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>opcode</td><td>命令号</td><td>hex</td><td></td><td><code>1170</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>empty_signature_length</td><td>envelope 空签名长度</td><td>uint16</td><td></td><td><code>0000</code></td><td><span class='pill ok'>high</span></td></tr><tr><td>rank_params</td><td>排行榜分类/页码/模式参数</td><td>bytes_or_ints</td><td></td><td><code></code></td><td><span class='pill bad'>low</span></td></tr></tbody></table>
+        </section>
+        <section class="card schema" data-opcode="1170" data-status="row_parser_added">
+          <div class="card-head"><div><h2>rank_list_1170_response</h2><p>response · row_parser_added</p></div><div class="opcode">1170</div></div>
+          <table><thead><tr><th>id</th><th>中文</th><th>类型</th><th>offset</th><th>值/示例/公式</th><th>置信度</th></tr></thead><tbody><tr><td>rank_name</td><td>玩家/君主名称</td><td>string</td><td></td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr><tr><td>rank_score_or_count</td><td>排行分数/数量</td><td>uint64</td><td>immediately_after_name</td><td><code></code></td><td><span class='pill warn'>medium</span></td></tr></tbody></table>
+        </section></div>
+<div class="footer">updatedAt: 2026-07-08；sourceOfTruth: YAML。</div>
+</main>
+<script>
+function filterCards(){
+  const q=document.getElementById('q').value.toLowerCase(); const kind=document.getElementById('kind').value;
+  document.querySelectorAll('.card').forEach(c=>{
+    const isSchema=c.classList.contains('schema');
+    const typeOk=kind==='all'||(kind==='schema'&&isSchema)||(kind==='request'&&!isSchema);
+    const qOk=!q||c.textContent.toLowerCase().includes(q)||String(c.dataset.opcode||'').toLowerCase().includes(q);
+    c.classList.toggle('hidden',!(typeOk&&qOk));
+  });
+}
+</script></body></html>

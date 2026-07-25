@@ -1,0 +1,84 @@
+# OS / IDE
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Android / Gradle
+**/.gradle/
+**/build/
+local.properties
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Game packages & native dumps (too large for git)
+*.apk
+*.apks
+*.aab
+*.ipa
+*.dex
+*.so
+*.jar
+!**/gradle/wrapper/*.jar
+
+# Capture / reverse bulk data
+ctf_out/
+reverse_cases/
+reverse_case_小黄点辅助/
+**/passive_pcap*/
+**/*_capture*/
+**/*.pcap
+**/*.pcapng
+**/*.mitm
+**/*.bin
+**/*.hex
+
+# Androguard / analysis DB
+androguard.db
+androguard.db-*
+androguard.log
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime state, secrets, logs
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+**/logs/
+电脑端辅助前端/reports/
+电脑端辅助前端/logs/
+自研辅助源码/reports/
+server_rebuild/data/
+server_rebuild/logs/
+
+# Desktop UI scratch previews (optional local artifacts)
+电脑端辅助前端/preview*.png
+电脑端辅助前端/verification_screens/
+
+# Local launcher / machine-specific
+*.pid
+proxy_outbound_ips.json
+
+# Node (if any)
+node_modules/
+dist/
+.cache/

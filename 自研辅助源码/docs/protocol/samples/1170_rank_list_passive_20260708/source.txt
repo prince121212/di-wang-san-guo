@@ -1,0 +1,5 @@
+sourceCaptureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402
+sourceAnalyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402/analyzed_wide_httpclient_20260708_023040
+flows: 008, 010
+operatorTimeline: 02:06:57 打开排行榜；02:07:07 声望榜；02:07:17 城池榜
+notes: flow008 response contains 仙女/赶路人；flow010 response contains 赶路人/赊刀人/爱新游等。

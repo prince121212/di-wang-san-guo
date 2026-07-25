@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>自研辅助 App - 动作前状态检查原型</title>
+  <style>
+    :root{--blue:#2759c8;--page:#f3f6fb;--card:#2d4358;--active:#235d90;--sky:#55acee;--green:#70d454;--yellow:#f6bf58;--red:#ff7d88;--text:#30343b;--muted:#777;--line:#d0d0d0;--black:#020202}
+    *{box-sizing:border-box}
+    body{margin:0;background:#e9eef6;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",Arial,sans-serif}
+    .note{max-width:900px;margin:12px auto 0;padding:9px 12px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:14px;line-height:1.45}
+    .stage{min-height:100vh;display:flex;justify-content:center;padding:12px 12px 22px}
+    .phone{width:460px;max-width:100%;background:var(--page);box-shadow:0 18px 70px rgba(15,23,42,.25);border:1px solid #dde5f0;overflow:hidden}
+    .system-bar{height:34px;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-weight:700;font-size:15px}
+    .top-title{height:64px;background:#f7f9fd;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;border-bottom:1px solid #edf1f6;position:relative}
+    .back{position:absolute;left:14px;top:18px;color:#3177ff;text-decoration:none;font-size:15px}
+    .account-card{margin:14px 4px 0;background:var(--card);color:#fff;border-radius:4px;padding:12px 16px;box-shadow:0 2px 5px rgba(0,0,0,.25)}
+    .account-title{font-size:17px;font-weight:800}.account-sub{font-size:13px;color:#cbd5e1;margin-top:5px;line-height:1.35}
+    .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.chip{display:inline-flex;align-items:center;justify-content:center;font-size:11px;border-radius:999px;padding:3px 7px;background:#eef2ff;color:#3155a4;white-space:nowrap}.chip.ok{background:#dcfce7;color:#166534}.chip.warn{background:#fff7ed;color:#9a3412}.chip.err{background:#fee2e2;color:#991b1b}.chip.gray{background:#f1f5f9;color:#475569}
+    .tabs{display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border-bottom:1px solid #ddd}.tab{height:39px;background:#fff;color:#3394ff;border:0;font-size:16px;font-weight:800;cursor:pointer}.tab.active{color:#1f2937;border:1.5px solid #3394ff;border-bottom:0}
+    .page{padding:8px 6px 0}.panel{border:1px solid #c8c8c8;border-radius:4px;background:#fff;padding:6px;margin-bottom:8px}.inner{border:1px solid #c8c8c8;background:#fafafa;padding:5px}.panel h2{font-size:17px;margin:2px 0 7px;color:#222}.panel p{font-size:13px;margin:6px 0;color:#555;line-height:1.45}
+    .config{display:grid;grid-template-columns:76px 1fr;gap:6px;align-items:center;font-size:14px}.config label{color:#333}.select,.input{height:28px;border:1px solid #aaa;background:#fff;border-radius:2px;padding:0 6px;font-size:14px}.row-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:7px}.btn{border:0;border-radius:6px;min-height:33px;font-size:14px;cursor:pointer;font-family:inherit}.btn.blue{background:var(--sky);color:#fff}.btn.green{background:var(--green);color:#245227}.btn.yellow{background:var(--yellow);color:#6b4a13}.btn.red{background:var(--red);color:#fff}.btn:disabled{background:#d1d5db;color:#6b7280;cursor:not-allowed}
+    .mini-table{width:100%;border-collapse:separate;border-spacing:2px;margin:4px 0;font-size:13px;table-layout:fixed}.mini-table th,.mini-table td{border:1px solid #d1d1d1;background:#fff;text-align:center;height:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px}.mini-table th{font-weight:700;background:#f8fafc}.mini-table .hit td{background:#fff7ed;border-color:#f6bf58}.mini-table .okcell{background:#dcfce7!important;color:#166534}.mini-table .badcell{background:#fee2e2!important;color:#991b1b}.mini-table .fixcell{background:#fff7ed!important;color:#9a3412}
+    .check-list{display:grid;gap:5px}.check-row{display:grid;grid-template-columns:22px 74px 1fr 62px;gap:5px;align-items:center;border:1px solid #ddd;background:#fff;padding:6px 5px;font-size:12px}.check-row .dot{width:16px;height:16px;border-radius:50%;background:#d1d5db;margin:auto}.check-row.ok .dot{background:#22c55e}.check-row.warn .dot{background:#f59e0b}.check-row.err .dot{background:#ef4444}.check-row b{font-size:13px}.small{font-size:11px;color:#777;line-height:1.35}.source{color:#2366b8;font-weight:700}.status-ok{color:#166534;font-weight:800}.status-warn{color:#9a3412;font-weight:800}.status-err{color:#991b1b;font-weight:800}
+    .flow{display:grid;gap:6px}.flow-step{display:grid;grid-template-columns:28px 1fr;gap:7px;align-items:start;background:#fff;border:1px solid #ddd;border-radius:5px;padding:7px;font-size:13px}.num{width:24px;height:24px;border-radius:50%;background:#2f75ff;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}.code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f1f5f9;border:1px solid #dbe2ea;border-radius:4px;padding:2px 4px;color:#334155}
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:6px}.callout{border:1px solid #b7d7ff;background:#f7fbff;color:#3a6ea5;padding:7px;border-radius:4px;font-size:12px;line-height:1.45}.warning{border-color:#fed7aa;background:#fff7ed;color:#9a3412}.success{border-color:#bbf7d0;background:#f0fdf4;color:#166534}
+    .save-log-card{margin:10px 4px 0;background:#000;border-radius:11px;min-height:224px;padding:18px 18px 14px;position:relative;color:#d8dee9;overflow:hidden}.save-btn{position:absolute;right:18px;top:18px;width:136px;height:56px;background:#55acee;color:#e8f5ff;font-size:20px;border-radius:7px;border:0}.log-title{margin-top:78px;font-size:17px;color:#dce6f2}.logs{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.45;color:#cbd5e1;max-height:112px;overflow:auto;white-space:pre-wrap;padding-right:4px}.logs .ok{color:#a7f3d0}.logs .warn{color:#fde68a}.logs .err{color:#fecaca}
+    .bottom-nav{height:86px;background:#fff;border-radius:20px 20px 0 0;display:grid;grid-template-columns:repeat(3,1fr);align-items:center;box-shadow:0 -2px 10px rgba(0,0,0,.12);border-top:1px solid #e3eaf4}.nav{text-align:center;color:#69727f;font-size:17px}.nav .ico{font-size:19px;display:block}.nav.active{color:#2f75ff;font-weight:800;background:#eef4ff;border-radius:16px;margin:10px 12px;padding:7px 0}.hidden{display:none}
+    @media(max-width:520px){.note{margin:0;border-radius:0}.stage{padding:0}.phone{width:100%;box-shadow:none}.tab{font-size:15px}.check-row{grid-template-columns:20px 66px 1fr 58px}.two-col{grid-template-columns:1fr}.logs{font-size:12px}}
+  </style>
+</head>
+<body>
+  <div class="note">新版状态机原型：旧版内容已移除：现在把“状态机”体现为每个动作执行前的状态读取、前置条件判断和必要修正。</div>
+  <div class="stage"><div class="phone">
+    <div class="system-bar"><span>晚上8:56 ◔ ▣ 🟢</span><span>HD ▮▮▮ Wi‑Fi ⑥ 100 ⚡</span></div>
+    <div class="top-title"><a class="back" href="product_prototype.html">‹ 返回</a>状态检查</div>
+
+    <section class="account-card">
+      <div class="account-title">1608600@周年服351区 · 东方美 · Lv.54</div>
+      <div class="account-sub">动作前按当前角色状态判断：能直接执行就发包；状态不满足则先修正；修正不了才阻止。</div>
+      <div class="chips"><span class="chip ok">来源：角色-英雄</span><span class="chip ok">来源：角色-军队</span><span id="summaryChip" class="chip warn">待检查</span></div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" onclick="show('check',this)">刷黄检查</button>
+      <button class="tab" onclick="show('source',this)">状态来源</button>
+      <button class="tab" onclick="show('repair',this)">自动修正</button>
+      <button class="tab" onclick="show('logtab',this)">执行记录</button>
+    </nav>
+
+    <main class="page">
+      <section id="check" class="screen">
+        <div class="panel"><div class="inner">
+          <h2>刷黄动作配置</h2>
+          <div class="config">
+            <label>将领</label>
+            <select id="generalSelect" class="select" onchange="loadGeneral()">
+              <option value="tai">台达元</option>
+              <option value="danyu">单于筠</option>
+              <option value="he">何颜鸥</option>
+            </select>
+            <label>目标</label><input class="input" value="黄巾/山贼 · 根据筛选条件找黄" />
+            <label>兵种</label><select id="needType" class="select" onchange="evaluate(false)"><option value="轻骑兵">轻骑兵</option><option value="步兵">步兵</option><option value="弓兵">弓兵</option></select>
+            <label>兵量</label><input id="needCount" class="input" value="10" oninput="evaluate(false)" />
+          </div>
+          <div class="row-actions">
+            <button class="btn blue" onclick="evaluate(true)">检查前置条件</button>
+            <button class="btn yellow" onclick="autoRepair()">自动修正</button>
+            <button id="executeBtn" class="btn green" onclick="executeBrush()" disabled>执行刷黄</button>
+          </div>
+        </div></div>
+
+        <div class="panel"><div class="inner">
+          <h2>动作前置条件</h2>
+          <div id="checkList" class="check-list"></div>
+        </div></div>
+
+        <div class="panel"><div class="inner">
+          <h2>产品逻辑</h2>
+          <div class="callout warning">例：派将领 A 带 10 个轻骑兵刷黄，不是只看“有没有空闲锁”，而是先看英雄页/军队页展示出来的真实状态：是否空闲、体力是否够、当前统兵是不是轻骑兵、当前统兵数量是不是 10/最大统兵。</div>
+        </div></div>
+      </section>
+
+      <section id="source" class="screen hidden">
+        <div class="panel"><div class="inner">
+          <h2>角色 - 英雄页状态</h2>
+          <table class="mini-table" id="heroTable"></table>
+          <p>英雄页提供动作前最关键的将领状态：态、体、统、兵。刷黄前先读取这里，不满足就进入修正流程。</p>
+        </div></div>
+        <div class="panel"><div class="inner">
+          <h2>角色 - 军队页状态</h2>
+          <table class="mini-table" id="armyTable"></table>
+          <p>军队页提供当前编队/兵种/兵量状态。比如当前不是轻骑兵，或者不是 10/198，就不能直接刷黄。</p>
+        </div></div>
+      </section>
+
+      <section id="repair" class="screen hidden">
+        <div class="panel"><div class="inner">
+          <h2>自动修正策略</h2>
+          <div class="flow">
+            <div class="flow-step"><div class="num">1</div><div><b>读取状态</b><br/><span class="small">从「角色-英雄」和「角色-军队」刷新当前将领/编队状态。</span></div></div>
+            <div class="flow-step"><div class="num">2</div><div><b>判断前置条件</b><br/><span class="small">空闲、体力、兵种、兵量、目标有效性全部满足才允许进入真实动作。</span></div></div>
+            <div class="flow-step"><div class="num">3</div><div><b>可修正则先修正</b><br/><span class="small">体力不足 → 用体力丹；兵种不对 → 改统领轻骑兵；兵量不对 → 设置为 <span class="code">10/198</span>。</span></div></div>
+            <div class="flow-step"><div class="num">4</div><div><b>复查后执行</b><br/><span class="small">修正后必须再次读取状态确认，而不是直接假设成功。</span></div></div>
+          </div>
+        </div></div>
+        <div class="panel"><div class="inner">
+          <h2>当前修正计划</h2>
+          <table class="mini-table" id="repairTable"></table>
+        </div></div>
+      </section>
+
+      <section id="logtab" class="screen hidden">
+        <div class="panel"><div class="inner">
+          <h2>一次刷黄的状态判断链</h2>
+          <div class="flow">
+            <div class="flow-step"><div class="num">查</div><div>刷新「角色-英雄」：将领态=闲、体力=100、统=71。</div></div>
+            <div class="flow-step"><div class="num">查</div><div>刷新「角色-军队」：兵种=步兵、当前兵=3000、最大统兵=198。</div></div>
+            <div class="flow-step"><div class="num">改</div><div>不满足刷黄配置：自动改兵种为轻骑兵，兵量改为 <span class="code">10/198</span>。</div></div>
+            <div class="flow-step"><div class="num">发</div><div>复查通过后，才进入找黄、prepare、出征刷黄。</div></div>
+          </div>
+        </div></div>
+      </section>
+    </main>
+
+    <section class="save-log-card">
+      <button class="save-btn" onclick="evaluate(true)">刷新状态</button>
+      <div class="log-title">☁ 状态检查日志</div>
+      <div id="logs" class="logs"></div>
+    </section>
+
+    <nav class="bottom-nav"><div class="nav"><span class="ico">⌂</span>助手</div><div class="nav active"><span class="ico">▧</span>状态</div><div class="nav"><span class="ico">♙</span>我</div></nav>
+  </div></div>
+
+<script>
+const generals={
+  tai:{name:'台达元',state:'闲',type:'步兵',level:54,stamina:100,loyalty:85,command:71,soldier:3000,max:198,formation:'7032235'},
+  danyu:{name:'单于筠',state:'出',type:'弓兵',level:54,stamina:0,loyalty:82,command:72,soldier:3000,max:201,formation:'7032238'},
+  he:{name:'何颜鸥',state:'闲',type:'轻骑兵',level:54,stamina:0,loyalty:80,command:70,soldier:10,max:196,formation:'7032241'}
+};
+let current='tai';
+function show(id,btn){document.querySelectorAll('.screen').forEach(x=>x.classList.add('hidden'));document.getElementById(id).classList.remove('hidden');document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));btn.classList.add('active');log('· [ui] 切换：'+btn.textContent)}
+function log(t,c=''){const box=document.getElementById('logs');const d=document.createElement('div');d.className=c;d.textContent=t;box.appendChild(d);box.scrollTop=box.scrollHeight}
+function loadGeneral(){current=document.getElementById('generalSelect').value;renderTables();evaluate(false);log('· [state] 选择将领：'+generals[current].name)}
+function needCount(){const n=parseInt(document.getElementById('needCount').value,10);return Number.isFinite(n)?n:10}
+function needType(){return document.getElementById('needType').value}
+function checks(){const g=generals[current];const n=needCount();const t=needType();return[
+  {k:'将领',name:'是否空闲',source:'角色-英雄',cur:'态='+g.state,ok:g.state==='闲',fix:g.state==='闲'?'无需处理':'不可自动修正，等待返回/换将'},
+  {k:'体力',name:'体力足够',source:'角色-英雄',cur:'体='+g.stamina,ok:g.stamina>0,fix:g.stamina>0?'无需处理':'使用体力丹后复查'},
+  {k:'兵种',name:'统兵兵种',source:'角色-军队',cur:g.type,ok:g.type===t,fix:g.type===t?'无需处理':'改成'+t+'后复查'},
+  {k:'兵量',name:'统兵数量',source:'角色-军队',cur:g.soldier+'/'+g.max,ok:g.soldier===n,fix:g.soldier===n?'无需处理':'改成'+n+'/'+g.max+'后复查'},
+  {k:'目标',name:'目标有效',source:'找黄结果',cur:'山贼/黄巾 fresh',ok:true,fix:'无需处理'}
+]}
+function evaluate(withLog){const list=checks();const all=list.every(x=>x.ok);document.getElementById('summaryChip').textContent=all?'前置条件通过':'有状态需修正';document.getElementById('summaryChip').className='chip '+(all?'ok':'warn');document.getElementById('executeBtn').disabled=!all;renderChecks(list);renderRepair(list);renderTables();if(withLog){log('· [check] '+generals[current].name+' 前置条件：'+(all?'全部通过':'未通过，进入修正计划'),all?'ok':'warn')}}
+function renderChecks(list=checks()){document.getElementById('checkList').innerHTML=list.map(x=>`<div class="check-row ${x.ok?'ok':'warn'}"><div class="dot"></div><b>${x.k}</b><div><div>${x.name} <span class="source">${x.source}</span></div><div class="small">当前：${x.cur}；处理：${x.fix}</div></div><span class="${x.ok?'status-ok':'status-warn'}">${x.ok?'通过':'待处理'}</span></div>`).join('')}
+function renderTables(){const g=generals[current];const hs=Object.values(generals).map(x=>`<tr class="${x.name===g.name?'hit':''}"><td>${x.name}</td><td>${x.state}</td><td>${x.type.replace('兵','')}</td><td>${x.level}</td><td>${x.stamina}</td><td>${x.loyalty}</td><td>${x.command}</td><td>${x.soldier}</td></tr>`).join('');document.getElementById('heroTable').innerHTML='<tr><th>将</th><th>态</th><th>类</th><th>级</th><th>体</th><th>忠</th><th>统</th><th>兵</th></tr>'+hs;const as=Object.values(generals).map(x=>`<tr class="${x.name===g.name?'hit':''}"><td>${x.formation}</td><td>${x.name}</td><td>${x.state}</td><td>${x.type}</td><td>${x.soldier}/${x.max}</td></tr>`).join('');document.getElementById('armyTable').innerHTML='<tr><th>编队</th><th>将领</th><th>状态</th><th>兵种</th><th>兵力</th></tr>'+as}
+function renderRepair(list=checks()){document.getElementById('repairTable').innerHTML='<tr><th>项</th><th>当前</th><th>动作</th><th>结果</th></tr>'+list.map(x=>`<tr><td>${x.k}</td><td>${x.cur}</td><td>${x.fix}</td><td class="${x.ok?'okcell':'fixcell'}">${x.ok?'已满足':'待修正'}</td></tr>`).join('')}
+function autoRepair(){const g=generals[current];const before=checks();let changed=false;if(g.state!=='闲'){log('· [repair] '+g.name+' 当前不是空闲，不能自动修正，只能等待/换将','err');evaluate(false);return}if(g.stamina<=0){g.stamina=100;changed=true;log('· [repair] '+g.name+' 体力不足：使用体力丹 -> 体力=100','warn')}if(g.type!==needType()){g.type=needType();changed=true;log('· [repair] '+g.name+' 兵种修正：统领 '+g.type,'warn')}if(g.soldier!==needCount()){g.soldier=needCount();changed=true;log('· [repair] '+g.name+' 兵量修正：'+g.soldier+'/'+g.max,'warn')}if(!changed)log('· [repair] 无需修正，前置条件已满足','ok');evaluate(true)}
+function executeBrush(){if(document.getElementById('executeBtn').disabled){log('· [execute] 前置条件未满足，禁止刷黄','err');return}log('· [execute] 前置条件通过 -> 找黄 -> prepare -> 出征刷黄','ok')}
+renderTables();evaluate(false);log('· [state] 已加载动作前状态检查页：刷黄=将领+体力+兵种+兵量+目标');
+</script>
+</body>
+</html>

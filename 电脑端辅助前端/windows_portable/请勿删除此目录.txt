@@ -1,0 +1,3 @@
+此目录仅用于首次继承 V0.0.1 旧数据。
+新版的 Windows 本机数据固定保存在：
+%LOCALAPPDATA%\DWPMDesktop\data

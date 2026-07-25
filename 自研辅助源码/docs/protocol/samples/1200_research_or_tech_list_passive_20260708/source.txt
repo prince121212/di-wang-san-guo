@@ -1,0 +1,6 @@
+captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+promotedAt: 2026-07-08 01:26:21
+flowIndices: [116]
+opcode: 1200
+id: research_or_tech_list_1200

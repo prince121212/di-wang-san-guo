@@ -1,0 +1,2154 @@
+version: 1
+updatedAt: '2026-07-08'
+sourceOfTruth: true
+notes:
+- 字段字典主格式为 YAML。字段允许 unknown offset，先沉淀证据，再逐步确认。
+- 'confidence: low/medium/high/confirmed。'
+- 2026-07-07 live mitmweb：补录 1130、3940、3941、1008、6444、1012、3183+114c；多数为 strings_confirmed_fields_unknown，待可控动作 diff。
+- 2026-07-07 live mitmweb：观察到尾部 fffc0000 的 27-byte 响应，疑似会话失效/被踢错误码；已停止代理并改走 pcap 被动方案。
+- 2026-07-08 passive bridge100 pcap：去重补录 1003、1016、1800、6287、1114、111f、1025 的字段骨架；仅新增未收录接口，不重复 3110/1130/6200/1008/1012/6444。
+- 2026-07-08 passive bridge100 pcap 增量：新增 6300、6260、1226、1214、1520(wire prepare)、1522(wire dispatch)、1280、1702；其中 1520/1522 是既有刷黄 1520030/1522030 逻辑的实包形态补录。
+- 2026-07-08 passive bridge100 pcap 第二批增量：新增 1250、1200、1104、1406、1103、123f；修正 scanner 将 0755/0100/d12c 参数误判为 opcode 的情况。
+- 2026-07-08 passive bridge100 pcap 第三批增量：新增 1229 error-only 样本；请求携带两个对象 id，响应 fffc0000。
+- 2026-07-08 passive bridge100 pcap 第四批增量：新增 1170 排行榜字段骨架；修正 1229 为批量补兵/批量补满成功字段骨架，旧 fffc0000 作为失败样本。
+- 2026-07-08 0x8004 JiangLing 修正：114-byte body 对齐原客户端 Lo/a.b6 common；body+0x03 是职业分类，body+0x27/0x28 是忠诚当前/上限，body+0x23 是最大统兵数 uint32，body+0x58 是状态。当前兵数/兵种不在 body 内，来自后续 Lo/a.S5 表 Pm/Qm；旧 body+0x67=兵种、body+0x2b=忠诚、body+0x23/0x25=当前/最大兵数均判定为误读。
+commonFields:
+- id: account_prefix
+  label: 账号/区服前缀
+  type: ascii
+  example: 1660606`7054`0000480502
+  confidence: high
+  appearsIn:
+  - heartbeat_or_status_3110
+  - find_yellow_041540
+  - growth_task_status_1130
+  - activity_list_3940
+  - activity_detail_3941
+  - map_city_page_scan_1008
+  - map_object_batch_ack_6444
+  - city_detail_batch_1012
+  - achievement_title_3183_114c
+  - ministry_official_status_6300
+  - arena_challenge_log_6260
+  - unknown_id_param_1226
+  - entity_rename_1214
+  - brush_yellow_prepare_wire_1520
+  - brush_yellow_dispatch_wire_1522
+  - formation_group_config_1280
+  - expedition_state_poll_1702
+  - unknown_object_detail_1250
+  - research_or_tech_list_1200
+  - inventory_or_status_sync_1104
+  - unknown_name_list_1406
+  - item_discard_1103
+  - research_upgrade_123f
+  - rank_list_1170
+  - batch_refill_troops_1229
+- id: session_token_like
+  label: 疑似 session/token
+  type: bytes
+  confidence: medium
+  evidenceNeed: 对比同账号多次登录、重登、换账号样本。
+- id: opcode
+  label: 命令号
+  type: hex
+  confidence: high
+schemas:
+- id: find_yellow_041540_request
+  requestId: find_yellow_041540
+  opcode: '041540'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    length: 23
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: opcode
+    label: 找黄命令
+    type: hex
+    value: '041540'
+    confidence: high
+  - id: search_x_or_area
+    label: 疑似搜索 X/区域
+    type: int_or_hex
+    example: 005b
+    confidence: low
+  - id: search_y_or_area
+    label: 疑似搜索 Y/区域
+    type: int_or_hex
+    example: 001a
+    confidence: low
+- id: find_yellow_041540_response
+  requestId: find_yellow_041540
+  opcode: '041540'
+  direction: response
+  status: partial
+  repeatedGroups:
+  - id: yellow_target
+    label: 山贼/黄巾目标
+    confidence: medium
+    fields:
+    - id: target_id
+      label: 目标 id
+      type: id
+      offset: unknown
+      confidence: medium
+    - id: target_level
+      label: 目标等级
+      type: int
+      offset: unknown
+      evidenceStrings:
+      - 3级山贼
+      - 10级山贼
+      confidence: medium
+    - id: target_name
+      label: 目标名
+      type: string
+      offset: unknown
+      confidence: medium
+    - id: reward_description
+      label: 奖励描述
+      type: string
+      offset: unknown
+      evidenceStrings:
+      - 许多资源
+      - 大批资源
+      - 有宝箱
+      confidence: high
+- id: brush_yellow_prepare_1520030_request
+  requestId: brush_yellow_prepare_1520030
+  opcode: '1520030'
+  direction: request
+  status: formula_confirmed
+  fields:
+  - id: prefix
+    label: 固定前缀
+    value: '000000000000000000'
+    confidence: confirmed
+  - id: length_hex
+    label: payload 长度
+    type: hex
+    formula: ids.size * 8 + 0x0a
+    confidence: confirmed
+  - id: opcode
+    value: '1520030'
+    confidence: confirmed
+  - id: ids_count
+    label: 将领/编队 id 数量
+    type: int
+    confidence: confirmed
+  - id: ids
+    label: 将领/编队 id 列表
+    type: repeated_id
+    confidence: confirmed
+  - id: delimiter
+    label: 目标前分隔
+    value: '0000'
+    confidence: confirmed
+  - id: target_id
+    label: 目标 id
+    type: id
+    confidence: confirmed
+- id: brush_yellow_dispatch_1522030_request
+  requestId: brush_yellow_dispatch_1522030
+  opcode: '1522030'
+  direction: request
+  status: formula_confirmed
+  fields:
+  - id: prefix
+    value: '000000000000000000'
+    confidence: confirmed
+  - id: length_hex
+    formula: ids.size * 8 + 0x15
+    confidence: confirmed
+  - id: opcode
+    value: '1522030'
+    confidence: confirmed
+  - id: ids_count
+    type: int
+    confidence: confirmed
+  - id: ids
+    type: repeated_id
+    confidence: confirmed
+  - id: delimiter
+    value: '0000'
+    confidence: confirmed
+  - id: target_id
+    type: id
+    confidence: confirmed
+  - id: suffix
+    label: 固定后缀
+    value: ffffffffffffffff000000
+    confidence: confirmed
+- id: status_sync_8004_response
+  opcode: '8004'
+  direction: response
+  status: jiangling_partial_confirmed
+  fields:
+  - id: monarch_name
+    label: 君主名
+    type: string
+    offset: head:utf
+    confidence: high
+  - id: monarch_level
+    label: 君主等级
+    type: int
+    offset: head_after_role_name+1
+    confidence: high
+  - id: money
+    label: 铜钱
+    type: int
+    offset: head_after_level:i64
+    confidence: high
+  - id: food
+    label: 粮食
+    type: int
+    offset: head_after_money:i64
+    confidence: high
+  - id: population
+    label: 人口
+    type: int
+    offset: head_after_rates:i64_pair
+    confidence: high
+  - id: general_list
+    label: 英雄/将领列表
+    type: repeated_group
+    offset: after_8004_head; scan i64_id+u16_name+114_body
+    example: 何颜鸥 / 冯岚 / 台达元
+    confidence: confirmed
+  - id: jiangling.id
+    label: 将领ID
+    type: uint64
+    offset: record+0x00
+    example: 00000000006bd24b
+    confidence: confirmed
+  - id: jiangling.name
+    label: 将领名
+    type: utf8_string
+    offset: record+0x0a len=u16(record+0x08)
+    example: 何颜鸥
+    confidence: confirmed
+  - id: jiangling.body
+    label: 将领记录体
+    type: bytes[114]
+    offset: after_name
+    example: body[0x3a..0x41] 回显 id；body[0x70..0x71]=ffff
+    confidence: confirmed
+  - id: jiangling.profession_code
+    label: 将领分类/职业码
+    type: uint8
+    offset: body+0x03
+    example: 0=步将,1=弓将,2=骑将,4=勇士
+    confidence: confirmed
+  - id: jiangling.progression
+    label: 成长/成长值
+    type: uint16
+    offset: body+0x06
+    example: 69
+    confidence: confirmed
+  - id: jiangling.level
+    label: 将领等级
+    type: uint8
+    offset: body+0x08
+    example: 1 / 5 / 6 / 9 / 11 / 15
+    confidence: confirmed
+  - id: jiangling.progression_raw_code
+    label: 成长前置原始码
+    type: uint16
+    offset: body+0x04
+    example: 730
+    confidence: medium
+  - id: jiangling.exp
+    label: 经验
+    type: uint32
+    offset: body+0x09
+    example: 0 / 7024 / 16468
+    confidence: high
+  - id: jiangling.exp_limit
+    label: 经验上限
+    type: uint32
+    offset: body+0x0d
+    example: 15 / 19965
+    confidence: high
+  - id: jiangling.wuli
+    label: 武力
+    type: uint16
+    offset: body+0x11
+    example: 63
+    confidence: confirmed
+  - id: jiangling.zhili
+    label: 智力
+    type: uint16
+    offset: body+0x13
+    example: 84
+    confidence: confirmed
+  - id: jiangling.tongshuai
+    label: 统帅
+    type: uint16
+    offset: body+0x15
+    example: 76
+    confidence: confirmed
+  - id: jiangling.gongji
+    label: 攻击
+    type: uint16
+    offset: body+0x17
+    example: 63
+    confidence: confirmed
+  - id: jiangling.fangyu
+    label: 防御
+    type: uint16
+    offset: body+0x19
+    example: 84
+    confidence: confirmed
+  - id: general_stamina
+    label: 将领体力
+    type: uint16
+    offset: body+0x1b
+    example: 99
+    confidence: confirmed
+  - id: jiangling.tili_limit
+    label: 将领体力上限
+    type: uint16
+    offset: body+0x1d
+    example: 100
+    confidence: confirmed
+  - id: jiangling.loyalty
+    label: 忠诚度当前
+    type: uint8
+    offset: body+0x27
+    example: 48 / 60
+    confidence: confirmed
+  - id: jiangling.loyalty_limit
+    label: 忠诚度上限
+    type: uint8
+    offset: body+0x28
+    example: 100
+    confidence: confirmed
+  - id: general_state
+    label: 将领状态：空闲/出征/驻防/被俘
+    type: enum
+    offset: body+0x58
+    example: 0=空闲,1=出征,2=驻防,3=被俘
+    confidence: confirmed
+  - id: max_soldier_count
+    label: 最大统兵数/带兵上限
+    type: uint32
+    offset: body+0x23
+    example: 198 / 162 / 204
+    confidence: confirmed
+  - id: jiangling.ao_breakout
+    label: 突围能力/能力值候选（非忠诚）
+    type: uint16
+    offset: body+0x2b
+    example: 84 / 79 / 71 / 80
+    confidence: medium
+  - id: soldier_count
+    label: 当前统兵数量
+    type: int32
+    offset: Lo/a.S5 entry Qm
+    example: 何颜鸥=1 / 骑1=200
+    confidence: confirmed
+  - id: soldier_type
+    label: 所统兵种
+    type: uint8_scriptSoldierRowIndex
+    offset: Lo/a.S5 entry Pm（scriptSoldier.sc 零基行号，不是兵种 id）
+    example: 3=轻骑兵（scriptSoldier 第 4 行，id=9）
+    confidence: confirmed
+  - id: jiangling.place_id
+    label: 所在地/封地ID候选
+    type: uint64
+    offset: body+0x32
+    example: 1877 / 2438
+    confidence: high
+- id: dungeon_status_01190000_response
+  requestId: dungeon_status_01190000
+  opcode: 01190000
+  direction: response
+  status: partial
+  fields:
+  - id: status_char
+    label: 闯关状态码
+    offsetRange: '[0x3f,0x40)'
+    type: char
+    confidence: medium
+    enum:
+      '2': 空闲/可闯关
+      '1': 状态1，待复验
+      '0': 冷却中
+      '3': 战斗中
+  - id: cooldown_ms_hex
+    label: 冷却时间毫秒 hex
+    offsetRange: '[0x48,0x58)'
+    type: hex_int
+    transform: value / 1000 = seconds
+    confidence: medium
+- id: daily_sign_claim_6202_response
+  requestId: daily_sign_claim_6202
+  opcode: '6202'
+  direction: response
+  status: partial_live_observed
+  fields:
+  - id: reward_result_text
+    label: 领奖结果文本
+    type: string
+    offset: unknown
+    example: 铜钱:10000获得成功。粮食:30000获得成功。
+    confidence: high
+  - id: money_reward
+    label: 铜钱奖励数量
+    type: int_or_string
+    offset: unknown
+    example: '10000'
+    confidence: high
+  - id: food_reward
+    label: 粮食奖励数量
+    type: int_or_string
+    offset: unknown
+    example: '30000'
+    confidence: high
+  - id: task_name_list
+    label: 任务名称列表
+    type: repeated_string
+    offset: unknown
+    confidence: medium
+- id: daily_task_overview_6200_response
+  requestId: daily_task_overview_6200
+  opcode: '6200'
+  direction: response
+  status: partial_live_observed
+  fields:
+  - id: daily_reward_definition
+    label: 日常奖励定义
+    type: repeated_string
+    offset: unknown
+    example: 铜钱+10000 / 粮食+30000
+    confidence: high
+  - id: task_progress
+    label: 任务进度
+    type: string_or_pair
+    offset: unknown
+    example: 0/1, 1/1, 0/5, 0/10
+    confidence: medium
+  - id: login_task
+    label: 登入游戏任务
+    type: string
+    offset: unknown
+    example: 登入游戏
+    confidence: high
+  - id: premium_reward_definition
+    label: 金钻/高级奖励定义
+    type: string
+    offset: unknown
+    example: 010000铜钱，10白银，10玉石，随机道具
+    confidence: medium
+- id: heartbeat_or_status_3110_response
+  requestId: heartbeat_or_status_3110
+  opcode: '3110'
+  direction: response
+  status: partial_live_observed_resource_offsets
+  fields:
+  - id: online_or_resource_status_block
+    label: 在线/资源状态数值块
+    type: binary_struct
+    offset: unknown
+    confidence: medium
+  - id: system_broadcast
+    label: 系统/国战/名将广播文本
+    type: string
+    offset: unknown
+    example: 名将--张苞被俘
+    confidence: high
+  - id: server_time_or_sequence
+    label: 服务器时间/序号
+    type: int_or_long
+    offset: unknown
+    confidence: low
+  - id: money
+    label: 当前铜钱
+    type: uint32_be
+    offset: '0x1f'
+    length: 4
+    confidence: high
+    evidence:
+    - before: 0x000c0a84 = 789124
+      after: 0x000c319d = 799133
+      delta: '+10009'
+      relatedUserAction: 签到获得铜钱10000；差额含自然增长/刷新误差
+  - id: food
+    label: 当前粮食
+    type: uint32_be
+    offset: '0x27'
+    length: 4
+    confidence: high
+    evidence:
+    - before: 0x00133987 = 1251719
+      after: 0x0013aebc = 1281724
+      delta: '+30005'
+      relatedUserAction: 签到获得粮食30000；差额含自然增长/刷新误差
+  - id: unknown_resource_a
+    label: 未知资源/数值 A
+    type: uint32_be
+    offset: '0x2b'
+    length: 4
+    example: 0x000003ee = 1006
+    confidence: low
+  - id: unknown_resource_b
+    label: 未知资源/数值 B
+    type: uint32_be
+    offset: '0x2f'
+    length: 4
+    example: 0x000002c3 = 707
+    confidence: low
+  - id: unknown_resource_c
+    label: 未知资源/数值 C
+    type: uint32_be
+    offset: '0x37'
+    length: 4
+    example: 0x000003fc = 1020
+    confidence: low
+- id: growth_task_status_1130_response
+  requestId: growth_task_status_1130
+  opcode: '1130'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: task_list
+    label: 成长/引导任务列表
+    type: repeated_group
+    offset: unknown
+    confidence: medium
+  - id: task_name
+    label: 任务名称
+    type: string
+    offset: unknown
+    example: 种植技术 / 建造弓兵营 / 挑战山贼 / 招募将领
+    confidence: high
+  - id: task_level_or_stage
+    label: 任务等级/阶段后缀
+    type: int_or_string_suffix
+    offset: unknown
+    example: 五谷丰登2 / 威震四方6 / 挑战山贼8
+    confidence: medium
+  - id: task_progress_or_state
+    label: 任务进度/完成状态
+    type: int_or_pair_or_flag
+    offset: unknown
+    confidence: low
+  - id: guide_action
+    label: 引导动作/任务入口
+    type: string_or_id
+    offset: unknown
+    example: 使用鲁公手册
+    confidence: medium
+- id: activity_list_3940_response
+  requestId: activity_list_3940
+  opcode: '3940'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: activity_list
+    label: 活动列表
+    type: repeated_group
+    offset: unknown
+    confidence: medium
+  - id: activity_id
+    label: 活动 ID
+    type: id_or_hex
+    offset: unknown
+    confidence: low
+  - id: activity_title
+    label: 活动标题
+    type: string
+    offset: unknown
+    example: 攻敌城，抢豪礼-1 / 烽火连城战无双 / 冲级抢礼包-88级
+    confidence: high
+  - id: image_url_or_path
+    label: 活动图片 URL/路径
+    type: string
+    offset: unknown
+    example: http...png
+    confidence: medium
+  - id: activity_sort_or_status
+    label: 排序/状态/标签字段
+    type: int_or_flag
+    offset: unknown
+    confidence: low
+- id: activity_detail_3941_request
+  requestId: activity_detail_3941
+  opcode: '3941'
+  direction: request
+  status: partial
+  fields:
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    offset: after_common_header
+    example: 00000008
+    confidence: low
+  - id: opcode
+    label: 活动详情命令
+    type: hex
+    value: '3941'
+    confidence: high
+  - id: activity_id_or_param
+    label: 活动 ID/详情参数
+    type: hex_or_id
+    example: 000000009b590093
+    confidence: low
+- id: activity_detail_3941_response
+  requestId: activity_detail_3941
+  opcode: '3941'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: condition_text
+    label: 活动条件描述
+    type: string
+    offset: unknown
+    example: 活动期间内，在攻城战中获得一次胜利
+    confidence: high
+  - id: reward_item_list
+    label: 奖励物品列表
+    type: repeated_string_or_group
+    offset: unknown
+    example: 初级行军符 / 战鼓 / 八阵图 / 将神魂
+    confidence: high
+  - id: reward_count
+    label: 奖励数量
+    type: int
+    offset: unknown
+    example: 1 / 2
+    confidence: medium
+  - id: threshold_count
+    label: 达成次数/条件阈值
+    type: int
+    offset: unknown
+    example: 一次/两次/七次/十五次
+    confidence: medium
+- id: map_city_page_scan_1008_request
+  requestId: map_city_page_scan_1008
+  opcode: '1008'
+  direction: request
+  status: partial
+  fields:
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    offset: after_common_header
+    example: 0000002a
+    confidence: medium
+  - id: opcode
+    label: 地图分页扫描命令
+    type: hex
+    value: '1008'
+    confidence: medium
+  - id: map_layer_or_mode
+    label: 地图层/扫描模式
+    type: uint16_or_flag
+    example: 00000a0a
+    confidence: low
+  - id: page_window_params
+    label: 分页/窗口参数
+    type: repeated_uint16_pair_or_grid
+    example: 0000:000c ... 0009:000c / 000a:000c ...
+    confidence: low
+  - id: end_or_sentinel
+    label: 结束/无更多数据哨兵
+    type: hex
+    example: ffffffff...000a0016
+    confidence: low
+- id: map_city_page_scan_1008_response
+  requestId: map_city_page_scan_1008
+  opcode: '1008'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: map_object_list
+    label: 地图对象/城池列表
+    type: repeated_group
+    offset: unknown
+    confidence: medium
+  - id: object_id
+    label: 对象/城池 ID
+    type: id
+    offset: unknown
+    confidence: low
+  - id: city_name
+    label: 城池名
+    type: string
+    offset: unknown
+    example: 永泰 / 永化 / 宛川 / 洛道 / 洛安
+    confidence: high
+  - id: lord_or_player_name
+    label: 玩家/君主名
+    type: string
+    offset: unknown
+    example: 赊刀人c / 天勇星b
+    confidence: medium
+  - id: kingdom_or_force
+    label: 国家/势力
+    type: string_or_enum
+    offset: unknown
+    example: 南楚 / 楚
+    confidence: medium
+  - id: coordinate_or_page_index
+    label: 坐标/分页索引
+    type: int_pair
+    offset: unknown
+    confidence: low
+- id: map_object_batch_ack_6444_request
+  requestId: map_object_batch_ack_6444
+  opcode: '6444'
+  direction: request
+  status: partial
+  fields:
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 00000109
+    confidence: medium
+  - id: opcode
+    label: 批量同步/确认命令
+    type: hex
+    value: '6444'
+    confidence: medium
+  - id: object_count
+    label: 对象数量
+    type: uint16_or_uint32
+    example: '000021'
+    confidence: low
+  - id: object_ids
+    label: 对象 ID 列表
+    type: repeated_uint64_or_padded_id
+    example: 0000000000000216, 000000000000023b
+    confidence: low
+- id: city_detail_batch_1012_response
+  requestId: city_detail_batch_1012
+  opcode: '1012'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: city_detail
+    label: 城池详情
+    type: group
+    offset: unknown
+    confidence: medium
+  - id: city_name
+    label: 城池名
+    type: string
+    offset: unknown
+    example: 洛阳
+    confidence: high
+  - id: lord_or_npc_name
+    label: 君主/NPC 名
+    type: string
+    offset: unknown
+    example: 献帝S
+    confidence: medium
+  - id: kingdom_name
+    label: 国家/势力名
+    type: string
+    offset: unknown
+    example: 大汉 / 汉
+    confidence: medium
+  - id: state_flags
+    label: 城池状态/归属/坐标等标志位
+    type: binary_struct
+    offset: unknown
+    confidence: low
+- id: achievement_title_3183_114c_response
+  requestId: achievement_title_3183_114c
+  opcode: 3183+114c
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: title_list
+    label: 成就/称号列表
+    type: repeated_group
+    offset: unknown
+    confidence: medium
+  - id: title_name
+    label: 称号名
+    type: string
+    offset: unknown
+    example: 滑头 / 寨主
+    confidence: high
+  - id: achievement_name
+    label: 成就名
+    type: string
+    offset: unknown
+    example: 张弛有道 / 崭露头角
+    confidence: high
+  - id: description
+    label: 描述文本
+    type: string
+    offset: unknown
+    example: 大丈夫能伸能屈，惹不起
+    confidence: high
+  - id: effect
+    label: 称号/成就效果
+    type: string
+    offset: unknown
+    example: 在战斗中撤退时伤兵数减少20 / 灭敌时获得的战功增加10
+    confidence: high
+  - id: unlock_condition
+    label: 获得条件
+    type: string
+    offset: unknown
+    example: 撤退次数1000次
+    confidence: medium
+- id: compound_request_body
+  direction: request
+  status: mechanism_observed
+  fields:
+  - id: compound_segments
+    label: 单个 HTTP body 可串联多个命令段
+    type: mechanism
+    offset: body
+    example: 311000000100 + 62000000
+    confidence: medium
+  - id: segment_session_token_repeat
+    label: 复合请求中每个命令段前可能重复 token/角色上下文
+    type: bytes
+    offset: before_each_command
+    confidence: low
+  - id: parser_rule
+    label: 解析规则
+    type: note
+    example: 不能只按 HTTP 请求数建模；要按 body 内命令段切分
+    confidence: medium
+- id: error_response_fffc_session_invalid
+  direction: response
+  status: live_observed_error_code
+  fields:
+  - id: common_response_prefix
+    label: 响应公共前缀/上下文字段
+    type: bytes
+    offset: '0x00'
+    example: 0101 + session/token-like
+    confidence: medium
+  - id: error_code
+    label: 错误码：疑似会话失效/被踢/登录态不可用
+    type: hex
+    offset: tail
+    value: fffc0000
+    confidence: medium
+  - id: trigger_context
+    label: 触发场景
+    type: note
+    example: 代理抓包和 bridge100 被动 pcap 均观察到 3110 心跳或后续业务请求返回 27 bytes 且尾部 fffc0000，随后测试账号退出登录。
+    confidence: medium
+  evidence:
+  - sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/error_fffc_session_invalid
+    timestamp: 2026-07-07 23:12:16-23:12:17
+  - sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1025_unknown_after_session_invalid_passive
+    timestamp: 2026-07-07 23:58:04-23:58:05
+- id: login_bootstrap_1003_request
+  requestId: login_bootstrap_1003
+  opcode: '1003'
+  direction: request
+  status: passive_capture_observed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: '0x02'
+    example: 1660606`7054`0000480502
+    confidence: high
+  - id: client_timestamp_or_nonce
+    label: 客户端时间戳/nonce
+    type: uint64_or_bytes
+    offset: after_account_prefix
+    confidence: low
+  - id: command_length
+    label: 命令段长度
+    type: uint32_be_or_hex
+    example: 00000058
+    confidence: low
+  - id: opcode
+    label: 登录初始化命令
+    type: hex
+    value: '1003'
+    confidence: medium
+  - id: device_uuid_primary
+    label: 设备/安装 UUID 1
+    type: ascii_uuid
+    offset: after_opcode
+    confidence: medium
+  - id: device_uuid_secondary
+    label: 设备/安装 UUID 2
+    type: ascii_uuid
+    offset: after_device_uuid_primary
+    confidence: medium
+  - id: role_or_server_code
+    label: 角色/区服代码
+    type: ascii_or_numeric
+    example: 0000480502
+    confidence: low
+- id: login_bootstrap_1003_response
+  requestId: login_bootstrap_1003
+  opcode: '1003'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: login_success_message
+    label: 登录成功文本
+    type: utf8_string
+    example: 登录成功
+    confidence: high
+  - id: role_name_or_display_name
+    label: 角色名/展示名
+    type: utf8_string
+    example: 东方美6
+    confidence: medium
+  - id: country_or_kingdom
+    label: 国家/势力
+    type: utf8_string
+    example: 大汉 / 汉
+    confidence: medium
+  - id: card_pool_or_reward_text
+    label: 奖励/卡池说明文本
+    type: utf8_string
+    example: 开启后可获得：名将--少
+    confidence: medium
+- id: role_world_bootstrap_1016_request
+  requestId: role_world_bootstrap_1016
+  opcode: '1016'
+  direction: request
+  status: passive_capture_observed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: '0x02'
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: after_timestamp
+    confidence: medium
+  - id: segment_length_or_param_len
+    label: 段长度/参数长度
+    type: uint32_be_or_hex
+    example: 00000008
+    confidence: low
+  - id: opcode
+    label: 登录后初始化命令
+    type: hex
+    value: '1016'
+    confidence: medium
+  - id: trailing_param
+    label: 尾部参数/分页或版本参数
+    type: uint32_or_hex
+    example: 000002fc
+    confidence: low
+- id: role_world_bootstrap_1016_response
+  requestId: role_world_bootstrap_1016
+  opcode: '1016'
+  direction: response
+  status: head_jiangling_status_partial_confirmed
+  fields:
+  - id: welcome_notice
+    label: 欢迎/国家公告
+    type: utf8_string
+    example: 欢迎加入 / 本国政务繁多
+    confidence: high
+  - id: country_slogan
+    label: 国家宣言/公告
+    type: utf8_string
+    example: 犯我强汉者，虽远必诛
+    confidence: high
+  - id: base_or_fief_name
+    label: 基地/封地名称
+    type: utf8_string
+    offset: state8004 utf scan
+    example: 东方美基地 / 太祥封地 / 董全基地
+    confidence: high
+  - id: policy_city_name
+    label: 政策段前城池名
+    type: utf8_string
+    offset: before policy_records
+    example: 建业 / 洛阳
+    confidence: high
+  - id: policy_record.name
+    label: 政策/buff 名称
+    type: utf8_string
+    offset: policy_record.name_utf
+    example: 神农 / 蚩尤 / 风后
+    confidence: confirmed
+  - id: policy_or_buff_effect
+    label: 政策/buff 效果文本
+    type: utf8_string
+    offset: immediately after policy_record.name
+    example: 降低20%伤兵治疗费用 / 守军攻防提升10% / 铜钱粮食产能提升30%
+    confidence: confirmed
+  - id: policy_record.index
+    label: 政策序号
+    type: uint16
+    offset: policy_record.name_utf_offset-0x04
+    example: 1 / 2 / 3
+    confidence: high
+  - id: policy_record.timer_raw
+    label: 政策时间/状态原始码
+    type: uint16_hex
+    offset: policy_record.name_utf_offset-0x02
+    example: 2f0d / 2f0c / 2f0b
+    confidence: low
+  - id: response_opcode
+    label: 实际响应 opcode
+    type: hex
+    value: '8004'
+    confidence: confirmed
+  - id: jiangling_list
+    label: 0x8004 tail 将领列表
+    type: repeated_group
+    offset: after_8004_head; i64_id+u16_name+114_body
+    example: 何颜鸥 / 冯岚 / 台达元 / 尹诩静
+    confidence: confirmed
+  - id: jiangling_status_level_tili_loyalty_troops
+    label: 将领状态/等级/体力/忠诚/统兵数/兵种
+    type: struct_fields
+    offset: status body+0x58; level body+0x08; growth body+0x06; tili body+0x1b; loyalty body+0x27/0x28; daiBingLimit body+0x23 uint32; currentTroopCount Lo/a.S5.Qm; troopType Lo/a.S5.Pm
+    example: status=0, level=1, growth=69, tili=99/100, loyalty=48/100, currentTroopCount=1, daiBingLimit=198, troopTypeCode=3=轻骑兵
+    confidence: confirmed
+- id: post_login_sync_1800_request
+  requestId: post_login_sync_1800
+  opcode: '1800'
+  direction: request
+  status: passive_capture_observed_unparsed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    confidence: medium
+  - id: opcode
+    label: 未知登录后同步命令
+    type: hex
+    value: '1800'
+    confidence: medium
+- id: post_login_sync_1800_response
+  requestId: post_login_sync_1800
+  opcode: '1800'
+  direction: response
+  status: mostly_binary_short_response
+  fields:
+  - id: unknown_short_struct
+    label: 未知短结构
+    type: binary_struct
+    offset: body
+    confidence: low
+  - id: observed_name_like_text
+    label: 观测到的名称类文本
+    type: utf8_string
+    example: 麻子 / 秋
+    confidence: low
+- id: unknown_ack_success_6287_request
+  requestId: unknown_ack_success_6287
+  opcode: '6287'
+  direction: request
+  status: passive_capture_observed_unparsed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    confidence: medium
+  - id: opcode
+    label: 未知确认命令
+    type: hex
+    value: '6287'
+    confidence: medium
+- id: unknown_ack_success_6287_response
+  requestId: unknown_ack_success_6287
+  opcode: '6287'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: success_message
+    label: 操作成功文本
+    type: utf8_string
+    example: 操作成功
+    confidence: high
+  - id: channel_or_scope_labels
+    label: 频道/范围标签
+    type: utf8_string
+    example: 世界 / 国家 / 城池
+    confidence: medium
+- id: battle_report_detail_1114_request
+  requestId: battle_report_detail_1114
+  opcode: '1114'
+  direction: request
+  status: passive_capture_observed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    confidence: medium
+  - id: segment_length_or_param_len
+    label: 段长度/参数长度
+    type: uint32_be_or_hex
+    example: 00000008
+    confidence: low
+  - id: opcode
+    label: 战报详情命令
+    type: hex
+    value: '1114'
+    confidence: medium
+  - id: battle_report_id_or_timestamp
+    label: 战报 id/时间戳
+    type: uint64_or_bytes
+    example: 19f3d176ff20d972
+    confidence: low
+- id: battle_report_detail_1114_response
+  requestId: battle_report_detail_1114
+  opcode: '1114'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: battle_target
+    label: 战斗目标
+    type: utf8_string
+    example: 1级山贼
+    confidence: high
+  - id: battle_result
+    label: 战斗结果
+    type: utf8_string
+    example: 我军失败
+    confidence: high
+  - id: troop_return_state
+    label: 部队返回状态
+    type: utf8_string
+    example: 返回封地
+    confidence: high
+  - id: stamina_after_battle
+    label: 战斗后体力
+    type: numeric_text
+    example: 体力：99
+    confidence: medium
+  - id: participant_or_hero_name
+    label: 参战对象/将领名
+    type: utf8_string
+    example: 8台达元
+    confidence: low
+- id: battle_report_actor_summary_111f_request
+  requestId: battle_report_actor_summary_111f
+  opcode: 111f
+  direction: request
+  status: passive_capture_observed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    confidence: medium
+  - id: opcode
+    label: 战报参战方摘要命令
+    type: hex
+    value: 111f
+    confidence: medium
+  - id: battle_report_id_or_timestamp
+    label: 战报 id/时间戳
+    type: uint64_or_bytes
+    example: 19f3d176ff20d972
+    confidence: low
+- id: battle_report_actor_summary_111f_response
+  requestId: battle_report_actor_summary_111f
+  opcode: 111f
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: attacker_side_label
+    label: 进攻方标签
+    type: utf8_string
+    example: 进攻方
+    confidence: high
+  - id: role_name
+    label: 角色名
+    type: utf8_string
+    example: 东方美
+    confidence: high
+  - id: gender_level_text
+    label: 性别/等级文本
+    type: utf8_string
+    example: 女54级
+    confidence: medium
+- id: unknown_after_session_invalid_1025_request
+  requestId: unknown_after_session_invalid_1025
+  opcode: '1025'
+  direction: request
+  status: passive_capture_observed_error_only
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    confidence: high
+  - id: stale_session_token_like
+    label: 已失效 session/token
+    type: bytes
+    confidence: medium
+  - id: opcode
+    label: 未知命令
+    type: hex
+    value: '1025'
+    confidence: low
+- id: unknown_after_session_invalid_1025_response
+  requestId: unknown_after_session_invalid_1025
+  opcode: '1025'
+  direction: response
+  status: error_code_only
+  fields:
+  - id: common_response_prefix
+    label: 响应公共前缀/上下文字段
+    type: bytes
+    offset: '0x00'
+    example: 0101 + session/token-like
+    confidence: medium
+  - id: error_code
+    label: 会话失效错误码
+    type: hex
+    offset: tail
+    value: fffc0000
+    confidence: medium
+- id: ministry_official_status_6300_request
+  requestId: ministry_official_status_6300
+  opcode: '6300'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: '00000002'
+    confidence: low
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '6300'
+    confidence: medium
+  - id: zero_param
+    label: 空参数/保留参数
+    type: bytes
+    example: '00000000'
+    confidence: low
+- id: ministry_official_status_6300_response
+  requestId: ministry_official_status_6300
+  opcode: '6300'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: ministry_name
+    label: 六部/官职名称
+    type: string
+    evidenceStrings:
+    - 户部
+    - 礼部
+    - 吏部
+    - 兵部
+    - 工部
+    - 刑部
+    confidence: medium
+  - id: official_slots_or_counts
+    label: 官职槽位/数量字段
+    type: int_or_struct
+    offset: unknown
+    confidence: low
+- id: arena_challenge_log_6260_request
+  requestId: arena_challenge_log_6260
+  opcode: '6260'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '6260'
+    confidence: medium
+- id: arena_challenge_log_6260_response
+  requestId: arena_challenge_log_6260
+  opcode: '6260'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  repeatedGroups:
+  - id: arena_record
+    label: 竞技场挑战记录
+    confidence: medium
+    fields:
+    - id: result_text
+      label: 胜负结果文本
+      type: string
+      evidenceStrings:
+      - 竞技场挑战失败
+      - 竞技场挑战胜利
+      confidence: medium
+    - id: role_or_opponent_name
+      label: 角色/对手名
+      type: string
+      offset: unknown
+      confidence: low
+    - id: arena_score_or_rank
+      label: 竞技场分数/排名/时间字段
+      type: int_or_struct
+      offset: unknown
+      confidence: low
+- id: unknown_id_param_1226_request
+  requestId: unknown_id_param_1226
+  opcode: '1226'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 0000000f
+    confidence: low
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1226'
+    confidence: medium
+  - id: object_id
+    label: 对象 id
+    type: uint64_or_padded_id
+    example: 00000000006b4d9a
+    confidence: low
+  - id: param_pair
+    label: 参数组
+    type: bytes_or_ints
+    example: 0008 00000085
+    confidence: low
+- id: unknown_id_param_1226_response
+  requestId: unknown_id_param_1226
+  opcode: '1226'
+  direction: response
+  status: ack_or_short_struct_unparsed
+  fields:
+  - id: echo_object_id
+    label: 回显对象 id
+    type: uint64_or_padded_id
+    offset: unknown
+    confidence: low
+  - id: result_or_param_echo
+    label: 结果/参数回显
+    type: bytes_or_ints
+    offset: unknown
+    confidence: low
+- id: entity_rename_1214_request
+  requestId: entity_rename_1214
+  opcode: '1214'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 0000000e
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1214'
+    confidence: high
+  - id: object_id
+    label: 对象 id
+    type: uint64_or_padded_id
+    confidence: medium
+  - id: name_length
+    label: 名称字节长度
+    type: uint16_or_uint32
+    example: '0004'
+    confidence: medium
+  - id: new_name_utf8
+    label: 新名称
+    type: utf8_string
+    example: 车1 / 步1
+    confidence: high
+- id: entity_rename_1214_response
+  requestId: entity_rename_1214
+  opcode: '1214'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: result_text
+    label: 结果文本
+    type: string
+    example: 改名成功
+    confidence: high
+  - id: object_id
+    label: 对象 id 回显
+    type: uint64_or_padded_id
+    confidence: medium
+  - id: new_name_utf8
+    label: 新名称回显
+    type: utf8_string
+    example: 车1 / 步1
+    confidence: high
+- id: brush_yellow_prepare_wire_1520_request
+  requestId: brush_yellow_prepare_wire_1520
+  opcode: '1520'
+  direction: request
+  status: partial_variant_of_1520030
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 0000001a
+    confidence: medium
+  - id: wire_opcode
+    label: 实包命令号
+    type: hex
+    value: '1520'
+    confidence: medium
+  - id: subcode_or_count_block
+    label: 子码/数量块
+    type: bytes
+    example: '00000302'
+    confidence: low
+  - id: actor_ids
+    label: 将领/编队 id 列表
+    type: repeated_uint64_or_padded_id
+    confidence: medium
+  - id: target_id
+    label: 目标 id
+    type: uint64_or_padded_id
+    confidence: medium
+- id: brush_yellow_dispatch_wire_1522_request
+  requestId: brush_yellow_dispatch_wire_1522
+  opcode: '1522'
+  direction: request
+  status: partial_variant_of_1522030
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: '00000025'
+    confidence: medium
+  - id: wire_opcode
+    label: 实包命令号
+    type: hex
+    value: '1522'
+    confidence: medium
+  - id: subcode_or_count_block
+    label: 子码/数量块
+    type: bytes
+    example: '00000302'
+    confidence: low
+  - id: actor_ids
+    label: 将领/编队 id 列表
+    type: repeated_uint64_or_padded_id
+    confidence: medium
+  - id: target_id
+    label: 目标 id
+    type: uint64_or_padded_id
+    confidence: medium
+  - id: suffix
+    label: 固定/保留后缀
+    type: bytes
+    example: ffffffffffffffff000000
+    confidence: medium
+- id: brush_yellow_dispatch_wire_1522_response
+  requestId: brush_yellow_dispatch_wire_1522
+  opcode: '1522'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: battle_event_text
+    label: 战斗/返回事件文本
+    type: string
+    evidenceStrings:
+    - 返回东方美的封地
+    - 步1消灭5级山贼
+    confidence: medium
+  - id: base_city_name
+    label: 封地/基地名
+    type: string
+    example: 东方美基地
+    confidence: medium
+- id: formation_group_config_1280_request
+  requestId: formation_group_config_1280
+  opcode: '1280'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 000000d4
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1280'
+    confidence: medium
+  - id: group_records
+    label: 五个编组槽位记录
+    type: repeated_struct
+    example: 编组 id/成员 id/ffffffff 空位哨兵
+    confidence: low
+- id: formation_group_config_1280_response
+  requestId: formation_group_config_1280
+  opcode: '1280'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  repeatedGroups:
+  - id: formation_group
+    label: 编组记录
+    confidence: medium
+    fields:
+    - id: group_name
+      label: 编组名
+      type: string
+      evidenceStrings:
+      - 编组1
+      - 编组2
+      - 编组3
+      - 编组4
+      - 编组5
+      confidence: medium
+    - id: member_ids
+      label: 成员/对象 id 列表
+      type: repeated_uint64_or_padded_id
+      offset: unknown
+      confidence: low
+- id: expedition_state_poll_1702_request
+  requestId: expedition_state_poll_1702
+  opcode: '1702'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 00000009
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1702'
+    confidence: high
+  - id: poll_mode_or_state
+    label: 轮询模式/状态参数
+    type: uint16_or_uint32
+    example: 000000 / 000001
+    confidence: low
+  - id: expedition_or_battle_id
+    label: 出征/战斗 id
+    type: uint64_or_padded_id
+    confidence: low
+- id: expedition_state_poll_1702_response
+  requestId: expedition_state_poll_1702
+  opcode: '1702'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  repeatedGroups:
+  - id: expedition_state_record
+    label: 出征/战斗状态记录
+    confidence: low
+    fields:
+    - id: actor_or_troop_name
+      label: 将领/部队名
+      type: string
+      evidenceStrings:
+      - 车1
+      - 步1
+      - 牧玥
+      - 周程瑞
+      confidence: medium
+    - id: actor_ids
+      label: 将领/部队 id
+      type: repeated_uint64_or_padded_id
+      offset: unknown
+      confidence: low
+    - id: progress_or_hp_values
+      label: 进度/兵力/时间数值
+      type: int_or_struct
+      offset: unknown
+      confidence: low
+- id: unknown_object_detail_1250_request
+  requestId: unknown_object_detail_1250
+  opcode: '1250'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 00000008
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1250'
+    confidence: medium
+  - id: object_id
+    label: 对象 id
+    type: uint64_or_padded_id
+    example: 00000000006b4dac
+    confidence: low
+- id: unknown_object_detail_1250_response
+  requestId: unknown_object_detail_1250
+  opcode: '1250'
+  direction: response
+  status: short_struct_unparsed
+  fields:
+  - id: object_id_or_slot_id
+    label: 对象/槽位 id
+    type: uint64_or_padded_id
+    offset: unknown
+    confidence: low
+  - id: status_values
+    label: 状态数值组
+    type: bytes_or_ints
+    offset: unknown
+    confidence: low
+- id: research_or_tech_list_1200_request
+  requestId: research_or_tech_list_1200
+  opcode: '1200'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 0000000d
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1200'
+    confidence: medium
+  - id: tech_or_building_id
+    label: 科技/建筑 id
+    type: uint64_or_padded_id
+    example: '00000000000755'
+    confidence: low
+  - id: params
+    label: 参数组
+    type: bytes_or_ints
+    example: 0008 0001
+    confidence: low
+- id: research_or_tech_list_1200_response
+  requestId: research_or_tech_list_1200
+  opcode: '1200'
+  direction: response
+  status: struct_list_unparsed
+  repeatedGroups:
+  - id: research_or_tech_record
+    label: 科技/研究记录
+    confidence: low
+    fields:
+    - id: record_id
+      label: 记录 id
+      type: uint64_or_padded_id
+      confidence: low
+    - id: level_or_state
+      label: 等级/状态
+      type: int_or_struct
+      confidence: low
+    - id: cost_or_timer
+      label: 资源消耗/时间字段
+      type: int_or_struct
+      confidence: low
+- id: inventory_or_status_sync_1104_request
+  requestId: inventory_or_status_sync_1104
+  opcode: '1104'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: '00000001'
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1104'
+    confidence: medium
+- id: inventory_or_status_sync_1104_response
+  requestId: inventory_or_status_sync_1104
+  opcode: '1104'
+  direction: response
+  status: inventory_item_list_partial_confirmed
+  fields:
+  - id: inventory.reserved_head
+    label: 保留头部
+    type: bytes[14]
+    offset: payload+0x00
+    example: '0000000000000000000000000000'
+    confidence: high
+  - id: inventory.capacity
+    label: 背包容量
+    type: uint16
+    offset: payload+0x0e
+    example: 50 / 1020
+    confidence: confirmed
+  - id: inventory.item_record_count
+    label: 物品记录数量
+    type: uint16
+    offset: payload+0x10
+    example: 5 / 44
+    confidence: confirmed
+  - id: inventory.unparsed_tail
+    label: 物品列表后的尾部
+    type: bytes
+    offset: payload+0x12+count*12
+    example: '01f4000a05'
+    confidence: low
+  repeatedGroups:
+  - id: inventory_item_or_status_record
+    label: 物品记录
+    confidence: confirmed
+    fields:
+    - id: item_id
+      label: 物品 ID
+      type: uint16
+      offset: record+0x00
+      evidenceValues:
+      - 0=徭役令
+      - 9=传音符
+      - 16=兵书
+      - 22=鲁公手册
+      - 37=新手礼包2
+      confidence: confirmed
+    - id: item_count
+      label: 数量
+      type: uint16
+      offset: record+0x02
+      evidenceValues:
+      - 传音符=5
+      - 徭役令=1
+      confidence: confirmed
+    - id: item_tail
+      label: 记录尾部保留字段
+      type: bytes[8]
+      offset: record+0x04
+      example: '0000000000000000'
+      confidence: high
+    - id: item_name
+      label: 物品名称
+      type: lookup(scriptItem.sc)
+      offset: client asset mapping
+      example: itemId=9 -> 传音符
+      confidence: confirmed
+- id: unknown_name_list_1406_request
+  requestId: unknown_name_list_1406
+  opcode: '1406'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 0000000b
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1406'
+    confidence: medium
+  - id: list_params
+    label: 列表参数
+    type: bytes_or_ints
+    confidence: low
+- id: unknown_name_list_1406_response
+  requestId: unknown_name_list_1406
+  opcode: '1406'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  repeatedGroups:
+  - id: name_list_record
+    label: 名称列表记录
+    confidence: low
+    fields:
+    - id: display_name
+      label: 显示名称
+      type: string
+      evidenceStrings:
+      - 爱新游
+      - 烟火清安久
+      - 献帝
+      confidence: medium
+    - id: rank_or_score
+      label: 排名/分数/附加数值
+      type: int_or_struct
+      confidence: low
+- id: item_discard_1103_request
+  requestId: item_discard_1103
+  opcode: '1103'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: '00000015'
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1103'
+    confidence: high
+  - id: item_id
+    label: 物品 id
+    type: uint64_or_padded_id
+    example: 000000000005d12c
+    confidence: medium
+  - id: count
+    label: 数量
+    type: uint32
+    example: '00000001'
+    confidence: medium
+  - id: suffix
+    label: 固定/保留后缀
+    type: bytes
+    example: ffffffffffffffff
+    confidence: low
+- id: item_discard_1103_response
+  requestId: item_discard_1103
+  opcode: '1103'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: result_text
+    label: 结果文本
+    type: string
+    example: 丢弃成功
+    confidence: high
+  - id: inventory_delta_or_state
+    label: 背包变化/状态快照
+    type: struct
+    confidence: low
+- id: research_upgrade_123f_request
+  requestId: research_upgrade_123f
+  opcode: 123f
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: 0000000e
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: 123f
+    confidence: high
+  - id: tech_or_building_id
+    label: 科技/建筑 id
+    type: uint64_or_padded_id
+    example: '00000000000755'
+    confidence: medium
+  - id: research_params
+    label: 研究参数
+    type: bytes_or_ints
+    confidence: low
+- id: research_upgrade_123f_response
+  requestId: research_upgrade_123f
+  opcode: 123f
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: result_text
+    label: 结果文本
+    type: string
+    example: 研究成功
+    confidence: high
+  - id: resource_or_timer_state
+    label: 资源/研究时间状态
+    type: struct
+    confidence: low
+- id: batch_refill_troops_1229_request
+  requestId: batch_refill_troops_1229
+  opcode: '1229'
+  direction: request
+  status: partial_success_observed
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度
+    type: hex_or_int
+    example: '0011'
+    note: captured wire 为 u16 payload_len=0011；对应 gameHex 长度字节为 11，payload=count(02)+两个 8-byte padded id。
+    confidence: high
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1229'
+    confidence: high
+  - id: empty_signature_length
+    label: envelope 空签名长度
+    type: uint16
+    example: '0000'
+    confidence: high
+  - id: object_count_or_mode
+    label: 对象数量/模式
+    type: uint8
+    example: '02'
+    confidence: medium
+  - id: formation_or_general_ids
+    label: 将领/编队 id 列表
+    type: repeated_uint64_or_padded_id
+    evidenceValues:
+    - '00000000006b4dac'
+    - '0000000000686b99'
+    - '00000000006b4dae'
+    - '00000000006b4d9a'
+    confidence: medium
+- id: batch_refill_troops_1229_response
+  requestId: batch_refill_troops_1229
+  opcode: '1229'
+  direction: response
+  status: strings_confirmed_fields_unknown
+  fields:
+  - id: result_text
+    label: 结果文本
+    type: string
+    example: 批量补满成功
+    confidence: high
+  - id: formation_or_troop_state_delta
+    label: 编队/兵力状态变化
+    type: struct
+    confidence: low
+  - id: error_code
+    label: 错误/拒绝码（旧失败样本）
+    type: hex
+    value: fffc0000
+    confidence: medium
+- id: rank_list_1170_request
+  requestId: rank_list_1170
+  opcode: '1170'
+  direction: request
+  status: partial
+  fields:
+  - id: account_prefix
+    label: 账号/区服前缀
+    type: ascii
+    offset: 0x02?
+    confidence: high
+  - id: session_token_like
+    label: 疑似 session/token
+    type: bytes
+    offset: unknown
+    confidence: medium
+  - id: payload_length
+    label: payload 长度/段长度
+    type: hex_or_int
+    example: '0003'
+    confidence: medium
+  - id: opcode
+    label: 命令号
+    type: hex
+    value: '1170'
+    confidence: high
+  - id: empty_signature_length
+    label: envelope 空签名长度
+    type: uint16
+    example: '0000'
+    confidence: high
+  - id: rank_params
+    label: 排行榜分类/页码/模式参数
+    type: bytes_or_ints
+    examples:
+    - '000001'
+    - '030001'
+    confidence: low
+- id: rank_list_1170_response
+  requestId: rank_list_1170
+  opcode: '1170'
+  direction: response
+  status: row_parser_added
+  repeatedGroups:
+  - id: rank_record
+    label: 排行榜记录
+    evidenceShape: uint16 utf8NameLength + utf8Name + uint64 scoreOrCount
+    confidence: medium
+    fields:
+    - id: rank_name
+      label: 玩家/君主名称
+      type: string
+      evidenceStrings:
+      - 仙女
+      - 赶路人
+      - 赊刀人
+      - 爱新游
+      confidence: medium
+    - id: rank_score_or_count
+      label: 排行分数/数量
+      type: uint64
+      offset: immediately_after_name
+      evidenceValues:
+      - '00000000057f225e'
+      - '0000000000000081'
+      confidence: medium

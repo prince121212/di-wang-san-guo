@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>自研辅助 App 当前界面交互原型</title>
+  <style>
+    :root{
+      --sys-blue:#2759c8;
+      --page:#f3f6fb;
+      --card:#2d4358;
+      --line:#d0d0d0;
+      --line-dark:#9b9b9b;
+      --text:#30343b;
+      --muted:#858b93;
+      --tab-blue:#3394ff;
+      --active-blue:#2f6aa3;
+      --green:#70d454;
+      --yellow:#f6bf58;
+      --gray:#c9ced4;
+      --red:#ff7d8e;
+      --light-blue:#55acee;
+      --log:#020202;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:#e9eef6;
+      color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",Arial,sans-serif;
+    }
+    .prototype-note{
+      max-width:1100px;
+      margin:18px auto 8px;
+      padding:12px 18px;
+      color:#475569;
+      font-size:14px;
+    }
+    .stage{
+      min-height:100vh;
+      display:flex;
+      justify-content:center;
+      align-items:flex-start;
+      padding:10px 12px 32px;
+    }
+    .phone{
+      width:460px;
+      max-width:100%;
+      background:var(--page);
+      border-radius:0 0 26px 26px;
+      box-shadow:0 18px 70px rgba(15,23,42,.25);
+      overflow:hidden;
+      border:1px solid #dde5f0;
+    }
+    .system-bar{
+      height:34px;
+      background:var(--sys-blue);
+      color:#fff;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 14px;
+      font-weight:700;
+      font-size:15px;
+    }
+    .top-title{
+      height:64px;
+      background:#f7f9fd;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:22px;
+      font-weight:800;
+      letter-spacing:1px;
+      border-bottom:1px solid #edf1f6;
+    }
+    .screen{display:block}
+    .screen.hidden{display:none}
+    .account-card{
+      margin:14px 4px 0;
+      background:var(--card);
+      color:#fff;
+      border-radius:4px;
+      padding:17px 22px 9px;
+      box-shadow:0 2px 5px rgba(0,0,0,.25);
+    }
+    .account-row1{display:grid;grid-template-columns:42px 1fr 66px;align-items:center;gap:8px}
+    .open-count{font-size:20px;white-space:nowrap}
+    .expire{color:#ff7e93;font-size:19px;font-weight:900;line-height:1.2}
+    .renew{background:#a7e0b9;color:#385a4b;border-radius:6px;text-align:center;padding:10px 0;font-size:17px;font-weight:700}
+    .account-name{
+      background:#fff;
+      color:#555;
+      border:2px solid #cfd2d5;
+      height:28px;
+      margin:12px 6px 13px;
+      display:flex;
+      align-items:center;
+      padding-left:8px;
+      font-size:18px;
+      overflow:hidden;
+      white-space:nowrap;
+    }
+    .button-row{display:grid;grid-template-columns:repeat(5,1fr);gap:11px;margin:0 2px 0}
+    button,.btn{
+      border:0;
+      border-radius:7px;
+      min-height:33px;
+      font-size:17px;
+      cursor:pointer;
+      color:rgba(45,45,45,.65);
+      font-family:inherit;
+    }
+    .btn-start{background:var(--green)} .btn-stop{background:var(--yellow)} .btn-edit{background:var(--gray)} .btn-add{background:var(--light-blue)} .btn-delete{background:var(--red)}
+    .primary-tabs{display:grid;grid-template-columns:repeat(7,1fr);background:#fff;border-bottom:1px solid #ddd;box-shadow:0 1px 5px rgba(0,0,0,.08)}
+    .main-tab{
+      height:39px;
+      background:#fff;
+      color:var(--tab-blue);
+      border:0;
+      border-right:1px solid transparent;
+      font-size:20px;
+      font-weight:700;
+      border-radius:0;
+    }
+    .main-tab.active{color:#1f2937;border:1.5px solid var(--tab-blue);border-bottom:0;background:#fff}
+    .content-card{
+      margin:7px 4px 0;
+      background:#fff;
+      border-radius:18px;
+      padding:9px;
+      box-shadow:0 2px 8px rgba(0,0,0,.14);
+      display:grid;
+      grid-template-columns:74px 1fr;
+      gap:7px;
+      min-height:350px;
+    }
+    .side-menu{
+      border:1px solid #cfcfcf;
+      border-radius:4px;
+      padding:8px;
+      min-height:336px;
+      background:#fff;
+    }
+    .side-btn{
+      width:100%;
+      display:block;
+      margin:0 0 8px;
+      height:31px;
+      border:1px solid #ddd;
+      background:#fff;
+      color:#999;
+      border-radius:7px;
+      font-size:17px;
+      font-weight:700;
+    }
+    .side-btn.active{background:var(--active-blue);color:#45a7ff;border-color:var(--active-blue)}
+    .panel-shell{border:1px solid #c8c8c8;border-radius:4px;background:#fff;padding:6px;min-height:336px;overflow:hidden}
+    .inner-panel{border:1px solid #c8c8c8;background:#fafafa;padding:4px;min-height:322px}
+    .role-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:18px;color:#333}
+    .role-table td{border:2px solid #d0d0d0;height:28px;text-align:center;background:#f9f9f9;line-height:1.1}
+    .role-table td:first-child{width:34%;color:#666}
+    .role-table input{width:94%;height:25px;border:1.5px solid #999;text-align:center;font-size:17px;color:#888;background:#fff}
+    .form-panel{padding:0 1px;font-size:14px;color:#444}
+    .form-row{display:flex;align-items:center;gap:5px;min-height:34px;background:#fff;border:1px solid #eee;padding:4px 5px;margin-bottom:0}
+    .form-row label{white-space:nowrap;color:#333;font-size:15px}.mini-input{height:27px;border:1px solid #999;background:#fff;padding:0 5px;min-width:44px;font-size:14px}.select{height:27px;border:1px solid #bdbdbd;background:#fff;padding:4px 8px;border-radius:2px;min-width:72px;text-align:center}.checkbox{width:16px;height:16px;accent-color:#2c8cff}.info-box{background:#f7fbff;border:1px solid #b7d7ff;color:#3a6ea5;padding:8px;margin-top:7px;border-radius:4px;font-size:13px;white-space:pre-line;line-height:1.45}
+    .mini-table{width:100%;border-collapse:separate;border-spacing:2px;margin:6px 0;font-size:13px;table-layout:fixed}.mini-table th,.mini-table td{border:1px solid #d1d1d1;background:#fff;text-align:center;height:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mini-table th{font-weight:700}.delete-cell{background:#ff7d88!important;color:#fff}.hint{color:#999}.bar-actions{display:flex;gap:6px;margin:7px 0}.bar-actions button{flex:1;background:#f5fbff;border:1px solid #49a2ff;color:#268df6;border-radius:6px;min-height:30px;font-size:13px}.empty{display:flex;align-items:center;justify-content:center;height:280px;color:#aaa;font-size:18px}.blue-full{width:100%;background:#50aaf0;color:#fff;border-radius:6px;margin:8px 0;font-size:16px}
+    .save-log-card{margin:16px 4px 14px;background:#000;border-radius:11px;min-height:238px;padding:18px 18px 14px;position:relative;color:#d8dee9;overflow:hidden}.save-btn{position:absolute;right:18px;top:18px;width:136px;height:56px;background:#55acee;color:#e8f5ff;font-size:22px;border-radius:7px}.log-title{margin-top:78px;font-size:17px;color:#dce6f2}.logs{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;line-height:1.45;color:#cbd5e1;max-height:128px;overflow:auto;white-space:pre-wrap;padding-right:4px}.logs .ok{color:#a7f3d0}.logs .warn{color:#fde68a}.logs .err{color:#fecaca}
+    .bottom-nav{height:86px;background:#fff;border-radius:20px 20px 0 0;display:grid;grid-template-columns:repeat(3,1fr);align-items:center;box-shadow:0 -2px 10px rgba(0,0,0,.12);border-top:1px solid #e3eaf4}.nav-item{text-align:center;color:#69727f;font-size:17px;cursor:pointer}.nav-item .ico{font-size:19px;display:block}.nav-item.active{color:#2f75ff;font-weight:800;background:#eef4ff;border-radius:16px;margin:10px 12px;padding:7px 0}.other-page,.me-page{padding:16px}.tile-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.tile{background:#fff;border:1px solid #d8dee8;border-radius:12px;padding:16px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08)}.tile b{display:block;margin-bottom:6px}.me-card{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;border:1px solid #d8dee8}.state-strip{display:flex;gap:6px;flex-wrap:wrap;margin:8px 4px 0}.chip{font-size:11px;border-radius:999px;padding:3px 7px;background:#eef2ff;color:#3155a4}.chip.ok{background:#dcfce7;color:#166534}.chip.warn{background:#fff7ed;color:#9a3412}
+    @media(max-width:520px){.phone{width:100%;}.expire{font-size:17px}.main-tab{font-size:18px}.content-card{grid-template-columns:72px 1fr}.role-table{font-size:16px}.save-btn{width:130px}.logs{font-size:13px}}
+  </style>
+</head>
+<body>
+  <div class="prototype-note">
+    当前文件按真机自研辅助 App 的实际界面重画：一级 Tab、左侧子菜单、右侧表格/表单、黑色日志区、底部导航均可点击交互。
+  </div>
+  <div class="stage">
+    <div class="phone">
+      <div class="system-bar"><span>晚上8:56 ◔ ▣ 🟢</span><span>HD ▮▮▮ Wi‑Fi ⑥ 100 ⚡</span></div>
+      <div class="top-title">助手</div>
+
+      <main id="assistantScreen" class="screen">
+        <section class="account-card">
+          <div class="account-row1">
+            <div class="open-count">1开</div>
+            <div class="expire">到期时间 2026-07-05 05:42:17 [已到期]</div>
+            <div class="renew">续期</div>
+          </div>
+          <div class="account-name">1608600@周年服351区(新服) · 东方美 · 54</div>
+          <div class="button-row">
+            <button class="btn btn-start" onclick="startHosting()">启动</button>
+            <button class="btn btn-stop" onclick="stopHosting()">关闭</button>
+            <button class="btn btn-edit" onclick="appendLog('· [ui] 打开账号修改面板（原型）','warn')">修改</button>
+            <button class="btn btn-add" onclick="appendLog('· [ui] 打开添加账号面板（原型）')">添加</button>
+            <button class="btn btn-delete" onclick="appendLog('· [ui] 删除需要二次确认（原型）','err')">删除</button>
+          </div>
+          <div class="state-strip">
+            <a class="chip" style="text-decoration:none" href="state_machine_prototype.html">状态检查页</a>
+            <span id="runChip" class="chip warn">未托管</span>
+            <span class="chip ok">0x1016/0x8004 可同步</span>
+            <span class="chip ok">brush-yellow gate</span>
+          </div>
+        </section>
+
+        <nav id="mainTabs" class="primary-tabs"></nav>
+
+        <section class="content-card">
+          <aside id="sideMenu" class="side-menu"></aside>
+          <section class="panel-shell"><div id="contentPanel" class="inner-panel"></div></section>
+        </section>
+
+        <section class="save-log-card">
+          <button class="save-btn" onclick="saveSettings()">保存设置</button>
+          <div class="log-title">☁ 任务日志</div>
+          <div id="logBox" class="logs"></div>
+        </section>
+      </main>
+
+      <main id="otherScreen" class="screen hidden">
+        <div class="other-page">
+          <div class="tile-grid">
+            <div class="tile"><b>名将速查</b><span>资料查询</span></div>
+            <div class="tile"><b>开区查询</b><span>周年服/新区</span></div>
+            <div class="tile"><b>城池搜索</b><span>驻防/坐标</span></div>
+            <div class="tile"><b>宝藏筛选</b><span>类型/掉落</span></div>
+            <div class="tile"><b>回归报告</b><span>刷黄/日常/打矿</span></div>
+            <div class="tile"><b>逆向证据</b><span>协议 shape</span></div>
+          </div>
+        </div>
+      </main>
+
+      <main id="meScreen" class="screen hidden">
+        <div class="me-page">
+          <div class="me-card"><b>当前账号</b><p>1608600 · 周年服351区 · 东方美 Lv.54</p></div>
+          <div class="me-card"><b>授权状态</b><p>1开 · 已到期，当前原型保留“续期”入口。</p></div>
+          <div class="me-card"><b>调试 / Gate</b><p>realActionNetworkAllowed=true<br/>realActionSendReady=true<br/>realActionScope=brush-yellow</p></div>
+          <div class="me-card"><b>导入导出</b><p>账号配置、任务日志、回归证据。</p></div>
+        </div>
+      </main>
+
+      <nav class="bottom-nav">
+        <div id="navAssistant" class="nav-item active" onclick="switchBottom('assistant')"><span class="ico">⌂</span>助手</div>
+        <div id="navOther" class="nav-item" onclick="switchBottom('other')"><span class="ico">▦</span>其他</div>
+        <div id="navMe" class="nav-item" onclick="switchBottom('me')"><span class="ico">♙</span>我</div>
+      </nav>
+    </div>
+  </div>
+
+  <script>
+    const categories = {
+      role: { title:'角色', subs:['角色','英雄','军队','宝物','状态'] },
+      military: { title:'军事', subs:['编队','掠夺','抢城','无损','副本','宝藏'] },
+      shua: { title:'刷黄', subs:['刷黄'] },
+      war: { title:'军情', subs:['军情','国家'] },
+      mining: { title:'打矿', subs:['打矿','找矿'] },
+      ministry: { title:'六部', subs:['六部','押镖'] },
+      common: { title:'常规', subs:['常规','日常','物品','连体','内政'] }
+    };
+    const order = ['role','military','shua','war','mining','ministry','common'];
+    let activeCat = 'role';
+    let activeSub = '角色';
+    let running = false;
+
+    function init(){
+      renderMainTabs();
+      renderSideMenu();
+      renderPanel();
+      setLogs([
+        ['· [self-lifecycle] [self-lifecycle-json] {"event":"session_logout","accountId":764,"sourceMode":1,"reason":"explicit stop action","logoutRequested":true,"logoutSucceeded":true,"logoutMessage":"real read-only session marked logged out locally"}',''],
+        ['· [self-lifecycle] [self-lifecycle-json] {"event":"task_stop","stoppedTaskTypes":["SHUA_HUANG"],"realActionNetworkAllowed":false}','']
+      ]);
+    }
+    function renderMainTabs(){
+      const el = document.getElementById('mainTabs');
+      el.innerHTML = order.map(k=>`<button class="main-tab ${k===activeCat?'active':''}" onclick="selectCat('${k}')">${categories[k].title}</button>`).join('');
+    }
+    function renderSideMenu(){
+      const el = document.getElementById('sideMenu');
+      el.innerHTML = categories[activeCat].subs.map(s=>`<button class="side-btn ${s===activeSub?'active':''}" onclick="selectSub('${s}')">${s}</button>`).join('');
+    }
+    function selectCat(k){ activeCat=k; activeSub=categories[k].subs[0]; renderMainTabs(); renderSideMenu(); renderPanel(); appendLog(`· [ui] 切换到 ${categories[k].title}/${activeSub}`); }
+    function selectSub(s){ activeSub=s; renderSideMenu(); renderPanel(); appendLog(`· [ui] 切换子页 ${categories[activeCat].title}/${s}`); }
+
+    function renderPanel(){
+      const p = document.getElementById('contentPanel');
+      if(activeCat==='role' && activeSub==='角色') p.innerHTML = roleInfo();
+      else if(activeCat==='role' && activeSub==='英雄') p.innerHTML = heroTable();
+      else if(activeCat==='role' && activeSub==='军队') p.innerHTML = simpleTable(['编队','将领','状态','兵力'], [['7032235','台达元','IDLE','3000'],['7032238','单于筠','BUSY','3000'],['7066185','冯岚','RETURNING','3000']]);
+      else if(activeCat==='role' && activeSub==='宝物') p.innerHTML = simpleTable(['名称','数量'], [['战鼓','3'],['徭役令','4'],['山贼头巾','32'],['旌旗','6'],['活血丹','3']]);
+      else if(activeCat==='role' && activeSub==='状态') p.innerHTML = simpleTable(['名称','剩余时间'], [['休战','0分钟'],['军队攻击增加10%','0分钟'],['将领经验增加50%','0分钟'],['夺取收益增加','0分钟']]);
+      else if(activeCat==='shua') p.innerHTML = shuaPanel();
+      else if(activeCat==='military' && activeSub==='编队') p.innerHTML = formationPanel();
+      else if(activeCat==='military' && activeSub==='掠夺') p.innerHTML = lootPanel();
+      else if(activeCat==='military' && activeSub==='副本') p.innerHTML = dungeonPanel();
+      else if(activeCat==='military') p.innerHTML = genericExpeditionPanel(activeSub);
+      else if(activeCat==='war') p.innerHTML = `<div class="empty">暂无${activeSub}数据</div>`;
+      else if(activeCat==='mining' && activeSub==='打矿') p.innerHTML = miningAutoPanel();
+      else if(activeCat==='mining' && activeSub==='找矿') p.innerHTML = miningSearchPanel();
+      else if(activeCat==='ministry' && activeSub==='六部') p.innerHTML = ministryPanel();
+      else if(activeCat==='ministry' && activeSub==='押镖') p.innerHTML = escortPanel();
+      else if(activeCat==='common' && activeSub==='常规') p.innerHTML = commonPanel();
+      else if(activeCat==='common' && activeSub==='日常') p.innerHTML = dailyPanel();
+      else if(activeCat==='common' && activeSub==='物品') p.innerHTML = itemsPanel();
+      else if(activeCat==='common' && activeSub==='连体') p.innerHTML = chainItemsPanel();
+      else if(activeCat==='common' && activeSub==='内政') p.innerHTML = internalPanel();
+    }
+
+    function roleInfo(){return `<table class="role-table">
+      <tr><td>君主</td><td>东方美</td></tr><tr><td>备注</td><td><input placeholder="请输入备注" /></td></tr><tr><td>等级</td><td>54</td></tr><tr><td>国家</td><td>大汉</td></tr><tr><td>铜钱</td><td>78万4532</td></tr><tr><td>粮食</td><td>125万6683</td></tr><tr><td>人口</td><td>1002</td></tr><tr><td>资源点</td><td>0/3</td></tr><tr><td>宝藏</td><td>0</td></tr><tr><td>刷黄次数</td><td>0</td></tr><tr><td>副本次数</td><td>0</td></tr>
+    </table>`}
+    function heroTable(){return simpleTable(['将','态','类','级','体','忠','统','兵'], [['台达元','闲','步','54','100','85','71','3000'],['单于筠','出','弓','54','0','82','72','3000'],['冯岚','返','骑','54','0','85','75','3000'],['何颜鸥','闲','步','54','0','80','70','3000']]);}
+    function simpleTable(headers, rows){return `<table class="mini-table"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`}
+    function row(label, inner){return `<div class="form-row"><label>${label}</label>${inner}</div>`}
+    function input(v,w=52){return `<input class="mini-input" style="width:${w}px" value="${v}" />`}
+    function select(v,w=76){return `<span class="select" style="min-width:${w}px">${v}</span>`}
+    function tick(checked=false){return `<input class="checkbox" type="checkbox" ${checked?'checked':''}/>`}
+    function actions(){return `<div class="bar-actions"><button onclick="appendLog('· [ui] 添加编队行')">+添加编队</button><button onclick="appendLog('· [ui] 复制编队')">📋复制编队</button><button onclick="appendLog('· [ui] 一键删除编队','warn')">🗑一键删除</button></div>`}
+    function shuaPanel(){return `<div class="form-panel">
+      ${row('开始时间：', input('0',38)+'<span>点</span>')}
+      ${row('中心坐标：','<span>x-</span>'+input('0',78)+'<span>y-</span>'+input('0',78))}
+      ${row('加速：', select('不加速',82)+'<span>模式：</span>'+select('懒人模式',88))}
+      <table class="mini-table"><tr><th>☐</th><th>出征将领</th><th>山贼等级</th><th>掉落</th><th>筛选山贼</th><th>操作</th></tr><tr><td>☑</td><td>台达元</td><td>1级</td><td>全部</td><td>全部(伤亡…)</td><td class="delete-cell">删除</td></tr></table>
+      ${actions()}<div class="info-box">说明：\n中心坐标(0,0)表示全图搜索\n刷黄如果杀敌了没有奖励说明刷黄次数已满，会停止刷黄\n当前真机闭环：1520030/1522030 success=true → dailyLimit Stop → logout。</div>
+    </div>`}
+    function formationPanel(){return `<div class="form-panel"><table class="mini-table"><tr><th></th><th>出征将领</th><th>类型</th><th>数量</th><th>操作</th></tr><tr><td>☑</td><td>台达元</td><td>民兵</td><td>3000</td><td class="delete-cell">删除</td></tr><tr><td>☐</td><td class="hint">请选择</td><td>民兵</td><td>3000</td><td class="delete-cell">删除</td></tr><tr><td>☐</td><td>栾寿</td><td>骁骑</td><td>999</td><td class="delete-cell">删除</td></tr></table>${actions()}<div class="info-box">说明：复制编队：复制上面的编队；将领名字后面会显示将领的配兵数和配置的编队。</div></div>`}
+    function lootPanel(){return `<div class="form-panel">${row('满兵：',tick(true)+'<span>时长：</span>'+select('6小时'))}${row('满忠：',tick(false))}<table class="mini-table"><tr><th>✓</th><th>出征将领</th><th>玩家名称</th><th>封地序号</th><th>操作</th></tr><tr><td>✓</td><td>台达元</td><td>一诺</td><td>1</td><td class="delete-cell">删除</td></tr></table>${actions()}<div class="info-box">说明：拉资建议满忠；勾选满忠，如果敌方封地有将领防守，会自动撤军。</div></div>`}
+    function genericExpeditionPanel(title){return `<div class="form-panel">${row('满兵：',tick(false))}<table class="mini-table"><tr><th>☐</th><th>出征将领</th><th>类型</th><th>操作</th></tr><tr><td>☐</td><td class="hint">请选择</td><td>${title}</td><td class="delete-cell">删除</td></tr></table>${actions()}<div class="info-box">说明：${title}仍处于配置/协议 shape 阶段，真实动作需要单独 gate。</div></div>`}
+    function dungeonPanel(){return `<div class="form-panel"><table class="mini-table"><tr><th>☐</th><th>出征将领</th><th>章节</th><th>关卡</th><th>开箱</th></tr><tr><td>☐</td><td class="hint">请选择</td><td>第一章</td><td>1</td><td>随机</td></tr></table><div class="info-box">说明：副本会与刷黄共享将领/编队状态锁，忙碌将领不可复用。</div></div>`}
+    function miningAutoPanel(){return `<div class="form-panel">${row('打矿加速：',select('不加速'))}${row('打矿满忠：',tick(false))}${row('定点送将对方玩家名称：',input('请输入对方玩家名称',190))}<table class="mini-table"><tr><th>☐</th><th>出征将领</th><th>资源类型</th><th>x坐标</th><th>y坐标</th><th>范围</th><th>操作</th></tr><tr><td>☐</td><td class="hint">请选择</td><td class="hint">请选择</td><td>0</td><td>0</td><td>附近</td><td class="delete-cell">删除</td></tr></table>${actions()}<div class="info-box">说明：坐标(0,0)表示全图搜索；定点打矿可用于送将。</div></div>`}
+    function miningSearchPanel(){return `<div class="form-panel"><div class="form-row"><label>矿类型：</label>${['金矿','银矿','冰玉矿','仙芝园','玄铁矿'].map(x=>`<span>${tick(false)}${x}</span>`).join('')}</div>${row('及等级设置：',select('请选择'))}${row('是否是无人矿：',tick(false))}${row('是否专找有驻防的矿：',tick(false))}<div class="bar-actions"><button>启动前台搜索</button><button>启动后台搜索</button><button>停止后台搜索</button></div><div class="info-box">注意：某个角色打过一次金矿后，该角色当天不能再看到金矿。</div></div>`}
+    function ministryPanel(){return `<div class="form-panel">${row('种菜收菜：','<span>开启</span>'+tick(false)+'<span>作物</span>'+select('水稻')+'<span>高级优先</span>'+tick(false))}${row('偷菜：','<span>开启</span>'+tick(false))}${row('礼部任务：','<span>开启</span>'+tick(false)+'<span>使用俸禄刷新</span>'+tick(false))}<div class="info-box">说明：礼部任务成功率和文官等级、特长、技能有关。</div></div>`}
+    function escortPanel(){return `<div class="form-panel">${row('高级优先：',tick(false)+'<span>满兵：</span>'+tick(false))}${row('国家镖车：',tick(false)+select('请选择'))}<table class="mini-table"><tr><th>☐</th><th>出征将领</th><th>类型</th><th>操作</th></tr><tr><td>☐</td><td class="hint">请选择</td><td class="hint">请选择</td><td class="delete-cell">删除</td></tr></table>${actions()}<div class="info-box">说明：押镖如果受到玩家攻击，会自动撤军。</div></div>`}
+    function commonPanel(){return `<div class="form-panel">${row('掉线重连：',input('5')+'<span>分钟</span>')}${row('刷黄上限：',input('500')+'<span>次</span>')}${row('治疗伤兵：','<span>开启</span>'+tick(false))}${row('自动内政：','<span>开启</span>'+tick(false))}${row('自动加体：','<span>开启</span>'+tick(false)+'<span>体力&lt;</span>'+input('100'))}${row('粮食转铜：','<span>开启</span>'+tick(false)+input('20')+'<span>万</span>')}</div>`}
+    function dailyPanel(){return `<div class="form-panel">${['自动签到','领竞技币','兑勇士令','自动捐献','领取俸禄','开启免战','连体整理'].map(x=>row(x+'：','<span>开启</span>'+tick(false))).join('')}<div class="info-box">说明：日常任务每天只会执行一次。当前离线 ready，真实动作仍需 gate。</div></div>`}
+    function itemsPanel(){return `<div class="form-panel">${row('丢弃物品：',select('山贼头巾'))}${row('保留物品：',select('青铜钥匙')+'<span>数量</span>'+input('3'))}${row('丢弃装备：',select('良好')+'<span>等级&lt;</span>'+input('60'))}${row('自动开箱：',select('50两银票、...'))}<div class="info-box">说明：不丢强化、炼魂、80级以上装备。</div></div>`}
+    function chainItemsPanel(){return `<div class="form-panel">${row('丢弃物品：',select('请选择'))}${row('保留物品：',select('请选择')+'<span>数量</span>'+input('0'))}${row('丢弃装备：',select('请选择')+'<span>等级&lt;</span>'+input('60'))}<button class="blue-full" onclick="appendLog('· [common] 执行连体整理（原型）')">执行连体整理</button><div class="info-box">说明：不配置则和主号物品配置一样。</div></div>`}
+    function internalPanel(){return `<div class="form-panel">${row('自动内政：','<span>开启</span>'+tick(true))}${row('优先升级低级建筑：',tick(true))}${row('优先升级建筑排序：',select('民居')+select('书院'))}${row('',select('兵营')+select('市场'))}${row('若建筑为空自动建设建筑为：',select('一键房子'))}<div class="info-box">注意：封地名必须是中文开头；如果内政异常，建议将封地数开满。</div></div>`}
+
+    function setLogs(items){ document.getElementById('logBox').innerHTML = items.map(([t,c])=>`<div class="${c||''}">${escapeHtml(t)}</div>`).join(''); }
+    function appendLog(text, cls=''){
+      const box=document.getElementById('logBox');
+      const div=document.createElement('div'); div.className=cls; div.textContent=text; box.appendChild(div); box.scrollTop=box.scrollHeight;
+    }
+    function startHosting(){
+      running=true; document.getElementById('runChip').textContent='托管运行中'; document.getElementById('runChip').className='chip ok';
+      appendLog('· [local-scheduler] local scheduling started','ok');
+      appendLog('· [real-action] 真实 0x1016 状态刷新成功：role=东方美 Lv.54 opcodes=0x8004','ok');
+      appendLog('· [state-machine] brush-yellow query-generals / query-formations');
+      appendLog('· [real-action] 1520030 prepare → 1522030 expedition success=true msg=消灭','ok');
+      appendLog('· [state-machine] dispatch-success → dailyLimit Stop → logout → service destroyed','ok');
+    }
+    function stopHosting(){ running=false; document.getElementById('runChip').textContent='已停止'; document.getElementById('runChip').className='chip warn'; appendLog('· [local-task-stop] STOP account=764 logoutSucceeded=true','warn'); }
+    function saveSettings(){ appendLog(`· [ui] 保存设置：${categories[activeCat].title}/${activeSub}`,'ok'); }
+    function switchBottom(which){
+      ['assistant','other','me'].forEach(k=>{document.getElementById(k+'Screen').classList.toggle('hidden',k!==which); document.getElementById('nav'+cap(k)).classList.toggle('active',k===which);});
+    }
+    function cap(s){ return s==='assistant'?'Assistant':s==='other'?'Other':'Me'; }
+    function escapeHtml(s){return s.replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+    init();
+  </script>
+</body>
+</html>

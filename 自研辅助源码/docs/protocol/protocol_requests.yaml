@@ -1,0 +1,2576 @@
+version: 1
+updatedAt: '2026-07-08'
+protocol: dwsg-http-binary
+sourceOfTruth: true
+notes:
+- 接口文档主格式为 YAML，HTML 只作为可视化展示，不作为数据源。
+- 所有 offset/字段含义允许 unknown/maybe/confirmed 三档置信度逐步演进。
+- 2026-07-07 live mitmweb：补录 1130、3940、3941、1008、6444、1012、3183+114c；多数为 strings_confirmed_fields_unknown，待可控动作 diff。
+- 2026-07-08 passive bridge100 pcap：去重补录 1003、1016、1800、6287、1114、111f、1025；不重复写入已收录的 3110、1130、6200、1008、1012、6444。
+- 2026-07-08 passive bridge100 pcap 增量：新增 6300、6260、1226、1214、1520(wire prepare)、1522(wire dispatch)、1280、1702；其中 1520/1522 是既有刷黄 1520030/1522030 逻辑的实包形态补录。
+- 2026-07-08 passive bridge100 pcap 第二批增量：新增 1250、1200、1104、1406、1103、123f；修正 scanner 将 0755/0100/d12c 参数误判为 opcode 的情况。
+- 2026-07-08 passive bridge100 pcap 第三批增量：新增 1229 error-only 样本；请求携带两个对象 id，响应 fffc0000。
+- 2026-07-08 passive bridge100 pcap 第四批增量：新增 1170 排行榜列表/分类排行；修正 1229 由 error-only 改为批量补兵/批量补满，保留旧 fffc0000 样本作为失败证据。
+- 2026-07-08 0x1016/0x8004：确认 JiangLing 记录体（i64 id + u16 name + 114-byte body），已能解析将领状态、等级、体力、忠诚、统兵数与兵种；兵种索引已按逆向出的全局兵种库映射为真实名称。
+endpoints:
+- id: king_http_client
+  label: 帝王三国 HTTP 二进制接口
+  url: http://118.89.111.11:25511/kingWapServer/HttpClient
+  method: POST
+  transport: http
+  bodyEncoding: binary
+  status: verified
+requests:
+- id: heartbeat_or_status_3110
+  opcode: '3110'
+  name: heartbeat_or_status
+  label: 心跳/在线状态/系统消息拉取
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed
+  confidence: medium
+  request:
+    bodyType: binary
+    exampleHex: 001731363630363036603730353460303030303438303530320000019f32e7eb0d01bd30b6212c944b0500000000000000000002311000000100
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      example: 1660606`7054`0000480502
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 命令号
+      type: hex
+      value: '3110'
+      confidence: high
+  response:
+    bodyType: binary
+    parserStatus: partial
+    observedStrings:
+    - 名将--张苞被俘
+    - 名将--简雍被俘
+    - 国战/城战广播
+    - 在线状态数值字段
+  evidence:
+    captures:
+    - flowIndex: 29
+      timestamp: '2026-07-05 23:31:27.834'
+      requestLength: 58
+      responseLength: 209
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/game_flows_summary.md
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/000_2026-07-05_233127_834_req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/000_2026-07-05_233127_834_resp.bin
+    - flowIndex: 12
+      timestamp: '2026-07-07 22:37:40.151'
+      requestLength: 58
+      responseLength: 397
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_live_latest/game_flows_summary.md
+    - flowIndex: 15
+      timestamp: '2026-07-07 22:38:20.567'
+      requestLength: 58
+      responseLength: 713
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_live_latest/game_flows_summary.md
+    - flowIndex: 17
+      timestamp: '2026-07-07 22:39:00.982'
+      requestLength: 58
+      responseLength: 245
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_live_latest/game_flows_summary.md
+- id: find_yellow_041540
+  opcode: '041540'
+  name: find_yellow
+  label: 找黄/找山贼
+  endpoint: king_http_client
+  direction: request_response
+  status: verified
+  confidence: high
+  scenario:
+    feature: brush_yellow
+    uiAction: 刷黄任务中搜索山贼/黄巾目标
+  request:
+    bodyType: binary
+    exampleHex: 001731363630363036603730353460303030303438303530320000019f3304f59c01bd30b6212c944b050000000000000000000415400000005b001a
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      example: 1660606`7054`0000480502
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 命令号
+      type: hex
+      value: '041540'
+      confidence: high
+    - field: search_x_or_area
+      label: 疑似搜索坐标/区域字段
+      type: int_or_hex
+      example: 005b
+      confidence: low
+    - field: search_y_or_area
+      label: 疑似搜索坐标/区域字段
+      type: int_or_hex
+      example: 001a
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: partial
+    contains:
+    - target_list
+    - npc_level
+    - npc_name
+    - reward_description
+    observedStrings:
+    - 3级山贼
+    - 10级山贼
+    - 5级山贼
+    - 9级山贼
+    - 1级山贼
+    - 许多资源
+    - 大量资源
+    - 大批资源
+    - 有宝箱
+    - 有装备
+    - 一些宝物
+  evidence:
+    captures:
+    - flowIndex: 282
+      timestamp: '2026-07-06 00:03:10.879'
+      requestLength: 60
+      responseLength: 2732
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/game_flows_summary.md
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/172_2026-07-06_000310_879_req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/172_2026-07-06_000310_879_resp.bin
+- id: brush_yellow_prepare_1520030
+  opcode: '1520030'
+  name: brush_yellow_prepare
+  label: 刷黄 prepare
+  endpoint: king_http_client
+  direction: request_response
+  status: verified_by_reverse_and_runtime
+  confidence: high
+  request:
+    bodyType: binary
+    formula: 000000000000000000 + hex(ids.size * 8 + 0x0a) + 1520030 + ids.size(decimal) + concat(ids) + 0000 + targetId
+    knownShape:
+    - field: prefix
+      label: 固定前缀
+      value: '000000000000000000'
+      confidence: high
+    - field: length_hex
+      label: payload 长度
+      formula: ids.size * 8 + 0x0a
+      confidence: high
+    - field: opcode
+      value: '1520030'
+      confidence: high
+    - field: ids_count
+      label: 将领/编队 id 数量
+      type: int
+      confidence: high
+    - field: ids
+      label: 将领/编队 id 列表
+      type: repeated_id
+      confidence: high
+    - field: target_id
+      label: 山贼/黄巾目标 id
+      type: id
+      confidence: high
+  response:
+    bodyType: binary
+    parserStatus: minimal_success_failure
+  evidence:
+    reverseReports:
+    - /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk/analysis/shuahuang_expedition_decode_2026-07-06/shuahuang_expedition_payload_builder_summary.md
+    runtimeReports:
+    - /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/reports/service_brush_yellow_evidence_current.md
+- id: brush_yellow_dispatch_1522030
+  opcode: '1522030'
+  name: brush_yellow_dispatch
+  label: 刷黄 expedition/出征
+  endpoint: king_http_client
+  direction: request_response
+  status: verified_by_reverse_and_runtime
+  confidence: high
+  request:
+    bodyType: binary
+    formula: 000000000000000000 + hex(ids.size * 8 + 0x15) + 1522030 + ids.size(decimal) + concat(ids) + 0000 + targetId + ffffffffffffffff000000
+    knownShape:
+    - field: prefix
+      label: 固定前缀
+      value: '000000000000000000'
+      confidence: high
+    - field: length_hex
+      label: payload 长度
+      formula: ids.size * 8 + 0x15
+      confidence: high
+    - field: opcode
+      value: '1522030'
+      confidence: high
+    - field: ids_count
+      label: 将领/编队 id 数量
+      type: int
+      confidence: high
+    - field: ids
+      label: 将领/编队 id 列表
+      type: repeated_id
+      confidence: high
+    - field: target_id
+      label: 山贼/黄巾目标 id
+      type: id
+      confidence: high
+    - field: suffix
+      label: 固定后缀
+      value: ffffffffffffffff000000
+      confidence: high
+  response:
+    bodyType: binary
+    parserStatus: minimal_success_failure
+    resultStates:
+    - success
+    - failure
+    - ff0000_like_reject
+  evidence:
+    reverseReports:
+    - /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk/analysis/shuahuang_expedition_decode_2026-07-06/shuahuang_expedition_payload_builder_summary.md
+    runtimeReports:
+    - /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/reports/service_brush_yellow_evidence_current.md
+- id: dungeon_status_01190000
+  opcode: 01190000
+  name: dungeon_status_query
+  label: 闯关/副本状态查询
+  endpoint: king_http_client
+  direction: request_response
+  status: reverse_verified_capture_observed
+  confidence: medium
+  request:
+    bodyType: binary
+    fixedGameHex: 00000000000000000001190000
+  response:
+    bodyType: binary
+    parserStatus: partial
+    knownOffsets:
+    - field: status_char
+      offsetRange: '[0x3f,0x40)'
+      confidence: medium
+    - field: cooldown_ms_hex
+      offsetRange: '[0x48,0x58)'
+      confidence: medium
+    statusMapping:
+      '2': 空闲/可闯关
+      '1': 状态1，待复验
+      '0': 冷却中
+      '3': 战斗中
+      other: 未知
+  evidence:
+    captures:
+    - flowIndex: 641
+      timestamp: '2026-07-06 00:30:12.619'
+      requestLength: 88
+      responseLength: 6475
+      statusCode: 200
+    reverseReports:
+    - /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk/analysis/chuangguan_dungeon_decode_2026-07-06/chuangguan_dungeon_payload_summary.md
+- id: daily_sign_claim_6202
+  opcode: '6202'
+  name: daily_sign_claim
+  label: 签到/登录任务领奖：铜钱+10000、粮食+30000
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed
+  confidence: medium
+  scenario:
+    feature: daily
+    uiAction: 用户点击签到按钮后，获得铜钱1万、粮食3万
+  request:
+    bodyType: binary
+    exampleHex: 001731363630363036603730353460303030303438303530320000019f3d03563a018facfb044f824ac40000000000000000000062020000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      example: 1660606`7054`0000480502
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: command_tail
+      label: 签到领奖命令尾部
+      type: hex
+      value: '62020000'
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - task_list
+    - reward_result
+    - money_reward
+    - food_reward
+    observedStrings:
+    - 种植技术
+    - 建造弓兵营
+    - 每日金钻宝箱
+    - 铜钱:10000获得成功。粮食:30000获得成功。
+    - :10000
+    - :30000
+  evidence:
+    captures:
+    - flowIndex: 10
+      timestamp: '2026-07-07 22:37:36.722'
+      requestLength: 56
+      responseLength: 1511
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_223826/game_flows_summary.md
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6202_daily_sign_claim/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6202_daily_sign_claim/resp.bin
+    userObservations:
+    - timestamp: 2026-07-07 22:38
+      observation: 点击签到按钮后获得铜钱10000、粮食30000
+- id: daily_task_overview_6200
+  opcode: '6200'
+  name: daily_task_overview
+  label: 日常/签到任务列表与奖励定义
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_recurring
+  confidence: high
+  scenario:
+    feature: daily
+    uiAction: 签到后刷新日常任务/奖励列表
+  request:
+    bodyType: binary
+    exampleHex: 001731363630363036603730353460303030303438303530320000019f3d0357ce018facfb044f824ac40000000000000000000062000000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      example: 1660606`7054`0000480502
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: command_tail
+      label: 日常任务列表命令尾部
+      type: hex
+      value: '62000000'
+      confidence: medium
+    variants:
+    - name: combined_3110_then_6200
+      bodyLength: 80
+      description: 同一 HTTP body 内先出现 3110 心跳段，随后追加 62000000 日常任务列表段。
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - daily_task_list
+    - reward_definition
+    - progress
+    - claim_state
+    observedStrings:
+    - 铜钱+10000
+    - 粮食+30000
+    - 登入游戏
+    - 0/1
+    - 1/1
+    - 010000铜钱，10白银，10玉石，随机道具
+    - 030000铜钱，20白银，10玉石，随机道具
+  evidence:
+    captures:
+    - flowIndex: 11
+      timestamp: '2026-07-07 22:37:37.017'
+      requestLength: 56
+      responseLength: 1422
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_223826/game_flows_summary.md
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6200_daily_task_overview/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6200_daily_task_overview/resp.bin
+    - flowIndex: 16
+      timestamp: '2026-07-07 22:38:40.771'
+      requestLength: 80
+      responseLength: 1666
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_live_latest/game_flows_summary.md
+      note: combined 3110 + 62000000 recurring refresh
+    - flowIndex: 20
+      timestamp: '2026-07-07 22:39:41.803'
+      requestLength: 80
+      responseLength: 1666
+      statusCode: 200
+      summaryPath: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_223536_http_only/analyzed_live_latest/game_flows_summary.md
+      note: combined 3110 + 62000000 recurring refresh
+    - timestamp: '2026-07-07 23:07:51.618'
+      requestLength: 80
+      responseLength: 1666
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6200_daily_task_overview/combined_3110_6200_20260707_230751_req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6200_daily_task_overview/combined_3110_6200_20260707_230751_resp.bin
+      mitmFlowId: 1092d70c-a7d5-4ecb-84f5-4a84a24076d7
+      note: live mitmweb combined 3110 + 62000000 recurring refresh
+    userObservations:
+    - timestamp: 2026-07-07 22:38
+      observation: 签到领奖后任务/奖励列表中出现铜钱+10000、粮食+30000、登入游戏进度
+- id: growth_task_status_1130
+  opcode: '1130'
+  name: growth_task_status
+  label: 成长/引导任务状态列表
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: medium
+  scenario:
+    feature: task_guide
+    uiAction: 登录/状态刷新后周期性拉取成长任务、引导任务状态
+  request:
+    bodyType: binary
+    exampleTailHex: '1130000000'
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      example: 1660606`7054`0000480502
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: command_tail
+      label: 成长任务状态命令尾部
+      type: hex
+      value: '1130000000'
+      confidence: high
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - growth_task_list
+    - task_name
+    - task_progress_or_level
+    - guide_state
+    observedStrings:
+    - 种植技术
+    - 建造弓兵营
+    - 五谷丰登2
+    - 威震四方6
+    - 挑战山贼8
+    - 使用鲁公手册
+    - 剿匪英雄3
+    - 开拓封地2
+    - 招募将领12
+    - 升级将领4
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:07:52.083'
+      requestLength: 57
+      responseLength: 798
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1130_growth_task_status/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1130_growth_task_status/resp.bin
+      mitmFlowId: 53549876-38fd-4253-ba8d-1af4bc41cbd5
+- id: activity_list_3940
+  opcode: '3940'
+  name: activity_list
+  label: 活动列表
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: medium
+  scenario:
+    feature: activity
+    uiAction: 打开/刷新活动入口列表
+  request:
+    bodyType: binary
+    exampleTailHex: '39400000'
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: command_tail
+      label: 活动列表命令尾部
+      type: hex
+      value: '39400000'
+      confidence: high
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - activity_list
+    - activity_title
+    - image_or_url
+    - activity_id
+    observedStrings:
+    - 攻敌城，抢豪礼-1
+    - 攻敌城，抢豪礼-2
+    - 攻敌城，抢豪礼-3
+    - 攻敌城，抢豪礼-4
+    - 烽火连城战无双
+    - 冲级抢礼包-88级
+    - 冲级抢礼包-66级
+    - 激活码兑换道具
+    - 平定山贼之乱
+    - 争夺城主，争龙椅
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:07:36.965'
+      requestLength: 56
+      responseLength: 905
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/3940_activity_list/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/3940_activity_list/resp.bin
+      mitmFlowId: 7a448269-1556-4dc8-912c-1e8d9bd41ebe
+- id: activity_detail_3941
+  opcode: '3941'
+  name: activity_detail
+  label: 活动详情/奖励条件
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: medium
+  scenario:
+    feature: activity
+    uiAction: 点击某个活动条目查看详情
+  request:
+    bodyType: binary
+    exampleTailHex: 39410000000000009b590093
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 00000008
+      confidence: low
+    - field: opcode
+      label: 活动详情命令
+      type: hex
+      value: '3941'
+      confidence: high
+    - field: activity_id_or_param
+      label: 活动 ID/详情参数
+      type: hex
+      example: 000000009b590093
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - activity_condition
+    - reward_item_list
+    - reward_count
+    - activity_description
+    observedStrings:
+    - 活动期间内，在攻城战中获得一次胜利
+    - 初级行军符
+    - 80级高级兵武箱
+    - 战鼓
+    - 八阵图
+    - 将神魂
+    - 冰玉材料包
+    - 仙芝材料包
+    - 孟德新书
+    - 北斗七星
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:07:37.165'
+      requestLength: 64
+      responseLength: 1305
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/3941_activity_detail/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/3941_activity_detail/resp.bin
+      mitmFlowId: 15bf9509-0030-47a1-8996-88e2109aad8e
+- id: map_city_page_scan_1008
+  opcode: '1008'
+  name: map_city_page_scan
+  label: 地图/城池分页扫描
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: map
+    uiAction: 打开地图/拖动地图/分页加载城池点位
+  request:
+    bodyType: binary
+    exampleTailHex: 100800000a0a0000000c0001000c...
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000002a
+      confidence: medium
+    - field: opcode
+      label: 地图分页扫描命令
+      type: hex
+      value: '1008'
+      confidence: medium
+    - field: page_or_window_params
+      label: 分页/窗口参数列表
+      type: repeated_uint16_pair_or_grid
+      example: 0000 000c, 0001 000c ... / 000a 000c ... / ffff sentinel
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - city_or_map_object_list
+    - city_name
+    - lord_or_player_name
+    - kingdom_or_country
+    - page_end_marker
+    observedStrings:
+    - 永泰
+    - 永化
+    - 宛川
+    - 宛台
+    - 吴川
+    - 洛道
+    - 洛安
+    - 赊刀人c
+    - 天勇星b
+    - 南楚
+    - 楚
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:07:13.701'
+      requestLength: 98
+      responseLength: 5057
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1008_map_city_page_scan/page_0_9_req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1008_map_city_page_scan/page_0_9_resp.bin
+      mitmFlowId: e839a469-32e9-4a2e-885a-aaad95d39ec4
+    - timestamp: '2026-07-07 23:07:15.471'
+      requestLength: 98
+      responseLength: 3115
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1008_map_city_page_scan/page_10_21_req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1008_map_city_page_scan/page_10_21_resp.bin
+      mitmFlowId: cd75ffb1-65be-41e2-9bc9-969ea713c300
+    - timestamp: '2026-07-07 23:07:17.444'
+      requestLength: 98
+      responseLength: 375
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1008_map_city_page_scan/page_end_req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1008_map_city_page_scan/page_end_resp.bin
+      mitmFlowId: 8d705938-867c-41e7-bcdf-2ea36933669c
+- id: map_object_batch_ack_6444
+  opcode: '6444'
+  name: map_object_batch_ack
+  label: 地图对象批量同步/确认
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: map
+    uiAction: 地图分页扫描后，客户端提交/确认一批对象 ID
+  request:
+    bodyType: binary
+    exampleTailHex: 64440000210000000000000216...
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 00000109
+      confidence: medium
+    - field: opcode
+      label: 批量同步/确认命令
+      type: hex
+      value: '6444'
+      confidence: medium
+    - field: object_count
+      label: 对象数量
+      type: uint16_or_uint32
+      example: '000021'
+      confidence: low
+    - field: object_ids
+      label: 地图对象/城池 ID 列表
+      type: repeated_uint64_or_padded_id
+      example: 0000000000000216, 000000000000023b ...
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: ack_only_unparsed
+    contains:
+    - short_ack_or_result
+    observedStrings: []
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:07:13.922'
+      requestLength: 321
+      responseLength: 28
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6444_map_object_batch_ack/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6444_map_object_batch_ack/resp.bin
+      mitmFlowId: 13ef2fb2-a174-4158-8e82-de9f90cec535
+- id: city_detail_batch_1012
+  opcode: '1012'
+  name: city_detail_batch
+  label: 城池详情/地图对象详情批量查询
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: map
+    uiAction: 地图对象详情加载/可见城池详情补全
+  request:
+    bodyType: binary
+    exampleTailHex: 10120000230000000000000215...
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 00000348
+      confidence: medium
+    - field: opcode
+      label: 城池/地图对象详情命令
+      type: hex
+      value: '1012'
+      confidence: medium
+    - field: object_count
+      label: 对象数量
+      type: uint16_or_uint32
+      example: '000023'
+      confidence: low
+    - field: object_records
+      label: 对象记录：id + 名称 + 状态/归属参数
+      type: repeated_struct
+      example: 0215 + 赊刀人 / 0213 + 献帝 / 0211 + 爱新游
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - city_detail
+    - city_name
+    - lord_name
+    - state_or_country
+    - kingdom_name
+    observedStrings:
+    - 洛阳
+    - 献帝S
+    - 大汉
+    - 汉
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:07:29.062'
+      requestLength: 896
+      responseLength: 131
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1012_city_detail_batch/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1012_city_detail_batch/resp.bin
+      mitmFlowId: 441aeeee-ff68-412c-b65a-ca6f07203f26
+- id: achievement_title_3183_114c
+  opcode: 3183+114c
+  name: achievement_title
+  label: 成就/称号/角色扩展信息
+  endpoint: king_http_client
+  direction: request_response
+  status: live_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: role_profile
+    uiAction: 登录后/角色资料或成就称号入口刷新
+  request:
+    bodyType: binary
+    exampleTailHex: 3183000000ffffffffffffff9c...114c000000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: primary_opcode
+      label: 主命令
+      type: hex
+      value: '3183'
+      confidence: medium
+    - field: embedded_session_or_role_id
+      label: 嵌入 token/角色 id
+      type: bytes
+      example: aa4618be177f45d1
+      confidence: low
+    - field: sub_opcode
+      label: 子命令/追加命令
+      type: hex
+      value: 114c
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - achievement_title_list
+    - title_name
+    - achievement_description
+    - buff_effect
+    - unlock_condition
+    observedStrings:
+    - 滑头
+    - 张弛有道
+    - 大丈夫能伸能屈，惹不起
+    - 在战斗中撤退时伤兵数减少20
+    - 完成成就任务：“张弛有道”后获得
+    - 撤退次数1000次
+    - 寨主
+    - 崭露头角
+    - 占地为王，我的地盘我做主
+    - 灭敌时获得的战功增加10
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:06:16.333'
+      requestLength: 90
+      responseLength: 12384
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/live_game_capture_20260707_225844_mitmproxy_business_only
+      requestBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/3183_114c_achievement_title/req.bin
+      responseBin: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/3183_114c_achievement_title/resp.bin
+      mitmFlowId: 89d9ef9d-b22f-45a1-9a8f-fd0df6d1c728
+- id: login_bootstrap_1003
+  opcode: '1003'
+  name: login_bootstrap
+  label: 登录/进服初始化
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: login
+    uiAction: 输入账号密码并选择区服后进入游戏
+  request:
+    bodyType: binary
+    exampleHexRedacted: contains account_prefix + timestamp + device_uuid_1 + device_uuid_2 + role/server code；不在文档内展开敏感登录样本。
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      example: 1660606`7054`0000480502
+      confidence: high
+    - field: client_timestamp_or_nonce
+      label: 客户端时间戳/nonce
+      type: uint64_or_bytes
+      confidence: low
+    - field: device_uuid_primary
+      label: 设备/安装 UUID 1
+      type: ascii_uuid
+      confidence: medium
+    - field: device_uuid_secondary
+      label: 设备/安装 UUID 2
+      type: ascii_uuid
+      confidence: medium
+    - field: role_or_server_code
+      label: 角色/区服代码
+      type: ascii_or_numeric
+      example: 0000480502
+      confidence: low
+    - field: opcode
+      label: 登录初始化命令
+      type: hex
+      value: '1003'
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - login_success
+    - role_summary
+    - kingdom_or_state
+    - reward_or_card_pool_text
+    observedStrings:
+    - 登录成功
+    - 东方美6
+    - 大汉
+    - 汉
+    - 开启后可获得：名将--少
+    - 君王刘仁泽
+    - 君王曹雄德
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:52:28'
+      requestLength: 144
+      responseLength: 6662
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 0
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1003_login_bootstrap_passive
+- id: role_world_bootstrap_1016
+  opcode: '1016'
+  name: role_world_bootstrap
+  label: 登录后角色/国家/封地初始化
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: login
+    uiAction: 登录成功后自动拉取角色、国家、封地、公告等初始化数据
+  request:
+    bodyType: binary
+    exampleTailHex: 00000000000000081016000000000000000002fc
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: segment_length_or_param_len
+      label: 段长度/参数长度
+      type: hex_or_int
+      example: 00000008
+      confidence: low
+    - field: opcode
+      label: 初始化命令
+      type: hex
+      value: '1016'
+      confidence: medium
+    - field: trailing_param
+      label: 尾部参数/分页或版本参数
+      type: uint32_or_hex
+      example: 000002fc
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: head_jiangling_inventory_status_partial_confirmed
+    contains:
+    - welcome_notice
+    - country_notice
+    - base_or_fief
+    - city_name_near_policy_section
+    - buffs_or_policy_effects
+    - jiangling_list
+    - jiangling_status_level_tili_loyalty_troops
+    observedStrings:
+    - 欢迎加入
+    - 本国政务繁多
+    - 犯我强汉者，虽远必诛
+    - 东方美基地
+    - 太祥封地
+    - 董全基地
+    - 建业
+    - 神农
+    - 蚩尤
+    - 风后
+    - 伤兵治疗费用
+    - 守军攻防提升10
+    - 铜钱粮食产能提升30
+    - 何颜鸥
+    - 冯岚
+    - 台达元
+    - 尹诩静
+    - 松翠岚
+    - 栾寿
+    knownShape:
+    - field: policy_city_name
+      label: 政策段前城池名
+      type: utf8_string
+      offset: before policy_records
+      example: 建业 / 洛阳
+      confidence: high
+    - field: policy_records
+      label: 政策/buff 文本记录
+      type: repeated utf_pair
+      offset: after S5 troop assignment table
+      example: 神农=降低20%伤兵治疗费用; 蚩尤=守军攻防提升10%; 风后=铜钱粮食产能提升30%
+      confidence: high
+    - field: policy_record.index
+      label: 政策序号
+      type: uint16
+      offset: name_utf_offset-0x04
+      example: 1 / 2 / 3
+      confidence: high
+    - field: policy_record.timer_raw
+      label: 政策时间/状态原始码
+      type: uint16_hex
+      offset: name_utf_offset-0x02
+      example: 2f0d / 2f0c / 2f0b
+      confidence: low
+    - field: policy_record.name
+      label: 政策名
+      type: utf8_string
+      offset: name_utf_offset
+      example: 神农 / 蚩尤 / 风后
+      confidence: confirmed
+    - field: policy_record.effect
+      label: 政策效果文本
+      type: utf8_string
+      offset: immediately after policy_record.name
+      example: 降低20%伤兵治疗费用 / 守军攻防提升10% / 铜钱粮食产能提升30%
+      confidence: confirmed
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:52:28'
+      requestLength: 64
+      responseLength: 12448
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 1
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1016_role_world_bootstrap_passive
+- id: post_login_sync_1800
+  opcode: '1800'
+  name: post_login_sync
+  label: 登录后补充同步/未知短响应
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: login
+    uiAction: 登录后自动触发，紧跟地图/任务初始化附近出现
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000011800000000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 未知同步命令
+      type: hex
+      value: '1800'
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: mostly_binary_short_response
+    contains:
+    - unknown_short_struct
+    observedStrings:
+    - 麻子
+    - 秋
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:52:28'
+      requestLength: 57
+      responseLength: 54
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 4
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1800_post_login_sync_passive
+- id: unknown_ack_success_6287
+  opcode: '6287'
+  name: unknown_ack_success
+  label: 未知确认/操作成功
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: login_or_ui_notice
+    uiAction: 登录后自动或点击某通知/面板后出现；当前只确认返回“操作成功”
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000016287000000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 未知确认命令
+      type: hex
+      value: '6287'
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - success_message
+    - location_or_channel_labels
+    observedStrings:
+    - 操作成功
+    - 世界
+    - 国家
+    - 城池
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:52:29'
+      requestLength: 57
+      responseLength: 79
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 10
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6287_unknown_ack_success_passive
+- id: battle_report_detail_1114
+  opcode: '1114'
+  name: battle_report_detail
+  label: 战报详情/山贼战斗结果
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: battle_report
+    uiAction: 查看战报详情；本样本为 1 级山贼战报
+  request:
+    bodyType: binary
+    exampleTailHex: 00000000000000081114000019f3d176ff20d972
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: segment_length_or_param_len
+      label: 段长度/参数长度
+      type: hex_or_int
+      example: 00000008
+      confidence: low
+    - field: opcode
+      label: 战报详情命令
+      type: hex
+      value: '1114'
+      confidence: medium
+    - field: battle_report_id_or_timestamp
+      label: 战报 id/时间戳
+      type: uint64_or_bytes
+      example: 19f3d176ff20d972
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - battle_target
+    - battle_result
+    - return_to_fief
+    - stamina_after_battle
+    observedStrings:
+    - 1级山贼
+    - 我军失败
+    - 返回封地
+    - 体力：99
+    - 8台达元
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:52:29'
+      requestLength: 64
+      responseLength: 152
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 13
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1114_battle_report_detail_passive
+- id: battle_report_actor_summary_111f
+  opcode: 111f
+  name: battle_report_actor_summary
+  label: 战报参战方摘要/进攻方信息
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: battle_report
+    uiAction: 查看战报详情时伴随拉取进攻方/参战方摘要
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000008111f000019f3d176ff20d972
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 战报参战方摘要命令
+      type: hex
+      value: 111f
+      confidence: medium
+    - field: battle_report_id_or_timestamp
+      label: 战报 id/时间戳
+      type: uint64_or_bytes
+      example: 19f3d176ff20d972
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - attacker_side
+    - role_name
+    - gender_or_hero_marker
+    - level
+    observedStrings:
+    - 进攻方
+    - 东方美
+    - 女54级
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:52:29'
+      requestLength: 64
+      responseLength: 72
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 14
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/111f_battle_report_actor_summary_passive
+- id: unknown_after_session_invalid_1025
+  opcode: '1025'
+  name: unknown_after_session_invalid
+  label: 未知请求/会话失效后返回 fffc0000
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_error_only
+  confidence: low
+  scenario:
+    feature: session
+    uiAction: 测试账号被退出后，3110 心跳先返回 fffc0000，随后该 1025 请求也返回 fffc0000
+  request:
+    bodyType: binary
+    exampleTailHex: 2183168
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: stale_session_token_like
+      label: 已失效 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 未知命令
+      type: hex
+      value: '1025'
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: error_code_only
+    contains:
+    - session_invalid
+    observedHex:
+    - fffc0000
+  evidence:
+    captures:
+    - timestamp: '2026-07-07 23:58:05'
+      requestLength: 56
+      responseLength: 27
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260707_234936
+      flowIndex: 117
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1025_unknown_after_session_invalid_passive
+- id: ministry_official_status_6300
+  opcode: '6300'
+  name: ministry_official_status
+  label: 六部/官职状态列表
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: official_or_court
+    uiAction: 登录后/政务相关页面自动拉取；当前只确认响应含六部名称
+  request:
+    bodyType: binary
+    exampleTailHex: '00000000000000000002630000000000'
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: '00000002'
+      confidence: low
+    - field: opcode
+      label: 六部/官职状态命令
+      type: hex
+      value: '6300'
+      confidence: medium
+    - field: zero_param
+      label: 空参数/保留参数
+      type: bytes
+      example: '00000000'
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - ministry_or_official_list
+    observedStrings:
+    - 户部
+    - 礼部
+    - 吏部
+    - 兵部
+    - 工部
+    - 刑部
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 58
+      responseLength: 200
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 20
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6300_ministry_official_status_passive_20260708
+      responseTextPreview: 1qM+
+- id: arena_challenge_log_6260
+  opcode: '6260'
+  name: arena_challenge_log
+  label: 竞技场挑战记录/战报列表
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: medium
+  scenario:
+    feature: arena
+    uiAction: 竞技场/战报相关页面拉取挑战胜负记录
+  request:
+    bodyType: binary
+    exampleTailHex: '0000000000000000000062600000'
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: opcode
+      label: 竞技场记录命令
+      type: hex
+      value: '6260'
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - arena_challenge_result_list
+    - opponent_or_role_name
+    observedStrings:
+    - 竞技场挑战失败
+    - 竞技场挑战胜利
+    - 司马我8
+    - 君王君B
+    - 策士君B
+    - 木子麟
+    - 天路
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 56
+      responseLength: 1074
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 21
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/6260_arena_challenge_log_passive_20260708
+      responseTextPreview: 1qM+ | 竞技场挑战失败 | 司马我8 | 竞技场挑战胜利 | 君王君B | 竞技场挑战胜利 | 策士君B | 竞技场挑战失败 | 善号号B | 竞技场挑战胜利
+- id: unknown_id_param_1226
+  opcode: '1226'
+  name: unknown_id_param
+  label: 未知对象参数操作
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: unknown
+    uiAction: 改名前后出现；请求携带对象 id + 参数 0008/0085，语义待 diff
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000000f1226000000000000006b4d9a00000800000085
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000000f
+      confidence: low
+    - field: opcode
+      label: 未知命令
+      type: hex
+      value: '1226'
+      confidence: medium
+    - field: object_id
+      label: 对象 id
+      type: uint64_or_padded_id
+      example: 00000000006b4d9a
+      confidence: low
+    - field: param_pair
+      label: 参数组
+      type: bytes_or_ints
+      example: 0008 00000085
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: ack_or_short_struct_unparsed
+    contains:
+    - short_ack_or_struct
+    observedStrings: []
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 71
+      responseLength: 49
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 24
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1226_unknown_id_param_passive_20260708
+      responseTextPreview: 1qM+
+- id: entity_rename_1214
+  opcode: '1214'
+  name: entity_rename
+  label: 对象/编队改名
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: rename
+    uiAction: 对 6b4dae/6b4d9a 两个对象改名为“车1”“步1”，响应“改名成功”
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000000e1214000000000000006b4dae0004e8bda631 / ...6b4d9a0004e6ada531
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000000e
+      confidence: medium
+    - field: opcode
+      label: 改名命令
+      type: hex
+      value: '1214'
+      confidence: high
+    - field: object_id
+      label: 被改名对象 id
+      type: uint64_or_padded_id
+      example: 00000000006b4dae / 00000000006b4d9a
+      confidence: medium
+    - field: name_length
+      label: 新名称字节长度
+      type: uint16_or_uint32
+      example: '0004'
+      confidence: medium
+    - field: new_name_utf8
+      label: 新名称 UTF-8
+      type: string
+      example: 车1 / 步1
+      confidence: high
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - rename_success
+    - object_id
+    - new_name_echo
+    observedStrings:
+    - 改名成功
+    - 车1
+    - 步1
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 70
+      responseLength: 58
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 25
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1214_entity_rename_passive_20260708
+      responseTextPreview: 1qM+ | 改名成功
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 70
+      responseLength: 58
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 27
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1214_entity_rename_passive_20260708
+      responseTextPreview: 1qM+ | 改名成功
+- id: brush_yellow_prepare_wire_1520
+  opcode: '1520'
+  name: brush_yellow_prepare_wire
+  label: 刷黄 prepare（bridge100 实包 wire 形态）
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_variant
+  confidence: medium
+  scenario:
+    feature: brush_yellow
+    uiAction: 刷黄出征前 prepare；这是已有 1520030 逻辑在 bridge100 pcap 中观察到的 wire opcode 形态
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000001a15200000030200000000006b4dae00000000006b4d9a000000000041e771
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000001a
+      confidence: medium
+    - field: opcode
+      label: prepare wire 命令
+      type: hex
+      value: '1520'
+      confidence: medium
+    - field: subcode_or_count_block
+      label: 疑似子码/数量块
+      type: bytes
+      example: '00000302'
+      confidence: low
+    - field: actor_ids
+      label: 出征将领/编队 id 列表
+      type: repeated_uint64_or_padded_id
+      example: 6b4dae, 6b4d9a
+      confidence: medium
+    - field: target_id
+      label: 目标 id
+      type: uint64_or_padded_id
+      example: .inf
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: short_struct_unparsed
+    contains:
+    - prepare_ack_or_timers
+    observedStrings: []
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 82
+      responseLength: 51
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 35
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1520_brush_yellow_prepare_wire_passive_20260708
+      responseTextPreview: 1qM+
+- id: brush_yellow_dispatch_wire_1522
+  opcode: '1522'
+  name: brush_yellow_dispatch_wire
+  label: 刷黄出征/战斗 dispatch（bridge100 实包 wire 形态）
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_variant
+  confidence: medium
+  scenario:
+    feature: brush_yellow
+    uiAction: 刷黄出征提交；这是已有 1522030 逻辑在 bridge100 pcap 中观察到的 wire opcode 形态
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000002515220000030200000000006b4dae00000000006b4d9a000000000041e771ffffffffffffffff000000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: '00000025'
+      confidence: medium
+    - field: opcode
+      label: dispatch wire 命令
+      type: hex
+      value: '1522'
+      confidence: medium
+    - field: subcode_or_count_block
+      label: 疑似子码/数量块
+      type: bytes
+      example: '00000302'
+      confidence: low
+    - field: actor_ids
+      label: 出征将领/编队 id 列表
+      type: repeated_uint64_or_padded_id
+      example: 6b4dae, 6b4d9a
+      confidence: medium
+    - field: target_id
+      label: 目标 id
+      type: uint64_or_padded_id
+      example: .inf
+      confidence: medium
+    - field: suffix
+      label: 固定/保留后缀
+      type: bytes
+      example: ffffffffffffffff000000
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - expedition_result_or_battle_log
+    - return_to_city
+    - kill_npc_result
+    observedStrings:
+    - 何颜鸥返回东方美的封地
+    - 冯岚返回东方美的封地
+    - 台达元返回东方美的封地
+    - 步1消灭5级山贼
+    - 东方美基地
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 93
+      responseLength: 2444
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 36
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1522_brush_yellow_dispatch_wire_passive_20260708
+      responseTextPreview: 1qM+ | 何颜鸥返回东方美的封地 | 东方美基地 | 冯岚返回东方美的封地 | 东方美基地 | 台达元返回东方美的封地 | 东方美基地 | 步1消灭5级山贼 | 东方美基地 | 东方美基地
+- id: formation_group_config_1280
+  opcode: '1280'
+  name: formation_group_config
+  label: 编组配置/出征编组列表
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: medium
+  scenario:
+    feature: formation
+    uiAction: 刷黄出征后/编组相关页面提交五个编组槽位，响应含“编组1..5”
+  request:
+    bodyType: binary
+    exampleTailHex: 000000000000000000d41280000002050005...ffffffff
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 000000d4
+      confidence: medium
+    - field: opcode
+      label: 编组配置命令
+      type: hex
+      value: '1280'
+      confidence: medium
+    - field: group_count_or_mode
+      label: 编组数量/模式
+      type: bytes_or_ints
+      example: 00000205 0005
+      confidence: low
+    - field: group_records
+      label: 编组槽位记录
+      type: repeated_struct
+      example: slot + actor ids + ffffffff sentinel
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - formation_group_names
+    - actor_ids_or_slots
+    observedStrings:
+    - 编组1
+    - 编组2
+    - 编组3
+    - 编组4
+    - 编组5
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 268
+      responseLength: 308
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 39
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1280_formation_group_config_passive_20260708
+      responseTextPreview: 1qM+
+- id: expedition_state_poll_1702
+  opcode: '1702'
+  name: expedition_state_poll
+  label: 出征/战斗状态轮询
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_recurring
+  confidence: medium
+  scenario:
+    feature: expedition_or_battle
+    uiAction: 刷黄 dispatch 后高频轮询同一任务/战斗 id；响应长度随状态变化
+  request:
+    bodyType: binary
+    exampleTailHex: '000000000000000000091702000001000000000004415e / first: ...17020000000000000000004ce281'
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 00000009
+      confidence: medium
+    - field: opcode
+      label: 状态轮询命令
+      type: hex
+      value: '1702'
+      confidence: high
+    - field: poll_mode_or_state
+      label: 轮询模式/状态参数
+      type: uint16_or_uint32
+      example: 000000 / 000001
+      confidence: low
+    - field: expedition_or_battle_id
+      label: 出征/战斗 id
+      type: uint64_or_padded_id
+      example: 000000000004ce281 / 000000000004415e
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - troop_or_battle_state
+    - actor_ids
+    - progress_numeric_fields
+    observedStrings:
+    - 车1
+    - 步1
+    - 牧玥
+    - 周程瑞
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 688
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 46
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 38
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 47
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 102
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 56
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 172
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 67
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 108
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 69
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 143
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 72
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 73
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 73
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 108
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 75
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 143
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 78
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:18 parse
+      requestLength: 65
+      responseLength: 143
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_011802
+      flowIndex: 80
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1702_expedition_state_poll_passive_20260708
+      responseTextPreview: 1qM+
+- id: unknown_object_detail_1250
+  opcode: '1250'
+  name: unknown_object_detail
+  label: 未知对象详情/状态查询
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: unknown_object
+    uiAction: 01:23 左右出现；携带对象 id 6b4dac，响应短结构，无可读业务文本
+  request:
+    bodyType: binary
+    exampleTailHex: 000000000000000000081250000000000000006b4dac
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 00000008
+      confidence: medium
+    - field: opcode
+      label: 未知对象详情命令
+      type: hex
+      value: '1250'
+      confidence: medium
+    - field: object_id
+      label: 对象 id
+      type: uint64_or_padded_id
+      example: 00000000006b4dac
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: short_struct_unparsed
+    contains:
+    - object_id_or_slot_state
+    observedStrings: []
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 64
+      responseLength: 118
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 114
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1250_unknown_object_detail_passive_20260708
+      responseTextPreview: 1qM+
+- id: research_or_tech_list_1200
+  opcode: '1200'
+  name: research_or_tech_list
+  label: 科技/研究列表或详情
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: medium
+  scenario:
+    feature: research
+    uiAction: 研究成功前出现；请求含科技/建筑 id 0755 和参数 0008/0001，响应为多条科技/研究结构
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000000d1200000000000000000000075500080001
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000000d
+      confidence: medium
+    - field: opcode
+      label: 科技/研究列表命令
+      type: hex
+      value: '1200'
+      confidence: medium
+    - field: tech_or_building_id
+      label: 科技/建筑 id
+      type: uint64_or_padded_id
+      example: '00000000000755'
+      confidence: low
+    - field: params
+      label: 参数组
+      type: bytes_or_ints
+      example: 0008 0001
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: struct_list_unparsed
+    contains:
+    - research_or_tech_record_list
+    - resource_or_timer_fields
+    observedStrings: []
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 69
+      responseLength: 585
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 116
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1200_research_or_tech_list_passive_20260708
+      responseTextPreview: 1qM+ | 1qM+
+- id: inventory_or_status_sync_1104
+  opcode: '1104'
+  name: inventory_or_status_sync
+  label: 背包/物品状态同步
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_recurring
+  confidence: medium
+  scenario:
+    feature: inventory_or_status
+    uiAction: 丢弃物品前后反复出现；响应中包含物品 id d12c/6fcf 等和数量字段
+  request:
+    bodyType: binary
+    exampleTailHex: '000000000000000000011104000000'
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: '00000001'
+      confidence: medium
+    - field: opcode
+      label: 背包/物品状态同步命令
+      type: hex
+      value: '1104'
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: inventory_item_list_partial_confirmed
+    contains:
+    - item_id_list
+    - item_count_fields
+    - unparsed_tail_after_item_list
+    observedStrings: []
+    knownShape:
+    - field: reserved_head
+      label: 保留头部
+      type: bytes[14]
+      offset: payload+0x00
+      confidence: high
+    - field: bag_capacity
+      label: 背包容量
+      type: uint16
+      offset: payload+0x0e
+      example: 50 / 1020
+      confidence: confirmed
+    - field: item_record_count
+      label: 物品条目数
+      type: uint16
+      offset: payload+0x10
+      example: 5 / 44
+      confidence: confirmed
+    - field: item_records
+      label: 物品记录列表
+      type: repeated bytes[12]
+      offset: payload+0x12
+      formula: item_record_count * 12
+      confidence: confirmed
+    - field: item_record.item_id
+      label: 物品 ID
+      type: uint16
+      offset: record+0x00
+      example: 9=传音符, 22=鲁公手册, 16=兵书
+      confidence: confirmed
+    - field: item_record.count
+      label: 数量
+      type: uint16
+      offset: record+0x02
+      example: 传音符=5
+      confidence: confirmed
+    - field: item_record.tail
+      label: 记录尾部保留字段
+      type: bytes[8]
+      offset: record+0x04
+      example: '0000000000000000'
+      confidence: high
+    - field: item_name_lookup
+      label: 物品名称映射
+      type: scriptItem.sc lookup
+      example: itemId=9 -> 传音符
+      confidence: confirmed
+    - field: unparsed_tail
+      label: 物品列表后的尾部
+      type: bytes
+      offset: payload+0x12+count*12
+      example: '01f4000a05'
+      confidence: low
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 57
+      responseLength: 632
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 117
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1104_inventory_or_status_sync_passive_20260708
+      responseTextPreview: 1qM+
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 57
+      responseLength: 656
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 133
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1104_inventory_or_status_sync_passive_20260708
+      responseTextPreview: ''
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 57
+      responseLength: 656
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 134
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1104_inventory_or_status_sync_passive_20260708
+      responseTextPreview: ''
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 57
+      responseLength: 631
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 136
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1104_inventory_or_status_sync_passive_20260708
+      responseTextPreview: ''
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 57
+      responseLength: 631
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 141
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1104_inventory_or_status_sync_passive_20260708
+      responseTextPreview: ''
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 57
+      responseLength: 631
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 144
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1104_inventory_or_status_sync_passive_20260708
+      responseTextPreview: ''
+- id: unknown_name_list_1406
+  opcode: '1406'
+  name: unknown_name_list
+  label: 未知玩家/城池名称列表查询
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_unparsed
+  confidence: low
+  scenario:
+    feature: unknown_list
+    uiAction: 请求含 1406，响应为名称列表：爱新游/南山雪/烟火清安久/献帝等；语义待结合 UI
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000000b140600000000000000000001010001
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000000b
+      confidence: medium
+    - field: opcode
+      label: 未知名称列表命令
+      type: hex
+      value: '1406'
+      confidence: medium
+    - field: list_params
+      label: 列表参数
+      type: bytes_or_ints
+      example: '000000000000000001010001'
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - name_list
+    - rank_or_score_fields
+    observedStrings:
+    - 爱新游
+    - 南山雪
+    - 不羡仙
+    - 融问
+    - 胖呼呼
+    - 木子麟
+    - 烟火清安久
+    - 献帝
+    - 临浮
+    - 财哥
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 67
+      responseLength: 237
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 121
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1406_unknown_name_list_passive_20260708
+      responseTextPreview: 1qM+ | 烟火清安久
+- id: item_discard_1103
+  opcode: '1103'
+  name: item_discard
+  label: 物品丢弃
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: inventory
+    uiAction: 丢弃物品；请求携带物品 id d12c 和数量 1，响应“丢弃成功”
+  request:
+    bodyType: binary
+    exampleTailHex: 000000000000000000151103000001000000000005d12c00000001ffffffffffffffff
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: '00000015'
+      confidence: medium
+    - field: opcode
+      label: 丢弃物品命令
+      type: hex
+      value: '1103'
+      confidence: high
+    - field: item_id
+      label: 物品 id
+      type: uint64_or_padded_id
+      example: 000000000005d12c
+      confidence: medium
+    - field: count
+      label: 数量
+      type: uint32
+      example: '00000001'
+      confidence: medium
+    - field: suffix
+      label: 固定/保留后缀
+      type: bytes
+      example: ffffffffffffffff
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - discard_success
+    - inventory_state_after_change
+    observedStrings:
+    - 丢弃成功
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 77
+      responseLength: 649
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 135
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1103_item_discard_passive_20260708
+      responseTextPreview: 丢弃成功
+- id: research_upgrade_123f
+  opcode: 123f
+  name: research_upgrade
+  label: 科技研究/升级
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: research
+    uiAction: 点击研究/升级；请求携带科技/建筑 id 0755，响应“研究成功”
+  request:
+    bodyType: binary
+    exampleTailHex: 0000000000000000000e123f00000000000000000755030005020000
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: 0000000e
+      confidence: medium
+    - field: opcode
+      label: 研究/升级命令
+      type: hex
+      value: 123f
+      confidence: high
+    - field: tech_or_building_id
+      label: 科技/建筑 id
+      type: uint64_or_padded_id
+      example: '00000000000755'
+      confidence: medium
+    - field: research_params
+      label: 研究参数
+      type: bytes_or_ints
+      example: '030005020000'
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - research_success
+    - resource_or_timer_state
+    observedStrings:
+    - 研究成功
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:23 parse
+      requestLength: 70
+      responseLength: 151
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012347_postpromote
+      flowIndex: 140
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/123f_research_upgrade_passive_20260708
+      responseTextPreview: 研究成功 | Q9qC
+- id: batch_refill_troops_1229
+  opcode: '1229'
+  name: batch_refill_troops
+  label: 批量补兵/批量补满
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed_success_and_error
+  confidence: medium
+  scenario:
+    feature: expedition_prepare
+    uiAction: 选择出征将领后点击“批量补兵/批量补满”；成功后继续 1520 prepare / 1522 dispatch
+  request:
+    bodyType: binary
+    exampleTailHex: 00000000000000000011122900000200000000006b4dac0000000000686b99
+    gameHexCandidate: 0000000000000000001112290200000000006b4dac0000000000686b99
+    shapeNotes:
+    - exampleTailHex 是 captured binary envelope tail：8-byte gm=0 + u16 payload_len=0011 + opcode=1229 + empty signature length=0000 + payload。
+    - gameHexCandidate 不含 envelope 的 empty signature length；payload 为 count=02 + 两个 8-byte padded id，长度 0x11 可由当前 dry-run parser 校验。
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度
+      type: hex_or_int
+      example: '0011'
+      confidence: high
+    - field: opcode
+      label: 批量补兵命令
+      type: hex
+      value: '1229'
+      confidence: high
+    - field: empty_signature_length
+      label: envelope 空签名长度
+      type: uint16
+      example: '0000'
+      confidence: high
+    - field: object_count_or_mode
+      label: 对象数量/模式
+      type: uint8
+      example: '02'
+      confidence: medium
+    - field: formation_or_general_ids
+      label: 将领/编队 id 列表
+      type: repeated_uint64_or_padded_id
+      examples:
+      - 00000000006b4dac, 0000000000686b99
+      - 00000000006b4dae, 00000000006b4d9a
+      confidence: medium
+  response:
+    bodyType: binary
+    parserStatus: strings_confirmed_fields_unknown
+    contains:
+    - batch_refill_success
+    - formation_or_troop_state_delta
+    - fffc0000_error_or_reject_from_older_sample
+    observedStrings:
+    - 批量补满成功
+    knownErrorTailHex: fffc0000
+  evidence:
+    captures:
+    - timestamp: 2026-07-08 01:26 parse
+      requestLength: 73
+      responseLength: 27
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260708_011351/compare_analyzed_20260708_012653_finalcheck
+      flowIndex: 187
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1229_unknown_pair_action_error_passive_20260708
+      responseTailHex: fffc0000
+    - timestamp: '2026-07-08 02:10:52.892'
+      requestLength: 73
+      responseLength: 93
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402/analyzed_wide_httpclient_20260708_023040
+      flowIndex: 30
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1229_batch_refill_troops_passive_20260708
+      requestIds:
+      - 6b4dac
+      - 686b99
+      responseTextPreview: 批量补满成功
+    - timestamp: '2026-07-08 02:12:09.531'
+      requestLength: 73
+      responseLength: 88
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402/analyzed_wide_httpclient_20260708_023040
+      flowIndex: 38
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1229_batch_refill_troops_passive_20260708
+      requestIds:
+      - 6b4dae
+      - 6b4d9a
+      responseTextPreview: 批量补满成功
+- id: rank_list_1170
+  opcode: '1170'
+  name: rank_list
+  label: 排行榜列表/分类排行
+  endpoint: king_http_client
+  direction: request_response
+  status: passive_capture_observed
+  confidence: medium
+  scenario:
+    feature: ranking
+    uiAction: 02:06:57 打开排行榜；02:07:07 声望榜；02:07:17 城池榜
+  request:
+    bodyType: binary
+    exampleTailHex: '0000000000000000000311700000000001'
+    gameHexCandidates:
+    - '000000000000000000031170000001'
+    - '000000000000000000031170030001'
+    shapeNotes:
+    - exampleTailHex 是 captured binary envelope tail：8-byte gm=0 + u16 payload_len=0003 + opcode=1170 + empty signature length=0000 + payload。
+    - gameHexCandidate 不含 envelope 的 empty signature length；payload 样本为 000001/030001。
+    knownShape:
+    - field: account_prefix
+      label: 账号/区服前缀
+      type: ascii
+      confidence: high
+    - field: session_token_like
+      label: 疑似 session/token 字段
+      type: bytes
+      confidence: medium
+    - field: payload_length
+      label: payload 长度/段长度
+      type: hex_or_int
+      example: '0003'
+      confidence: medium
+    - field: opcode
+      label: 排行榜命令
+      type: hex
+      value: '1170'
+      confidence: high
+    - field: empty_signature_length
+      label: envelope 空签名长度
+      type: uint16
+      example: '0000'
+      confidence: high
+    - field: rank_params
+      label: 排行榜分类/分页参数
+      type: bytes_or_ints
+      examples:
+      - '000001'
+      - '030001'
+      confidence: low
+  response:
+    bodyType: binary
+    parserStatus: row_parser_added
+    contains:
+    - rank_player_list
+    - rank_category_or_score_fields
+    observedStrings:
+    - 仙女
+    - 赶路人
+    - 赊刀人
+    - 爱新游
+    - 怪咖
+    - 康康
+    - 天雄星
+    - 天罡星
+  evidence:
+    captures:
+    - timestamp: '2026-07-08 02:06:55.825'
+      requestLength: 59
+      responseLength: 219
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402/analyzed_wide_httpclient_20260708_023040
+      flowIndex: 8
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1170_rank_list_passive_20260708
+      responseTextPreview: 仙女 | 赶路人 | 渣哥 | 爱新游 | 麻子 | 小风月 | 赊刀人 | 南山雪 | 康康
+    - timestamp: '2026-07-08 02:07:10.125'
+      requestLength: 59
+      responseLength: 223
+      statusCode: 200
+      captureDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402
+      analyzedDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_wide_20260708_020402/analyzed_wide_httpclient_20260708_023040
+      flowIndex: 10
+      sampleDir: /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/docs/protocol/samples/1170_rank_list_passive_20260708
+      responseTextPreview: 赶路人 | 赊刀人 | 爱新游 | 怪咖 | 康康 | 董卓 | 南山雪 | 仙女 | 天雄星 | 天罡星

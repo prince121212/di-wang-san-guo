@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta id="viewportMeta" name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    if (new URLSearchParams(location.search).get("mobile") === "1") {
+      document.getElementById("viewportMeta").setAttribute(
+        "content",
+        "width=1080, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes"
+      );
+    }
+  </script>
+  <title>帝王三国电脑端辅助</title>
+  <link rel="stylesheet" href="./styles.css?v=20260725-mobile-core-complete-2" />
+</head>
+<body>
+  <div class="desktop-toolbar" id="desktopToolbar">
+    <div class="desktop-toolbar-actions">
+      <button class="desktop-dashboard-btn" id="openDesktopDashboardBtn" type="button">总控</button>
+      <button class="add-container-btn" id="addContainerBtn" type="button">+容器</button>
+      <button class="desktop-map-btn" id="openDesktopBanditMapBtn" type="button">山贼地图</button>
+      <button class="desktop-map-btn desktop-mine-map-btn" id="openDesktopMineMapBtn" type="button">资源地图</button>
+      <button class="desktop-start-all-tasks-btn" id="startAllSavedTasksBtn" type="button">一键开始全部任务</button>
+    </div>
+    <span class="container-count" id="containerCount">1 个容器</span>
+  </div>
+
+  <div class="container-grid" id="containerGrid">
+    <section class="container-panel" data-container-id="1">
+      <div class="container-titlebar">
+        <span>容器 1</span>
+        <small>主容器</small>
+      </div>
+      <div class="container-phone-wrap">
+        <div class="phone-stage">
+          <div id="toast" class="toast hidden"></div>
+          <div class="quick-switch">
+            <button class="quick-switch-btn active" data-page="助手" type="button">助手</button>
+            <button class="quick-switch-btn" data-page="日志" type="button">日志</button>
+          </div>
+          <header class="status-bar" aria-hidden="true">
+            <span class="status-time">4:06</span>
+            <span class="status-tool">🔧</span>
+            <span class="status-icons">HD&nbsp;▂▃▅&nbsp;⌁&nbsp;<b>79</b>▯&nbsp;↯</span>
+          </header>
+
+          <main class="app-shell">
+            <h1 class="app-title">助手</h1>
+
+            <section id="assistantPage">
+              <section class="account-card">
+                <div class="account-line">
+                  <span class="open-count">1开</span>
+                  <span class="expire-label">到期时间2026-07-08 03:59:04</span>
+                  <button class="renew-btn">续期</button>
+                  <button class="refresh-btn" title="刷新">⟳</button>
+                </div>
+                <div class="server-line">
+                  <select class="server-input account-native-select" id="accountSelect" aria-hidden="true" tabindex="-1">
+                    <option value="">请先添加账号</option>
+                  </select>
+                  <div class="account-custom-select" id="accountCustomSelect">
+                    <button class="account-custom-trigger" id="accountCustomTrigger" type="button"
+                      aria-haspopup="listbox" aria-expanded="false">请先添加账号</button>
+                    <div class="account-custom-options" id="accountCustomOptions" role="listbox"></div>
+                  </div>
+                  <span class="enabled-text">已开启</span>
+                </div>
+                <div class="proxy-line">
+                  <span class="proxy-label">当前IP</span>
+                  <select class="proxy-input proxy-native-select" id="proxySelect" aria-hidden="true" tabindex="-1">
+                    <option value="auto:">自动选择</option>
+                  </select>
+                  <div class="proxy-custom-select" id="proxyCustomSelect">
+                    <button class="proxy-custom-trigger" id="proxyCustomTrigger" type="button"
+                      aria-haspopup="listbox" aria-expanded="false">自动选择</button>
+                    <div class="proxy-custom-options" id="proxyCustomOptions" role="listbox"></div>
+                  </div>
+                  <button class="proxy-refresh-btn" id="refreshProxyBtn" type="button" title="刷新可用节点并检测当前IP">⟳</button>
+                  <span class="proxy-ip" id="proxyIpText">-</span>
+                </div>
+                <div class="action-row">
+                  <button class="btn green" id="startAccountBtn" type="button">启动</button>
+                  <button class="btn yellow" id="stopAccountBtn" type="button">关闭</button>
+                  <button class="btn gray" id="modifyAccountBtn" type="button">修改</button>
+                  <button class="btn blue" id="addAccountBtn" type="button">添加</button>
+                  <button class="btn red" id="deleteAccountBtn" type="button">删除</button>
+                </div>
+                <div class="request-health-dots" id="requestHealthDots" aria-label="当前账号最近30次游戏请求状态"></div>
+              </section>
+
+              <nav class="top-tabs" id="topTabs"></nav>
+
+              <section class="workspace">
+                <aside class="side-tabs" id="sideTabs"></aside>
+                <section class="content-card" id="contentCard"></section>
+              </section>
+
+              <section class="log-panel assistant-log-panel">
+                <pre id="taskLog"></pre>
+                <button class="save-btn">保存设置</button>
+              </section>
+            </section>
+
+            <section id="logPage" class="page-hidden log-page">
+              <div class="log-page-toolbar">
+                <div>
+                  <b>运行日志</b>
+                  <span>登录、保存设置、后台刷黄、找黄和出征结果都会记录在这里。</span>
+                </div>
+                <button class="table-btn danger-live" id="clearLogBtn" type="button">清空日志</button>
+              </div>
+              <pre id="taskLogPage"></pre>
+            </section>
+
+            <section id="otherPage" class="page-hidden other-page">
+              <div id="otherHome" class="other-home">
+                <div class="other-section-title">游戏资料</div>
+                <button class="other-entry-button" id="openDungeonGuideBtn" type="button">
+                  <span class="other-entry-icon" aria-hidden="true">副</span>
+                  <span class="other-entry-copy">
+                    <b>副本攻略</b>
+                    <small>出征条件、开箱说明与 7 章 86 关完整目录</small>
+                  </span>
+                  <span class="other-entry-arrow" aria-hidden="true">›</span>
+                </button>
+                <div class="other-section-title other-instructions-title">使用说明</div>
+                <section class="other-instructions">
+                  <h2>出征将领坑位</h2>
+                  <p>您勾选出征将领的顺序决定将领的坑位，逻辑与原服中相同，即最先勾选的将领将会占据首排居中的坑位。</p>
+                </section>
+              </div>
+
+              <article id="dungeonGuide" class="page-hidden dungeon-guide">
+                <header class="dungeon-guide-head">
+                  <button id="closeDungeonGuideBtn" class="guide-back-button" type="button" aria-label="返回攻略页">‹</button>
+                  <div>
+                    <h2>从出征到开箱</h2>
+                    <p>当前服务器开放 7 章，共 86 关</p>
+                  </div>
+                </header>
+
+                <section class="guide-lead">
+                  <span class="guide-status">当前服务器资料</span>
+                  <p>副本是连续的单人战斗玩法。辅助会按所选章节和关卡发起战斗，等待战斗结束，再按设置打开左、中、右其中一个宝箱。</p>
+                </section>
+
+                <section class="guide-section">
+                  <h3>出征前检查</h3>
+                  <ol class="guide-check-list">
+                    <li>出征将领必须处于“闲”状态，征、修、战等其他状态均不能出征。</li>
+                    <li>将领必须已经配兵；无配兵时副本不会启动。</li>
+                    <li>在“军事 - 副本”勾选规则，选择将领、章节、关卡和开箱位置后保存。</li>
+                    <li>任务栈空闲时会立即执行；已有任务时按队列顺序等待。</li>
+                  </ol>
+                </section>
+
+                <section class="guide-section">
+                  <h3>战斗与开箱</h3>
+                  <div class="guide-fact-grid">
+                    <div><b>战斗形式</b><span>单人副本</span></div>
+                    <div><b>开箱位置</b><span>左 / 中 / 右</span></div>
+                    <div><b>完成记录</b><span>成功结算后次数 +1</span></div>
+                    <div><b>每日重置</b><span>每日 0 点归零</span></div>
+                  </div>
+                  <p class="guide-note">左、中、右箱目前没有可靠证据证明某一位置的奖励概率更高，按自己的习惯选择即可。已实测第一章第 3 关使用右箱可正常完成，战斗约 137 秒。</p>
+                </section>
+
+                <section class="guide-section guide-catalog">
+                  <div class="guide-section-heading">
+                    <h3>关卡总表</h3>
+                    <span>7 章 · 86 关</span>
+                  </div>
+
+                  <section class="guide-chapter">
+                    <header><b>第一章 · 山贼之乱</b><span>12 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>奉诏讨贼</li><li>追击贼匪</li><li>山贼营寨</li><li>守卫洛阳</li>
+                      <li>涿郡遇贼</li><li>青州解围</li><li>宛城对决</li><li>攻打宛城</li>
+                      <li>救援曲阳</li><li>曲阳退敌</li><li>增援广宗</li><li>广宗决战</li>
+                    </ol>
+                    <p>常见奖励：装备、鲁公手册、铁矿、山贼令、实木宝箱；终关可见徭役令、将神魂。</p>
+                  </section>
+
+                  <section class="guide-chapter">
+                    <header><b>第二章</b><span>12 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>宦官乱政</li><li>刺灭董卓</li><li>逃离洛阳</li><li>进军汜水关</li>
+                      <li>营地攻防战</li><li>征讨华雄</li><li>击破汜水关</li><li>兵进虎牢关</li>
+                      <li>虎牢拉锯战</li><li>人中吕布</li><li>攻破虎牢关</li><li>董卓追击战</li>
+                    </ol>
+                    <p>常见奖励：装备、鲁公手册、浆果、追缉令、实木宝箱；终关可见招募令、将神魂。</p>
+                  </section>
+
+                  <section class="guide-chapter">
+                    <header><b>第三章 · 长安之乱</b><span>14 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>函谷关伏兵</li><li>诱敌之计</li><li>踏破函谷关</li><li>潼关苦战</li>
+                      <li>抢夺潼关</li><li>巧施离间计</li><li>长安内乱</li><li>美人之争</li>
+                      <li>李郭劫驾</li><li>长安救驾</li><li>逃遁入武关</li><li>追兵歼灭战</li>
+                      <li>争夺献帝</li><li>诸侯混战</li>
+                    </ol>
+                    <p>常见奖励：装备、鲁公图册、水晶、大汉军旗、青铜宝箱；终关可见免战牌、将神魂。</p>
+                  </section>
+
+                  <section class="guide-chapter">
+                    <header><b>第四章 · 徐州之争</b><span>14 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>曹操兴兵</li><li>回救濮阳</li><li>攻破濮阳</li><li>讨伐袁术</li>
+                      <li>屯兵小沛</li><li>马匹劫掠战</li><li>牵制袁术</li><li>张绣之乱</li>
+                      <li>吕袁之战</li><li>兵围小沛</li><li>吕布逃亡</li><li>水淹下邳</li>
+                      <li>吕布遭擒</li><li>援军消灭战</li>
+                    </ol>
+                    <p>常见奖励：装备、初级行军符、灵草、护卫令、青铜宝箱；终关可见高级招募令、将神魂。</p>
+                  </section>
+
+                  <section class="guide-chapter">
+                    <header><b>第五章 · 伪帝袁术</b><span>11 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>初会孙策</li><li>孙策举兵</li><li>酣战太史慈</li><li>攻克曲阿</li>
+                      <li>分兵战吴城</li><li>奇袭会稽</li><li>袁术称帝</li><li>进攻合肥</li>
+                      <li>攻打寿春</li><li>袁术逃亡</li><li>仲氏覆灭</li>
+                    </ol>
+                    <p>常见奖励：装备、中级行军符、玄铁、剿灭令、青铜钥匙；终关可见鲁公宝典、将神魂。</p>
+                  </section>
+
+                  <section class="guide-chapter">
+                    <header><b>第六章 · 官渡之战（上）</b><span>12 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>公孙瓒借兵</li><li>大战界桥</li><li>龙凑之战</li><li>巨马水反击</li>
+                      <li>许昌之变</li><li>刘曹反目</li><li>袁绍下战书</li><li>白马之战</li>
+                      <li>关羽战颜良</li><li>逐兵白马</li><li>延津之战</li><li>败文丑</li>
+                    </ol>
+                    <p>常见奖励：装备、高级行军符、玉露、壮军鼓、青铜钥匙；终关可见八阵图、将神魂。</p>
+                  </section>
+
+                  <section class="guide-chapter">
+                    <header><b>第七章 · 官渡之战（下）</b><span>11 关</span></header>
+                    <ol class="dungeon-stage-list">
+                      <li>袁绍兴兵</li><li>奇袭袁绍</li><li>劫兵粮</li><li>许攸献计</li>
+                      <li>火烧乌巢</li><li>反守为攻</li><li>大战仓亭</li><li>诈败施计</li>
+                      <li>攻占冀州</li><li>进军南皮</li><li>远征乌桓</li>
+                    </ol>
+                    <p>常见奖励：装备、特级行军符、玄铁、乌桓地图、精铁宝箱；终关可见战鼓、将神魂。</p>
+                  </section>
+                </section>
+
+                <section class="guide-section guide-warning">
+                  <h3>尚未开放的客户端资料</h3>
+                  <p>客户端静态资源还保留第 8 组 12 关和第 9 组 13 关，共 25 关；但当前服务器的副本目录接口没有返回它们，因此不计入已开放关卡，也不能据此发起副本。</p>
+                  <p>第 8 组从“关羽归刘”到“兴兵问罪”；第 9 组从“押解遇袭”到“攻占襄阳”。以后以服务器实际返回为准。</p>
+                </section>
+
+                <section class="guide-section guide-tech-note">
+                  <h3>容易混淆的地方</h3>
+                  <p>界面里的“章节”用于定位目录，实际出征使用服务器返回的全局关卡编号。“0004”代表固定的单人副本类型，不是第四章。</p>
+                </section>
+              </article>
+
+              <section id="banditMapPage" class="page-hidden bandit-map-page">
+                <header class="bandit-map-head">
+                  <button id="closeBanditMapBtn" class="guide-back-button" type="button" aria-label="返回其他页">‹</button>
+                  <div>
+                    <h2>山贼地图</h2>
+                    <p id="banditMapMeta">正在读取最新地图...</p>
+                  </div>
+                  <button id="refreshBanditMapBtn" class="table-btn" type="button">刷新</button>
+                </header>
+                <div class="bandit-map-viewport" id="banditMapViewport">
+                  <svg id="banditMapCanvas" class="bandit-map-canvas" role="img" aria-label="山贼坐标地图"></svg>
+                  <div id="banditMapEmpty" class="bandit-map-empty page-hidden">当前区服暂无山贼地图数据</div>
+                  <aside id="banditMapPopup" class="bandit-map-popup page-hidden"></aside>
+                </div>
+              </section>
+            </section>
+
+            <section id="homePage" class="page-hidden home-page">
+              <div class="home-settings-toolbar">
+                <label for="homeAccountSelect">账号</label>
+                <select id="homeAccountSelect" class="design-select">
+                  <option value="">请选择账号</option>
+                </select>
+                <button id="viewAccountSettingsBtn" class="table-btn" type="button">查看设置</button>
+              </div>
+              <div id="homeSettingsContent" class="home-settings-content">
+                <div class="home-settings-empty">选择账号后查看该账号保存的原始设置文件</div>
+              </div>
+            </section>
+          </main>
+
+          <footer class="bottom-nav">
+            <div class="bottom-item active" data-page="助手"><span class="icon">⌂</span><span>助手</span></div>
+            <div class="bottom-item" data-page="其他"><span class="icon">▦</span><span>攻略</span></div>
+            <div class="bottom-item" data-page="Home"><span class="icon">⌂</span><span>Home</span></div>
+            <div class="home-indicator"></div>
+          </footer>
+
+          <div class="modal-mask hidden" id="accountModal">
+            <div class="modal-card">
+              <button class="modal-close" id="closeModal">✕</button>
+              <h2>添加游戏账号</h2>
+              <label><span>游戏平台</span><select id="loginPlatform">
+                <option value="热血三国联盟">热血三国联盟</option>
+                <option value="当乐帝王三国">当乐帝王三国</option>
+              </select></label>
+              <label><span>游戏区服</span><select id="loginServer"><option value="">正在读取区服目录...</option></select></label>
+              <label><span>游戏账号</span><input id="loginUsername" value="1608601" /></label>
+              <label><span>游戏密码（明文）</span><input id="loginPassword" type="text" value="123459" autocomplete="off" placeholder="请输入测试账号密码（明文显示）" /><em>✎</em></label>
+              <label><span>连体序号</span><input id="loginSerial" value="0" /></label>
+              <button class="modal-ok" id="loginSubmit" type="button">确定</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <aside class="system-log-sidebar" id="systemLogSidebar">
+    <div class="system-log-head">
+      <div>
+        <b>电脑版辅助系统日志</b>
+        <span id="systemLogMeta">加载中...</span>
+      </div>
+      <div class="system-log-actions">
+        <button class="system-log-clear" id="clearSystemLogBtn" type="button">清除</button>
+        <button class="system-log-refresh" id="refreshSystemLogBtn" type="button">刷新</button>
+      </div>
+    </div>
+    <div class="system-log-content">
+      <div id="systemLogBody">加载中...</div>
+      <section class="system-alert-box">
+        <div class="system-alert-title">游戏服错误/账号会话告警</div>
+        <div id="systemAlertBody">暂无红色告警</div>
+      </section>
+    </div>
+  </aside>
+
+  <main class="desktop-dashboard page-hidden" id="desktopDashboard">
+    <header class="desktop-dashboard-head">
+      <button id="closeDesktopDashboardBtn" class="desktop-dashboard-back" type="button">返回辅助</button>
+      <div class="desktop-dashboard-title">
+        <h1>账号总控</h1>
+        <p id="desktopDashboardMeta">正在读取本地快照...</p>
+      </div>
+      <div class="desktop-dashboard-controls">
+        <label class="dashboard-mine-waterline">打矿候选
+          <select id="desktopDashboardMineCandidateCount" aria-label="打矿候选目标数">
+            <option value="1">1</option><option value="2">2</option>
+            <option value="3" selected>3</option><option value="4">4</option>
+            <option value="5">5</option><option value="6">6</option>
+            <option value="8">8</option><option value="10">10</option>
+          </select>
+        </label>
+        <input id="desktopDashboardSearch" type="search" placeholder="仅搜索登录账号" />
+        <select id="desktopDashboardLevelFilter" aria-label="按角色等级筛选">
+          <option value="all">全部等级</option>
+        </select>
+        <select id="desktopDashboardCountryFilter" aria-label="按国家筛选">
+          <option value="all">全部国家</option>
+        </select>
+        <select id="desktopDashboardFilter" aria-label="筛选账号状态">
+          <option value="all">全部账号</option>
+          <option value="attention">需要关注</option>
+          <option value="online" selected>在线账号</option>
+          <option value="stopped">未启动账号</option>
+        </select>
+        <button id="refreshDesktopDashboardBtn" type="button" title="立即刷新总控数据">↻ 立即刷新</button>
+      </div>
+    </header>
+    <div class="desktop-dashboard-body" id="desktopDashboardBody">
+      <div class="desktop-dashboard-loading">正在读取全部账号状态...</div>
+    </div>
+    <section class="dashboard-starter-section">
+      <header class="dashboard-starter-heading">
+        <div>
+          <h2>起号模式</h2>
+          <p>每个账号独立展示，只保留起号需要的信息和操作记录。</p>
+        </div>
+        <div>
+          <button id="dashboardAddStarterContainerBtn" type="button">添加容器</button>
+          <button id="dashboardCreateStarterBtn" type="button">添加起号账号</button>
+          <button id="dashboardRefreshStarterBtn" type="button">刷新</button>
+        </div>
+      </header>
+      <div id="dashboardStarterContainers" class="dashboard-starter-containers">
+        <div class="starter-empty">暂无起号账号</div>
+      </div>
+    </section>
+  </main>
+
+  <main class="desktop-bandit-map page-hidden" id="desktopBanditMap">
+    <header class="desktop-bandit-map-head">
+      <button id="closeDesktopBanditMapBtn" class="desktop-map-back-btn" type="button">返回辅助</button>
+      <div>
+        <h1>山贼地图</h1>
+        <p id="desktopBanditMapMeta">正在读取最新地图...</p>
+      </div>
+      <div class="desktop-map-tools">
+        <button id="desktopMapFilterBtn" class="desktop-map-tool-btn" type="button">筛选</button>
+        <button id="desktopMapZoomOutBtn" class="desktop-map-icon-btn" type="button" title="缩小地图" aria-label="缩小地图">−</button>
+        <span id="desktopMapZoomText" class="desktop-map-zoom-text">100%</span>
+        <button id="desktopMapZoomInBtn" class="desktop-map-icon-btn" type="button" title="放大地图" aria-label="放大地图">+</button>
+      </div>
+      <button id="refreshDesktopBanditMapBtn" class="desktop-map-refresh-btn" type="button">刷新</button>
+    </header>
+    <section class="desktop-bandit-map-body">
+      <section id="desktopMapFilterPanel" class="desktop-map-filter-panel page-hidden">
+        <div class="desktop-map-filter-row">
+          <b>山贼等级</b>
+          <select id="desktopMapLevelFilter">
+            <option value="0">全部等级</option>
+            <option value="1">1级</option><option value="2">2级</option><option value="3">3级</option>
+            <option value="4">4级</option><option value="5">5级</option><option value="6">6级</option>
+            <option value="7">7级</option><option value="8">8级</option><option value="9">9级</option>
+            <option value="10">10级</option>
+          </select>
+        </div>
+        <div class="desktop-map-filter-row">
+          <b>战利品类别</b>
+          <label><input class="desktop-map-drop-filter" type="checkbox" value="资源" checked>资源</label>
+          <label><input class="desktop-map-drop-filter" type="checkbox" value="宝箱" checked>宝箱</label>
+          <label><input class="desktop-map-drop-filter" type="checkbox" value="装备" checked>装备</label>
+          <label><input class="desktop-map-drop-filter" type="checkbox" value="宝物" checked>宝物</label>
+        </div>
+        <div class="desktop-map-filter-row">
+          <b>步弓骑车</b>
+          <div class="desktop-map-composition-filter" aria-label="步弓骑车上限">
+            <select class="desktop-map-composition-digit" aria-label="步兵将领上限"></select>
+            <select class="desktop-map-composition-digit" aria-label="弓兵将领上限"></select>
+            <select class="desktop-map-composition-digit" aria-label="骑兵将领上限"></select>
+            <select class="desktop-map-composition-digit" aria-label="战车将领上限"></select>
+          </div>
+        </div>
+        <div class="desktop-map-filter-actions">
+          <button id="desktopMapResetFilterBtn" type="button">重置</button>
+          <button id="desktopMapApplyFilterBtn" type="button">应用筛选</button>
+        </div>
+      </section>
+      <div class="desktop-map-scroll" id="desktopBanditMapScroll">
+        <svg id="desktopBanditMapCanvas" class="desktop-bandit-map-canvas" role="img" aria-label="山贼XY坐标地图"></svg>
+        <div id="desktopBanditMapEmpty" class="desktop-map-empty page-hidden">当前区服暂无山贼地图数据</div>
+      </div>
+      <aside id="desktopBanditMapPopup" class="desktop-bandit-map-popup page-hidden"></aside>
+    </section>
+  </main>
+
+  <main class="desktop-bandit-map page-hidden" id="desktopMineMap">
+    <header class="desktop-bandit-map-head">
+      <button id="closeDesktopMineMapBtn" class="desktop-map-back-btn" type="button">返回辅助</button>
+      <div>
+        <h1>资源地图</h1>
+        <p id="desktopMineMapMeta">正在读取最新地图...</p>
+      </div>
+      <div class="desktop-map-tools">
+        <button id="desktopMineMapFilterBtn" class="desktop-map-tool-btn" type="button">筛选</button>
+        <button id="desktopMineMapZoomOutBtn" class="desktop-map-icon-btn" type="button" title="缩小地图" aria-label="缩小地图">−</button>
+        <span id="desktopMineMapZoomText" class="desktop-map-zoom-text">100%</span>
+        <button id="desktopMineMapZoomInBtn" class="desktop-map-icon-btn" type="button" title="放大地图" aria-label="放大地图">+</button>
+      </div>
+      <button id="refreshDesktopMineMapBtn" class="desktop-map-refresh-btn" type="button">刷新</button>
+    </header>
+    <section class="desktop-bandit-map-body">
+      <section id="desktopMineMapFilterPanel" class="desktop-map-filter-panel page-hidden">
+        <div class="desktop-map-filter-row">
+          <b>资源类型</b>
+          <select id="desktopMineMapKindFilter">
+            <option value="">全部资源</option>
+            <option>镔铁矿</option><option>水晶矿</option><option>玄铁矿</option>
+            <option>浆果园</option><option>灵草园</option><option>玉露园</option>
+            <option>银矿</option><option>一级牧场</option><option>二级牧场</option>
+            <option>三级牧场</option>
+          </select>
+        </div>
+        <div class="desktop-map-filter-row">
+          <b>玩家归属</b>
+          <select id="desktopMineMapOwnerFilter">
+            <option value="">全部</option>
+            <option value="free">未被玩家占领</option>
+            <option value="occupied">玩家已占领</option>
+          </select>
+        </div>
+        <div class="desktop-map-filter-actions">
+          <button id="desktopMineMapResetFilterBtn" type="button">重置</button>
+          <button id="desktopMineMapApplyFilterBtn" type="button">应用筛选</button>
+        </div>
+      </section>
+      <div class="desktop-map-scroll" id="desktopMineMapScroll">
+        <svg id="desktopMineMapCanvas" class="desktop-bandit-map-canvas" role="img" aria-label="资源点XY坐标地图"></svg>
+        <div id="desktopMineMapEmpty" class="desktop-map-empty page-hidden">当前区服暂无资源地图数据</div>
+      </div>
+      <aside id="desktopMineMapPopup" class="desktop-bandit-map-popup page-hidden"></aside>
+    </section>
+  </main>
+
+  <script src="./app.js?v=20260722-starter-records-2"></script>
+</body>
+</html>
