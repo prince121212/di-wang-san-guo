@@ -289,6 +289,64 @@ class DailyInventoryProtocolTests(unittest.TestCase):
             ("开箱", "实木宝箱 → 铜钱+1000"),
         )
 
+    def test_daily_country_success_logs_are_politics_records(self) -> None:
+        self.assertEqual(
+            SERVER.success_action_from_log(
+                "自动捐献完成：自动捐献完成：铜钱成功、粮食成功、科技积分成功"
+            ),
+            ("捐献", "铜钱成功、粮食成功、科技积分成功"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log(
+                "自动捐献完成：44000铜钱、132000粮食"
+            ),
+            ("捐献", "捐献成功 44000铜和132000粮"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log("领取俸禄完成：领取成功642850铜钱、1190689粮食"),
+            ("俸禄", "领取成功642850铜钱、1190689粮食"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log("领取俸禄完成：无法再次领取"),
+            ("俸禄", "无法再次领取"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log(
+                "国家征收完成：国家征收完成：成功5次，预计获得铜钱236000，失败0项，检查13座州/郡/县城，已跳过小城"
+            ),
+            ("国征", "成功5次，预计获得铜钱236000，失败0项，检查13座州/郡/县城，已跳过小城"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log("城主征收完成：成功5座，失败0座"),
+            ("城征", "成功5座，失败0座"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log("名将拜访完成：名将拜访成功：蔡邕"),
+            ("拜访", "蔡邕"),
+        )
+        self.assertEqual(
+            SERVER.success_action_from_log(
+                "名将拜访完成：名将拜访成功：蔡邕已拜访（暂未接受征召）；蔡邕拒绝了阁下的邀请，请再接再厉"
+            ),
+            ("拜访", "蔡邕已拜访（暂未接受征召）；蔡邕拒绝了阁下的邀请，请再接再厉"),
+        )
+        # 失败/部分失败日志不应进入成功记录
+        self.assertIsNone(
+            SERVER.success_action_from_log(
+                "城主征收失败：城主征收部分完成：成功0座，失败5座"
+            )
+        )
+        self.assertIsNone(
+            SERVER.success_action_from_log(
+                "名将拜访失败：名将拜访已执行但未招揽成功：蔡邕"
+            )
+        )
+        self.assertIsNone(
+            SERVER.success_action_from_log(
+                "自动捐献完成：铜钱成功、粮食失败、科技积分成功"
+            )
+        )
+
     def test_clean_inventory_records_each_successful_discard(self) -> None:
         inventory = {
             "items": [

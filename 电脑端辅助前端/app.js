@@ -25,6 +25,7 @@ const autoOpenItemOptions = [
   "铜钱辎重", "粮食辎重"
 ];
 const discardItemOptions = ["山贼头巾", "精铁宝箱", "青铜宝箱", "传音符", "屯田令"];
+const dungeonClearModeOption = "打通副本模式";
 const dungeonChapters = [
   { value: "第一章", title: "山贼之乱", stageCount: 12 },
   { value: "第二章", title: "第二章", stageCount: 12 },
@@ -956,6 +957,7 @@ function defaultMilitaryFutureSettings() {
       rows: [{ enabled: false, generalIds: [], generalId: "", level: "10级" }]
     },
     dungeon: {
+      mode: "loop",
       rows: [{ enabled: false, generalIds: [], generalId: "", chapter: "第四章", stage: "5", chest: "右" }]
     },
     escort: {
@@ -1247,11 +1249,16 @@ function dungeonChapterMeta(value) {
   }
   return dungeonChapters[0];
 }
+function dungeonClearModeSelected(value) {
+  return String(value ?? "").trim() === dungeonClearModeOption;
+}
 function dungeonStageOptions(chapterValue) {
+  if (dungeonClearModeSelected(chapterValue)) return [dungeonClearModeOption];
   const count = dungeonChapterMeta(chapterValue).stageCount;
   return Array.from({ length: count }, (_, index) => String(index + 1));
 }
 function normalizeDungeonStage(chapterValue, stageValue) {
+  if (dungeonClearModeSelected(chapterValue)) return dungeonClearModeOption;
   const count = dungeonChapterMeta(chapterValue).stageCount;
   const stage = Number(stageValue);
   if (!Number.isFinite(stage) || stage < 1) return "1";
@@ -1264,6 +1271,7 @@ function syncDungeonStageSelect(chapterSelect) {
   const options = dungeonStageOptions(chapterSelect.value);
   const selected = normalizeDungeonStage(chapterSelect.value, stageSelect.value);
   stageSelect.innerHTML = simpleOptionsHtml(options, selected);
+  stageSelect.disabled = dungeonClearModeSelected(chapterSelect.value);
 }
 function designRow(label, body, cls = "") {
   return `<div class="design-row ${cls}"><span class="design-label">${label}</span>${body}</div>`;
@@ -2105,16 +2113,23 @@ function saveFutureMilitaryDom() {
   const dungeonRoot = document.querySelector(".dungeon-page");
   if (dungeonRoot) {
     enforceSingleDungeonEnabled(null, dungeonRoot);
+    const dungeonRows = Array.from(dungeonRoot.querySelectorAll(".dungeon-table tbody tr"));
+    const modeRow = dungeonRows.find(tr => tr.querySelector(".dungeon-enabled")?.checked)
+      || dungeonRows.find(tr => dungeonClearModeSelected(tr.querySelector(".dungeon-chapter")?.value))
+      || dungeonRows[0];
     settings.dungeon = {
-      rows: Array.from(dungeonRoot.querySelectorAll(".dungeon-table tbody tr")).map((tr, idx) => {
+      mode: dungeonClearModeSelected(modeRow?.querySelector(".dungeon-chapter")?.value) ? "clear" : "loop",
+      rows: dungeonRows.map((tr, idx) => {
         const generalIds = readIds(tr);
-        const chapter = dungeonChapterMeta(tr.querySelector(".dungeon-chapter")?.value || "第四章").value;
+        const chapterValue = tr.querySelector(".dungeon-chapter")?.value || "第四章";
+        const clearMode = dungeonClearModeSelected(chapterValue);
+        const chapter = clearMode ? "第一章" : dungeonChapterMeta(chapterValue).value;
         return {
           enabled: !!tr.querySelector(".dungeon-enabled")?.checked,
           generalIds,
           generalId: generalIds[0] || "",
           chapter,
-          stage: normalizeDungeonStage(chapter, tr.querySelector(".dungeon-stage")?.value || "5"),
+          stage: clearMode ? "1" : normalizeDungeonStage(chapter, tr.querySelector(".dungeon-stage")?.value || "5"),
           chest: tr.querySelector(".dungeon-chest")?.value || "右",
           idx
         };
@@ -2513,24 +2528,32 @@ function renderMilitary() {
       ? savedRows
       : [{ ...defaultMilitaryFutureSettings().dungeon.rows[0], enabled: false }];
     const enabledRowIndex = sourceRows.findIndex(row => row.enabled === true);
+    const clearModeRowIndex = dungeon.mode === "clear"
+      ? (enabledRowIndex >= 0 ? enabledRowIndex : 0)
+      : -1;
     const rows = sourceRows.map((row, i) => {
       let ids = rowGeneralIds(row);
       if (!ids.length && i === 0 && appState.generals.length) ids = [String(generalIdAt(0) || "")].filter(Boolean);
-      const chapter = dungeonChapterMeta(row.chapterName || row.chapter || "第四章").value;
+      const chapter = i === clearModeRowIndex
+        ? dungeonClearModeOption
+        : dungeonChapterMeta(row.chapterName || row.chapter || "第四章").value;
       const stage = normalizeDungeonStage(chapter, row.stage || "5");
       return [
         `<input class="design-check dungeon-enabled" type="checkbox" ${i === enabledRowIndex ? "checked" : ""}>`,
         militaryGeneralMultiHtml(ids, `dungeon-${i}`),
-        dSelect(dungeonChapters.map(item => item.value), chapter, "table-select dungeon-chapter"),
-        dSelect(dungeonStageOptions(chapter), stage, "table-select dungeon-stage"),
+        dSelect([...dungeonChapters.map(item => item.value), dungeonClearModeOption], chapter, "table-select dungeon-chapter"),
+        `<select class="design-select table-select dungeon-stage" ${dungeonClearModeSelected(chapter) ? "disabled" : ""}>${simpleOptionsHtml(dungeonStageOptions(chapter), stage)}</select>`,
         dSelect(["左", "中", "右"], row.chest || "右", "table-select dungeon-chest"),
         `<button class="table-btn dynamic-delete" type="button">删除</button>`
       ];
     });
+    const pauseNote = dungeon.pausedAfterDefeat?.paused
+      ? `<br><span class="daily-task-note">上次因战败已暂停：${escHtml(dungeon.pausedAfterDefeat.reason || "战败")}；重新保存本页后才会继续。</span>`
+      : "";
     return h`
     <div class="design-page military-design-page dungeon-page">
       ${designTable(["", "出征将领", "章节", "关卡", "开箱", "操作"], rows, "military-table dungeon-table")}${actionButtons()}
-      ${note("副本编队同一时间最多启用一条；全部不勾选并保存时关闭副本任务。<br/>启用后持续循环：每轮检查将领状态、体力和配兵，战斗结束后按配置开箱；任一异常会立即中断并写入日志。")}
+      ${note(`副本编队同一时间最多启用一条；全部不勾选并保存时关闭副本任务。选择具体章节时循环刷选定关卡；在“章节”选择“${dungeonClearModeOption}”后，“关卡”会同步显示打通模式，并按服务器目录从首个未通关关卡逐关推进。${pauseNote}`)}
     </div>`;
   }
   if (activeSide === "押镖") {
@@ -2650,6 +2673,7 @@ function renderRole() {
       ["服务器", escHtml(appState.area?.areaName || appState.area?.serverKey || "-")],
       ["等级", escHtml(rs.level ?? role.level ?? "-")],
       ["国家", escHtml(role.country || rs.nation || role.title || "-")],
+      ["官阶", escHtml(rs.officeName || role.officeName || "-")],
       ["铜钱", `${fmtNum(rs.copper)}${rs.copperPerHour !== undefined ? `（+${fmtNum(rs.copperPerHour)}/小时）` : ""}`],
       ["粮食", `${fmtNum(rs.food)}${rs.foodPerHour !== undefined ? `（+${fmtNum(rs.foodPerHour)}/小时）` : ""}`],
       ["声望", fmtNum(rs.prestige)],
@@ -2794,7 +2818,7 @@ function renderRole() {
         : key === "brushYellow"
           ? `${name}（${fmtNum(appState.dailyStats?.brushYellowCount || 0)}/${fmtNum(appState.brushSettings?.dailyLimit || 500)}）`
         : key === "dungeon"
-          ? `${name}（${fmtNum(item.dailyDungeonCount ?? appState.dailyStats?.dungeonCount ?? 0)}次）`
+          ? `${item.mode === "clear" ? "打通副本" : name}（${fmtNum(item.dailyDungeonCount ?? appState.dailyStats?.dungeonCount ?? 0)}次）`
         : key === "mine"
           ? `${name}（${fmtNum(item.resourcePointCurrent ?? appState.roleState?.resourcePointCurrent ?? 0)} / ${fmtNum(item.resourcePointCap ?? appState.roleState?.resourcePointCap ?? 0)}）`
         : name;
@@ -2815,9 +2839,11 @@ function renderRole() {
     const dailyItems = dailyDefaults.map(([key, name]) => {
       const item = dailyByKey.get(key) || {};
       const completed = !!item.completed;
+      const statusText = item.statusText || (completed ? "已做" : "未做");
+      const statusTitle = item.message || (completed ? "今日已完成" : "今日未完成");
       return `<div class="role-task-item ${completed ? "is-completed" : ""}">
         <span class="role-task-name">${escHtml(name)}</span>
-        <span class="role-task-daily-status ${completed ? "is-done" : "is-pending"}" title="${completed ? "今日已完成" : "今日未完成"}">${completed ? "已做" : "未做"}</span>
+        <span class="role-task-daily-status ${completed ? "is-done" : "is-pending"}" title="${escAttr(statusTitle)}">${escHtml(statusText)}</span>
       </div>`;
     }).join("");
     return `<div class="role-task-page">
@@ -3698,9 +3724,11 @@ async function loadGeneralVisitCandidates({ force = false } = {}) {
       ? data.generals
       : (Array.isArray(data.candidates) ? data.candidates : []);
     appState.generalVisitCandidates = candidates.map(candidate => ({ ...candidate }));
-    appState.generalVisitCandidatesNotice = data.alreadyVisited
-      ? (data.message || "本日已经完成名将拜访")
-      : "";
+    appState.generalVisitCandidatesNotice = data.skipped
+      ? (data.message || "国民跳过")
+      : data.alreadyVisited
+        ? (data.message || "本日已经完成名将拜访")
+        : "";
     appState.generalVisitCandidatesUpdatedAt = Number(data.updatedAt || Date.now());
     const availableIds = new Set(
       appState.generalVisitCandidates
@@ -3715,7 +3743,9 @@ async function loadGeneralVisitCandidates({ force = false } = {}) {
     if (removed.length) {
       appendLog(`名将候选已更新：${removed.length}个原优先目标当前不可拜访，已从本次未保存选择中移除。`);
     }
-    appendLog(data.alreadyVisited
+    appendLog(data.skipped
+      ? `名将候选查询已跳过：${appState.generalVisitCandidatesNotice}`
+      : data.alreadyVisited
       ? `名将候选查询完成：${appState.generalVisitCandidatesNotice}`
       : `名将候选查询完成：共${candidates.length}名，其中${availableIds.size}名当前可拜访。`);
   } catch (error) {
@@ -4126,12 +4156,15 @@ function getDungeonForm() {
     if (!r.enabled) return;
     if (!r.generalIds.length) throw new Error(`第 ${idx + 1} 条副本规则未选择出征将领`);
     if (r.generalIds.length > 5) throw new Error(`第 ${idx + 1} 条副本规则最多选择5名出征将领`);
-    if (!r.chapter) throw new Error(`第 ${idx + 1} 条副本规则未选择章节`);
-    if (!r.stage) throw new Error(`第 ${idx + 1} 条副本规则未选择关卡`);
+    if (settings.mode !== "clear") {
+      if (!r.chapter) throw new Error(`第 ${idx + 1} 条副本规则未选择章节`);
+      if (!r.stage) throw new Error(`第 ${idx + 1} 条副本规则未选择关卡`);
+    }
   });
   return {
     sessionId: appState.sessionId,
     confirm: "dungeon",
+    mode: settings.mode === "clear" ? "clear" : "loop",
     rows
   };
 }
@@ -4213,6 +4246,7 @@ function bindDesignDynamicControls() {
         else input.value = "";
       });
       tr.querySelectorAll("select").forEach(select => { select.selectedIndex = 0; });
+      syncDungeonStageSelect(tr.querySelector(".dungeon-chapter"));
       syncGeneralMultiScope(tr);
       return;
     }
@@ -4263,6 +4297,7 @@ function bindDesignDynamicControls() {
         else input.value = "";
       });
       first.querySelectorAll("select").forEach(select => { select.selectedIndex = 0; });
+      syncDungeonStageSelect(first.querySelector(".dungeon-chapter"));
       syncGeneralMultiScope(first);
     }
   });
@@ -4276,6 +4311,7 @@ function bindDesignDynamicControls() {
     showToast("按钮可点击，接口待接入", "info");
   });
   document.querySelectorAll(".dungeon-chapter").forEach(select => {
+    syncDungeonStageSelect(select);
     select.onchange = () => {
       syncDungeonStageSelect(select);
       saveFutureMilitaryDom();
@@ -4782,7 +4818,7 @@ async function saveDungeonSettings() {
     const cfg = getDungeonForm();
     const enabledRows = cfg.rows.filter(r => r.enabled);
     appendLog(enabledRows.length
-      ? `保存副本规则：${enabledRows.map(r => `将领=${r.generalIds.join("/")} → ${r.chapter}第${r.stage}关，开箱=${r.chest}`).join("；")}`
+      ? `${cfg.mode === "clear" ? "保存打通副本编队" : "保存副本规则"}：${enabledRows.map(r => `将领=${r.generalIds.join("/")} → ${r.chapter}第${r.stage}关，开箱=${r.chest}`).join("；")}`
       : "保存副本规则：未启用任何编队，副本循环任务将关闭");
     const data = await apiPost("/api/dungeon/execute", cfg);
     if (data.accountHabits) applyServerHabits({ accountHabits: data.accountHabits });
@@ -4797,14 +4833,19 @@ async function saveDungeonSettings() {
       appState.automation.taskId = data.task.taskId;
       appState.automation.status = data.task.status || "starting";
       appState.automation.lastLogs = [];
-      appendLog(`副本循环任务已加入任务栈并开始执行：${data.task.taskId}`);
+      appendLog(`${cfg.mode === "clear" ? "打通副本任务" : "副本循环任务"}已加入任务栈并开始执行：${data.task.taskId}`);
       startStatusPolling();
     } else if (data.dungeonTask?.reason) {
       appendLog(`副本规则已提交，但暂不执行：${data.dungeonTask.reason}`);
     } else {
       appendLog("副本规则已提交；当前没有返回执行任务。");
     }
-    showToast(data.disabled ? "副本任务已关闭" : "副本循环任务已提交", "success");
+    showToast(
+      data.disabled
+        ? "副本任务已关闭"
+        : (cfg.mode === "clear" ? "打通副本任务已提交" : "副本循环任务已提交"),
+      "success",
+    );
     render();
   } catch (e) {
     appendLog("保存副本规则失败：" + e.message);

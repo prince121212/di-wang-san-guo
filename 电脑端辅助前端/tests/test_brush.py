@@ -1598,6 +1598,30 @@ class BrushProtocolTests(unittest.TestCase):
         self.assertFalse(config["dailyTasks"]["generalVisit"])
         self.assertEqual(config["generalVisitGeneralIds"], [])
 
+    def test_national_citizen_can_save_visit_task_without_candidates(self) -> None:
+        sess = {
+            "sessionId": "citizen-daily-settings",
+            "generals": [],
+            "roleState": {"officeName": "国民", "officeId": 0x0100},
+        }
+        old_config = SERVER.normalize_auto_config(sess, {
+            "autoStart": False,
+            "dailyTasks": {"generalVisit": False},
+        })
+
+        config = SERVER.normalize_settings_scope_patch(
+            sess,
+            old_config,
+            "common.daily",
+            {
+                "dailyTasks": {"generalVisit": True},
+                "generalVisitGeneralIds": [],
+            },
+        )
+
+        self.assertTrue(config["dailyTasks"]["generalVisit"])
+        self.assertEqual(config["generalVisitGeneralIds"], [])
+
     def test_items_scope_cannot_overwrite_brush_or_common_fields(self) -> None:
         old_config = {
             "autoStart": True,

@@ -597,6 +597,7 @@ GAME_REQUEST_PURPOSES = {
     0x1230: "治疗伤兵",
     0x1231: "查询伤兵",
     0x1310: "查询玩家封地",
+    0x1318: "查询自有城池",
     0x1330: "城主征收",
     0x1332: "查询国家征收状态",
     0x1334: "国家征收",
@@ -4697,9 +4698,30 @@ def success_action_from_log(message: str) -> tuple[str, str] | None:
         return "签到", "领取每日宝箱成功"
     if text.startswith("领竞技币完成："):
         return "领币", text.split("：", 1)[1] or "领取竞技币成功"
+    # 旧版手动/兼容路径：自动捐献完成：44000铜钱、132000粮食
     match = re.search(r"自动捐献完成：(\d+)铜钱、(\d+)粮食", text)
     if match:
         return "捐献", f"捐献成功 {match.group(1)}铜和{match.group(2)}粮"
+    # 日常自动化路径：自动捐献完成：自动捐献完成：铜钱成功、粮食成功、科技积分成功
+    if text.startswith("自动捐献完成：") and "失败" not in text:
+        detail = text.split("：", 1)[1].strip()
+        detail = re.sub(r"^(?:自动捐献完成[:：]\s*)+", "", detail).strip() or "捐献成功"
+        return "捐献", detail
+    # log_daily_feature_result 统一写成「领取俸禄完成：… / 国家征收完成：…」
+    if text.startswith("领取俸禄完成："):
+        detail = text.split("：", 1)[1].strip() or "领取俸禄成功"
+        return "俸禄", detail
+    if text.startswith("国家征收完成："):
+        detail = text.split("：", 1)[1].strip()
+        detail = re.sub(r"^(?:国家征收(?:部分)?完成[:：]\s*)+", "", detail).strip() or "国家征收成功"
+        return "国征", detail
+    if text.startswith("城主征收完成："):
+        detail = text.split("：", 1)[1].strip() or "城主征收成功"
+        return "城征", detail
+    if text.startswith("名将拜访完成："):
+        detail = text.split("：", 1)[1].strip()
+        detail = re.sub(r"^(?:名将拜访成功[:：]\s*)+", "", detail).strip() or "名将拜访成功"
+        return "拜访", detail
     match = re.search(r"自动开箱成功：(.+)", text)
     if match:
         return "开箱", match.group(1)
@@ -5358,7 +5380,13 @@ def daily_feature_lock(sess: dict[str, Any], task_key: str) -> threading.RLock:
         return DAILY_FEATURE_LOCKS.setdefault(key, threading.RLock())
 
 
-def record_daily_task_completion(sess: dict[str, Any], task_key: str, *, source: str = "automation") -> dict[str, Any]:
+def record_daily_task_completion(
+    sess: dict[str, Any],
+    task_key: str,
+    *,
+    source: str = "automation",
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Record a confirmed one-time daily task result for the current role and date."""
     key = str(task_key or "")
     if key not in DAILY_TASK_NAMES:
@@ -5368,6 +5396,12 @@ def record_daily_task_completion(sess: dict[str, Any], task_key: str, *, source:
         "completedAt": now_ms(),
         "source": str(source or "automation"),
     }
+    result_detail = result if isinstance(result, dict) else {}
+    for field in (
+        "message", "skipped", "skipReason", "statusText", "officeId", "officeName",
+    ):
+        if field in result_detail:
+            detail[field] = result_detail[field]
     with DAILY_LOCK:
         storage_key = daily_task_storage_key(sess, key)
         account_items = DAILY_TASK_COMPLETIONS.setdefault(storage_key, {})
@@ -5389,16 +5423,22 @@ def current_daily_task_completions(sess: dict[str, Any]) -> list[dict[str, Any]]
         )
         if isinstance(arena_completed, dict):
             completed["arenaCoins"] = dict(arena_completed)
-    return [
-        {
+    rows = []
+    for key, name in DAILY_TASK_NAMES.items():
+        detail = completed.get(key) or {}
+        is_completed = bool(detail.get("completed"))
+        rows.append({
             "key": key,
             "name": name,
-            "completed": bool((completed.get(key) or {}).get("completed")),
-            "completedAt": (completed.get(key) or {}).get("completedAt"),
-            "source": (completed.get(key) or {}).get("source", ""),
-        }
-        for key, name in DAILY_TASK_NAMES.items()
-    ]
+            "completed": is_completed,
+            "completedAt": detail.get("completedAt"),
+            "source": detail.get("source", ""),
+            "message": detail.get("message", ""),
+            "skipped": bool(detail.get("skipped")),
+            "skipReason": detail.get("skipReason", ""),
+            "statusText": detail.get("statusText") or ("已做" if is_completed else "未做"),
+        })
+    return rows
 
 
 def daily_task_is_completed(sess: dict[str, Any], task_key: str) -> bool:
@@ -10778,6 +10818,23 @@ DUNGEON_CHAPTER_STAGE_COUNTS = {
     for chapter_id, stage_codes in DUNGEON_STATIC_STAGE_CODES.items()
 }
 
+DUNGEON_MODE_LOOP = "loop"
+DUNGEON_MODE_CLEAR = "clear"
+
+
+def normalize_dungeon_mode(value: Any) -> str:
+    """Normalize the two user-facing dungeon modes.
+
+    ``loop`` preserves the original behavior (repeat one configured stage),
+    while ``clear`` advances to the first server-reported stage not yet passed.
+    """
+    if isinstance(value, bool):
+        return DUNGEON_MODE_CLEAR if value else DUNGEON_MODE_LOOP
+    text = str(value or "").strip().lower()
+    if text in {"clear", "progressive", "progress", "通关", "打通", "打通副本"}:
+        return DUNGEON_MODE_CLEAR
+    return DUNGEON_MODE_LOOP
+
 
 def dungeon_chapter_number(value: Any) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
@@ -10811,6 +10868,132 @@ def dungeon_stage_number(value: Any, chapter_id: int | None = None) -> int:
     if chapter_stage_count is not None and n > chapter_stage_count:
         raise RuntimeError(f"副本第 {chapter_id + 1} 章只有 {chapter_stage_count} 关，不能选择第 {n} 关")
     return n
+
+
+def first_uncompleted_dungeon_stage(catalog: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the first sequential stage whose result code is still 0xff.
+
+    The catalog reports ``resultCode=255`` for a stage that has not been
+    passed.  A locked chapter is reported with ``detailFlag=0`` and no stage
+    rows at all, so it must also be treated as the next uncompleted boundary.
+    We stop there instead of skipping ahead or declaring every dungeon clear.
+    """
+    chapters = [
+        chapter for chapter in (catalog.get("chapters") or [])
+        if isinstance(chapter, dict)
+    ]
+    chapters.sort(key=lambda item: (
+        int(item.get("chapterId") if item.get("chapterId") is not None else item.get("displayChapter") or 0),
+        int(item.get("displayChapter") or 0),
+    ))
+    for chapter in chapters:
+        stages = [row for row in (chapter.get("stages") or []) if isinstance(row, dict)]
+        stages.sort(key=lambda item: int(item.get("displayStage") or 0))
+        chapter_id = int(
+            chapter.get("chapterId")
+            if chapter.get("chapterId") is not None
+            else int(chapter.get("displayChapter") or 1) - 1
+        )
+        if not stages and int(chapter.get("detailFlag") or 0) == 0:
+            static_codes = DUNGEON_STATIC_STAGE_CODES.get(chapter_id) or []
+            return {
+                "chapter": chapter_id,
+                "chapterName": f"第{chapter_id + 1}章",
+                "catalogChapterName": str(chapter.get("name") or ""),
+                "stage": 1,
+                # The task will not dispatch while available=False.  This is
+                # display metadata only; the live code is read after unlock.
+                "stageCode": int(static_codes[0]) if static_codes else None,
+                "available": False,
+                "resultCode": 255,
+                "lockedChapter": True,
+                "catalog": catalog,
+            }
+        for stage in stages:
+            if int(stage.get("resultCode", 255)) != 255:
+                continue
+            display_stage = int(stage.get("displayStage") or 0)
+            if display_stage <= 0:
+                continue
+            if stage.get("stageCode") is None:
+                raise RuntimeError(
+                    f"副本第{chapter_id + 1}章第{display_stage}关缺少服务器关卡编号"
+                )
+            return {
+                "chapter": chapter_id,
+                "chapterName": f"第{chapter_id + 1}章",
+                "stage": display_stage,
+                "stageCode": int(stage.get("stageCode")),
+                "available": bool(stage.get("available", True)),
+                "resultCode": 255,
+                "catalog": catalog,
+            }
+    return None
+
+
+def dungeon_stage_completed_in_catalog(
+    catalog: dict[str, Any],
+    stage_ref: dict[str, Any],
+) -> bool | None:
+    """Return whether a particular stage is now passed; ``None`` means unknown."""
+    chapter_id = int(stage_ref.get("chapter") or 0)
+    display_stage = int(stage_ref.get("stage") or 0)
+    for chapter in catalog.get("chapters") or []:
+        if int(chapter.get("chapterId", -1)) != chapter_id:
+            continue
+        for stage in chapter.get("stages") or []:
+            if int(stage.get("displayStage") or 0) == display_stage:
+                return int(stage.get("resultCode", 255)) != 255
+    return None
+
+
+def _dungeon_battle_texts(result: Any) -> list[str]:
+    """Collect only server text fields that can contain a terminal battle result."""
+    if not isinstance(result, dict):
+        return []
+    texts: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            texts.append(text)
+
+    for source in (
+        result,
+        result.get("chestResult"),
+        result.get("rewardState"),
+        result.get("dungeonStateAfterLaunch"),
+    ):
+        if isinstance(source, dict):
+            for key in (
+                "textPreview", "message", "serverMessage", "launchText",
+                "failureReason",
+            ):
+                add(source.get(key))
+    for action in result.get("actionResults") or []:
+        if not isinstance(action, dict):
+            continue
+        for packet in action.get("packets") or []:
+            if isinstance(packet, dict):
+                add(packet.get("textPreview"))
+    for poll in (result.get("battlePoll") or {}).get("polls") or []:
+        if not isinstance(poll, dict):
+            continue
+        for packet in poll.get("packets") or []:
+            if isinstance(packet, dict):
+                add(packet.get("textPreview"))
+    return texts
+
+
+def dungeon_battle_defeat_confirmed(result: Any) -> bool:
+    """Recognize an explicit defeat, never a generic transport/chest error."""
+    if isinstance(result, dict) and result.get("defeatConfirmed") is True:
+        return True
+    return any(
+        marker in text
+        for text in _dungeon_battle_texts(result)
+        for marker in ("战败", "挑战失败", "战斗失败", "副本失败")
+    )
 
 
 def dungeon_chest_index(value: Any) -> int:
@@ -10859,10 +11042,12 @@ def dungeon_preflight_generals(
     task: dict[str, Any] | None = None,
     *,
     allow_existing_troops: bool = False,
+    force_heal: bool = False,
 ) -> list[dict[str, Any]]:
     return prepare_military_generals(
         sess, general_ids, "副本", task=task,
         allow_existing_troops=allow_existing_troops,
+        force_heal=force_heal,
     )
 
 
@@ -11190,7 +11375,12 @@ def open_dungeon_chest(sess: dict[str, Any], chest: int | str) -> dict[str, Any]
     }
 
 
-def normalize_dungeon_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_dungeon_rows(
+    sess: dict[str, Any],
+    body: dict[str, Any],
+    *,
+    mode: str | None = None,
+) -> list[dict[str, Any]]:
     raw_rows = body.get("rows")
     if not isinstance(raw_rows, list):
         raw_rows = [body]
@@ -11220,9 +11410,31 @@ def normalize_dungeon_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[d
         if missing:
             raise RuntimeError(f"第 {idx + 1} 条副本规则存在不属于当前账号的将领：{','.join(missing)}")
         chapter_label = row.get("chapterName") or row.get("chapter")
-        chapter = dungeon_chapter_number(chapter_label if chapter_label is not None else "第一章")
         stage_value = row.get("stage") if row.get("stage") is not None else row.get("level")
-        stage = dungeon_stage_number(stage_value if stage_value is not None else 1, chapter)
+        if normalize_dungeon_mode(mode) == DUNGEON_MODE_CLEAR:
+            # Clear mode replaces these placeholders from the live catalog
+            # immediately before each dispatch; tolerate stale UI values.
+            try:
+                chapter = dungeon_chapter_number(
+                    chapter_label if chapter_label is not None else "第一章"
+                )
+            except RuntimeError:
+                chapter = 0
+            try:
+                stage = dungeon_stage_number(
+                    stage_value if stage_value is not None else 1,
+                    chapter,
+                )
+            except RuntimeError:
+                stage = 1
+        else:
+            chapter = dungeon_chapter_number(
+                chapter_label if chapter_label is not None else "第一章"
+            )
+            stage = dungeon_stage_number(
+                stage_value if stage_value is not None else 1,
+                chapter,
+            )
         chest_value = row.get("chest") if row.get("chest") is not None else row.get("chestName")
         chest = dungeon_chest_index(chest_value if chest_value is not None else "右")
         rows.append({
@@ -11254,12 +11466,20 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
     stage_value = opts.get("stage") if opts.get("stage") is not None else 1
     stage = dungeon_stage_number(stage_value, chapter)
     chest = dungeon_chest_index(opts.get("chest") if opts.get("chest") is not None else opts.get("chestName") or "右")
+    preflight_options = {
+        "force_heal": True,
+    } if bool(opts.get("clearStage") or opts.get("forceHealWounded")) else {}
     selected = dungeon_preflight_generals(
         sess, general_ids, task=task,
         allow_existing_troops=bool(opts.get("starterMode")),
+        **preflight_options,
     )
     catalog = query_dungeon_catalog(sess)
-    stage_code = resolve_dungeon_stage_code(catalog, chapter, stage)
+    stage_code = (
+        int(opts.get("stageCode"))
+        if opts.get("stageCode") is not None
+        else resolve_dungeon_stage_code(catalog, chapter, stage)
+    )
     refill_report = None
     if bool(opts.get("fullTroops", False)):
         refill_report = execute_refill_troops(sess, general_ids, confirm="batch-refill")
@@ -11268,6 +11488,7 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
         selected = dungeon_preflight_generals(
             sess, general_ids, task=task,
             allow_existing_troops=bool(opts.get("starterMode")),
+            **preflight_options,
         )
     general_hexes = [g.get("idHex") or f"{int(g['id']):016x}" for g in selected]
     prepare_payload = build_dungeon_prepare_payload(general_hexes, stage_code)
@@ -11455,6 +11676,7 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
         "chestResult": chest_result,
         "actionResults": action_results,
     }
+    report["defeatConfirmed"] = dungeon_battle_defeat_confirmed(report)
     report["reportFile"] = ""
     return report
 
@@ -11469,7 +11691,7 @@ MILITARY_FUTURE_READINESS: dict[str, dict[str, Any]] = {
     "dungeon": {
         "name": "副本",
         "status": "implemented",
-        "message": "已接入 0x1930/0x8930、0x1520/0x8520、0x1522/0x8522、0x1938/0x8938、0x1702/0x8702、0x193e/0x893e 的首版真实执行链路。",
+        "message": "已接入固定关卡循环与打通副本模式；打通模式按0x8930目录逐关推进，战败即暂停并提示。",
         "evidence": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/game_flows.json",
     },
     "escort": {
@@ -11519,6 +11741,13 @@ def normalize_military_future_settings(feature: str, settings: Any) -> dict[str,
             next_rows.append(next_row)
         settings = dict(settings)
         settings["rows"] = next_rows
+    if key == "dungeon":
+        settings = dict(settings)
+        # Backward-compatible alias: older clients may send clearStages=true.
+        mode_value = settings.get("mode")
+        if mode_value in (None, "") and "clearStages" in settings:
+            mode_value = settings.get("clearStages")
+        settings["mode"] = normalize_dungeon_mode(mode_value)
     return settings
 
 
@@ -12221,6 +12450,102 @@ def refresh_military_intel(sess: dict[str, Any]) -> dict[str, Any]:
     return update_military_intel_from_packets(sess, packets, code, persist=True)
 
 
+OFFICE_NAMES_BY_ID: dict[int, str] = {
+    # 游民/细作是没有正式官职的身份，但客户端使用同一字段表示。
+    0x0000: "游民",
+    0x0001: "细作",
+    0x0100: "国民",
+    0x0400: "丞相",
+    0x0401: "丞相",
+    0x0480: "大都督",
+    0x0481: "大都督",
+    0x0500: "国王",
+}
+OFFICE_NAMES_BY_ID.update({0x0200 + index: "侍郎" for index in range(0x19)})
+OFFICE_NAMES_BY_ID.update({0x0280 + index: "都尉" for index in range(0x19)})
+OFFICE_NAMES_BY_ID.update({
+    0x0300: "兵部尚书",
+    0x0301: "吏部尚书",
+    0x0302: "民部尚书",
+    0x0303: "刑部尚书",
+    0x0304: "工部尚书",
+    0x0305: "户部尚书",
+    0x0306: "礼部尚书",
+    0x0307: "学部尚书",
+    0x0380: "虎威将军",
+    0x0381: "破虏将军",
+    0x0382: "奋武将军",
+    0x0383: "抚远将军",
+    0x0384: "征东将军",
+    0x0385: "平西将军",
+    0x0386: "镇北将军",
+    0x0387: "定南将军",
+})
+
+
+def office_name_from_id(office_id: Any) -> str:
+    """Return the client-visible office name for the 0x8004 office short."""
+    try:
+        normalized = int(office_id) & 0xFFFF
+    except (TypeError, ValueError):
+        return ""
+    return OFFICE_NAMES_BY_ID.get(normalized, "")
+
+
+def role_is_national_citizen(sess: dict[str, Any]) -> bool:
+    """Return true only when live role data identifies the office as 国民."""
+    role_state = sess.get("roleState") if isinstance(sess.get("roleState"), dict) else {}
+    role = sess.get("role") if isinstance(sess.get("role"), dict) else {}
+    for source in (role_state, role):
+        office_name = str(source.get("officeName") or "").strip()
+        has_office_data = bool(office_name)
+        office_matches_citizen = office_name == "国民"
+        for field in ("officeIdUnsigned", "officeId", "officeIdRaw"):
+            value = source.get(field)
+            if value in (None, ""):
+                continue
+            has_office_data = True
+            try:
+                if isinstance(value, str):
+                    try:
+                        parsed = int(value, 0)
+                    except ValueError:
+                        parsed = int(value)
+                else:
+                    parsed = int(value)
+                normalized = parsed & 0xFFFF
+            except (TypeError, ValueError):
+                continue
+            if normalized == 0x0100:
+                office_matches_citizen = True
+        if has_office_data:
+            # roleState is the live source.  Do not let stale role-list data
+            # override a current, non-citizen office value.
+            return office_matches_citizen
+        if any(
+            source.get(field) not in (None, "")
+            for field in ("officeIdUnsigned", "officeId", "officeIdRaw")
+        ):
+            return office_matches_citizen
+    return False
+
+
+def national_citizen_daily_skip_result(sess: dict[str, Any]) -> dict[str, Any] | None:
+    """Build the terminal daily-task result used by office-gated features."""
+    if not role_is_national_citizen(sess):
+        return None
+    return {
+        "success": True,
+        "completed": True,
+        "skipped": True,
+        "skipReason": "national-citizen",
+        "message": "国民跳过",
+        "statusText": "已做（国民跳过）",
+        "officeId": 0x0100,
+        "officeName": "国民",
+    }
+
+
 def parse_8004_head(payload: bytes, source_opcode: str = "0x1016/0x8004") -> dict[str, Any]:
     """Parse the stable monarch/resource head of 0x8004.
 
@@ -12262,34 +12587,41 @@ def parse_8004_head(payload: bytes, source_opcode: str = "0x1016/0x8004") -> dic
     if len(payload) < 96:
         return {"sourceOpcode": source_opcode, "payloadByteCount": len(payload), "parseError": "0x8004 payload too short"}
     try:
-        i8()  # status1
-        i8()  # status2
+        status1 = i8()
+        status2 = i8()
         server_time = i64()
         role_id = i64()
         role_name = utf_at_cursor()
-        i8()
+        flag_b = i8()
         level = i8()
         copper = i64()
         food = i64()
-        i64()
-        i8()
-        i16()
-        i8()
+        field_f = i64()
+        flag_g = i8()
+        # 这里的 short 是头像资源编号（data.i.h），不是官职。
+        avatar_short_raw = i16()
+        flag_x = i8()
         prestige = i64()
         prestige_prev = i64()
         prestige_next = i64()
-        i64()
-        i8()
+        skip_long = i64()
+        flag_l = i8()
         copper_per_hour = i32()
         food_per_hour = i32()
-        i64()
-        i64()
+        battle_merit_candidate = i64()
+        field_p = i64()
         population_current = i64()
         population_cap = i64()
         fief_limit = i8()
         general_limit = i8()
         resource_point_current = i8()
         resource_point_cap = i8()
+        # data.i.x 在资源点上限后还会读一个保留 byte，再读官职 short（data.i.w）。
+        office_field_flag = None
+        office_id_raw = None
+        if len(payload) - p >= 3:
+            office_field_flag = i8()
+            office_id_raw = i16()
         parsed = p
         tail = payload[parsed:]
         return {
@@ -12310,6 +12642,29 @@ def parse_8004_head(payload: bytes, source_opcode: str = "0x1016/0x8004") -> dic
             "resourcePointCurrent": resource_point_current,
             "resourcePointCap": resource_point_cap,
             "serverTimeMillis": server_time,
+            # 中段未完全定性字段：保留原始值，供协议差分/后续映射。
+            "status1": status1,
+            "status2": status2,
+            "flagB": flag_b,
+            "fieldF": field_f,
+            "flagG": flag_g,
+            # 兼容旧字段名：历史版本误把头像 short 标成了 officeShort。
+            "officeShortRaw": avatar_short_raw,
+            "officeShortUnsigned": avatar_short_raw & 0xFFFF,
+            "avatarShortRaw": avatar_short_raw,
+            "avatarShortUnsigned": avatar_short_raw & 0xFFFF,
+            "officeFieldFlag": office_field_flag,
+            "officeId": office_id_raw,
+            "officeIdRaw": office_id_raw,
+            "officeIdUnsigned": (
+                office_id_raw & 0xFFFF if office_id_raw is not None else None
+            ),
+            "officeName": office_name_from_id(office_id_raw),
+            "flagX": flag_x,
+            "skipLong": skip_long,
+            "flagL": flag_l,
+            "battleMeritCandidate": battle_merit_candidate,
+            "fieldP": field_p,
             "sourceOpcode": source_opcode,
             "payloadByteCount": len(payload),
             "parsedHeadByteCount": parsed,
@@ -15124,11 +15479,7 @@ def starter_next_dungeon_stage(
 
 def starter_dungeon_defeat_confirmed(chest_result: dict[str, Any]) -> bool:
     """Only explicit server battle-result wording may terminate dungeons."""
-    text = str((chest_result or {}).get("textPreview") or "")
-    return any(
-        marker in text
-        for marker in ("战败", "挑战失败", "战斗失败", "副本失败")
-    )
+    return dungeon_battle_defeat_confirmed({"chestResult": chest_result or {}})
 
 
 def starter_heal_resource_deferred(
@@ -17418,11 +17769,219 @@ def build_national_collect_payload(city_name: str) -> bytes:
     return build_national_city_status_payload(city_name)
 
 
+def build_owned_city_list_payload(role_id: int | str | None = None) -> bytes:
+    """0x1318 查询自己作为城主拥有的城池。
+
+    2026-07-25 抓包（passive_pcap_hotspot_20260725_010719 flow #131）：
+      req payload = i64(roleId?) + u16(0)
+      实测 roleId=2 时返回小城「南化」(104,20)。
+    头像 → 城池信息 走的就是这个接口，不是 0x1310 封地列表。
+    """
+    rid = int(role_id or 0)
+    if rid < 0:
+        raise ValueError("自有城池查询 roleId 无效")
+    return struct.pack(">qH", rid, 0)
+
+
 def build_city_lord_collect_payload(city_name: str) -> bytes:
     name = str(city_name or "").strip()
     if not name:
         raise ValueError("城主征收缺少城池名称")
+    # 2026-07-25 抓包 flow #133：01 + UTF(南化) + 00
     return b"\x01" + utf(name) + b"\x00"
+
+
+def parse_owned_city_list(payload: bytes) -> dict[str, Any]:
+    """Parse 0x8318 自有城池列表/详情。
+
+    证据：
+      - 操作口述：头像→城池信息只返回自己当城主的城（当时仅小城南化）
+      - 抓包 flow #131 resp：可解析出 name=南化, x=104, y=20, owner=宿代苑
+      - 客户端 k.M0 对 0x8318 的首段读取：
+          status:u8, count:u8, 然后每条 city 记录以
+          long + byte + UTF(name) + short x + short y 开头
+    当前实现先稳定提取征收所需的 cityName/x/y/owner；其余字段保留 raw。
+    """
+    raw = payload or b""
+    if len(raw) < 2:
+        return {
+            "success": False,
+            "status": None,
+            "count": 0,
+            "cities": [],
+            "message": f"0x8318响应过短：{len(raw)}",
+            "rawHex": raw.hex()[:4096],
+        }
+    status = raw[0]
+    count = raw[1]
+    offset = 2
+    cities: list[dict[str, Any]] = []
+    message = ""
+
+    # status==1：客户端提示“没有城池”
+    if int(status) == 1:
+        return {
+            "success": True,
+            "status": int(status),
+            "count": 0,
+            "cities": [],
+            "noCity": True,
+            "message": "没有城池",
+            "rawHex": raw.hex()[:4096],
+            "parsedBytes": offset,
+        }
+
+    def read_city_record(start: int, index: int) -> tuple[dict[str, Any] | None, int]:
+        p = start
+        if p + 9 > len(raw):
+            return None, start
+        city_id = struct.unpack_from(">q", raw, p)[0]
+        p += 8
+        kind_or_flag = raw[p]
+        p += 1
+        try:
+            name, p2 = _daily_read_utf(raw, p)
+        except Exception:
+            return None, start
+        p = p2
+        if p + 4 > len(raw):
+            return None, start
+        x = struct.unpack_from(">H", raw, p)[0]
+        y = struct.unpack_from(">H", raw, p + 2)[0]
+        p += 4
+        owner = ""
+        owner_level = None
+        # 尽量吸收 owner/level，失败也不影响 cityName
+        try:
+            if p + 2 <= len(raw):
+                # 中间还有若干固定宽字段；用“下一个中文 UTF”扫描 owner。
+                probe = p
+                found_owner_at = None
+                while probe + 2 <= len(raw) and probe < p + 64:
+                    n = struct.unpack_from(">H", raw, probe)[0]
+                    if 1 <= n <= 30 and probe + 2 + n <= len(raw):
+                        chunk = raw[probe + 2:probe + 2 + n]
+                        try:
+                            text = chunk.decode("utf-8")
+                        except Exception:
+                            probe += 1
+                            continue
+                        if any("一" <= ch <= "鿿" for ch in text):
+                            found_owner_at = probe
+                            owner = text
+                            after = probe + 2 + n
+                            if after < len(raw):
+                                owner_level = raw[after]
+                            break
+                    probe += 1
+                if found_owner_at is not None:
+                    # 不强制推进主游标到 owner 后，避免未识别字段错位；
+                    # 主游标只保证消费到 x/y 后的最小记录，便于 count>1 时继续。
+                    pass
+        except Exception:
+            pass
+        # 主记录最小前进：long+byte+utf+x+y；若 count 指示多城，尝试按
+        # 下一条 long+byte+utf 的起点启发式推进。
+        next_p = p
+        record = {
+            "index": index,
+            "cityId": int(city_id),
+            "cityIdHex": f"{int(city_id) & 0xFFFFFFFFFFFFFFFF:016x}",
+            "kindCode": int(kind_or_flag),
+            "name": name,
+            "cityName": name,
+            "city": name,
+            "x": int(x),
+            "y": int(y),
+            "ownerName": owner,
+            "ownerLevel": owner_level,
+        }
+        return record, next_p
+
+    if int(count) > 0:
+        cursor = offset
+        for index in range(1, int(count) + 1):
+            city, cursor2 = read_city_record(cursor, index)
+            if city is None:
+                break
+            cities.append(city)
+            # 尝试定位下一条：从当前 utf/x/y 之后扫描下一个“long + byte + utf中文名”
+            scan = cursor2
+            next_start = None
+            while scan + 11 <= len(raw) and index < int(count):
+                n = struct.unpack_from(">H", raw, scan + 9)[0] if scan + 11 <= len(raw) else 0
+                # long(8)+byte(1)+utfLen(2)
+                if 1 <= n <= 30 and scan + 11 + n <= len(raw):
+                    chunk = raw[scan + 11:scan + 11 + n]
+                    try:
+                        text = chunk.decode("utf-8")
+                    except Exception:
+                        scan += 1
+                        continue
+                    if any("一" <= ch <= "鿿" for ch in text):
+                        next_start = scan
+                        break
+                scan += 1
+            if next_start is None:
+                cursor = cursor2
+                break
+            cursor = next_start
+        offset = cursor
+    else:
+        # count==0 但 body 仍可能带单城详情（抓包 #131 即此形态）：
+        # status,count 后直接 long+byte+UTF(name)+x+y...
+        city, offset2 = read_city_record(offset, 1)
+        if city is not None:
+            cities.append(city)
+            offset = offset2
+            count = 1
+
+    return {
+        "success": True,
+        "status": int(status),
+        "count": len(cities),
+        "declaredCount": int(count) if raw[1:2] else 0,
+        "cities": cities,
+        "message": message,
+        "rawHex": raw.hex()[:4096],
+        "parsedBytes": offset,
+        "trailingHex": raw[offset:].hex()[:4096],
+    }
+
+
+def query_owned_cities(sess: dict[str, Any]) -> dict[str, Any]:
+    """Query cities where the current role is city lord via 0x1318/0x8318."""
+    role = sess.get("role") if isinstance(sess.get("role"), dict) else {}
+    state = sess.get("roleState") if isinstance(sess.get("roleState"), dict) else {}
+    role_id = (
+        role.get("roleId")
+        or role.get("id")
+        or state.get("roleId")
+        or state.get("id")
+        or sess.get("roleId")
+        or 0
+    )
+    payload = build_owned_city_list_payload(role_id)
+    code, _data, packets = post_game(
+        sess["gameHttp"],
+        [(0x1318, payload)],
+        int(sess["dm"]),
+        account_id=str(sess.get("sessionId") or ""),
+    )
+    response = next((p for p in packets if p.get("opcode") == 0x8318), None)
+    if response is None:
+        raise GameProtocolResponseError(f"自有城池列表未收到0x8318：http={code}")
+    parsed = parse_owned_city_list(response.get("payload") or b"")
+    parsed.update({
+        "http": int(code),
+        "opcode": "0x1318/0x8318",
+        "requestPayloadHex": payload.hex(),
+        "roleId": int(role_id or 0),
+        "updatedAt": now_ms(),
+    })
+    sess["lastOwnedCities"] = parsed
+    persist_runtime_state()
+    return parsed
 
 
 def build_general_visit_list_payload(page: int, page_size: int = DAILY_GENERAL_PAGE_SIZE) -> bytes:
@@ -17438,7 +17997,11 @@ def build_general_visit_payload(general_id: int | str, page: int, page_size: int
 
 
 def parse_daily_status_utf_receipt(payload: bytes, *, success_status: int = 1) -> dict[str, Any]:
-    """Parse 0xA14B/0x8330/0x8334: status byte + UTF message + long tail."""
+    """Parse compact daily receipts such as 0x8330 city-lord collect.
+
+    Layout observed for city-lord success:
+      status:u8 + UTF(message) + trailing longs
+    """
     if not payload:
         return {"success": False, "status": None, "message": "响应为空", "remainingHex": ""}
     status = struct.unpack_from(">b", payload, 0)[0]
@@ -17451,6 +18014,114 @@ def parse_daily_status_utf_receipt(payload: bytes, *, success_status: int = 1) -
         "status": status,
         "message": clean_activity_result_message(message),
         "remainingHex": payload[offset:].hex()[:4096],
+    }
+
+
+def parse_salary_receipt(payload: bytes) -> dict[str, Any]:
+    """Parse 0xA14B 国家俸禄回执。
+
+    2026-07-25 真实抓包 flow #021：
+      01 00 + UTF("领取国家俸禄成功，获得铜钱642850，粮食1190689。") + longs...
+    即 status:u8 + extra:u8 + UTF(message) + trailing values。
+    旧实现少读了 extra 字节，会把文案解析成空，最终只剩“服务器确认成功”。
+    """
+    raw = payload or b""
+    if not raw:
+        return {
+            "success": False,
+            "completed": False,
+            "status": None,
+            "extra": None,
+            "message": "响应为空",
+            "copper": None,
+            "food": None,
+            "remainingHex": "",
+        }
+    status = struct.unpack_from(">b", raw, 0)[0]
+    extra = raw[1] if len(raw) >= 2 else None
+    message = ""
+    offset = 1
+    # 优先按 status + extra + UTF 解析；若 extra 位置其实已是 UTF 长度高字节，再回退。
+    if len(raw) >= 2:
+        try:
+            message, offset = _daily_read_utf(raw, 2)
+        except Exception:
+            try:
+                message, offset = _daily_read_utf(raw, 1)
+                extra = None
+            except Exception:
+                message, offset = printable(raw[1:], 500), 1
+                extra = None
+    cleaned = clean_activity_result_message(message)
+    copper = None
+    food = None
+    copper_match = re.search(r"铜钱\s*([0-9,，]+)", cleaned)
+    food_match = re.search(r"粮食\s*([0-9,，]+)", cleaned)
+    if copper_match:
+        copper = int(re.sub(r"[,，]", "", copper_match.group(1)))
+    if food_match:
+        food = int(re.sub(r"[,，]", "", food_match.group(1)))
+
+    already = any(
+        marker in cleaned
+        for marker in (
+            "无法再次领取",
+            "已经领取",
+            "已领取",
+            "今日已领取",
+            "本日已领取",
+            "今天已经领取",
+        )
+    )
+    no_office = any(
+        marker in cleaned
+        for marker in (
+            "无官职",
+            "没有官职",
+            "只有官员才能领取",
+            "官员才能领取俸禄",
+            "当前不能领取俸禄",
+        )
+    )
+    success_by_text = (
+        "成功" in cleaned
+        or "获得铜钱" in cleaned
+        or (copper is not None or food is not None)
+    )
+    # 兼容两套回执：status==1 直接成功；或 status==0 且 extra==1/文案成功。
+    success = (
+        int(status) == 1
+        or (int(status) == 0 and (extra == 1 or success_by_text) and not no_office)
+        or already
+    )
+    if already:
+        # 统一成用户可读短句
+        summary = "无法再次领取"
+    elif no_office:
+        summary = "无官职无法领取"
+        success = False
+    elif success and (copper is not None or food is not None):
+        copper_text = f"{copper}铜钱" if copper is not None else ""
+        food_text = f"{food}粮食" if food is not None else ""
+        joined = "、".join(part for part in (copper_text, food_text) if part)
+        summary = f"领取成功{joined}" if joined else (cleaned or "领取俸禄成功")
+    elif success:
+        summary = cleaned or "领取俸禄成功"
+    else:
+        summary = cleaned or "领取俸禄失败"
+
+    return {
+        "success": bool(success),
+        "completed": bool(success or already),
+        "alreadyClaimed": bool(already),
+        "noOffice": bool(no_office),
+        "status": int(status),
+        "extra": None if extra is None else int(extra),
+        "message": summary,
+        "rawMessage": cleaned,
+        "copper": copper,
+        "food": food,
+        "remainingHex": raw[offset:].hex()[:4096],
     }
 
 
@@ -17680,10 +18351,8 @@ def parse_general_visit_receipt(payload: bytes) -> dict[str, Any]:
     message, offset = _daily_read_utf(payload, 4)
     cleaned_message = clean_activity_result_message(message)
     already_visited = general_visit_already_visited(status, cleaned_message)
-    # A rejected invitation is still a completed visit and consumes the
-    # account's daily visit.  By contrast, messages such as “名将已被俘虏” or
-    # “名将已被结交” mean the visit never started and may fall through to the
-    # next selected candidate.
+    # 拜访交互本身是否完成：接受征召、拒绝征召都算“今天已经拜访过了”。
+    # “名将已被俘虏/已被结交”等表示拜访没真正发生，可顺延下一个候选。
     invitation_resolved = int(status) == 0 and any(
         marker in cleaned_message
         for marker in (
@@ -17693,13 +18362,17 @@ def parse_general_visit_receipt(payload: bytes) -> dict[str, Any]:
             "纳入帐下",
         )
     )
+    visit_succeeded = int(status) == 1 or invitation_resolved
     return {
         "status": int(status),
         "message": cleaned_message,
-        "success": int(status) == 1,
-        "completed": int(status) == 1 or invitation_resolved or already_visited,
+        # 业务语义：只要成功完成一次拜访交互就算成功（含拒绝征召）。
+        "success": visit_succeeded,
+        "completed": visit_succeeded or already_visited,
+        "recruited": int(status) == 1,
         "alreadyVisited": already_visited,
         "invitationResolved": invitation_resolved,
+        "invitationRejected": invitation_resolved and "拒绝了阁下的邀请" in cleaned_message,
         "remainingHex": payload[offset:].hex()[:4096],
     }
 
@@ -17796,6 +18469,9 @@ def collect_national_city(sess: dict[str, Any], city: dict[str, Any] | str) -> d
 
 
 def claim_national_salary(sess: dict[str, Any]) -> dict[str, Any]:
+    citizen_skip = national_citizen_daily_skip_result(sess)
+    if citizen_skip is not None:
+        return citizen_skip
     payload = build_salary_payload()
     code, _data, packets = post_game(
         sess["gameHttp"],
@@ -17806,20 +18482,20 @@ def claim_national_salary(sess: dict[str, Any]) -> dict[str, Any]:
     response = next((p for p in packets if p.get("opcode") == 0xA14B), None)
     if response is None:
         raise GameProtocolResponseError(f"国家俸禄未收到0xA14B：http={code}")
-    result = parse_daily_status_utf_receipt(response.get("payload") or b"", success_status=1)
+    result = parse_salary_receipt(response.get("payload") or b"")
     result.update({"http": int(code), "responseOpcode": "0xA14B"})
     return result
 
 
 def query_own_fiefs(sess: dict[str, Any]) -> dict[str, Any]:
-    role = sess.get("role") if isinstance(sess.get("role"), dict) else {}
-    state = sess.get("roleState") if isinstance(sess.get("roleState"), dict) else {}
-    role_name = str(
-        state.get("roleName") or role.get("roleName") or sess.get("roleName") or ""
-    ).strip()
-    if not role_name:
-        raise RuntimeError("当前账号没有可识别的角色名称，无法查询自有城池")
-    return query_raid_fiefs(sess, role_name)
+    """兼容旧名：城主征收改为查询自有城池(0x1318)，不再用封地列表(0x1310)。"""
+    owned = query_owned_cities(sess)
+    cities = list(owned.get("cities") or [])
+    return {
+        **owned,
+        # 旧调用方读 fiefs；这里返回的已是城池记录。
+        "fiefs": cities,
+    }
 
 
 def collect_city_lord(sess: dict[str, Any], fief: dict[str, Any] | str) -> dict[str, Any]:
@@ -17840,6 +18516,15 @@ def collect_city_lord(sess: dict[str, Any], fief: dict[str, Any] | str) -> dict[
 
 
 def query_general_visit_candidates(sess: dict[str, Any]) -> dict[str, Any]:
+    citizen_skip = national_citizen_daily_skip_result(sess)
+    if citizen_skip is not None:
+        return {
+            **citizen_skip,
+            "generals": [],
+            "candidates": [],
+            "pages": 0,
+            "updatedAt": now_ms(),
+        }
     pages: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     page = 1
@@ -18492,6 +19177,9 @@ def execute_national_collect(sess: dict[str, Any]) -> dict[str, Any]:
     are never queried by ``query_national_cities`` and are rejected again here
     defensively.
     """
+    citizen_skip = national_citizen_daily_skip_result(sess)
+    if citizen_skip is not None:
+        return citizen_skip
     cities = query_national_cities(sess)
     unique: dict[str, dict[str, Any]] = {}
     for city in cities:
@@ -18732,32 +19420,65 @@ def execute_national_collect(sess: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def city_lord_collect_attempt_kind(result: dict[str, Any] | None) -> str:
+    """Classify one 0x8330 city-lord attempt for daily completion semantics."""
+    item = result if isinstance(result, dict) else {}
+    message = str(item.get("message") or "")
+    if item.get("success"):
+        return "collected"
+    # 这些是“目标本身不可征”的业务回执：不应算失败，也不应阻塞今日完成。
+    ineligible_markers = (
+        "都城及其周边与之相联的门户城池不能进行征收",
+        "只有城主可以使用城主征收功能",
+        "您不是城主",
+        "不是城主",
+    )
+    if any(marker in message for marker in ineligible_markers):
+        return "ineligible"
+    # 当日已征过：交互已发生，记为已执行。
+    already_markers = (
+        "已经征收",
+        "本日已征收",
+        "今日已征收",
+        "今天已经征收",
+        "已经进行过征收",
+    )
+    if any(marker in message for marker in already_markers):
+        return "already"
+    return "failed"
+
+
 def execute_city_lord_collect(sess: dict[str, Any]) -> dict[str, Any]:
-    raw = query_own_fiefs(sess)
-    fiefs = raw.get("fiefs") if isinstance(raw, dict) else raw
+    """对 0x1318 返回的自有城池逐城执行 0x1330 城主征收。"""
+    raw = query_owned_cities(sess)
+    cities = raw.get("cities") if isinstance(raw, dict) else raw
     unique: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for fief in fiefs or []:
-        if not isinstance(fief, dict):
+    for city in cities or []:
+        if not isinstance(city, dict):
             continue
-        city_name = _daily_city_name(fief)
+        city_name = _daily_city_name(city)
         if not city_name or city_name in seen:
             continue
         seen.add(city_name)
-        unique.append(dict(fief))
+        unique.append(dict(city))
     attempts: list[dict[str, Any]] = []
-    for fief in unique:
-        name = _daily_city_name(fief)
+    for city in unique:
+        name = _daily_city_name(city)
         try:
-            result = collect_city_lord(sess, fief)
+            result = collect_city_lord(sess, city)
         except GameServerRejected:
             raise
         except Exception as exc:
             result = {"success": False, "city": name, "message": str(exc) or "征收请求异常"}
-        attempts.append(dict(result or {}, city=name))
-    successes = sum(1 for item in attempts if item.get("success"))
-    failures = len(attempts) - successes
-    if not attempts:
+        kind = city_lord_collect_attempt_kind(result)
+        attempts.append(dict(result or {}, city=name, attemptKind=kind))
+    collected = [item for item in attempts if item.get("attemptKind") == "collected"]
+    already = [item for item in attempts if item.get("attemptKind") == "already"]
+    ineligible = [item for item in attempts if item.get("attemptKind") == "ineligible"]
+    failed = [item for item in attempts if item.get("attemptKind") == "failed"]
+    executed = collected + already
+    if not unique:
         return {
             "success": True,
             "completed": True,
@@ -18766,26 +19487,72 @@ def execute_city_lord_collect(sess: dict[str, Any]) -> dict[str, Any]:
             "attemptedCount": 0,
             "successCount": 0,
             "failureCount": 0,
+            "ineligibleCount": 0,
+            "alreadyCount": 0,
+            "ownedCityCount": int((raw or {}).get("count") or 0) if isinstance(raw, dict) else 0,
             "message": "没有查询到可执行城主征收的自有城池",
             "attempts": [],
+            "ownedCities": list(cities or []),
+            "listOpcode": "0x1318/0x8318",
         }
+    if failed and not executed:
+        message = f"城主征收失败：可尝试{len(unique)}座，失败{len(failed)}座"
+        if ineligible:
+            message += f"，不可征{len(ineligible)}座"
+        success = False
+        completed = False
+        partial = False
+    elif failed and executed:
+        message = (
+            f"城主征收部分完成：成功{len(collected)}座"
+            f"{'，已征过' + str(len(already)) + '座' if already else ''}"
+            f"，失败{len(failed)}座"
+        )
+        success = False
+        completed = False
+        partial = True
+    else:
+        parts = []
+        if collected:
+            parts.append(f"成功{len(collected)}座")
+        if already:
+            parts.append(f"已征过{len(already)}座")
+        if ineligible:
+            parts.append(f"不可征{len(ineligible)}座")
+        message = "城主征收完成：" + ("，".join(parts) if parts else "无待征收城池")
+        success = True
+        completed = True
+        partial = False
     return {
-        "success": failures == 0,
-        "partialSuccess": successes > 0,
-        "completed": failures == 0,
+        "success": success,
+        "partialSuccess": partial,
+        "completed": completed,
         "attemptedCount": len(attempts),
-        "successCount": successes,
-        "failureCount": failures,
-        "message": (
-            f"城主征收完成：成功{successes}座，失败{failures}座"
-            if failures == 0 else
-            f"城主征收部分完成：成功{successes}座，失败{failures}座"
-        ),
+        "successCount": len(collected),
+        "alreadyCount": len(already),
+        "ineligibleCount": len(ineligible),
+        "failureCount": len(failed),
+        "executedCount": len(executed),
+        "ownedCityCount": len(unique),
+        "message": message,
         "attempts": attempts,
+        "ownedCities": [
+            {
+                "cityName": _daily_city_name(city),
+                "x": city.get("x"),
+                "y": city.get("y"),
+                "ownerName": city.get("ownerName"),
+            }
+            for city in unique
+        ],
+        "listOpcode": "0x1318/0x8318",
     }
 
 
 def execute_general_visit(sess: dict[str, Any], selected_ids: list[Any] | tuple[Any, ...] | None = None) -> dict[str, Any]:
+    citizen_skip = national_citizen_daily_skip_result(sess)
+    if citizen_skip is not None:
+        return citizen_skip
     ordered_ids = list(dict.fromkeys(str(value).strip() for value in (selected_ids or []) if str(value).strip()))[:4]
     if not ordered_ids:
         return {
@@ -18842,27 +19609,28 @@ def execute_general_visit(sess: dict[str, Any], selected_ids: list[Any] | tuple[
                 "attempts": attempts,
                 "skipped": skipped,
             }
-        if result.get("success"):
+        if result.get("success") or result.get("invitationResolved") or result.get("completed"):
+            # 接受征召 / 拒绝征召 / 其它“拜访交互已完成”回执，都算今天拜访成功。
+            recruited = bool(result.get("recruited") or (result.get("success") and not result.get("invitationRejected")))
+            rejected = bool(result.get("invitationRejected"))
+            if recruited and not rejected:
+                summary = f"名将拜访成功：{name}已接受征召"
+            elif rejected:
+                summary = f"名将拜访成功：{name}已拜访（暂未接受征召）"
+            else:
+                summary = f"名将拜访成功：{name}"
+            detail_message = str(result.get("message") or "").strip()
+            if detail_message and detail_message not in summary:
+                summary = f"{summary}；{detail_message}"
             return {
                 "success": True,
                 "completed": True,
-                "attemptedCount": len(attempts),
-                "failureCount": sum(1 for item in attempts if not item.get("success")),
-                "message": f"名将拜访成功：{name}",
-                "attempts": attempts,
-                "skipped": skipped,
-            }
-        if result.get("completed"):
-            return {
-                "success": False,
-                "completed": True,
                 "visitResolved": True,
+                "recruited": recruited and not rejected,
+                "invitationRejected": rejected,
                 "attemptedCount": len(attempts),
-                "failureCount": sum(1 for item in attempts if not item.get("success")),
-                "message": (
-                    f"名将拜访已执行但未招揽成功：{name}；"
-                    f"{result.get('message') or '服务器未返回原因'}"
-                ),
+                "failureCount": 0,
+                "message": summary,
                 "attempts": attempts,
                 "skipped": skipped,
             }
@@ -18908,7 +19676,9 @@ def execute_daily_once_tasks(sess: dict[str, Any], settings: dict[str, Any]) -> 
     def record_if_completed(key: str, result: dict[str, Any]) -> None:
         if not bool(result.get("completed")):
             return
-        if result.get("duplicateClaim"):
+        if result.get("skipped"):
+            record_daily_task_completion(sess, key, result=result)
+        elif result.get("duplicateClaim"):
             record_daily_task_completion(sess, key, source="automation-duplicate")
         else:
             record_daily_task_completion(sess, key)
@@ -28330,6 +29100,12 @@ TASK_NOTICE_DISPLAY = {
 def task_notice_identity(task: dict[str, Any]) -> tuple[str, str]:
     raw_type = str(task.get("type") or "task")
     key, name = TASK_NOTICE_DISPLAY.get(raw_type, (raw_type, raw_type or "后台任务"))
+    if (
+        raw_type == "dungeon"
+        and normalize_dungeon_mode((task.get("config") or {}).get("mode"))
+        == DUNGEON_MODE_CLEAR
+    ):
+        name = "打通副本"
     return f"task:{key}", name
 
 
@@ -28620,9 +29396,15 @@ def prepare_military_generals(
     *,
     task: dict[str, Any] | None = None,
     allow_existing_troops: bool = False,
+    force_heal: bool = False,
 ) -> list[dict[str, Any]]:
     """Check state/energy/formation and repair formation before a real dispatch."""
-    heal_all_wounded_before_military_prepare(sess, action_name, task=task)
+    heal_all_wounded_before_military_prepare(
+        sess,
+        action_name,
+        task=task,
+        force=force_heal,
+    )
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw_gid in general_ids:
@@ -29360,8 +30142,13 @@ def normalize_settings_scope_patch(
         )
         # Invalid visit setup affects only this feature.  Keep the other daily
         # switches exactly as submitted and leave general visit disabled until
-        # at least one ordered candidate has been selected.
-        if daily_tasks.get("generalVisit") and not visit_ids:
+        # at least one ordered candidate has been selected.  A 国民 role is an
+        # intentional terminal skip, so it does not need a candidate ID.
+        if (
+            daily_tasks.get("generalVisit")
+            and not visit_ids
+            and not role_is_national_citizen(sess)
+        ):
             daily_tasks["generalVisit"] = False
         normalized["dailyTasks"] = daily_tasks
     normalized["sessionId"] = sess["sessionId"]
@@ -29481,6 +30268,9 @@ def task_status_public(task: dict[str, Any]) -> dict[str, Any]:
         "taskId", "type", "sessionId", "status", "createdAt", "updatedAt",
         "startedAt", "finishedAt", "cycle", "logs", "error", "stopReason",
         "schedulerState", "schedulerRunnable", "schedulerMessage",
+        "dungeonMode", "currentDungeonStage", "lastDungeonClearSelection",
+        "lastClearedDungeonStage", "clearCompletedCount",
+        "lastDungeonDefeat", "defeatConfirmed", "completed",
     )
     with TASK_LOCK:
         payload = {
@@ -30055,6 +30845,12 @@ def task_stack_for_session(session_id: str, tasks: list[dict[str, Any]]) -> list
             raw_type,
             (default_key, default_key or "后台任务", "other"),
         )
+        if (
+            raw_type == "dungeon"
+            and normalize_dungeon_mode((task.get("config") or {}).get("mode"))
+            == DUNGEON_MODE_CLEAR
+        ):
+            name = "打通副本"
         state = str(task.get("schedulerState") or task.get("status") or "queued")
         task_id = str(task.get("taskId") or "")
         current = task_id in claimed_ids or state in {"dispatching", "fighting"}
@@ -30135,6 +30931,7 @@ def sync_recent_important_notices_from_logs(account_key: str) -> None:
         ("打矿任务异常，已中断", "task:mine", "打矿已中止"),
         ("无损任务失败", "task:lossless", "无损已中止"),
         ("副本循环任务失败", "task:dungeon", "副本已中止"),
+        ("打通副本暂停", "task:dungeon", "打通副本已暂停"),
         ("掠夺循环任务失败", "task:raid", "掠夺已中止"),
         ("配兵任务失败", "task:formations", "配兵已中止"),
     ]
@@ -30406,6 +31203,14 @@ def current_task_overview(sess: dict[str, Any]) -> dict[str, Any]:
             "schedulerRunnable": bool((task or {}).get("schedulerRunnable")),
             "schedulerGeneralIds": list((task or {}).get("schedulerGeneralIds") or []),
             "schedulerNextCheckAt": scheduler_next_check_at,
+            "mode": (
+                str(((task or {}).get("config") or {}).get("mode") or DUNGEON_MODE_LOOP)
+                if key == "dungeon" else None
+            ),
+            "currentDungeonStage": (
+                (task or {}).get("currentDungeonStage")
+                if key == "dungeon" else None
+            ),
             "taskId": (task or {}).get("taskId"),
             "cycle": int((task or {}).get("cycle") or 0),
             "usedAttempts": max(0, min(LOSSLESS_DAILY_LIMIT, int(used_attempts or 0))) if key == "lossless" else None,
@@ -32170,6 +32975,62 @@ def start_lossless_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dic
         }
 
 
+def next_dungeon_clear_stage(sess: dict[str, Any]) -> dict[str, Any]:
+    """Read the live catalog and select the first sequential uncompleted stage."""
+    catalog = query_dungeon_catalog(sess)
+    chapters = catalog.get("chapters") or []
+    if not chapters:
+        raise RuntimeError(
+            f"读取打通副本关卡失败：{catalog.get('parseError') or '目录没有章节数据'}"
+        )
+    stage = first_uncompleted_dungeon_stage(catalog)
+    if stage is None:
+        return {
+            "completed": True,
+            "catalog": catalog,
+            "message": "副本目录中的所有关卡均已通关",
+        }
+    stage = dict(stage)
+    stage["waitingUnlock"] = not bool(stage.get("available", True))
+    stage["catalog"] = catalog
+    if stage["waitingUnlock"]:
+        stage["message"] = (
+            f"当前首个未通关关卡为{stage['chapterName']}第{stage['stage']}关，"
+            "尚未解锁，稍后重新检查"
+        )
+    return stage
+
+
+def persist_dungeon_clear_pause(
+    sess: dict[str, Any],
+    task: dict[str, Any],
+    row: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    """Persist a defeat pause so reconnect/start-saved cannot auto-relaunch it."""
+    habits = load_account_habits(sess)
+    future = habits.get("militaryFuture") if isinstance(habits.get("militaryFuture"), dict) else {}
+    saved = future.get("dungeon") if isinstance(future.get("dungeon"), dict) else {}
+    dungeon_settings = dict(saved)
+    if not isinstance(dungeon_settings.get("rows"), list):
+        dungeon_settings["rows"] = [dict(item) for item in (task.get("config") or {}).get("rows") or []]
+    pause = {
+        "paused": True,
+        "reason": str(reason),
+        "chapter": row.get("chapter"),
+        "chapterName": row.get("chapterName"),
+        "stage": row.get("stage"),
+        "pausedAt": now_ms(),
+    }
+    dungeon_settings["mode"] = DUNGEON_MODE_CLEAR
+    dungeon_settings["pausedAfterDefeat"] = pause
+    save_account_habits(
+        sess,
+        military_future={"dungeon": dungeon_settings},
+    )
+    return pause
+
+
 def dungeon_worker(task_id: str) -> None:
     task = AUTO_TASKS.get(task_id)
     if not task:
@@ -32186,18 +33047,142 @@ def dungeon_worker(task_id: str) -> None:
     try:
         task["status"] = "running"
         rows = [dict(x) for x in cfg.get("rows") or []]
+        dungeon_mode = normalize_dungeon_mode(cfg.get("mode"))
+        clear_mode = dungeon_mode == DUNGEON_MODE_CLEAR
+        task["dungeonMode"] = dungeon_mode
         if not rows:
             raise RuntimeError("副本循环任务没有可执行规则")
-        task_log(task, f"副本循环任务启动：共 {len(rows)} 条规则；每轮检查状态、体力和配兵，出征将领全部回闲后直接开箱并继续下一轮")
+        task_log(
+            task,
+            (
+                "打通副本任务启动：使用已保存的副本编队，从首个未通关关卡开始逐关推进；"
+                "每关出征前检查伤兵并按保存规则重新配兵，确认战败后立即暂停"
+                if clear_mode else
+                f"副本循环任务启动：共 {len(rows)} 条规则；每轮检查状态、体力和配兵，"
+                "出征将领全部回闲后直接开箱并继续下一轮"
+            ),
+        )
         success_count = 0
         results: list[dict[str, Any]] = []
+
+        def pause_clear_after_defeat(row: dict[str, Any], result: dict[str, Any]) -> None:
+            nonlocal claim_held
+            chapter_name = str(row.get("chapterName") or f"第{int(row.get('chapter') or 0) + 1}章")
+            stage_label = f"{chapter_name}第{row.get('stage')}关"
+            battle_text = next(iter(_dungeon_battle_texts(result)), "服务器明确返回战败")
+            reason = f"打通副本暂停：{stage_label}战败；{battle_text[:240]}"
+            task["defeatConfirmed"] = True
+            task["lastDungeonDefeat"] = {
+                "stage": {
+                    "chapter": row.get("chapter"),
+                    "chapterName": chapter_name,
+                    "stage": row.get("stage"),
+                },
+                "message": battle_text[:500],
+                "at": now_ms(),
+            }
+            task["stopReason"] = reason
+            task["status"] = "stopped"
+            try:
+                task["dungeonClearPause"] = persist_dungeon_clear_pause(
+                    sess, task, row, reason,
+                )
+            except Exception as exc:
+                task["dungeonClearPauseError"] = str(exc)
+            command_center_release(
+                task,
+                state="stopped",
+                runnable=False,
+                message="打通副本因战败暂停",
+            )
+            claim_held = False
+            task_log(task, reason)
+            persist_runtime_state()
+
+        def confirm_clear_stage(row: dict[str, Any], result: dict[str, Any]) -> bool:
+            if result.get("stageCompleted") is not None:
+                return bool(result.get("stageCompleted"))
+            confirmed: bool | None = None
+            for attempt in range(3):
+                catalog = query_dungeon_catalog(sess)
+                task["lastDungeonClearCatalog"] = {
+                    key: value
+                    for key, value in catalog.items()
+                    if key not in {"packets", "rawHex"}
+                }
+                confirmed = dungeon_stage_completed_in_catalog(catalog, row)
+                if confirmed is True:
+                    break
+                if attempt < 2:
+                    time.sleep(0.5)
+            result["stageCompleted"] = confirmed
+            return confirmed is True
+
         while not task["stopEvent"].is_set():
             if not wait_for_task_account_online(task, sid, "副本"):
                 break
+            active_rows = rows
+            if clear_mode:
+                next_stage = next_dungeon_clear_stage(sess)
+                task["lastDungeonClearSelection"] = {
+                    key: value
+                    for key, value in next_stage.items()
+                    if key != "catalog"
+                }
+                if next_stage.get("completed"):
+                    task["status"] = "finished"
+                    task["completed"] = True
+                    task["stopReason"] = "副本已全部打通"
+                    command_center_release(
+                        task,
+                        state="stopped",
+                        runnable=False,
+                        message="副本已全部打通",
+                    )
+                    task_log(task, "打通副本任务完成：副本目录中的所有关卡均已通关")
+                    persist_runtime_state()
+                    return
+                if next_stage.get("waitingUnlock"):
+                    wait_sec = 60
+                    command_center_set_state(
+                        task,
+                        "cooldown",
+                        general_ids=list(rows[0].get("generalIds") or []),
+                        runnable=False,
+                        message=next_stage.get("message") or "等待下一副本关卡解锁",
+                        next_check_at=now_ms() + wait_sec * 1000,
+                    )
+                    if task.get("lastDungeonClearUnlockLog") != next_stage.get("message"):
+                        task["lastDungeonClearUnlockLog"] = next_stage.get("message")
+                        task_log(task, next_stage.get("message") or "等待下一副本关卡解锁")
+                    task["stopEvent"].wait(wait_sec)
+                    continue
+                active_rows = [{
+                    **rows[0],
+                    "chapter": next_stage.get("chapter"),
+                    "chapterName": next_stage.get("chapterName"),
+                    "stage": next_stage.get("stage"),
+                    "stageCode": next_stage.get("stageCode"),
+                    "clearStage": True,
+                }]
+                task["currentDungeonStage"] = {
+                    "chapter": next_stage.get("chapter"),
+                    "chapterName": next_stage.get("chapterName"),
+                    "stage": next_stage.get("stage"),
+                    "stageCode": next_stage.get("stageCode"),
+                }
             cycle_no = int(task.get("cycle", 0)) + 1
             task["currentCycle"] = cycle_no
-            task_log(task, f"副本第 {cycle_no} 轮开始：将依次执行 {len(rows)} 条规则")
-            for idx, row in enumerate(rows, start=1):
+            task_log(
+                task,
+                (
+                    f"打通副本第 {cycle_no} 次检查：准备{active_rows[0].get('chapterName')}"
+                    f"第{active_rows[0].get('stage')}关"
+                    if clear_mode else
+                    f"副本第 {cycle_no} 轮开始：将依次执行 {len(active_rows)} 条规则"
+                ),
+            )
+            for idx, row in enumerate(active_rows, start=1):
                 if task["stopEvent"].is_set():
                     task["status"] = "stopped"
                     task_log(task, "副本循环任务已停止，不再发起下一场")
@@ -32215,7 +33200,7 @@ def dungeon_worker(task_id: str) -> None:
                 task["currentRow"] = idx
                 task_log(
                     task,
-                    f"副本第 {cycle_no} 轮第 {idx}/{len(rows)} 条："
+                    f"副本第 {cycle_no} 轮第 {idx}/{len(active_rows)} 条："
                     f"{','.join(general_names) or ','.join(row.get('generalIds') or [])} → "
                     f"{chapter_name}第{row.get('stage')}关，开箱={row.get('chestName')}",
                 )
@@ -32235,6 +33220,11 @@ def dungeon_worker(task_id: str) -> None:
                 claim_held = True
                 while True:
                     try:
+                        if clear_mode:
+                            task_log(
+                                task,
+                                "打通副本出征前：检查伤兵并先治疗，随后按已保存副本编队重新配兵",
+                            )
                         result = execute_dungeon(
                             sess,
                             {**row, "confirm": "dungeon"},
@@ -32272,6 +33262,9 @@ def dungeon_worker(task_id: str) -> None:
                             task["status"] = "stopped"
                             return
                         claim_held = True
+                if clear_mode and dungeon_battle_defeat_confirmed(result):
+                    pause_clear_after_defeat(row, result)
+                    return
                 pending_recovery: dict[str, Any] | None = None
                 launch_error = result.get("failureReason") or result.get("launchText") or ""
                 if (
@@ -32369,6 +33362,9 @@ def dungeon_worker(task_id: str) -> None:
                 chest_result = result.get("chestResult") or {}
                 general_wait_summary = result.get("generalWaitSummary") or {}
                 completed = bool(result.get("success")) and bool(chest_result.get("success"))
+                if clear_mode and dungeon_battle_defeat_confirmed(result):
+                    pause_clear_after_defeat(row, result)
+                    return
                 results.append({
                     "cycle": cycle_no,
                     "row": idx,
@@ -32382,12 +33378,24 @@ def dungeon_worker(task_id: str) -> None:
                     "failureReason": result.get("failureReason", ""),
                     "generalWaitSummary": general_wait_summary,
                     "chestResult": {k: chest_result.get(k) for k in ["success", "skipped", "reason", "textPreview"]},
+                    "defeatConfirmed": bool(result.get("defeatConfirmed")),
+                    "stageCompleted": result.get("stageCompleted"),
                     "pendingChestRecovery": pending_recovery,
                     "reportFile": result.get("reportFile", ""),
                 })
                 results = results[-30:]
                 task["dungeonResults"] = results
                 task["lastDungeonResult"] = results[-1]
+                if clear_mode and result.get("success"):
+                    clear_stage_completed = confirm_clear_stage(row, result)
+                    results[-1]["stageCompleted"] = result.get("stageCompleted")
+                    results[-1]["success"] = bool(completed and clear_stage_completed)
+                    task["lastDungeonResult"] = results[-1]
+                    if not clear_stage_completed:
+                        raise RuntimeError(
+                            f"{chapter_name}第{row.get('stage')}关战斗结束，但目录未确认通关；"
+                            "打通副本已暂停，避免重复出征"
+                        )
                 if not result.get("success"):
                     raise RuntimeError(
                         f"第 {cycle_no} 轮第 {idx} 条副本未确认启动成功："
@@ -32405,11 +33413,18 @@ def dungeon_worker(task_id: str) -> None:
                     raise RuntimeError(f"第 {cycle_no} 轮第 {idx} 条副本开箱失败：{chest_reason}；已中断循环")
                 success_count += 1
                 task["successCount"] = success_count
+                if clear_mode:
+                    task["clearCompletedCount"] = success_count
+                    task["lastClearedDungeonStage"] = {
+                        "chapter": row.get("chapter"),
+                        "chapterName": chapter_name,
+                        "stage": row.get("stage"),
+                    }
                 daily_after = record_daily_dungeon_success(sess)
                 task["dailyDungeonCount"] = daily_after
                 task_log(
                     task,
-                    f"副本第 {cycle_no} 轮第 {idx} 条完成："
+                    f"{'打通副本' if clear_mode else '副本'}第 {cycle_no} 轮第 {idx} 条完成："
                     f"{','.join(general_names)} → {chapter_name}第{row.get('stage')}关，"
                     f"{row.get('chestName')}箱已开启；累计完成={success_count}，今日副本次数={daily_after}；"
                     f"证据={result.get('reportFile')}",
@@ -32429,9 +33444,19 @@ def dungeon_worker(task_id: str) -> None:
                     persist_runtime_state()
                     return
                 task["stopEvent"].wait(0.5)
+                if clear_mode:
+                    break
             task["cycle"] = cycle_no
             task["updatedAt"] = now_ms()
-            task_log(task, f"副本第 {cycle_no} 轮完成：共完成 {len(rows)} 条；返回第 1 步重新检查将领状态、体力和配兵")
+            task_log(
+                task,
+                (
+                    f"打通副本第 {cycle_no} 关完成；下一轮重新读取首个未通关关卡"
+                    if clear_mode else
+                    f"副本第 {cycle_no} 轮完成：共完成 {len(active_rows)} 条；"
+                    "返回第 1 步重新检查将领状态、体力和配兵"
+                ),
+            )
             persist_runtime_state()
             task["stopEvent"].wait(0.5)
         task["status"] = "stopped"
@@ -32459,8 +33484,14 @@ def dungeon_worker(task_id: str) -> None:
             )
 
 
-def start_dungeon_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+def start_dungeon_task(
+    sess: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    mode: str = DUNGEON_MODE_LOOP,
+) -> dict[str, Any]:
     sid = str(sess.get("sessionId") or "")
+    normalized_mode = normalize_dungeon_mode(mode)
     stopped_task_ids = request_stop_tasks_for_session_type(
         sid,
         "dungeon",
@@ -32476,7 +33507,11 @@ def start_dungeon_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dict
             "cycle": 0,
             "createdAt": now_ms(),
             "updatedAt": now_ms(),
-            "config": {"sessionId": sid, "rows": [dict(r) for r in rows]},
+            "config": {
+                "sessionId": sid,
+                "rows": [dict(r) for r in rows],
+                "mode": normalized_mode,
+            },
             "logs": [],
             "stopEvent": threading.Event(),
             "schedulerState": "checking",
@@ -32487,7 +33522,11 @@ def start_dungeon_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dict
                 for row in rows
                 for general_id in row.get("generalIds") or []
             )),
-            "schedulerMessage": "等待指挥中心安排副本",
+            "schedulerMessage": (
+                "等待指挥中心安排打通副本"
+                if normalized_mode == DUNGEON_MODE_CLEAR
+                else "等待指挥中心安排副本"
+            ),
         }
         thread = threading.Thread(target=dungeon_worker, args=(task_id,), daemon=True)
         task["thread"] = thread
@@ -35142,9 +36181,38 @@ def resume_saved_resident_tasks(sess: dict[str, Any]) -> dict[str, Any]:
         future.get("dungeon") if isinstance(future.get("dungeon"), dict) else {},
     )
     try:
-        dungeon_rows = normalize_dungeon_rows(sess, dungeon_settings)
+        dungeon_mode = normalize_dungeon_mode(dungeon_settings.get("mode"))
+        dungeon_rows = normalize_dungeon_rows(
+            sess,
+            dungeon_settings,
+            mode=dungeon_mode,
+        )
         if dungeon_rows:
-            resumed["dungeon"] = start_dungeon_task(sess, dungeon_rows)
+            paused_after_defeat = (
+                dungeon_settings.get("pausedAfterDefeat")
+                if isinstance(dungeon_settings.get("pausedAfterDefeat"), dict)
+                else {}
+            )
+            if (
+                dungeon_mode == DUNGEON_MODE_CLEAR
+                and paused_after_defeat.get("paused")
+            ):
+                one_time["dungeonPausedAfterDefeat"] = dict(paused_after_defeat)
+                account_log(
+                    sid,
+                    "打通副本保持暂停：上次战败后需用户重新保存副本设置才会继续",
+                    level="warning",
+                    source="command-center",
+                    detail=paused_after_defeat,
+                )
+            elif dungeon_mode == DUNGEON_MODE_CLEAR:
+                resumed["dungeon"] = start_dungeon_task(
+                    sess, dungeon_rows, mode=dungeon_mode,
+                )
+            else:
+                # Preserve the legacy call shape for integrations that provide
+                # a two-argument start_dungeon_task hook.
+                resumed["dungeon"] = start_dungeon_task(sess, dungeon_rows)
     except Exception as e:
         errors["dungeon"] = str(e)
 
@@ -36754,7 +37822,12 @@ class Handler(SimpleHTTPRequestHandler):
                         result = claim_national_salary(sess)
                         result["completed"] = bool(result.get("success"))
                         if result.get("success"):
-                            record_daily_task_completion(sess, "salary", source="manual")
+                            if result.get("skipped"):
+                                record_daily_task_completion(
+                                    sess, "salary", source="manual", result=result,
+                                )
+                            else:
+                                record_daily_task_completion(sess, "salary", source="manual")
                         log_daily_feature_result(sess, "salary", result, source="manual")
                 self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
                 return
@@ -36769,7 +37842,14 @@ class Handler(SimpleHTTPRequestHandler):
                     else:
                         result = execute_national_collect(sess)
                         if result.get("completed"):
-                            record_daily_task_completion(sess, "nationalCollect", source="manual")
+                            if result.get("skipped"):
+                                record_daily_task_completion(
+                                    sess, "nationalCollect", source="manual", result=result,
+                                )
+                            else:
+                                record_daily_task_completion(
+                                    sess, "nationalCollect", source="manual",
+                                )
                         log_daily_feature_result(sess, "nationalCollect", result, source="manual")
                 self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
                 return
@@ -36800,7 +37880,14 @@ class Handler(SimpleHTTPRequestHandler):
                     else:
                         result = execute_general_visit(sess, selected)
                         if result.get("completed"):
-                            record_daily_task_completion(sess, "generalVisit", source="manual")
+                            if result.get("skipped"):
+                                record_daily_task_completion(
+                                    sess, "generalVisit", source="manual", result=result,
+                                )
+                            else:
+                                record_daily_task_completion(
+                                    sess, "generalVisit", source="manual",
+                                )
                         log_daily_feature_result(sess, "generalVisit", result, source="manual")
                 self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
                 return
@@ -37475,16 +38562,34 @@ class Handler(SimpleHTTPRequestHandler):
                 raw_rows = body.get("rows")
                 if not isinstance(raw_rows, list):
                     raw_rows = [body]
-                ui_settings = normalize_military_future_settings("dungeon", {"rows": raw_rows})
+                ui_settings = normalize_military_future_settings(
+                    "dungeon",
+                    {
+                        "rows": raw_rows,
+                        "mode": body.get("mode"),
+                        "clearStages": body.get("clearStages"),
+                    },
+                )
                 ui_rows = ui_settings.get("rows") or []
-                rows = normalize_dungeon_rows(sess, {"rows": ui_rows})
+                dungeon_mode = normalize_dungeon_mode(ui_settings.get("mode"))
+                rows = normalize_dungeon_rows(
+                    sess,
+                    {"rows": ui_rows},
+                    mode=dungeon_mode,
+                )
                 account_log(
                     sid,
-                    f"保存副本请求：启用 {len(rows)} 条，共配置 {len(ui_rows)} 条",
+                    f"保存副本请求：模式={'打通副本' if dungeon_mode == DUNGEON_MODE_CLEAR else '循环刷指定关卡'}；"
+                    f"启用 {len(rows)} 条，共配置 {len(ui_rows)} 条",
                     source="server",
-                    detail={"rows": ui_rows, "executionRows": rows},
+                    detail={"mode": dungeon_mode, "rows": ui_rows, "executionRows": rows},
                 )
-                saved_files = save_account_habits(sess, military_future={"dungeon": {"rows": ui_rows}})
+                saved_files = save_account_habits(
+                    sess,
+                    military_future={
+                        "dungeon": {"mode": dungeon_mode, "rows": ui_rows},
+                    },
+                )
                 if not rows:
                     stopped_task_ids = request_stop_tasks_for_session_type(
                         sid,
@@ -37503,6 +38608,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "disabled": True,
                         "savedFiles": saved_files,
                         "rows": ui_rows,
+                        "mode": dungeon_mode,
                         "executionRows": [],
                         "stoppedTaskIds": stopped_task_ids,
                         "dungeonTask": dungeon_task,
@@ -37510,12 +38616,17 @@ class Handler(SimpleHTTPRequestHandler):
                         "accountHabits": load_account_habits(sess),
                     })
                     return
-                dungeon_task = start_dungeon_task(sess, rows)
+                dungeon_task = (
+                    start_dungeon_task(sess, rows, mode=dungeon_mode)
+                    if dungeon_mode == DUNGEON_MODE_CLEAR
+                    else start_dungeon_task(sess, rows)
+                )
                 self.send_json({
                     "ok": True,
                     "saved": True,
                     "savedFiles": saved_files,
                     "rows": ui_rows,
+                    "mode": dungeon_mode,
                     "executionRows": rows,
                     "dungeonTask": dungeon_task,
                     "task": dungeon_task.get("task") if dungeon_task.get("started") else None,
@@ -37733,8 +38844,12 @@ class Handler(SimpleHTTPRequestHandler):
                 if scope == "common.daily":
                     raw_patch = body.get("patch") if isinstance(body.get("patch"), dict) else {}
                     raw_daily = raw_patch.get("dailyTasks") if isinstance(raw_patch.get("dailyTasks"), dict) else {}
-                    if raw_daily.get("generalVisit") and not normalize_general_visit_ids(
-                        raw_patch.get("generalVisitGeneralIds")
+                    if (
+                        raw_daily.get("generalVisit")
+                        and not normalize_general_visit_ids(
+                            raw_patch.get("generalVisitGeneralIds")
+                        )
+                        and not role_is_national_citizen(sess)
                     ):
                         settings_warnings.append(
                             "名将拜访未选择将领，本项未开启；其他日常设置已正常保存"

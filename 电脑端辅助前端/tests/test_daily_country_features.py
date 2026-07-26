@@ -71,16 +71,102 @@ class DailyCountryFeatureTests(unittest.TestCase):
 
     def test_salary_payload_and_success_status(self) -> None:
         calls = []
+        # 真实 0xA14B：status + extra + UTF
+        payload = bytes([1, 0]) + SERVER.utf("领取国家俸禄成功，获得铜钱642850，粮食1190689。")
 
         def fake_post(_url, commands, _dm, account_id=None):
             calls.append(commands)
-            return 200, b"", [packet(0xA14B, status_receipt(1, "领取国家俸禄成功"))]
+            return 200, b"", [packet(0xA14B, payload)]
 
         with patch.object(SERVER, "post_game", side_effect=fake_post):
             result = SERVER.claim_national_salary(self.sess)
 
         self.assertTrue(result["success"])
+        self.assertEqual(result["copper"], 642850)
+        self.assertEqual(result["food"], 1190689)
+        self.assertEqual(result["message"], "领取成功642850铜钱、1190689粮食")
         self.assertEqual(calls, [[(0x314B, b"\x01")]])
+
+    def test_salary_receipt_already_claimed_and_no_office(self) -> None:
+        already = SERVER.parse_salary_receipt(
+            bytes([1, 0]) + SERVER.utf("今日已领取俸禄，无法再次领取")
+        )
+        no_office = SERVER.parse_salary_receipt(
+            bytes([0, 0]) + SERVER.utf("只有官员才能领取俸禄")
+        )
+        self.assertTrue(already["success"])
+        self.assertTrue(already["alreadyClaimed"])
+        self.assertEqual(already["message"], "无法再次领取")
+        self.assertFalse(no_office["success"])
+        self.assertTrue(no_office["noOffice"])
+        self.assertEqual(no_office["message"], "无官职无法领取")
+
+    def test_salary_capture_sample_from_20260725(self) -> None:
+        payload = bytes.fromhex(
+            "01000040e9a286e58f96e59bbde5aeb6e4bfb8e7a684e68890e58a9fefbc8c"
+            "e88eb7e5be97e9939ce992b1363432383530efbc8ce7b2aee9a39f31313930"
+            "363839e38082"
+        )
+        parsed = SERVER.parse_salary_receipt(payload)
+        self.assertTrue(parsed["success"])
+        self.assertEqual(parsed["copper"], 642850)
+        self.assertEqual(parsed["food"], 1190689)
+        self.assertEqual(parsed["message"], "领取成功642850铜钱、1190689粮食")
+
+    def test_national_citizen_skips_office_gated_tasks_and_records_status(self) -> None:
+        self.sess["roleState"].update({"officeIdUnsigned": 0x0100, "officeName": "国民"})
+        with patch.object(SERVER, "ACCOUNT_STATE_DB_READY", False), \
+             patch.object(SERVER, "DAILY_TASK_COMPLETIONS", {}), \
+             patch.object(SERVER, "persist_runtime_state"), \
+             patch.object(SERVER, "post_game") as post_game, \
+             patch.object(SERVER, "query_national_cities") as query_cities, \
+             patch.object(SERVER, "query_general_visit_candidates") as query_candidates, \
+             patch.object(SERVER, "account_log"), \
+             patch.object(SERVER, "database_resolve_important_notice"):
+            result = SERVER.execute_daily_once_tasks(self.sess, {
+                "salary": True,
+                "nationalCollect": True,
+                "generalVisit": True,
+                "generalVisitGeneralIds": ["1001"],
+            })
+            states = {
+                item["key"]: item
+                for item in SERVER.current_daily_task_completions(self.sess)
+            }
+
+        post_game.assert_not_called()
+        query_cities.assert_not_called()
+        query_candidates.assert_not_called()
+        for key in ("salary", "nationalCollect", "generalVisit"):
+            with self.subTest(task=key):
+                self.assertTrue(result[key]["success"])
+                self.assertTrue(result[key]["completed"])
+                self.assertTrue(result[key]["skipped"])
+                self.assertEqual(result[key]["skipReason"], "national-citizen")
+                self.assertTrue(states[key]["completed"])
+                self.assertTrue(states[key]["skipped"])
+                self.assertEqual(states[key]["statusText"], "已做（国民跳过）")
+
+    def test_national_citizen_candidate_query_does_not_send_game_request(self) -> None:
+        self.sess["roleState"] = {"officeId": "0x0100"}
+        with patch.object(SERVER, "post_game") as post_game:
+            result = SERVER.query_general_visit_candidates(self.sess)
+
+        post_game.assert_not_called()
+        self.assertTrue(result["completed"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["generals"], [])
+
+    def test_only_national_citizen_matches_the_office_gate(self) -> None:
+        for office_state in (
+            {"officeName": "侍郎", "officeId": 0x0202},
+            {"officeName": "游民", "officeId": 0x0000},
+            {"officeName": "细作", "officeId": 0x0001},
+            {},
+        ):
+            with self.subTest(office_state=office_state):
+                sess = {**self.sess, "roleState": office_state}
+                self.assertFalse(SERVER.role_is_national_citizen(sess))
 
     def test_national_list_payload_categories_exclude_small_city(self) -> None:
         payloads = []
@@ -254,31 +340,106 @@ class DailyCountryFeatureTests(unittest.TestCase):
         self.assertTrue(result["partialSuccess"])
 
     def test_city_lord_collects_every_owned_city_after_one_failure(self) -> None:
-        fiefs = {"fiefs": [{"cityName": "甲"}, {"cityName": "乙"}, {"cityName": "丙"}]}
+        cities = {"cities": [
+            {"cityName": "甲", "name": "甲"},
+            {"cityName": "乙", "name": "乙"},
+            {"cityName": "丙", "name": "丙"},
+        ]}
         attempted = []
 
-        with patch.object(SERVER, "query_own_fiefs", return_value=fiefs), \
-             patch.object(SERVER, "collect_city_lord", side_effect=lambda _s, fief: (
-                 attempted.append(fief["cityName"]) or {"success": fief["cityName"] != "乙"}
+        with patch.object(SERVER, "query_owned_cities", return_value=cities), \
+             patch.object(SERVER, "collect_city_lord", side_effect=lambda _s, city: (
+                 attempted.append(city["cityName"]) or {"success": city["cityName"] != "乙"}
              )):
             result = SERVER.execute_city_lord_collect(self.sess)
 
         self.assertEqual(attempted, ["甲", "乙", "丙"])
         self.assertEqual(result["attemptedCount"], 3)
         self.assertFalse(result["completed"])
+        self.assertEqual(result["listOpcode"], "0x1318/0x8318")
+
+    def test_owned_city_list_parser_matches_20260725_nanhua_capture(self) -> None:
+        # ctf_out/passive_pcap_hotspot_20260725_010719 flow #131
+        payload = bytes.fromhex(
+            "0000000000000000025b040006e58d97e58c96006800140501003d"
+            "000000000000001effffffff000003e80009e5aebfe4bba3e88b91"
+            "55000000030d4000061a8000000001000186a0000000010007a120"
+            "00000000000000000000"
+        )
+        parsed = SERVER.parse_owned_city_list(payload)
+        self.assertTrue(parsed["success"])
+        self.assertEqual(parsed["count"], 1)
+        city = parsed["cities"][0]
+        self.assertEqual(city["cityName"], "南化")
+        self.assertEqual(city["x"], 104)
+        self.assertEqual(city["y"], 20)
+        self.assertEqual(city["ownerName"], "宿代苑")
+        self.assertEqual(city["ownerLevel"], 85)
+        self.assertEqual(
+            SERVER.build_owned_city_list_payload(2).hex(),
+            "00000000000000020000",
+        )
+        self.assertEqual(
+            SERVER.build_city_lord_collect_payload("南化").hex(),
+            "010006e58d97e58c9600",
+        )
+
+    def test_city_lord_uses_owned_city_list_not_fief_list(self) -> None:
+        cities = {"cities": [{"cityName": "南化", "name": "南化", "x": 104, "y": 20}]}
+        attempted = []
+        with patch.object(SERVER, "query_owned_cities", return_value=cities) as query, \
+             patch.object(SERVER, "query_raid_fiefs") as fiefs, \
+             patch.object(SERVER, "collect_city_lord", side_effect=lambda _s, city: (
+                 attempted.append(city["cityName"]) or {"success": True, "message": "铜钱+20000；粮食+40000"}
+             )):
+            result = SERVER.execute_city_lord_collect(self.sess)
+
+        query.assert_called_once()
+        fiefs.assert_not_called()
+        self.assertEqual(attempted, ["南化"])
+        self.assertTrue(result["success"])
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["ownedCityCount"], 1)
+
+    def test_city_lord_ineligible_replies_count_as_completed_not_failure(self) -> None:
+        cities = {"cities": [
+            {"cityName": "洛阳", "name": "洛阳"},
+            {"cityName": "太良", "name": "太良"},
+        ]}
+
+        def collect(_sess, city):
+            name = city["cityName"]
+            if name == "洛阳":
+                return {
+                    "success": False,
+                    "message": "无法进行征收；都城及其周边与之相联的门户城池不能进行征收",
+                }
+            return {
+                "success": False,
+                "message": "无法进行征收；只有城主可以使用城主征收功能",
+            }
+
+        with patch.object(SERVER, "query_owned_cities", return_value=cities), \
+             patch.object(SERVER, "collect_city_lord", side_effect=collect):
+            result = SERVER.execute_city_lord_collect(self.sess)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["ineligibleCount"], 2)
+        self.assertEqual(result["failureCount"], 0)
 
     def test_city_lord_uses_city_name_not_display_fief_name(self) -> None:
-        fiefs = {
-            "fiefs": [
-                {"name": "利萍丰基地", "fiefName": "利萍丰基地", "cityName": "洛阳"},
-                {"name": "广成关封地", "fiefName": "广成关封地", "cityName": "广成关"},
+        cities = {
+            "cities": [
+                {"name": "洛阳", "cityName": "洛阳"},
+                {"name": "广成关", "cityName": "广成关"},
             ]
         }
         attempted = []
 
-        with patch.object(SERVER, "query_own_fiefs", return_value=fiefs), \
-             patch.object(SERVER, "collect_city_lord", side_effect=lambda _s, fief: (
-                 attempted.append(SERVER._daily_city_name(fief)) or {"success": True}
+        with patch.object(SERVER, "query_owned_cities", return_value=cities), \
+             patch.object(SERVER, "collect_city_lord", side_effect=lambda _s, city: (
+                 attempted.append(SERVER._daily_city_name(city)) or {"success": True}
              )):
             result = SERVER.execute_city_lord_collect(self.sess)
 
@@ -286,7 +447,7 @@ class DailyCountryFeatureTests(unittest.TestCase):
         self.assertEqual(attempted, ["洛阳", "广成关"])
 
     def test_city_lord_no_owned_city_is_terminal_no_target(self) -> None:
-        with patch.object(SERVER, "query_own_fiefs", return_value={"fiefs": []}):
+        with patch.object(SERVER, "query_owned_cities", return_value={"cities": [], "count": 0}):
             result = SERVER.execute_city_lord_collect(self.sess)
 
         self.assertTrue(result["success"])
@@ -323,7 +484,7 @@ class DailyCountryFeatureTests(unittest.TestCase):
         self.assertEqual(attempted, ["3", "2"])
         self.assertTrue(result["success"])
 
-    def test_general_visit_rejected_invitation_is_terminal_for_today(self) -> None:
+    def test_general_visit_rejected_invitation_is_success_for_today(self) -> None:
         candidates = [
             {"id": "1", "name": "甲", "captiveState": 0},
             {"id": "2", "name": "乙", "captiveState": 0},
@@ -333,9 +494,11 @@ class DailyCountryFeatureTests(unittest.TestCase):
         def visit(_sess, general):
             attempted.append(general["id"])
             return {
-                "success": False,
+                "success": True,
                 "completed": True,
                 "invitationResolved": True,
+                "invitationRejected": True,
+                "recruited": False,
                 "status": 0,
                 "message": "甲拒绝了阁下的邀请，请再接再厉",
             }
@@ -345,9 +508,12 @@ class DailyCountryFeatureTests(unittest.TestCase):
             result = SERVER.execute_general_visit(self.sess, ["1", "2"])
 
         self.assertEqual(attempted, ["1"])
-        self.assertFalse(result["success"])
+        self.assertTrue(result["success"])
         self.assertTrue(result["completed"])
         self.assertTrue(result["visitResolved"])
+        self.assertTrue(result["invitationRejected"])
+        self.assertIn("名将拜访成功", result["message"])
+        self.assertIn("暂未接受征召", result["message"])
 
     def test_general_visit_receipt_marks_rejection_and_duplicate_as_completed(self) -> None:
         rejected = SERVER.parse_general_visit_receipt(
@@ -357,11 +523,14 @@ class DailyCountryFeatureTests(unittest.TestCase):
             visit_receipt(-2, "不可拜访，本日已拜访")
         )
 
-        self.assertFalse(rejected["success"])
+        self.assertTrue(rejected["success"])
         self.assertTrue(rejected["completed"])
         self.assertTrue(rejected["invitationResolved"])
+        self.assertTrue(rejected["invitationRejected"])
+        self.assertFalse(rejected["recruited"])
         self.assertTrue(duplicate["completed"])
         self.assertTrue(duplicate["alreadyVisited"])
+        self.assertFalse(duplicate["success"])
 
     def test_general_visit_list_short_business_receipt_does_not_overread(self) -> None:
         payload = bytes([0xFE]) + SERVER.utf("不可拜访，本日已拜访")
