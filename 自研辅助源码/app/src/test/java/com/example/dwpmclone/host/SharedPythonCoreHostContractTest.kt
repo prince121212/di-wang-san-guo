@@ -43,6 +43,7 @@ class SharedPythonCoreHostContractTest {
         assertTrue(host.contains("\"account_records_snapshot_json\""))
         assertTrue(host.contains("\"account_record_presentation_json\""))
         assertTrue(host.contains("SharedAccountStateGateway"))
+        assertTrue(host.contains("\"dispatch_json\""))
     }
 
     @Test
@@ -118,6 +119,14 @@ class SharedPythonCoreHostContractTest {
         assertTrue(store.contains("secrets\": \"platform-ports-only"))
         assertTrue(store.contains("sensitive field cannot enter account store"))
         assertFalse(store.contains("load_password("))
+
+        val controller = source(
+            "app/src/main/java/com/example/dwpmclone/ui/web/LocalAssistantApiController.kt",
+            "src/main/java/com/example/dwpmclone/ui/web/LocalAssistantApiController.kt"
+        )
+        assertTrue(controller.contains("GET\" to \"/api/accounts\" -> sharedCoreAccounts"))
+        assertTrue(controller.contains("dispatchAccountProjection"))
+        assertFalse(controller.contains("private fun accountArray()"))
     }
 
     private fun source(vararg candidates: String): String {

@@ -86,7 +86,7 @@ class LocalAssistantApiController(
             "GET" to "/api/core/operations" -> sharedCoreOperations(request)
             "GET" to "/api/core/operations/status" -> sharedCoreOperationStatus(request)
             "GET" to "/api/core/verification/protocol" -> sharedCoreProtocolVerification(request)
-            "GET" to "/api/accounts" -> ok(request, JSONObject().put("accounts", accountArray()))
+            "GET" to "/api/accounts" -> sharedCoreAccounts(request)
             "GET" to "/api/areas" -> ok(request, JSONObject().put("areas", JSONArray()).put("updatedAt", System.currentTimeMillis()))
             "GET" to "/api/accounts/settings" -> accountSettings(request)
             "GET" to "/api/logs/system" -> systemLogs(request)
@@ -139,8 +139,26 @@ class LocalAssistantApiController(
             .put("androidBusinessOwner", "mixed-by-route-contract")
             .put("androidLegacyBusinessOwner", "android-kotlin")
             .put("sharedPythonMigratedRoute", "GET /api/health")
+            .put("sharedPythonMigratedRoutes", JSONArray()
+                .put("GET /api/health")
+                .put("GET /api/accounts"))
             .put("androidPythonHost", sharedPythonCore.metrics())
         return AssistantApiResponse(request.id, status, health)
+    }
+
+    private fun sharedCoreAccounts(request: AssistantApiRequest): AssistantApiResponse {
+        val nowMillis = System.currentTimeMillis()
+        val publicAccounts = accounts.listPublicAccounts()
+        val dispatched = dispatchAccountProjection(
+            publicAccounts,
+            nowMillis,
+            request.id
+        )
+        return AssistantApiResponse(
+            request.id,
+            dispatched.optInt("status", 500),
+            dispatched.optJSONObject("body") ?: JSONObject()
+        )
     }
 
     private fun submitSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
@@ -309,7 +327,7 @@ class LocalAssistantApiController(
             AssistantForegroundService.stop(appContext)
         }
         logs.append("账号 ${account.id} 已从手机本地删除", "account", account.id)
-        return ok(request, JSONObject().put("accounts", accountArray()))
+        return sharedCoreAccounts(request)
     }
 
     private fun startSavedTasks(request: AssistantApiRequest): AssistantApiResponse {
@@ -629,62 +647,66 @@ class LocalAssistantApiController(
         )
     }
 
-    private fun accountArray(): JSONArray = JSONArray().apply {
-        accounts.listPublicAccounts().forEach { put(accountJson(it)) }
+    private fun accountJson(account: GameAccount): JSONObject {
+        val publicAccount = accounts.getPublic(account.id) ?: account
+        val nowMillis = System.currentTimeMillis()
+        val dispatched = dispatchAccountProjection(
+            listOf(publicAccount),
+            nowMillis,
+            "account-card-${account.id}-$nowMillis",
+            accountRefs = listOf(account.id.toString())
+        )
+        check(dispatched.optInt("status", 500) == 200) {
+            dispatched.optJSONObject("body")?.optString("error")
+                ?: "共享账号展示投影失败"
+        }
+        return dispatched.getJSONObject("body")
+            .getJSONArray("accounts")
+            .optJSONObject(0)
+            ?: throw IllegalStateException("共享账号展示投影缺少账号")
     }
 
-    private fun accountJson(account: GameAccount): JSONObject {
-        val lifecycle = sharedPythonCore.accountLifecycleDecision(
-            accountEnabled = account.enabled,
-            executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive(),
-            loginState = account.loginState,
-            sourceMode = account.session?.sourceMode ?: 0,
-            forceValidation = false,
-            lastValidatedAtMillis = account.session?.channelExtra
-                ?.get("lastValidatedAt")
-                ?.toLongOrNull(),
-            nowMillis = System.currentTimeMillis()
+    private fun dispatchAccountProjection(
+        sourceAccounts: List<GameAccount>,
+        nowMillis: Long,
+        requestId: String,
+        accountRefs: List<String>? = null
+    ): JSONObject {
+        val runtime = JSONObject()
+        sourceAccounts.forEach { account ->
+            runtime.put(account.id.toString(), accountRuntimeFacts(account))
+        }
+        val body = JSONObject().put("runtimeByAccount", runtime)
+        accountRefs?.let { refs ->
+            body.put("accountRefs", JSONArray().apply { refs.forEach(::put) })
+        }
+        return sharedPythonCore.dispatch(
+            "GET",
+            "/api/accounts",
+            body,
+            JSONObject()
+                .put("requestId", requestId)
+                .put("source", "android-webview")
+                .put("platform", "android")
+                .put("executionOwnerActive", AssistantForegroundService.isExecutionOwnerActive())
+                .put("nowMillis", nowMillis)
         )
-        val extra = account.session?.channelExtra.orEmpty()
-        val level = extra["level"]?.toIntOrNull()
+    }
+
+    private fun accountRuntimeFacts(account: GameAccount): JSONObject {
         val retry = reconnects.state(account.id)
-        val checkedAt = extra["lastHeartbeatAt"]?.toLongOrNull()
-            ?: extra["lastValidatedAt"]?.toLongOrNull()
-        val lastError = extra["lastReloginError"]
-            ?: extra["lastOfflineReason"]
-            ?: extra["lastNetworkPauseReason"]
-            ?: retry.reason
-        val nowMillis = System.currentTimeMillis()
         val overview = taskOverview(account.id)
-        val hasLiveSession = lifecycle.mayUseLiveSession
         return JSONObject()
-            .put("sessionId", account.id.toString())
-            .put("username", account.username)
-            .put("displayName", account.displayName ?: "${account.username}@${account.serverName}")
-            .put("serverQuery", account.serverName)
-            .put("areaName", account.serverName)
-            .put("roleName", account.monarchName ?: account.displayName)
-            .put("level", level ?: JSONObject.NULL)
-            .put("status", lifecycle.status)
-            .put("statusText", lifecycle.statusText)
-            .put("started", lifecycle.started)
-            .put("desiredStarted", account.enabled)
-            .put("hasLiveSession", hasLiveSession)
-            .put("lastHeartbeat", checkedAt?.let {
-                JSONObject()
-                    .put("online", lifecycle.status == "online")
-                    .put("message", if (lifecycle.status == "online") "在线" else lastError)
-                    .put("checkedAt", it)
-            } ?: JSONObject.NULL)
-            .put("lastError", lastError)
-            .put("reconnectState", if (retry.nextAttemptAtMillis > nowMillis) "countdown" else "")
-            .put("reconnectAt", retry.nextAttemptAtMillis.takeIf { it > 0L } ?: JSONObject.NULL)
-            .put(
-                "reconnectRemainingSec",
-                ((retry.nextAttemptAtMillis - nowMillis).coerceAtLeast(0L) + 999L) / 1_000L
-            )
+            .put("reconnect", JSONObject()
+                .put("failures", retry.failures)
+                .put("nextAttemptAtMillis", retry.nextAttemptAtMillis)
+                .put("reason", retry.reason)
+                .put("failureKind", retry.failureKind))
             .put("accountHabits", accountHabits(account.id))
-            .put("session", if (hasLiveSession) sessionJson(account) else JSONObject.NULL)
+            .put(
+                "session",
+                if (account.session?.sourceMode == 1) sessionJson(account) else JSONObject.NULL
+            )
             .put("recentGameRequests", JSONArray().apply {
                 requestHealth.recent(account.id).forEach { item ->
                     put(JSONObject()
@@ -694,8 +716,7 @@ class LocalAssistantApiController(
                 }
             })
             .put("dailyStats", dailyStatsJson(account.id))
-            .put("taskStack", overview.optJSONArray("taskStack") ?: JSONArray())
-            .put("notices", overview.optJSONArray("notices") ?: JSONArray())
+            .put("taskOverview", overview)
     }
 
     private fun sessionJson(account: GameAccount): JSONObject {

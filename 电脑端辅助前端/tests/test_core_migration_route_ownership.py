@@ -68,6 +68,12 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(health["currentDesktopOwner"], "shared-python")
         self.assertEqual(health["currentAndroidOwner"], "shared-python")
+        accounts = next(
+            row for row in normalized["routes"]
+            if (row["method"], row["path"]) == ("GET", "/api/accounts")
+        )
+        self.assertEqual(accounts["currentDesktopOwner"], "desktop-python")
+        self.assertEqual(accounts["currentAndroidOwner"], "shared-python")
 
     def test_desktop_handler_paths_are_all_classified(self) -> None:
         source = DESKTOP_SERVER.read_text(encoding="utf-8")

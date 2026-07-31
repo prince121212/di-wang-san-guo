@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .account.lifecycle import AccountLifecyclePolicy
+from .account.presentation import project_account_cards
 from .account.store import DurableAccountStore
 from .account.state_machine import reduce_account_event
 from .contracts import load_behavior_contract, load_route_ownership
@@ -83,6 +84,7 @@ class CoreFacade:
         )
         self._local_handlers: Dict[tuple[str, str], LocalRouteHandler] = {
             ("GET", "/api/health"): self._health_route,
+            ("GET", "/api/accounts"): self._accounts_route,
         }
         self._network_handlers: Dict[
             tuple[str, str],
@@ -667,6 +669,35 @@ class CoreFacade:
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
         return self.health()
+
+    def _accounts_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtime_by_account = body.get("runtimeByAccount") or {}
+        if not isinstance(runtime_by_account, dict):
+            raise ValueError("runtimeByAccount must be an object")
+        account_refs = body.get("accountRefs")
+        if account_refs is not None and not isinstance(account_refs, list):
+            raise ValueError("accountRefs must be an array")
+        snapshot = self._accounts.presentation_snapshot()
+        return {
+            "ok": True,
+            "accounts": project_account_cards(
+                snapshot["accounts"],
+                runtime_by_account,
+                self._account_lifecycle,
+                execution_owner_active=bool(
+                    context.get("executionOwnerActive", False)
+                ),
+                now_millis=int(
+                    context.get("nowMillis")
+                    or self._ports.clock.now_millis()
+                ),
+                account_refs=account_refs,
+            ),
+        }
 
     def _publish_operation_event(self, event: Dict[str, Any]) -> None:
         self._ports.events.publish(event)

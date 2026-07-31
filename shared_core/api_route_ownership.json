@@ -18,6 +18,12 @@
         "path": "/api/health",
         "desktop": "shared-python",
         "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/accounts",
+        "desktop": "desktop-python",
+        "android": "shared-python"
       }
     ]
   },

@@ -40,6 +40,81 @@ def public_account(account_ref: str = "202") -> dict:
 
 
 class SharedAccountStoreTests(unittest.TestCase):
+    def test_accounts_route_uses_shared_lifecycle_and_public_runtime_projection(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        try:
+            facade.account_record_upsert(public_account())
+            response = facade.dispatch(
+                "GET",
+                "/api/accounts",
+                {
+                    "runtimeByAccount": {
+                        "202": {
+                            "reconnect": {
+                                "failures": 2,
+                                "nextAttemptAtMillis": 61_000,
+                                "reason": "network unavailable",
+                                "failureKind": "network",
+                            },
+                            "accountHabits": {"config": {"autoStart": True}},
+                            "session": {"role": {"roleName": "离线角色"}},
+                            "recentGameRequests": [{"status": "success"}],
+                            "dailyStats": {"brushYellowCount": 3},
+                            "taskOverview": {
+                                "taskStack": [{"key": "daily"}],
+                                "notices": [{"key": "warning"}],
+                            },
+                        }
+                    }
+                },
+                {
+                    "executionOwnerActive": False,
+                    "nowMillis": 1_000,
+                },
+            )
+
+            self.assertEqual(response.status, 200)
+            card = response.body["accounts"][0]
+            self.assertEqual(card["sessionId"], "202")
+            self.assertEqual(card["roleName"], None)
+            self.assertEqual(card["level"], 88)
+            self.assertEqual(card["status"], "stopped")
+            self.assertFalse(card["started"])
+            self.assertFalse(card["hasLiveSession"])
+            self.assertIsNone(card["session"])
+            self.assertEqual(card["reconnectState"], "countdown")
+            self.assertEqual(card["reconnectRemainingSec"], 60)
+            self.assertEqual(card["lastError"], "network unavailable")
+            self.assertEqual(card["accountHabits"]["config"]["autoStart"], True)
+            self.assertEqual(card["taskStack"][0]["key"], "daily")
+            self.assertEqual(card["notices"][0]["key"], "warning")
+        finally:
+            facade.close()
+
+    def test_accounts_route_does_not_publish_zero_as_a_retry_deadline(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        try:
+            facade.account_record_upsert(public_account())
+            response = facade.dispatch(
+                "GET",
+                "/api/accounts",
+                {
+                    "runtimeByAccount": {
+                        "202": {
+                            "reconnect": {"nextAttemptAtMillis": 0},
+                        }
+                    }
+                },
+                {"nowMillis": 1_000},
+            )
+
+            card = response.body["accounts"][0]
+            self.assertIsNone(card["reconnectAt"])
+            self.assertEqual(card["reconnectState"], "")
+            self.assertEqual(card["reconnectRemainingSec"], 0)
+        finally:
+            facade.close()
+
     def test_round_trip_restart_and_atomic_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "accounts-v1.json"

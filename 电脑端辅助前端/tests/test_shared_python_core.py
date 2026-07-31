@@ -69,14 +69,17 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertIn("assistant_behavior_contract.json", manifest["files"])
         self.assertTrue(all(not path.startswith("/") for path in manifest["files"]))
 
-    def test_phase_five_dispatch_declares_but_fails_closed_for_unmigrated_routes(self) -> None:
+    def test_dispatch_serves_migrated_routes_and_fails_closed_for_the_rest(self) -> None:
         facade = CoreFacade(ROOT / "shared_core")
 
         health = facade.dispatch_local("GET", "/api/health?probe=1")
-        unmigrated = facade.dispatch_local("GET", "/api/accounts")
+        accounts = facade.dispatch_local("GET", "/api/accounts")
+        unmigrated = facade.dispatch_local("GET", "/api/accounts/settings")
 
         self.assertEqual(health.status, 200)
         self.assertTrue(health.body["ok"])
+        self.assertEqual(accounts.status, 200)
+        self.assertEqual(accounts.body, {"ok": True, "accounts": []})
         self.assertEqual(unmigrated.status, 501)
         self.assertEqual(unmigrated.body["code"], "ROUTE_NOT_MIGRATED")
         self.assertIn("not migrated", unmigrated.body["error"])
