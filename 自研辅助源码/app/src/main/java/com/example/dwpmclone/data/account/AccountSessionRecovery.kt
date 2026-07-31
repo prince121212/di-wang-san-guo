@@ -208,6 +208,17 @@ class AccountSessionRecovery(
     private val stateTransitions: AccountStateTransitionSource,
     private val probe: SessionHealthProbe = RealSessionHealthProbe(),
 ) {
+    fun prepareProcessRecovery(nowMillis: Long) {
+        accounts.listAccounts().forEach { account ->
+            val transition = transition(
+                account,
+                AccountStateEvents.PROCESS_RECOVERED,
+                nowMillis
+            )
+            applyTransition(account, transition)
+        }
+    }
+
     fun reconcile(nowMillis: Long, forceValidation: Boolean): SessionRecoverySummary {
         var online = 0
         var paused = 0

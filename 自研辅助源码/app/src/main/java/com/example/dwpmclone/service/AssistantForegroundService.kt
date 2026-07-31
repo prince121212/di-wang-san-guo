@@ -139,6 +139,7 @@ class AssistantForegroundService : Service() {
             stateTransitions = SharedPythonCoreHost.get(this),
             probe = RealSessionHealthProbe(serviceReadOnlyProtocol),
         )
+        sessionRecovery.prepareProcessRecovery(System.currentTimeMillis())
         // 后台是绝大多数真实游戏请求的来源，这里也安装一次采集入口，
         // 保证开机自启（未打开界面）时账号卡的健康点依然有数据。
         requestHealth = RequestHealthRepository(this)

@@ -175,6 +175,27 @@ class SharedAccountStateMachineTests(unittest.TestCase):
         self.assertFalse(with_session["liveSessionUsable"])
         self.assertFalse(without_session["liveSessionUsable"])
 
+    def test_process_recovery_preserves_persisted_future_backoff(self) -> None:
+        waiting = reduce_account_event(
+            {
+                "desiredStarted": True,
+                "loginState": "REAL_PROTOCOL_OFFLINE",
+                "sessionCredentialPresent": False,
+                "failureKind": "server",
+                "failureCount": 2,
+                "nextRetryAtMillis": 90_000,
+                "lastError": "HTTP 403",
+            },
+            EVENT_PROCESS_RECOVERED,
+            now_millis=10_000,
+        )
+
+        self.assertEqual(waiting["nextOperation"], "wait-retry")
+        self.assertEqual(waiting["nextRetryAtMillis"], 90_000)
+        self.assertEqual(waiting["failureKind"], "server")
+        self.assertEqual(waiting["failureCount"], 2)
+        self.assertFalse(waiting["liveSessionUsable"])
+
     def test_facade_json_api_is_deterministic_and_rejects_unknown_events(self) -> None:
         facade = CoreFacade(ROOT / "shared_core")
         try:

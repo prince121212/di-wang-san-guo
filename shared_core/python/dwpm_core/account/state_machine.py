@@ -218,12 +218,24 @@ def reduce_account_event(
         return output
 
     if normalized_event == EVENT_PROCESS_RECOVERED:
+        persisted_retry_at = _optional_nonnegative_int(
+            state.get("nextRetryAtMillis")
+        )
         if not desired_started:
             output.update(
                 loginState=HOST_LOGIN_STATES[STOPPED],
                 liveSessionUsable=False,
                 nextRetryAtMillis=None,
                 nextOperation="none",
+            )
+        elif persisted_retry_at is not None and persisted_retry_at > now:
+            output.update(
+                loginState=HOST_LOGIN_STATES[
+                    NETWORK_PAUSED if session_present else NEED_RELOGIN
+                ],
+                liveSessionUsable=False,
+                nextRetryAtMillis=persisted_retry_at,
+                nextOperation="wait-retry",
             )
         elif session_present:
             output.update(
