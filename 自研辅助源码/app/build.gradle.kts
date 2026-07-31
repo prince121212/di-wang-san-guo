@@ -75,7 +75,11 @@ val syncAssistantWebAssets by tasks.registering(Sync::class) {
         into("assistant")
     }
     from(rootProject.file("../shared_core")) {
-        include("assistant_behavior_contract.json", "feature_parity_matrix.json")
+        include(
+            "api_route_ownership.json",
+            "assistant_behavior_contract.json",
+            "feature_parity_matrix.json"
+        )
         into("shared_core")
     }
     into(generatedAssistantAssets)

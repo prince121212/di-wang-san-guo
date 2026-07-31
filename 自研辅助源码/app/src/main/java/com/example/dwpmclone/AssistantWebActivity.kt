@@ -15,6 +15,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.example.dwpmclone.ui.guide.NativeGuideBridge
 import com.example.dwpmclone.ui.hosting.BackgroundHostingPermissionCoordinator
+import com.example.dwpmclone.ui.web.AssistantApiLaneClassifierAssetLoader
 import com.example.dwpmclone.ui.web.AssistantWebBridge
 import com.example.dwpmclone.ui.web.LocalAssistantApiController
 import java.io.ByteArrayInputStream
@@ -49,7 +50,8 @@ class AssistantWebActivity : Activity() {
             webView,
             LocalAssistantApiController(this) {
                 hostingPermissions.requestForStartedHosting()
-            }
+            },
+            AssistantApiLaneClassifierAssetLoader.load(this)
         )
         webView.addJavascriptInterface(assistantBridge, NATIVE_API_NAME)
         webView.addJavascriptInterface(NativeGuideBridge(this), NATIVE_GUIDE_NAME)
