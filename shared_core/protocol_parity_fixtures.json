@@ -1,6 +1,26 @@
 {
   "schemaVersion": 1,
   "fixtures": {
+    "wireEnvelopeV1": {
+      "utfText": "帝王",
+      "utfHex": "0006e5b89de78e8b",
+      "request": {
+        "header": "test`header",
+        "timestampMillis": 1700000000123,
+        "dm": 123456789,
+        "commands": [
+          { "opcode": "0x1016", "payloadHex": "0102" },
+          { "opcode": "0x3110", "payloadHex": "" }
+        ],
+        "expectedHex": "000b74657374606865616465720000018bcfe5687b0200000000075bcd150000000000000000000210160000010200000000075bcd150000000000000000000031100000"
+      },
+      "plainResponseHex": "0101000000000000000100000000000000020000000003801600616263",
+      "plainResponsePayloadHex": "616263",
+      "obfuscatedResponseHex": "0101000000000000000100000000000000020100000003801600f433e6",
+      "obfuscatedResponsePayloadHex": "0102ff",
+      "expectedOpcode": "0x8016",
+      "xy": { "x": 18, "y": 255, "hex": "001200ff" }
+    },
     "brushCenterMajorityFief": {
       "generalIds": [11, 12, 13],
       "generals": [

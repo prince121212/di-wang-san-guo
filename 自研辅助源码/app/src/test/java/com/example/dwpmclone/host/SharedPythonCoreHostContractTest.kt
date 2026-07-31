@@ -50,6 +50,7 @@ class SharedPythonCoreHostContractTest {
 
         assertTrue(controller.contains("/api/core/operations/simulate"))
         assertTrue(controller.contains("/api/core/operations/status"))
+        assertTrue(controller.contains("/api/core/verification/protocol"))
         assertTrue(controller.contains("ApplicationInfo.FLAG_DEBUGGABLE"))
         assertTrue(operationCore.contains("idempotencyKey"))
         assertTrue(operationCore.contains("temporary.replace(self._path)"))

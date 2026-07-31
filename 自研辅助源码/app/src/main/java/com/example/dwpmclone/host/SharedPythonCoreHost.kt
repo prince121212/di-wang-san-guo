@@ -61,6 +61,8 @@ class SharedPythonCoreHost private constructor(context: Context) {
 
     fun operationsSnapshot(): JSONObject = callJson("operations_snapshot_json")
 
+    fun protocolFixtureReport(): JSONObject = callJson("protocol_fixture_report_json")
+
     fun cancelOperation(operationId: String): JSONObject =
         callJson("cancel_operation_json", operationId)
 

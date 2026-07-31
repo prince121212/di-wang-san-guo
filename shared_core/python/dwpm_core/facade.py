@@ -10,6 +10,7 @@ from .contracts import load_route_ownership
 from .hashing import compute_core_hash
 from .models import CoreResponse
 from .operations import DurableOperationStore
+from .verification import verify_protocol_fixtures
 from .version import CORE_ID, CORE_VERSION
 
 
@@ -105,6 +106,12 @@ class CoreFacade:
 
     def cancel_operation_json(self, operation_id: str) -> str:
         return self._json(self.cancel_operation(operation_id))
+
+    def protocol_fixture_report(self) -> Dict[str, Any]:
+        return verify_protocol_fixtures()
+
+    def protocol_fixture_report_json(self) -> str:
+        return self._json(self.protocol_fixture_report())
 
     def close(self) -> None:
         self._operations.close()

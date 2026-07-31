@@ -59,6 +59,47 @@ if str(SHARED_PYTHON_SOURCE_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_PYTHON_SOURCE_DIR))
 
 from dwpm_core import CoreFacade
+from dwpm_core.features.expedition import (
+    build_brush_payloads as shared_build_brush_payloads,
+    build_brush_payloads_variant as shared_build_brush_payloads_variant,
+    build_dungeon_expedition_payload as shared_build_dungeon_expedition_payload,
+    build_dungeon_prepare_payload as shared_build_dungeon_prepare_payload,
+    build_lossless_expedition_payload as shared_build_lossless_expedition_payload,
+    build_lossless_prepare_payload as shared_build_lossless_prepare_payload,
+    build_mine_payloads as shared_build_mine_payloads,
+    build_raid_expedition_payload as shared_build_raid_expedition_payload,
+    build_raid_prepare_payload as shared_build_raid_prepare_payload,
+)
+from dwpm_core.features.formation import (
+    SOLDIER_CODE_NAMES as SHARED_SOLDIER_CODE_NAMES,
+    SOLDIER_TYPE_CODES as SHARED_SOLDIER_TYPE_CODES,
+    build_assign_troops_payload as shared_build_assign_troops_payload,
+    build_heal_all_payloads as shared_build_heal_all_payloads,
+    build_heal_payload as shared_build_heal_payload,
+    build_heal_preinfo_payload as shared_build_heal_preinfo_payload,
+    build_refill_payload as shared_build_refill_payload,
+    parse_assign_troops_response as shared_parse_assign_troops_response,
+    parse_heal_preinfo_response as shared_parse_heal_preinfo_response,
+    parse_heal_response as shared_parse_heal_response,
+    parse_refill_response as shared_parse_refill_response,
+    soldier_type_code as shared_soldier_type_code,
+    soldier_type_name as shared_soldier_type_name,
+)
+from dwpm_core.protocol import (
+    DEFAULT_RESPONSE_OBFUSCATION_KEY,
+    action_gamehex_to_cmd as shared_action_gamehex_to_cmd,
+    deobfuscate_response_payload as shared_deobfuscate_response_payload,
+    encode_utf as shared_encode_utf,
+    encode_xy as shared_encode_xy,
+    make_packet as shared_make_packet,
+    normalize_hex_id as shared_normalize_hex_id,
+    packet_opcode as shared_packet_opcode,
+    packet_payload_bytes as shared_packet_payload_bytes,
+    parse_response as shared_parse_response,
+    printable as shared_printable,
+    read_only_gamehex_to_cmd as shared_read_only_gamehex_to_cmd,
+    read_utf as shared_read_utf,
+)
 
 
 SHARED_PYTHON_CORE = CoreFacade(ROOT.parent / "shared_core")
@@ -277,10 +318,7 @@ PASSPORT = str(PLATFORM_PROFILES[DEFAULT_PLATFORM_KEY]["passport"])
 CHANNEL_NUM = str(PLATFORM_PROFILES[DEFAULT_PLATFORM_KEY]["channel"])
 # 原版 APK 的 Lo/a.o() 从 assets/script/1590000.k 恢复出的响应混淆密钥。
 # Lo/a.P(key, payload) 不是加密算法，而是逐字节循环减 key（模 256）。
-RESPONSE_OBFUSCATION_KEY = bytes.fromhex(
-    "f331e74bd85a8e2ab96791bb02bd32d2"
-    "40494b00351014efe75f2b0e62b2abba"
-)
+RESPONSE_OBFUSCATION_KEY = DEFAULT_RESPONSE_OBFUSCATION_KEY
 CLIENT_HEARTBEAT_INTERVAL_SEC = (
     int(_STARTUP_ACCOUNT_LIFECYCLE_CONTRACT["heartbeatIntervalMillis"]) / 1000.0
 )
@@ -5782,14 +5820,11 @@ def current_daily_stats(sess: dict[str, Any]) -> dict[str, Any]:
 
 
 def utf(s: str) -> bytes:
-    b = s.encode("utf-8")
-    return struct.pack(">H", len(b)) + b
+    return shared_encode_utf(s)
 
 
 def read_utf(payload: bytes, p: int) -> tuple[str, int]:
-    ln = int.from_bytes(payload[p:p + 2], "big")
-    p += 2
-    return payload[p:p + ln].decode("utf-8", errors="ignore"), p + ln
+    return shared_read_utf(payload, p)
 
 
 def http_get(base: str, params: dict[str, Any]) -> str:
@@ -6090,79 +6125,21 @@ def make_packet(
     *,
     header: str | None = None,
 ) -> bytes:
-    out = bytearray()
-    out += utf(str(header or HEADER))
-    out += struct.pack(">q", now_ms())
-    out += struct.pack(">B", len(commands))
-    for opcode, payload in commands:
-        out += struct.pack(">q", int(dm))
-        out += struct.pack(">q", 0)
-        out += struct.pack(">H", len(payload))
-        out += struct.pack(">H", opcode)
-        out += utf("")
-        out += payload
-    return bytes(out)
+    return shared_make_packet(
+        commands,
+        dm,
+        header=str(header or HEADER),
+        timestamp_millis=now_ms(),
+    )
 
 
 def deobfuscate_response_payload(payload: bytes) -> bytes:
     """Mirror the original client's Lo/a.P(Lo/a.o(), payload)."""
-    key = RESPONSE_OBFUSCATION_KEY
-    if not key:
-        raise RuntimeError("游戏响应混淆密钥为空")
-    return bytes((value - key[index % len(key)]) & 0xff for index, value in enumerate(payload))
+    return shared_deobfuscate_response_payload(payload, RESPONSE_OBFUSCATION_KEY)
 
 
 def parse_response(data: bytes) -> list[dict[str, Any]]:
-    p = 0
-    packets: list[dict[str, Any]] = []
-
-    def need(n: int) -> None:
-        if p + n > len(data):
-            raise ValueError(f"parse overflow pos={p} need={n} size={len(data)}")
-
-    def u8() -> int:
-        nonlocal p
-        need(1)
-        v = data[p]
-        p += 1
-        return v
-
-    def i64() -> int:
-        nonlocal p
-        need(8)
-        v = struct.unpack(">q", data[p:p + 8])[0]
-        p += 8
-        return v
-
-    def i32() -> int:
-        nonlocal p
-        need(4)
-        v = struct.unpack(">i", data[p:p + 4])[0]
-        p += 4
-        return v
-
-    def u16() -> int:
-        nonlocal p
-        need(2)
-        v = struct.unpack(">H", data[p:p + 2])[0]
-        p += 2
-        return v
-
-    try:
-        outer = u8()
-        for oi in range(outer):
-            inner = u8()
-            for ii in range(inner):
-                long0 = i64(); long1 = i64(); obf = u8(); ln = i32(); op = u16(); frag = u8()
-                need(ln)
-                payload = data[p:p + ln]
-                p += ln
-                if obf:
-                    payload = deobfuscate_response_payload(payload)
-                packets.append({"outer": oi, "inner": ii, "long0": long0, "long1": long1, "obf": obf, "len": ln, "opcode": op, "frag": frag, "payload": payload})
-    except Exception as e:
-        packets.append({"parseError": str(e), "rawHex": data.hex()[:4096]})
-    return packets
+    return shared_parse_response(data, RESPONSE_OBFUSCATION_KEY)
 
 
 def _http_response_body(raw: bytes) -> tuple[int, dict[str, str], bytes]:
@@ -7497,24 +7474,11 @@ def server_rejected_http(code: int) -> bool:
 
 
 def packet_opcode(packet: dict[str, Any]) -> int | None:
-    value = packet.get("opcode")
-    try:
-        if isinstance(value, str):
-            return int(value, 16) if value.lower().startswith("0x") else int(value)
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return shared_packet_opcode(packet)
 
 
 def packet_payload_bytes(packet: dict[str, Any]) -> bytes:
-    payload = packet.get("payload")
-    if isinstance(payload, (bytes, bytearray)):
-        return bytes(payload)
-    payload_hex = str(packet.get("payloadHex") or "").strip()
-    try:
-        return bytes.fromhex(payload_hex) if payload_hex else b""
-    except ValueError:
-        return b""
+    return shared_packet_payload_bytes(packet)
 
 
 def classify_game_response(
@@ -9476,45 +9440,20 @@ def refresh_owned_fief_locations(sess: dict[str, Any]) -> dict[str, dict[str, An
 
 
 def build_raid_prepare_payload(general_id_hexes: list[str], target_id: int) -> bytes:
-    if not general_id_hexes:
-        raise RuntimeError("掠夺至少需要选择 1 个出征将领")
-    if len(general_id_hexes) > RAID_MAX_GENERALS_PER_FORMATION:
-        raise RuntimeError(
-            f"掠夺编队最多选择{RAID_MAX_GENERALS_PER_FORMATION}名出征将领"
-        )
-    out = bytearray([RAID_ACTION_TYPE, len(general_id_hexes)])
-    for gid in general_id_hexes:
-        out += bytes.fromhex(normalize_hex_id(gid))
-    out += struct.pack(">q", int(target_id))
-    return bytes(out)
+    return shared_build_raid_prepare_payload(general_id_hexes, target_id)
 
 
 def build_raid_expedition_payload(general_id_hexes: list[str], target_id: int) -> bytes:
     # 普通立即出征：正式出征比 0x1520 多 relatedLong=-1 和 3 个 0 字节。
     # 之前抓包里的 relatedLong=1 + 03 19 10 是“精确到达 03:25:16”，不能用于默认掠夺。
-    return (
-        build_raid_prepare_payload(general_id_hexes, target_id)
-        + struct.pack(">q", RAID_IMMEDIATE_RELATED_LONG)
-        + RAID_IMMEDIATE_FLAGS
-    )
+    return shared_build_raid_expedition_payload(general_id_hexes, target_id)
 
 
 def build_mine_payloads(
     general_id_hexes: list[str],
     resource_id: int,
 ) -> tuple[bytes, bytes]:
-    if not general_id_hexes:
-        raise RuntimeError("打矿至少需要选择 1 个出征将领")
-    if len(general_id_hexes) > MINE_MAX_GENERALS_PER_FORMATION:
-        raise RuntimeError(
-            f"打矿编队最多选择{MINE_MAX_GENERALS_PER_FORMATION}名出征将领"
-        )
-    prepare = bytearray([MINE_ACTION_TYPE, len(general_id_hexes)])
-    for general_id_hex in general_id_hexes:
-        prepare += bytes.fromhex(normalize_hex_id(general_id_hex))
-    prepare += struct.pack(">q", int(resource_id))
-    expedition = bytes(prepare) + struct.pack(">q", -1) + b"\x00\x00\x00"
-    return bytes(prepare), expedition
+    return shared_build_mine_payloads(general_id_hexes, resource_id)
 
 
 def execute_mine(
@@ -11977,25 +11916,11 @@ def settle_lossless_result(sess: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_lossless_prepare_payload(general_id_hexes: list[str], role_id: int) -> bytes:
-    if not general_id_hexes:
-        raise RuntimeError("无损至少需要选择1个出征将领")
-    if len(general_id_hexes) > LOSSLESS_MAX_GENERALS_PER_FORMATION:
-        raise RuntimeError(
-            f"无损编队最多选择{LOSSLESS_MAX_GENERALS_PER_FORMATION}名出征将领"
-        )
-    out = bytearray([LOSSLESS_ACTION_TYPE, len(general_id_hexes)])
-    for general_id in general_id_hexes:
-        out += bytes.fromhex(normalize_hex_id(general_id))
-    out += struct.pack(">q", int(role_id))
-    return bytes(out)
+    return shared_build_lossless_prepare_payload(general_id_hexes, role_id)
 
 
 def build_lossless_expedition_payload(general_id_hexes: list[str], role_id: int) -> bytes:
-    return (
-        build_lossless_prepare_payload(general_id_hexes, role_id)
-        + struct.pack(">q", LOSSLESS_IMMEDIATE_RELATED_LONG)
-        + LOSSLESS_IMMEDIATE_FLAGS
-    )
+    return shared_build_lossless_expedition_payload(general_id_hexes, role_id)
 
 
 def dispatch_lossless(
@@ -12487,27 +12412,11 @@ def build_dungeon_prepare_payload(general_id_hexes: list[str], stage_code: int) 
     原客户端 x.g(stageId, 4, 0, -1) 证明 0x0004 是固定的单人副本类型，
     并非章节号；章节只用于从 0x8930 目录中定位全局关卡 ID。
     """
-    if not general_id_hexes:
-        raise RuntimeError("副本至少需要选择 1 个出征将领")
-    if len(general_id_hexes) > DUNGEON_MAX_GENERALS_PER_FORMATION:
-        raise RuntimeError(
-            f"副本编队最多选择{DUNGEON_MAX_GENERALS_PER_FORMATION}名出征将领"
-        )
-    out = bytearray([DUNGEON_ACTION_TYPE, len(general_id_hexes)])
-    for gid in general_id_hexes:
-        out += bytes.fromhex(normalize_hex_id(gid))
-    out += struct.pack(">i", -1)
-    out += struct.pack(">H", DUNGEON_SINGLE_PLAYER_TYPE)
-    out += struct.pack(">H", int(stage_code))
-    return bytes(out)
+    return shared_build_dungeon_prepare_payload(general_id_hexes, stage_code)
 
 
 def build_dungeon_expedition_payload(general_id_hexes: list[str], stage_code: int) -> bytes:
-    return (
-        build_dungeon_prepare_payload(general_id_hexes, stage_code)
-        + struct.pack(">q", DUNGEON_IMMEDIATE_RELATED_LONG)
-        + DUNGEON_IMMEDIATE_FLAGS
-    )
+    return shared_build_dungeon_expedition_payload(general_id_hexes, stage_code)
 
 
 def parse_dungeon_catalog(payload: bytes) -> dict[str, Any]:
@@ -13217,9 +13126,7 @@ def normalize_military_future_settings(feature: str, settings: Any) -> dict[str,
 
 
 def printable(bs: bytes, limit: int = 512) -> str:
-    s = bs.decode("utf-8", errors="ignore")
-    s = "".join(ch if (0x20 <= ord(ch) <= 0x7e or "\u4e00" <= ch <= "\u9fff") else " " for ch in s)
-    return re.sub(r"\s+", " ", s).strip()[:limit]
+    return shared_printable(bs, limit)
 
 
 def recover_generals_from_8004(hexstr: str) -> list[dict[str, Any]]:
@@ -14706,118 +14613,48 @@ def clean_inventory_by_policy(sess: dict[str, Any], policy: dict[str, Any]) -> d
 
 
 def encode_xy(x: int, y: int) -> str:
-    return f"{x:04x}{y:04x}"
+    return shared_encode_xy(x, y)
 
 
 def read_only_gamehex_to_cmd(gamehex: str) -> tuple[int, bytes]:
-    body = gamehex[18:]
-    declared = int(body[:2], 16)
-    op = int(body[2:6], 16)
-    payload = bytes.fromhex(body[6:])
-    if len(payload) != declared:
-        raise ValueError(f"bad readonly gamehex declared={declared} actual={len(payload)}")
-    return op, payload
+    return shared_read_only_gamehex_to_cmd(gamehex)
 
 
 def action_gamehex_to_cmd(gamehex: str) -> tuple[int, int, bytes]:
-    body = gamehex[18:]
-    declared = int(body[:2], 16)
-    op = int(body[2:6], 16)
-    payload = bytes.fromhex(body[6:])
-    return declared, op, payload
+    return shared_action_gamehex_to_cmd(gamehex)
 
 
 def build_brush_payloads(general_chunks: list[str], target_hex: str) -> tuple[str, str]:
-    payloads = build_brush_payloads_variant(general_chunks, target_hex, variant=0)
-    return payloads["prepare"], payloads["expedition"]
+    return shared_build_brush_payloads(general_chunks, target_hex)
 
 
 def build_brush_payloads_variant(general_chunks: list[str], target_hex: str, variant: int = 0) -> dict[str, Any]:
-    n = len(general_chunks)
-    ids = "".join(general_chunks)
-    prefix = "0" * 18
-    canonical_action_hex = f"{BRUSH_ACTION_TYPE:02x}"
-    variants = {
-        # Canonical client shape recovered from unpacked game dex:
-        # LscriptPages/game/p;->O(I [J J)V:
-        #   writeByte(type), writeByte(count), writeLong(general)*, writeLong(target), send 0x1520
-        # LscriptPages/game/p;->N(I [J J B B B J)V:
-        #   writeByte(type), writeByte(count), writeLong(general)*, writeLong(target),
-        #   writeLong(-1), writeByte(0), writeByte(0), writeByte(0), send 0x1522
-        # Earlier reports inserted an extra 0000 before target; that made declared length and
-        # actual payload diverge and caused the game server to return 0x8522=ff0000.
-        0: {
-            "prepareOp": f"1520{canonical_action_hex}0",
-            "prepareTrailer": target_hex,
-            "prepareExtra": 0x0a,
-            "expeditionOp": f"1522{canonical_action_hex}0",
-            "expeditionTrailer": target_hex + "ffffffffffffffff000000",
-            "expeditionExtra": 0x15,
-            "actionType": BRUSH_ACTION_TYPE,
-        },
-        # Retained only for offline protocol comparison. The live product path uses
-        # variant 0/actionType=3, matching capture 20260710_215812 flows 074/075.
-        10: {"prepareOp": "15200a0", "prepareTrailer": target_hex, "prepareExtra": 0x0a, "expeditionOp": "15220a0", "expeditionTrailer": target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x15},
-        1: {"prepareOp": "1520020", "prepareTrailer": "0000" + target_hex, "prepareExtra": 0x0a, "expeditionOp": "1522020", "expeditionTrailer": "0000" + target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x15},
-        2: {"prepareOp": "15200e0", "prepareTrailer": "ffffffff0004" + target_hex, "prepareExtra": 0x0e, "expeditionOp": "15220e0", "expeditionTrailer": "ffffffff0004" + target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x19},
-        3: {"prepareOp": "1520010", "prepareTrailer": target_hex, "prepareExtra": 0x08, "expeditionOp": "1522010", "expeditionTrailer": target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x13},
-        4: {"prepareOp": "15200b0", "prepareTrailer": target_hex, "prepareExtra": 0x08, "expeditionOp": "15220b0", "expeditionTrailer": target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x13},
-    }
-    spec = variants.get(int(variant))
-    if spec is None:
-        raise RuntimeError(f"未知刷黄出征 payload 变体：{variant}")
-    prepare = prefix + f"{n * 8 + spec['prepareExtra']:x}" + spec["prepareOp"] + str(n) + ids + spec["prepareTrailer"]
-    expedition = prefix + f"{n * 8 + spec['expeditionExtra']:x}" + spec["expeditionOp"] + str(n) + ids + spec["expeditionTrailer"]
-    return {"variant": int(variant), "prepare": prepare, "expedition": expedition, **spec}
+    return shared_build_brush_payloads_variant(
+        general_chunks,
+        target_hex,
+        variant,
+    )
 
 
 def normalize_hex_id(id_value: Any) -> str:
-    clean = "".join(c for c in str(id_value or "") if c in "0123456789abcdefABCDEF").lower()
-    if not clean:
-        raise RuntimeError("缺少将领 ID")
-    significant = clean.lstrip("0") or "0"
-    if len(significant) > 16:
-        raise RuntimeError(f"将领 ID 超过 8 字节：{id_value}")
-    return significant.rjust(16, "0")
+    return shared_normalize_hex_id(id_value)
 
 
 def build_refill_payload(general_chunks: list[str]) -> bytes:
     """构造 0x1229 批量补兵 payload：count(byte) + 8-byte general ids."""
-    if not general_chunks:
-        raise RuntimeError("批量补兵至少需要一个将领")
-    if len(general_chunks) > 0xFF:
-        raise RuntimeError("批量补兵将领数量超过 255")
-    payload = bytearray([len(general_chunks)])
-    for chunk in general_chunks:
-        payload += bytes.fromhex(normalize_hex_id(chunk))
-    return bytes(payload)
+    return shared_build_refill_payload(general_chunks)
 
 
-SOLDIER_TYPE_CODES = {
-    "民兵": 0, "弩兵": 1, "弓兵": 2, "轻骑兵": 3, "弩车": 4, "冲城车": 5,
-    "轻步兵": 6, "近卫兵": 7, "重步兵": 8, "弩骑兵": 9, "重骑兵": 10,
-    "铁骑兵": 11, "投石车": 12, "重弩车": 13, "强弩兵": 14, "骁骑兵": 15,
-}
-SOLDIER_CODE_NAMES = {v: k for k, v in SOLDIER_TYPE_CODES.items()}
+SOLDIER_TYPE_CODES = SHARED_SOLDIER_TYPE_CODES
+SOLDIER_CODE_NAMES = SHARED_SOLDIER_CODE_NAMES
 
 
 def soldier_type_code(name_or_code: Any) -> int:
-    if isinstance(name_or_code, int):
-        return int(name_or_code)
-    s = str(name_or_code or "").strip()
-    if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
-        return int(s)
-    return SOLDIER_TYPE_CODES.get(s, 3)
+    return shared_soldier_type_code(name_or_code)
 
 
 def soldier_type_name(code: Any) -> str:
-    try:
-        c = int(code)
-    except Exception:
-        return str(code)
-    if c == -1:
-        return "无配兵"
-    return SOLDIER_CODE_NAMES.get(c, f"兵种{c}")
+    return shared_soldier_type_name(code)
 
 
 def build_assign_troops_payload(general_id_hex: str, soldier_type_name_or_code: Any, count: int, group: int = 0) -> bytes:
@@ -14827,8 +14664,12 @@ def build_assign_troops_payload(general_id_hex: str, soldier_type_name_or_code: 
       writeLong(generalId), writeByte(group), writeShort(soldierType), writeInt(count), send 4646/0x1226.
     group 在客户端普通“补满/调整兵力”路径中为 0。
     """
-    gid = int(normalize_hex_id(general_id_hex), 16)
-    return struct.pack(">qbhi", gid, int(group), soldier_type_code(soldier_type_name_or_code), int(count))
+    return shared_build_assign_troops_payload(
+        general_id_hex,
+        soldier_type_name_or_code,
+        count,
+        group,
+    )
 
 
 def parse_assign_troops_response(payload: bytes) -> dict[str, Any]:
@@ -14839,60 +14680,12 @@ def parse_assign_troops_response(payload: bytes) -> dict[str, Any]:
     newType(short), newCount(short)，
     status==1 时继续读取库存/兵种数组。
     """
-    p = 0
-    out: dict[str, Any] = {"rawHex": payload.hex()[:4096], "textPreview": printable(payload, 1200)}
-    try:
-        if len(payload) < 17:
-            return {**out, "success": False, "message": "0x8226 响应过短"}
-        status = struct.unpack(">b", payload[p:p + 1])[0]; p += 1
-        general_id = struct.unpack(">q", payload[p:p + 8])[0]; p += 8
-        old_type = struct.unpack(">h", payload[p:p + 2])[0]; p += 2
-        old_count = struct.unpack(">h", payload[p:p + 2])[0]; p += 2
-        new_type = struct.unpack(">h", payload[p:p + 2])[0]; p += 2
-        new_count = struct.unpack(">h", payload[p:p + 2])[0]; p += 2
-        if status == 1:
-            current_desc = "无配兵" if new_type == -1 and new_count == 0 else f"{new_count} {soldier_type_name(new_type)}"
-            message = f"配兵成功：当前 {current_desc}"
-        else:
-            message = f"配兵失败(status={status}，通常表示兵种/数量不可用、库存不足或将领当前不可配兵)"
-        out.update({
-            "status": status,
-            "success": status == 1,
-            "message": message,
-            "generalId": general_id,
-            "generalIdHex": f"{general_id:016x}",
-            "oldSoldierTypeCode": old_type,
-            "oldSoldierType": soldier_type_name(old_type),
-            "oldSoldierCount": old_count,
-            "assignedSoldierTypeCode": new_type,
-            "assignedSoldierType": soldier_type_name(new_type),
-            "assignedSoldierCount": new_count,
-            "echoSoldierTypeCode": new_type,
-            "echoSoldierCount": new_count,
-            # 兼容旧前端/旧报告字段：fieldA/B 是旧状态，current/soldierLimit 指向新状态。
-            "fieldA": old_type,
-            "fieldB": old_count,
-            "currentSoldierCount": new_count,
-            "soldierLimit": new_count,
-        })
-        if status == 1 and p < len(payload):
-            n = payload[p]; p += 1
-            inventory = []
-            for _ in range(n):
-                if p + 5 > len(payload):
-                    break
-                code = struct.unpack(">b", payload[p:p + 1])[0]; p += 1
-                amount = struct.unpack(">i", payload[p:p + 4])[0]; p += 4
-                inventory.append({"soldierTypeCode": code, "amount": amount})
-            out["soldierInventory"] = inventory
-    except Exception as e:
-        out.update({"success": False, "parseError": str(e), "message": "配兵响应解析失败"})
-    return out
+    return shared_parse_assign_troops_response(payload)
 
 
 def build_heal_preinfo_payload(fief_id: int | str, soldier_code: int, count: int) -> bytes:
     """0x1231 reqHurtSoldierCurePreInfo: writeLong(fiefId), writeShort(soldierType), writeInt(count)."""
-    return struct.pack(">qhi", int(fief_id), int(soldier_code), int(count))
+    return shared_build_heal_preinfo_payload(fief_id, soldier_code, count)
 
 
 def build_heal_payload(fief_id: int | str, soldier_group: int, soldier_code: int, count: int, use_gold: bool = False) -> bytes:
@@ -14901,7 +14694,13 @@ def build_heal_payload(fief_id: int | str, soldier_group: int, soldier_code: int
     离线证据：LscriptPages/game/q;->d0(J I I I I)V 依次写 long/byte/short/int/byte 后发送 4656(0x1230)。
     旧 shape `02 0000 ffffffff 00` 正好对应 group=2、soldierType=0、count=-1、useGold=false。
     """
-    return struct.pack(">qbhib", int(fief_id), int(soldier_group), int(soldier_code), int(count), 1 if use_gold else 0)
+    return shared_build_heal_payload(
+        fief_id,
+        soldier_group,
+        soldier_code,
+        count,
+        use_gold,
+    )
 
 
 def build_heal_all_payloads(fief_id: int | str) -> tuple[bytes, bytes]:
@@ -14911,46 +14710,17 @@ def build_heal_all_payloads(fief_id: int | str) -> tuple[bytes, bytes]:
     - `q.l1()` 对 0x8231 的 readShort 为负数时展示 `re_提示治疗全部`；
     - 旧辅助 shape 的 0x1230 tail 为 `02 0000 ffffffff 00`，即 group=2、soldierType=0、count=-1、useGold=0。
     """
-    return build_heal_preinfo_payload(fief_id, -1, -1), build_heal_payload(fief_id, 2, 0, -1, use_gold=False)
+    return shared_build_heal_all_payloads(fief_id)
 
 
 def parse_heal_preinfo_response(payload: bytes) -> dict[str, Any]:
     """解析 0x8231 治疗预估响应：readLong, readShort, readLong, readLong。"""
-    out: dict[str, Any] = {"rawHex": payload.hex()[:4096], "textPreview": printable(payload, 1200)}
-    try:
-        if len(payload) < 26:
-            return {**out, "success": False, "message": "0x8231 响应过短"}
-        out.update({
-            "success": True,
-            "fiefId": struct.unpack(">q", payload[0:8])[0],
-            "soldierType": struct.unpack(">h", payload[8:10])[0],
-            "copperCost": struct.unpack(">q", payload[10:18])[0],
-            "goldCost": struct.unpack(">q", payload[18:26])[0],
-        })
-    except Exception as e:
-        out.update({"success": False, "parseError": str(e)})
-    return out
+    return shared_parse_heal_preinfo_response(payload)
 
 
 def parse_heal_response(payload: bytes) -> dict[str, Any]:
     """解析 0x8230 治疗响应：readByte status, readLong, readLong, readByte hasExtraState。"""
-    out: dict[str, Any] = {"rawHex": payload.hex()[:4096], "textPreview": printable(payload, 1200)}
-    try:
-        if len(payload) < 18:
-            return {**out, "success": False, "message": "0x8230 响应过短"}
-        status = struct.unpack(">b", payload[0:1])[0]
-        messages = {0: "治疗成功", -1: "铜钱不足", -2: "治疗失败", -3: "黄金不足"}
-        out.update({
-            "status": status,
-            "success": status == 0,
-            "message": messages.get(status, f"未知治疗状态 {status}"),
-            "firstLong": struct.unpack(">q", payload[1:9])[0],
-            "secondLong": struct.unpack(">q", payload[9:17])[0],
-            "hasExtraState": bool(payload[17]),
-        })
-    except Exception as e:
-        out.update({"success": False, "parseError": str(e)})
-    return out
+    return shared_parse_heal_response(payload)
 
 
 def action_target_hex(target: dict[str, Any]) -> str:
@@ -30552,42 +30322,7 @@ def observe_brush_settlement(
 
 def parse_refill_response(payload: bytes) -> dict[str, Any]:
     """解析 0x8229 批量补兵响应的关键字段，字段来自 bath_add_army_protocol_report。"""
-    p = 0
-    out: dict[str, Any] = {"rawHex": payload.hex()[:4096], "textPreview": printable(payload, 1200)}
-    try:
-        if len(payload) < 3:
-            return {**out, "success": False, "message": "响应过短"}
-        status = struct.unpack(">b", payload[p:p + 1])[0]; p += 1
-        message, p = read_utf(payload, p)
-        out.update({"status": status, "message": message, "success": status == 0})
-        if status != 0:
-            return out
-        if p < len(payload):
-            role_count = payload[p]; p += 1
-            roles = []
-            for _ in range(role_count):
-                if p + 13 > len(payload):
-                    break
-                gid = struct.unpack(">q", payload[p:p + 8])[0]; p += 8
-                army_type = payload[p]; p += 1
-                army_count = struct.unpack(">i", payload[p:p + 4])[0]; p += 4
-                roles.append({"generalId": gid, "generalIdHex": f"{gid:016x}", "armyType": army_type, "armyCount": army_count})
-            out["roleUpdates"] = roles
-        if p + 9 <= len(payload):
-            fief_id = struct.unpack(">q", payload[p:p + 8])[0]; p += 8
-            soldier_type_count = payload[p]; p += 1
-            inventory = []
-            for _ in range(soldier_type_count):
-                if p + 5 > len(payload):
-                    break
-                soldier_type = payload[p]; p += 1
-                amount = struct.unpack(">i", payload[p:p + 4])[0]; p += 4
-                inventory.append({"soldierType": soldier_type, "amount": amount})
-            out["fiefId"] = fief_id
-            out["soldierInventory"] = inventory
-    except Exception as e:
-        out.update({"success": False, "parseError": str(e)})
-    return out
+    return shared_parse_refill_response(payload)
 
 
 def execute_refill_troops(sess: dict[str, Any], general_ids: list[str], *, confirm: str = "") -> dict[str, Any]:

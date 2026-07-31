@@ -83,6 +83,7 @@ class LocalAssistantApiController(
             "GET" to "/api/health" -> sharedCoreHealth(request)
             "GET" to "/api/core/operations" -> sharedCoreOperations(request)
             "GET" to "/api/core/operations/status" -> sharedCoreOperationStatus(request)
+            "GET" to "/api/core/verification/protocol" -> sharedCoreProtocolVerification(request)
             "GET" to "/api/accounts" -> ok(request, JSONObject().put("accounts", accountArray()))
             "GET" to "/api/areas" -> ok(request, JSONObject().put("areas", JSONArray()).put("updatedAt", System.currentTimeMillis()))
             "GET" to "/api/accounts/settings" -> accountSettings(request)
@@ -166,6 +167,16 @@ class LocalAssistantApiController(
     private fun sharedCoreOperations(request: AssistantApiRequest): AssistantApiResponse {
         if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
         return AssistantApiResponse(request.id, 200, sharedPythonCore.operationsSnapshot())
+    }
+
+    private fun sharedCoreProtocolVerification(request: AssistantApiRequest): AssistantApiResponse {
+        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
+        val report = sharedPythonCore.protocolFixtureReport()
+        return AssistantApiResponse(
+            request.id,
+            if (report.optBoolean("ok", false)) 200 else 500,
+            report
+        )
     }
 
     private fun cancelSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
