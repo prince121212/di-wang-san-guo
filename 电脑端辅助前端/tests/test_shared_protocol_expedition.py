@@ -105,8 +105,8 @@ class SharedExpeditionProtocolTests(unittest.TestCase):
         report = CoreFacade(ROOT / "shared_core").protocol_fixture_report()
 
         self.assertTrue(report["ok"])
-        self.assertEqual(report["checkCount"], 18)
-        self.assertEqual(report["passedCount"], 18)
+        self.assertEqual(report["checkCount"], 33)
+        self.assertEqual(report["passedCount"], 33)
         self.assertEqual(report["failureCount"], 0)
 
 

@@ -190,6 +190,13 @@
       ],
       "expectedItemIds": [78, 76]
     },
+    "mineMarchSpeed8524": {
+      "battleId": 9649515,
+      "itemId": 77,
+      "requestPayloadHex": "0000000000933d6b004d",
+      "successResponseHex": "0064617461",
+      "finishedResponseHex": "fe"
+    },
     "raidActionType1": {
       "generalIds": [1, 2],
       "targetId": 101,

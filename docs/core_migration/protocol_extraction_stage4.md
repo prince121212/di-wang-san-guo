@@ -15,15 +15,26 @@
 
 `server.py` 的同名方法仍保留稳定 API，但函数体只委托给 `shared_*` 实现，不再保留第二份字节规则。
 
+## 批次 2：目标、矿点与出征回执
+
+继续把以下电脑端已验证逻辑机械抽离到共享核心：
+
+- `dwpm_core.features.targets`：0x8540 山贼解析、0x8542 资源点解析、目标 ID 编码、掉落/兵种/等级/归属筛选、世界地图规范扫描网格、距离排序和目标去重。
+- `dwpm_core.features.mine`：0x8520 预览、0x8526 召回、0x8524 行军加速、行军符选择和请求 payload。
+- `dwpm_core.features.expedition.parse_dispatch_response`：0x8522 正式出征回执。
+- `dwpm_core.protocol.wire.extract_utf_strings`：回执内 UTF 事件字段的共用提取。
+
+电脑端保留原函数名兼容现有调用者，但实现均为共享函数的薄委托。抽离前后使用同一批抓包 fixture 做完整结果对比，0x8540 和 0x8542 的返回对象逐字段相等。
+
 ## 离线同源验证
 
 `CoreFacade.protocol_fixture_report()` 直接从共享 `protocol_parity_fixtures.json` 运行字节断言。Android Debug APK 通过进程内路由 `GET /api/core/verification/protocol` 执行了同一份 Python 代码：
 
 ```text
-checkCount   = 18
-passedCount  = 18
+checkCount   = 33
+passedCount  = 33
 failureCount = 0
-coreHash     = 9f9d3849e22f71017cb150451a9df25f59456eb10fbc9a7dd3140cfface1b2a8
+coreHash     = 3c10eafd5a4c7aa8447ab3cf70c91a5fef9503e65c1d8417e888ea7ca712ee12
 ```
 
 覆盖项包括：
@@ -31,12 +42,13 @@ coreHash     = 9f9d3849e22f71017cb150451a9df25f59456eb10fbc9a7dd3140cfface1b2a8
 - 普通/混淆响应 envelope。
 - 配兵和补兵的请求字节与回执语义。
 - 五种出征功能的预出征与正式出征字节。
+- 出征、打矿预览、召回和行军加速回执。
+- 0x8540/0x8542 目标解析、扫描顺序以及等级和归属筛选。
 
 该路由只在 Debug 版开放，全程不登录账号、不读取 Session、不访问网络。
 
 ## 后续批次
 
-- 目标搜索 0x8540/0x8542 解析与筛选。
 - 掠夺、无损、副本和军情回执解析。
 - 角色、将领、军队、背包与日常纯解析。
 - 全部协议 fixture 纳入 APK 内自检后，才结束阶段 4。

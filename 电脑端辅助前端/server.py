@@ -69,6 +69,7 @@ from dwpm_core.features.expedition import (
     build_mine_payloads as shared_build_mine_payloads,
     build_raid_expedition_payload as shared_build_raid_expedition_payload,
     build_raid_prepare_payload as shared_build_raid_prepare_payload,
+    parse_dispatch_response as shared_parse_dispatch_response,
 )
 from dwpm_core.features.formation import (
     SOLDIER_CODE_NAMES as SHARED_SOLDIER_CODE_NAMES,
@@ -85,12 +86,46 @@ from dwpm_core.features.formation import (
     soldier_type_code as shared_soldier_type_code,
     soldier_type_name as shared_soldier_type_name,
 )
+from dwpm_core.features.mine import (
+    MARCH_SPEED_SECONDS as SHARED_MARCH_SPEED_SECONDS,
+    MARCH_SPEED_STATUS_MESSAGES as SHARED_MARCH_SPEED_STATUS_MESSAGES,
+    build_march_speed_payload as shared_build_march_speed_payload,
+    build_recall_payload as shared_build_mine_recall_payload,
+    choose_march_speed_items as shared_choose_march_speed_items,
+    inventory_march_speed_counts as shared_inventory_march_speed_counts,
+    parse_march_speed_response as shared_parse_march_speed_response,
+    parse_mine_preview as shared_parse_mine_preview,
+    parse_recall_response as shared_parse_recall_response,
+)
+from dwpm_core.features.targets import (
+    KIND_MARKERS as SHARED_KIND_MARKERS,
+    MINE_BUSINESS_IDS as SHARED_MINE_BUSINESS_IDS,
+    RESOURCE_POINT_NAMES as SHARED_RESOURCE_POINT_NAMES,
+    action_target_hex as shared_action_target_hex,
+    action_target_hex_candidates as shared_action_target_hex_candidates,
+    bandit_drop_categories as shared_bandit_drop_categories,
+    brush_scan_coordinates as shared_brush_scan_coordinates,
+    composition_code as shared_composition_code,
+    dedupe_targets as shared_dedupe_targets,
+    match_composition as shared_match_composition,
+    match_drop as shared_match_drop,
+    mine_target_matches as shared_mine_target_matches,
+    normalize_brush_levels as shared_normalize_brush_levels,
+    normalize_drop_keyword as shared_normalize_drop_keyword,
+    normalize_drop_keywords as shared_normalize_drop_keywords,
+    parse_bandit_targets as shared_parse_bandit_targets,
+    parse_mine_resources as shared_parse_mine_resources,
+    scan_targets as shared_scan_targets,
+    target_distance_squared as shared_target_distance_squared,
+    target_matches_search_filter as shared_target_matches_search_filter,
+)
 from dwpm_core.protocol import (
     DEFAULT_RESPONSE_OBFUSCATION_KEY,
     action_gamehex_to_cmd as shared_action_gamehex_to_cmd,
     deobfuscate_response_payload as shared_deobfuscate_response_payload,
     encode_utf as shared_encode_utf,
     encode_xy as shared_encode_xy,
+    extract_utf_strings as shared_extract_utf_strings,
     make_packet as shared_make_packet,
     normalize_hex_id as shared_normalize_hex_id,
     packet_opcode as shared_packet_opcode,
@@ -409,16 +444,7 @@ MINE_DB_SCHEMA_VERSION = 1
 
 # 0x8542 的协议 typeCode。金矿、冰玉矿、仙芝园已经从当前世界
 # 消失，不再作为可选类型；牧场通过 level=1/2/3 区分三个业务类型。
-RESOURCE_POINT_NAMES = {
-    0x01: "镔铁矿",
-    0x02: "水晶矿",
-    0x03: "玄铁矿",
-    0x05: "牧场",
-    0x06: "浆果园",
-    0x07: "灵草园",
-    0x08: "玉露园",
-    0x0A: "银矿",
-}
+RESOURCE_POINT_NAMES = SHARED_RESOURCE_POINT_NAMES
 MINE_RESOURCE_OPTIONS = (
     "镔铁矿",
     "水晶矿",
@@ -431,31 +457,9 @@ MINE_RESOURCE_OPTIONS = (
     "二级牧场",
     "三级牧场",
 )
-MINE_BUSINESS_IDS = {
-    "镔铁矿": 1,
-    "水晶矿": 2,
-    "玄铁矿": 3,
-    "浆果园": 6,
-    "灵草园": 7,
-    "玉露园": 8,
-    "银矿": 10,
-    "一级牧场": 11,
-    "二级牧场": 12,
-    "三级牧场": 13,
-}
+MINE_BUSINESS_IDS = SHARED_MINE_BUSINESS_IDS
 
-KIND_MARKERS = {
-    "E5B1B1E8B38A": "山贼",
-    "E5B1B1E8B4BC": "山贼",
-    "E9BB83E5B7BE": "黄巾",
-    "E9BB84E5B7BE": "黄巾",
-    "E6B8A0E5B885": "渠帅",
-    "E6B8A0E5B8A5": "渠帅",
-    "E4B8BBE5B086": "主将",
-    "E4B8BBE5B087": "主将",
-    "E4B8BBE5B885": "主帅",
-    "E4B8BBE5B8A5": "主帅",
-}
+KIND_MARKERS = SHARED_KIND_MARKERS
 
 SESSIONS: dict[str, dict[str, Any]] = {}
 ACCOUNTS: dict[str, dict[str, Any]] = {}
@@ -2618,32 +2622,16 @@ def mine_target_matches(
     exact_x: int | None = None,
     exact_y: int | None = None,
 ) -> bool:
-    type_names = {
-        str(value or "").strip()
-        for value in resource_types or []
-        if str(value or "").strip() and str(value or "").strip() != "请选择"
-    }
-    level_values = {int(value) for value in levels or []}
-    if type_names and str(target.get("kind") or "") not in type_names:
-        return False
-    if level_values and int(target.get("level") or 0) not in level_values:
-        return False
-    player_occupied = bool(
-        target.get("playerOccupied")
-        if target.get("playerOccupied") is not None
-        else target.get("occupied")
+    return shared_mine_target_matches(
+        target,
+        resource_types=resource_types,
+        levels=levels,
+        only_empty=only_empty,
+        only_defended=only_defended,
+        allow_player_occupied=allow_player_occupied,
+        exact_x=exact_x,
+        exact_y=exact_y,
     )
-    if player_occupied and not allow_player_occupied:
-        return False
-    if only_empty and player_occupied:
-        return False
-    if only_defended and int(target.get("defenderCount") or 0) <= 0:
-        return False
-    if exact_x is not None and int(target.get("x") or 0) != int(exact_x):
-        return False
-    if exact_y is not None and int(target.get("y") or 0) != int(exact_y):
-        return False
-    return True
 
 
 def shared_map_available_mine_targets(
@@ -8651,67 +8639,12 @@ def summarize_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def parse_8520_mine_preview(payload: bytes) -> dict[str, Any]:
     """0x8520 固定 25 字节：行军秒数、两个时间、胜率、目标坐标。"""
-    out: dict[str, Any] = {"rawHex": payload.hex(), "valid": False}
-    if len(payload) < MINE_PREVIEW_MINIMUM_BYTES:
-        return {
-            **out,
-            "error": (
-                f"出征预览长度不足：{len(payload)}/"
-                f"{MINE_PREVIEW_MINIMUM_BYTES}"
-            ),
-        }
-    try:
-        march_seconds, arrival_at, second_time, win_rate, x, y = struct.unpack(
-            ">iqqBHH", payload[:MINE_PREVIEW_MINIMUM_BYTES]
-        )
-        out.update({
-            "valid": march_seconds >= 0,
-            "marchSeconds": march_seconds,
-            "arrivalAt": arrival_at,
-            "secondTime": second_time,
-            "winRate": win_rate,
-            "x": x,
-            "y": y,
-            "trailingHex": payload[MINE_PREVIEW_MINIMUM_BYTES:].hex(),
-        })
-    except Exception as exc:
-        out["error"] = str(exc)
-    return out
+    return shared_parse_mine_preview(payload)
 
 
 def parse_8526_recall_response(payload: bytes, battle_id: int | None = None) -> dict[str, Any]:
     """Parse legacy short replies and current replies carrying a return event."""
-    out: dict[str, Any] = {"rawHex": payload.hex()[:4096], "success": False}
-    if len(payload) < 8:
-        return {**out, "message": f"召回响应长度不足：{len(payload)}"}
-    legacy_battle_id = struct.unpack(">q", payload[:8])[0]
-    response_battle_id = legacy_battle_id
-    source = "prefix"
-    for field in extract_utf_strings(payload, max_len=600):
-        if "【返回】" not in str(field.get("text") or ""):
-            continue
-        p = int(field["offset"]) + 2 + int(field["length"])
-        if p + 14 > len(payload):
-            continue
-        event_battle_id = int.from_bytes(payload[p + 6:p + 14], "big")
-        if event_battle_id <= 0:
-            continue
-        response_battle_id = event_battle_id
-        source = "returnEvent"
-        if battle_id is None or event_battle_id == int(battle_id):
-            break
-    success = response_battle_id > 0 and (
-        battle_id is None or response_battle_id == int(battle_id)
-    )
-    return {
-        **out,
-        "success": success,
-        "battleId": response_battle_id,
-        "battleIdHex": f"{response_battle_id & 0xffffffffffffffff:016x}",
-        "battleIdSource": source,
-        "message": "召回请求已受理" if success else "召回响应 battleId 不匹配",
-        "militaryPayloadBytes": max(0, len(payload) - 8),
-    }
+    return shared_parse_recall_response(payload, battle_id)
 
 
 def parse_8522_dispatch_response(payload: bytes) -> dict[str, Any]:
@@ -8721,49 +8654,11 @@ def parse_8522_dispatch_response(payload: bytes) -> dict[str, Any]:
       readByte status; readUTF msg; if status == 0 readLong battleId and parse battle.
       status == -1 with empty msg is the observed ff0000 silent failure.
     """
-    out: dict[str, Any] = {"rawHex": payload.hex(), "success": False}
-    if not payload:
-        return {**out, "status": None, "message": "空响应"}
-    try:
-        status = struct.unpack(">b", payload[:1])[0]
-        p = 1
-        message = ""
-        if p + 2 <= len(payload):
-            message, p = read_utf(payload, p)
-        out.update({
-            "status": status,
-            "statusOk": status == 0,
-            "message": message,
-        })
-        if status == 0 and p + 8 <= len(payload):
-            battle_id = struct.unpack(">q", payload[p:p + 8])[0]
-            out["battleId"] = battle_id
-            out["battleIdHex"] = f"{battle_id:016x}"
-        out["success"] = status == 0 and int(out.get("battleId") or 0) > 0
-        if status == 0 and not out["success"] and not message:
-            out["message"] = "出征响应缺少有效 battleId"
-        if status != 0 and not message:
-            out["message"] = (
-                "目标封地的君主等级不足，或使用了免战牌，处于保护状态"
-                if status == -14
-                else ("操作失败" if status == -1 else f"失败状态 {status}")
-            )
-        return out
-    except Exception as e:
-        return {**out, "parseError": str(e), "textPreview": printable(payload, 512)}
+    return shared_parse_dispatch_response(payload)
 
 
-MARCH_SPEED_SECONDS = {
-    int(item_id): int(seconds)
-    for item_id, seconds in _STARTUP_MINE_SPEED_CONTRACT["itemSeconds"].items()
-}
-
-MARCH_SPEED_STATUS_MESSAGES = {
-    0: "行军加速成功",
-    -1: "行军加速失败",
-    -2: "行军已经结束",
-    -3: "自动VIP状态下无法使用行军符",
-}
+MARCH_SPEED_SECONDS = SHARED_MARCH_SPEED_SECONDS
+MARCH_SPEED_STATUS_MESSAGES = SHARED_MARCH_SPEED_STATUS_MESSAGES
 
 
 def build_add_loyalty_payload(general_id: int, delta: int) -> bytes:
@@ -8846,28 +8741,11 @@ def parse_821f_loyalty_response(payload: bytes) -> dict[str, Any]:
 
 
 def build_mine_speed_payload(battle_id: int, item_id: int) -> bytes:
-    if int(item_id) not in MARCH_SPEED_SECONDS:
-        raise RuntimeError(f"未知行军符：{item_id}")
-    return struct.pack(">qH", int(battle_id), int(item_id))
+    return shared_build_march_speed_payload(battle_id, item_id)
 
 
 def parse_8524_mine_speed_response(payload: bytes) -> dict[str, Any]:
-    if not payload:
-        return {
-            "success": False,
-            "status": None,
-            "message": "行军加速响应为空",
-            "rawHex": "",
-        }
-    status = struct.unpack(">b", payload[:1])[0]
-    return {
-        "success": status == 0,
-        "status": status,
-        "finished": status == -2,
-        "message": MARCH_SPEED_STATUS_MESSAGES.get(status, f"行军加速未知状态 {status}"),
-        "militaryPayloadBytes": max(0, len(payload) - 1),
-        "rawHex": payload.hex()[:4096],
-    }
+    return shared_parse_march_speed_response(payload)
 
 
 def mine_speed_enabled(value: Any) -> bool:
@@ -8877,16 +8755,7 @@ def mine_speed_enabled(value: Any) -> bool:
 
 
 def _inventory_march_speed_counts(inventory: dict[str, Any]) -> dict[int, int]:
-    counts = {item_id: 0 for item_id in MARCH_SPEED_SECONDS}
-    for row in inventory.get("items") or []:
-        try:
-            item_id = int(row.get("itemId"))
-            count = max(0, int(row.get("count") or 0))
-        except (TypeError, ValueError, AttributeError):
-            continue
-        if item_id in counts:
-            counts[item_id] += count
-    return counts
+    return shared_inventory_march_speed_counts(inventory)
 
 
 def choose_march_speed_items(
@@ -8894,61 +8763,7 @@ def choose_march_speed_items(
     inventory_items: list[dict[str, Any]],
 ) -> list[int]:
     """Choose the least wasteful available combination, preferring fewer/high items."""
-    required_seconds = max(
-        0,
-        int(remaining_seconds) - MINE_SPEED_STOP_BELOW_SECONDS,
-    )
-    if required_seconds <= 0:
-        return []
-    counts = _inventory_march_speed_counts({"items": inventory_items})
-    available_seconds = sum(
-        counts[item_id] * MARCH_SPEED_SECONDS[item_id]
-        for item_id in MARCH_SPEED_SECONDS
-    )
-    if available_seconds < required_seconds:
-        return [
-            item_id
-            for item_id in sorted(MARCH_SPEED_SECONDS, reverse=True)
-            for _ in range(counts[item_id])
-        ]
-
-    target_units = (required_seconds + 899) // 900
-    max_units = target_units + 11
-    item_units = {item_id: seconds // 900 for item_id, seconds in MARCH_SPEED_SECONDS.items()}
-    # sumUnits -> tuple(count76, count77, count78, count79)
-    states: dict[int, tuple[int, int, int, int]] = {0: (0, 0, 0, 0)}
-    item_ids = sorted(MARCH_SPEED_SECONDS)
-
-    def preference(combo: tuple[int, int, int, int]) -> tuple[Any, ...]:
-        return (
-            sum(combo),
-            -combo[3],
-            -combo[2],
-            -combo[1],
-            -combo[0],
-        )
-
-    for index, item_id in enumerate(item_ids):
-        usable = min(counts[item_id], max_units // item_units[item_id] + 1)
-        for _ in range(usable):
-            previous = list(states.items())
-            for total, combo in previous:
-                next_total = total + item_units[item_id]
-                if next_total > max_units:
-                    continue
-                next_combo = list(combo)
-                next_combo[index] += 1
-                candidate = tuple(next_combo)
-                current = states.get(next_total)
-                if current is None or preference(candidate) < preference(current):
-                    states[next_total] = candidate
-    winning_total = min(total for total in states if total >= target_units)
-    winning = states[winning_total]
-    return [
-        item_id
-        for item_id in sorted(item_ids, reverse=True)
-        for _ in range(winning[item_ids.index(item_id)])
-    ]
+    return shared_choose_march_speed_items(remaining_seconds, inventory_items)
 
 
 def ensure_military_generals_full_loyalty(
@@ -10895,11 +10710,7 @@ def query_mine_garrison_intel(
 
 
 def build_mine_recall_payload(battle_id: int) -> bytes:
-    return (
-        MINE_WITHDRAW_PAYLOAD_PREFIX
-        + struct.pack(">q", int(battle_id))
-        + MINE_WITHDRAW_PAYLOAD_SUFFIX
-    )
+    return shared_build_mine_recall_payload(battle_id)
 
 
 def recall_mine_garrison(
@@ -13495,22 +13306,11 @@ def parse_idle_army_from_8004(hexstr: str, generals: list[dict[str, Any]] | None
 
 
 def extract_utf_strings(payload: bytes, *, min_len: int = 2, max_len: int = 180) -> list[dict[str, Any]]:
-    strings: list[dict[str, Any]] = []
-    for pos in range(0, max(0, len(payload) - 2)):
-        ln = int.from_bytes(payload[pos:pos + 2], "big")
-        if not (min_len <= ln <= max_len) or pos + 2 + ln > len(payload):
-            continue
-        raw = payload[pos + 2:pos + 2 + ln]
-        try:
-            text = raw.decode("utf-8")
-        except Exception:
-            continue
-        if not any("\u4e00" <= ch <= "\u9fff" for ch in text):
-            continue
-        if any(ord(ch) < 0x20 and ch not in "\r\n\t" for ch in text):
-            continue
-        strings.append({"offset": pos, "length": ln, "text": text})
-    return strings
+    return shared_extract_utf_strings(
+        payload,
+        min_len=min_len,
+        max_len=max_len,
+    )
 
 
 def extract_utf_fields(payload: bytes, *, min_len: int = 1, max_len: int = 220) -> list[dict[str, Any]]:
@@ -14724,15 +14524,7 @@ def parse_heal_response(payload: bytes) -> dict[str, Any]:
 
 
 def action_target_hex(target: dict[str, Any]) -> str:
-    raw = "".join(c for c in str(target.get("rawRecord") or "") if c in "0123456789abcdefABCDEF").lower()
-    # 结构化 0x8540 记录开头就是 8-byte target id，随后才是 UTF 名称长度。
-    # 不能取“前10字节尾8字节”，那会把名称长度 000a 拼进 target long，
-    # 造成 0x1522 被游戏服以 0x8522=ff0000 拒绝。
-    if target.get("source") == "8540-structured" and len(raw) >= 16:
-        return raw[:16]
-    if len(raw) >= 18:
-        return raw[:18][-16:]
-    return str(target.get("idHex") or format(int(target["id"]), "x")).removeprefix("0x").rjust(16, "0")
+    return shared_action_target_hex(target)
 
 
 def action_target_hex_candidates(target: dict[str, Any]) -> list[dict[str, str]]:
@@ -14744,415 +14536,45 @@ def action_target_hex_candidates(target: dict[str, Any]) -> list[dict[str, str]]
     but try the type-10 shifted form first.  Each candidate records its evidence label
     so reports/logs explain exactly what was sent.
     """
-    raw = "".join(c for c in str(target.get("rawRecord") or "") if c in "0123456789abcdefABCDEF").lower()
-    candidates: list[dict[str, str]] = []
-
-    def add(label: str, hx: str) -> None:
-        clean = "".join(c for c in str(hx or "") if c in "0123456789abcdefABCDEF").lower()
-        if len(clean) < 16:
-            return
-        # 1520/1522 Java client methods pass target as a long, so canonical candidates
-        # are exactly 8 bytes.  Longer "raw10" probes were useful diagnostically but
-        # are not safe as production dispatch because they append unread bytes.
-        clean = clean[-16:]
-        if not any(x["targetHex"] == clean for x in candidates):
-            candidates.append({"label": label, "targetHex": clean})
-
-    if len(raw) >= 20:
-        add("raw10_tail8_id_plus_utf_len", raw[:20][-16:])
-    if target.get("source") == "8540-structured" and len(raw) >= 16:
-        add("structured_record_first8_id", raw[:16])
-    if len(raw) >= 18:
-        add("legacy_first10_tail8", raw[:18][-16:])
-    add("id_hex", str(target.get("idHex") or format(int(target["id"]), "x")).removeprefix("0x").rjust(16, "0"))
-    return candidates
+    return shared_action_target_hex_candidates(target)
 
 
 def composition_code(target: dict[str, Any]) -> str:
-    comp = target.get("composition")
-    if not isinstance(comp, dict) or comp.get("source") != "8540-units":
-        return ""
-    return "".join(str(int(comp.get(key, 0))) for key in ("foot", "bow", "cavalry", "chariot"))
+    return shared_composition_code(target)
 
 
 def bandit_drop_categories(description: Any) -> list[str]:
-    text = str(description or "")
-    return [category for category in ("资源", "宝箱", "装备", "宝物") if category in text]
+    return shared_bandit_drop_categories(description)
 
 
 def parse_8540_targets(payload: bytes) -> list[dict[str, Any]]:
     """优先用 8540 的结构化记录解析真实目标；失败则回退 marker 扫描。"""
-    targets = []
-    try:
-        if len(payload) < 5:
-            return []
-        map_w = int.from_bytes(payload[0:2], "big")
-        map_h = int.from_bytes(payload[2:4], "big")
-        count = payload[4]
-        p = 5
-        for _ in range(count):
-            start = p
-            rid = int.from_bytes(payload[p:p + 8], "big"); p += 8
-            name, p = read_utf(payload, p)
-            raw_after_name = payload[p:p + 7].hex().upper()
-            # 已观察到：byte2 与 name 中的等级一致；后续包含目标列表元数据。
-            meta_a = payload[p]; meta_b = payload[p + 1]; level_byte = payload[p + 2]; p += 3
-            meta_d = int.from_bytes(payload[p:p + 2], "big"); p += 2
-            meta_e = int.from_bytes(payload[p:p + 2], "big"); p += 2
-            resource, p = read_utf(payload, p)
-            resource_1 = int.from_bytes(payload[p:p + 4], "big", signed=True); p += 4
-            resource_2 = int.from_bytes(payload[p:p + 4], "big", signed=True); p += 4
-            x, y = meta_d, meta_e
-            loot_count = payload[p]; p += 1
-            loot_ids = []
-            for _loot_index in range(loot_count):
-                loot_ids.append(int.from_bytes(payload[p:p + 4], "big")); p += 4
-            unit_count = payload[p]; p += 1
-            composition = {"foot": 0, "bow": 0, "cavalry": 0, "chariot": 0, "source": "8540-units"}
-            units = []
-            major_keys = {0: "foot", 1: "bow", 2: "cavalry", 4: "chariot"}
-            for _unit_index in range(unit_count):
-                general_name, p = read_utf(payload, p)
-                unit_a = int.from_bytes(payload[p:p + 2], "big"); p += 2
-                unit_uid = int.from_bytes(payload[p:p + 2], "big"); p += 2
-                unit_b = payload[p]; major_code = payload[p + 1]; soldier_code = payload[p + 2]; p += 3
-                soldier_count = int.from_bytes(payload[p:p + 4], "big", signed=True); p += 4
-                major_key = major_keys.get(major_code)
-                if major_key is None:
-                    raise ValueError(f"未知山贼兵种大类码 {major_code}")
-                composition[major_key] += 1
-                units.append({
-                    "generalName": general_name, "a": unit_a, "uid": unit_uid, "b": unit_b,
-                    "majorCode": major_code, "soldierTypeCode": soldier_code, "soldierCount": soldier_count,
-                })
-            m = re.search(r"(\d+)级", name)
-            level = int(m.group(1)) if m else int(level_byte)
-            kind = "山贼" if "山贼" in name or "山賊" in name else ("黄巾" if "黄巾" in name or "黃巾" in name else name)
-            raw_record = f"{rid:016X}" + utf(name).hex().upper()
-            target = {
-                "id": rid,
-                "idHex": f"{rid:012x}",
-                "kind": kind,
-                "name": name,
-                "level": level,
-                "x": x,
-                "y": y,
-                "rank": level,
-                "resource": resource,
-                "resource1": resource_1,
-                "resource2": resource_2,
-                "rawRecord": raw_record,
-                "lootIds": loot_ids,
-                "dropCategories": bandit_drop_categories(resource),
-                "units": units,
-                "meta": {"mapWidth": map_w, "mapHeight": map_h, "a": meta_a, "b": meta_b, "levelByte": level_byte, "d": meta_d, "e": meta_e},
-                "composition": composition,
-                "compositionCode": "".join(str(composition[key]) for key in ("foot", "bow", "cavalry", "chariot")),
-                "source": "8540-structured",
-            }
-            targets.append(target)
-            if p >= len(payload):
-                break
-    except Exception:
-        targets = []
-    return targets or scan_targets(payload.hex())
+    return shared_parse_bandit_targets(payload)
 
 
 def parse_8542_resources(payload: bytes) -> list[dict[str, Any]]:
-    """Parse the original client's reqResourceList (0x8542) response.
-
-    The field order follows scriptPages/game/p.i1(String). Unknown fields are
-    deliberately retained under ``detail`` instead of being assigned guessed
-    business meanings.
-    """
-    p = 0
-
-    def need(size: int, field: str) -> None:
-        if p + size > len(payload):
-            raise ValueError(
-                f"0x8542 truncated at {field}: pos={p} need={size} size={len(payload)}"
-            )
-
-    def u8(field: str) -> int:
-        nonlocal p
-        need(1, field)
-        value = payload[p]
-        p += 1
-        return value
-
-    def u16(field: str) -> int:
-        nonlocal p
-        need(2, field)
-        value = struct.unpack(">H", payload[p:p + 2])[0]
-        p += 2
-        return value
-
-    def i32(field: str) -> int:
-        nonlocal p
-        need(4, field)
-        value = struct.unpack(">i", payload[p:p + 4])[0]
-        p += 4
-        return value
-
-    def i64(field: str) -> int:
-        nonlocal p
-        need(8, field)
-        value = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        return value
-
-    def text(field: str) -> str:
-        nonlocal p
-        need(2, field)
-        length = struct.unpack(">H", payload[p:p + 2])[0]
-        p += 2
-        need(length, field)
-        value = payload[p:p + length].decode("utf-8", errors="replace")
-        p += length
-        return value
-
-    if len(payload) < 5:
-        raise ValueError(f"0x8542 response too short: {len(payload)}")
-    center_x = u16("centerX")
-    center_y = u16("centerY")
-    count = u8("resourceCount")
-    resources: list[dict[str, Any]] = []
-    for index in range(count):
-        start = p
-        resource_id = i64(f"resource[{index}].id")
-        type_code = u8(f"resource[{index}].type")
-        level = u8(f"resource[{index}].level")
-        x = u16(f"resource[{index}].x")
-        y = u16(f"resource[{index}].y")
-        detail_flag = u8(f"resource[{index}].detailFlag")
-        detail: dict[str, Any] = {
-            "flag": detail_flag,
-            "ownerName": "",
-            "ownerCountry": "",
-            # 保留旧键，兼容已经打开的前端和旧设置读取。
-            "text1": "",
-            "text2": "",
-            "amountA": None,
-            "amountB": None,
-            "description": "",
-            "valueJ": None,
-            "valueK": None,
-        }
-        if detail_flag == 0:
-            owner_name = text(f"resource[{index}].ownerName")
-            owner_country = text(f"resource[{index}].ownerCountry")
-            detail.update({
-                "ownerName": owner_name,
-                "ownerCountry": owner_country,
-                "text1": owner_name,
-                "text2": owner_country,
-            })
-        # 抓包和原客户端 p.i1(String) 均证明以下字段对所有记录都存在。
-        # 旧代码仅在 detailFlag==0 时读取，遇到普通 NPC 矿就会从这里开始错位。
-        detail.update({
-            "amountA": i32(f"resource[{index}].amountA"),
-            "amountB": i32(f"resource[{index}].amountB"),
-            "description": text(f"resource[{index}].description"),
-            "valueJ": i32(f"resource[{index}].valueJ"),
-            "valueK": i32(f"resource[{index}].valueK"),
-        })
-        troop_groups = []
-        for troop_index in range(u8(f"resource[{index}].troopGroupCount")):
-            troop_groups.append({
-                "typeCode": u8(
-                    f"resource[{index}].troops[{troop_index}].type"
-                ),
-                "count": u16(
-                    f"resource[{index}].troops[{troop_index}].count"
-                ),
-                "levelOrStatus": u8(
-                    f"resource[{index}].troops[{troop_index}].levelOrStatus"
-                ),
-            })
-        defenders = []
-        for defender_index in range(u8(f"resource[{index}].defenderCount")):
-            defenders.append({
-                "generalName": text(
-                    f"resource[{index}].defenders[{defender_index}].name"
-                ),
-                "fieldS": u16(
-                    f"resource[{index}].defenders[{defender_index}].fieldS"
-                ),
-                "fieldR": u16(
-                    f"resource[{index}].defenders[{defender_index}].fieldR"
-                ),
-                "fieldT": u8(
-                    f"resource[{index}].defenders[{defender_index}].fieldT"
-                ),
-                "troopTypeCode": u8(
-                    f"resource[{index}].defenders[{defender_index}].troopType"
-                ),
-                "generalLevelOrStatus": u8(
-                    f"resource[{index}].defenders[{defender_index}].generalLevelOrStatus"
-                ),
-                "troopCount": i32(
-                    f"resource[{index}].defenders[{defender_index}].troopCount"
-                ),
-            })
-        protocol_name = RESOURCE_POINT_NAMES.get(type_code, f"资源点{type_code}")
-        kind = (
-            {1: "一级牧场", 2: "二级牧场", 3: "三级牧场"}.get(
-                level, f"{level}级牧场"
-            )
-            if type_code == 0x05
-            else protocol_name
-        )
-        owner_name = str(detail.get("ownerName") or "").strip()
-        owner_country = str(detail.get("ownerCountry") or "").strip()
-        player_occupied = bool(owner_name or owner_country)
-        resources.append({
-            "id": resource_id,
-            "idHex": f"{resource_id & 0xffffffffffffffff:016x}",
-            "kind": kind,
-            "protocolKind": protocol_name,
-            "name": kind if type_code == 0x05 else f"{level}级{kind}",
-            "typeCode": type_code,
-            "businessId": MINE_BUSINESS_IDS.get(kind),
-            "level": level,
-            "rank": level,
-            "x": x,
-            "y": y,
-            "detailFlag": detail_flag,
-            "detail": detail,
-            "ownerName": owner_name,
-            "ownerCountry": owner_country,
-            "playerOccupied": player_occupied,
-            "unoccupiedByPlayer": not player_occupied,
-            "troopGroups": troop_groups,
-            "defenders": defenders,
-            "defenderCount": len(defenders),
-            "hasDefenders": bool(defenders),
-            # “空矿”在业务中指没有玩家占领，而不是没有 NPC 守军。
-            "isEmpty": not player_occupied,
-            "occupied": player_occupied,
-            "amountA": detail.get("amountA"),
-            "amountB": detail.get("amountB"),
-            # 兼容旧字段名；字段真实业务含义尚未由客户端静态表完全命名。
-            "storage": detail.get("amountA"),
-            "productionPerHour": detail.get("amountB"),
-            "description": detail.get("description"),
-            "valueJ": detail.get("valueJ"),
-            "valueK": detail.get("valueK"),
-            "rawRecord": payload[start:p].hex(),
-            "source": "8542-structured",
-            "meta": {
-                "centerX": center_x,
-                "centerY": center_y,
-                "recordIndex": index,
-            },
-        })
-    if p != len(payload):
-        for resource in resources:
-            resource.setdefault("meta", {})["trailingHex"] = payload[p:].hex()
-    return resources
+    """Parse the original client's reqResourceList (0x8542) response."""
+    return shared_parse_mine_resources(payload)
 
 
 def scan_targets(response_hex: str) -> list[dict[str, Any]]:
-    norm = "".join(c for c in response_hex.upper() if c in "0123456789ABCDEF")
-    out: list[dict[str, Any]] = []
-    for marker, kind in KIND_MARKERS.items():
-        start = 0
-        while True:
-            idx = norm.find(marker, start)
-            if idx < 0:
-                break
-            for prefix in (26, 24, 22, 20, 18):
-                s = idx - prefix
-                if s < 0:
-                    continue
-                rec = norm[s:idx + len(marker)]
-                if len(rec) < 20:
-                    continue
-                try:
-                    id_hex = rec[:12]
-                    tid = int(id_hex, 16)
-                    m = re.search(r"000A([0-9A-F]{2})" + marker + r"$", rec)
-                    level = 0
-                    if m:
-                        b = int(m.group(1), 16)
-                        if 48 <= b <= 57:
-                            level = b - 48
-                    rank = {"渠帅": 11, "主将": 12, "主帅": 13}.get(kind, level)
-                    if tid > 0:
-                        out.append({
-                            "id": tid, "idHex": id_hex.lower(), "kind": kind, "name": f"{level}级{kind}" if level else kind,
-                            "rank": rank, "level": level, "x": 0, "y": 0, "rawRecord": rec,
-                            "composition": None, "compositionCode": "", "source": "marker-scan"
-                        })
-                        break
-                except Exception:
-                    pass
-            start = idx + len(marker)
-    seen = set(); res = []
-    for t in out:
-        k = (t["id"], t["kind"], t.get("level"), t.get("rawRecord"))
-        if k not in seen:
-            seen.add(k); res.append(t)
-    return res
+    return shared_scan_targets(response_hex)
 
 
 def match_composition(target: dict[str, Any], filt: dict[str, Any]) -> bool:
-    if not filt:
-        return True
-    comp = target.get("composition") or {}
-    if comp.get("source") != "8540-units":
-        return False
-    foot = int(comp.get("foot", 0)); bow = int(comp.get("bow", 0)); cav = int(comp.get("cavalry", 0)); car = int(comp.get("chariot", 0))
-    max_foot = int(filt.get("maxFoot", 9)); max_bow = int(filt.get("maxBow", 9)); max_cav = int(filt.get("maxCavalry", 9)); max_car = int(filt.get("maxChariot", 9))
-    require_foot = bool(filt.get("requireFoot", False))
-    if require_foot and foot <= 0:
-        return False
-    return foot <= max_foot and bow <= max_bow and cav <= max_cav and car <= max_car
+    return shared_match_composition(target, filt)
 
 
 def normalize_drop_keyword(drop: Any) -> str:
-    text = str(drop or "").strip()
-    if text in {"宝物", "资源", "装备", "宝箱"}:
-        return text
-    if text in {"铜钱", "粮食", "粮草", "资源类"}:
-        return "资源"
-    return ""
+    return shared_normalize_drop_keyword(drop)
 
 
 def normalize_drop_keywords(drop: Any, drops: Any = None) -> list[str]:
-    raw_values: list[Any] = []
-    if isinstance(drops, list):
-        raw_values.extend(drops)
-    elif drops not in (None, ""):
-        raw_values.extend(re.split(r"[,，;；|\s]+", str(drops)))
-    if isinstance(drop, list):
-        raw_values.extend(drop)
-    elif drop not in (None, ""):
-        raw_values.extend(re.split(r"[,，;；|\s]+", str(drop)))
-    if any(str(x).strip() == "不限" for x in raw_values):
-        return ["宝物", "资源", "装备", "宝箱"]
-    out: list[str] = []
-    for item in raw_values:
-        keyword = normalize_drop_keyword(item)
-        if keyword and keyword not in out:
-            out.append(keyword)
-    return out
+    return shared_normalize_drop_keywords(drop, drops)
 
 
 def match_drop(target: dict[str, Any], drop: Any) -> bool:
-    keywords = normalize_drop_keywords(drop)
-    if not keywords:
-        return True
-    if set(keywords) == {"宝物", "资源", "装备", "宝箱"}:
-        return True
-    haystack = " ".join(str(v or "") for v in [
-        target.get("resource"),
-        target.get("reward"),
-        target.get("drop"),
-        target.get("name"),
-        target.get("rawRecord"),
-    ])
-    return any(keyword in haystack for keyword in keywords)
+    return shared_match_drop(target, drop)
 
 
 def parse_passport_area_list(text: str) -> tuple[str, str, list[dict[str, str]]]:
@@ -28399,41 +27821,11 @@ def delete_account(session_id: str) -> None:
 
 
 def brush_scan_coordinates(center_x: int, center_y: int, limit: int) -> list[tuple[int, int]]:
-    cx = max(BRUSH_WORLD_X_MIN, min(int(center_x), BRUSH_WORLD_X_MAX))
-    cy = max(BRUSH_WORLD_Y_MIN, min(int(center_y), BRUSH_WORLD_Y_MAX))
-    max_count = max(1, min(int(limit), BRUSH_FULL_SCAN_LIMIT))
-    # Every account must scan the same canonical lattice. The account center
-    # only controls priority; using it as the lattice origin creates several
-    # shifted grids whose response areas substantially overlap.
-    coords = [
-        (x, y)
-        for x in range(
-            BRUSH_WORLD_X_MIN,
-            BRUSH_WORLD_X_MAX + 1,
-            BRUSH_WORLD_STEP,
-        )
-        for y in range(
-            BRUSH_WORLD_Y_MIN,
-            BRUSH_WORLD_Y_MAX + 1,
-            BRUSH_WORLD_STEP,
-        )
-    ]
-    coords.sort(key=lambda point: (
-        (point[0] - cx) ** 2 + (point[1] - cy) ** 2,
-        abs(point[0] - cx) + abs(point[1] - cy),
-        point[0],
-        point[1],
-    ))
-    return coords[:max_count]
+    return shared_brush_scan_coordinates(center_x, center_y, limit)
 
 
 def target_distance_squared(target: dict[str, Any], center_x: int, center_y: int) -> int:
-    try:
-        tx = int(target.get("x"))
-        ty = int(target.get("y"))
-    except (TypeError, ValueError):
-        return 10 ** 9
-    return (tx - center_x) ** 2 + (ty - center_y) ** 2
+    return shared_target_distance_squared(target, center_x, center_y)
 
 
 def normalize_brush_levels(
@@ -28441,23 +27833,7 @@ def normalize_brush_levels(
     level: Any = None,
 ) -> list[int]:
     """Normalize the new multi-level field while accepting legacy `level`."""
-    if isinstance(levels, (list, tuple, set)):
-        raw_values = list(levels)
-    elif levels not in (None, ""):
-        raw_values = re.split(r"[,，;；|\s]+", str(levels))
-    else:
-        raw_values = []
-    if not raw_values and level not in (None, ""):
-        raw_values = [level]
-    normalized: list[int] = []
-    for value in raw_values:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            continue
-        if 1 <= parsed <= 10 and parsed not in normalized:
-            normalized.append(parsed)
-    return sorted(normalized)
+    return shared_normalize_brush_levels(levels, level)
 
 
 def brush_levels_text(levels: Any = None, level: Any = None) -> str:
@@ -28472,42 +27848,17 @@ def target_matches_search_filter(
     drops: list[str],
     composition_filter: dict[str, Any],
 ) -> bool:
-    levels = normalize_brush_levels(
-        level if isinstance(level, (list, tuple, set)) else None,
-        None if isinstance(level, (list, tuple, set)) else level,
-    )
-    try:
-        target_level = int(target.get("level") or 0)
-    except (TypeError, ValueError):
-        target_level = 0
-    return (
-        target_kind in str(target.get("kind", ""))
-        and (not levels or target_level in levels)
-        and match_drop(target, drops)
-        and match_composition(target, composition_filter)
+    return shared_target_matches_search_filter(
+        target,
+        target_kind,
+        level,
+        drops,
+        composition_filter,
     )
 
 
 def dedupe_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    unique: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
-    for target in targets:
-        target_id = str(target.get("id") or target.get("idHex") or "")
-        key = (
-            "id",
-            target_id,
-        ) if target_id else (
-            "coord",
-            target.get("x"),
-            target.get("y"),
-            target.get("kind"),
-            target.get("level"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(target)
-    return unique
+    return shared_dedupe_targets(targets)
 
 
 def invalidate_brush_scan_cache(

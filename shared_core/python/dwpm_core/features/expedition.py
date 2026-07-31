@@ -6,7 +6,7 @@ import struct
 from typing import Any, Dict, List, Tuple
 
 from ..contracts import load_behavior_contract
-from ..protocol.wire import normalize_hex_id
+from ..protocol.wire import normalize_hex_id, printable, read_utf
 
 
 BEHAVIOR_CONTRACT = load_behavior_contract()
@@ -229,3 +229,44 @@ def build_dungeon_expedition_payload(
         + struct.pack(">q", int(DUNGEON_CONTRACT["immediateRelatedLong"]))
         + bytes.fromhex(str(DUNGEON_CONTRACT["immediateFlagsHex"]))
     )
+
+
+def parse_dispatch_response(payload: bytes) -> Dict[str, Any]:
+    """Parse the shared 0x8522 expedition response shape."""
+
+    output: Dict[str, Any] = {"rawHex": payload.hex(), "success": False}
+    if not payload:
+        return {**output, "status": None, "message": "空响应"}
+    try:
+        status = struct.unpack(">b", payload[:1])[0]
+        position = 1
+        message = ""
+        if position + 2 <= len(payload):
+            message, position = read_utf(payload, position)
+        output.update(
+            {
+                "status": status,
+                "statusOk": status == 0,
+                "message": message,
+            }
+        )
+        if status == 0 and position + 8 <= len(payload):
+            battle_id = struct.unpack(">q", payload[position:position + 8])[0]
+            output["battleId"] = battle_id
+            output["battleIdHex"] = f"{battle_id:016x}"
+        output["success"] = status == 0 and int(output.get("battleId") or 0) > 0
+        if status == 0 and not output["success"] and not message:
+            output["message"] = "出征响应缺少有效 battleId"
+        if status != 0 and not message:
+            output["message"] = (
+                "目标封地的君主等级不足，或使用了免战牌，处于保护状态"
+                if status == -14
+                else ("操作失败" if status == -1 else f"失败状态 {status}")
+            )
+        return output
+    except Exception as error:
+        return {
+            **output,
+            "parseError": str(error),
+            "textPreview": printable(payload, 512),
+        }

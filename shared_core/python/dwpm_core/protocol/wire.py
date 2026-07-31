@@ -175,6 +175,36 @@ def printable(payload: bytes, limit: int = 512) -> str:
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
+def extract_utf_strings(
+    payload: bytes,
+    *,
+    min_len: int = 2,
+    max_len: int = 180,
+) -> List[Dict[str, Any]]:
+    strings: List[Dict[str, Any]] = []
+    for position in range(0, max(0, len(payload) - 2)):
+        length = int.from_bytes(payload[position:position + 2], "big")
+        if (
+            not min_len <= length <= max_len
+            or position + 2 + length > len(payload)
+        ):
+            continue
+        raw = payload[position + 2:position + 2 + length]
+        try:
+            text = raw.decode("utf-8")
+        except Exception:
+            continue
+        if not any("\u4e00" <= character <= "\u9fff" for character in text):
+            continue
+        if any(
+            ord(character) < 0x20 and character not in "\r\n\t"
+            for character in text
+        ):
+            continue
+        strings.append({"offset": position, "length": length, "text": text})
+    return strings
+
+
 def encode_xy(x: int, y: int) -> str:
     return f"{int(x):04x}{int(y):04x}"
 
