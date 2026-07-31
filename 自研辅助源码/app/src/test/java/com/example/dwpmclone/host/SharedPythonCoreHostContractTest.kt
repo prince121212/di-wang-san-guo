@@ -122,6 +122,19 @@ class SharedPythonCoreHostContractTest {
         assertTrue(operations.contains("dwpm-network-"))
         assertTrue(operations.contains("UNCERTAIN"))
         assertTrue(operations.contains("request-already-sent"))
+
+        val controller = source(
+            "app/src/main/java/com/example/dwpmclone/ui/web/LocalAssistantApiController.kt",
+            "src/main/java/com/example/dwpmclone/ui/web/LocalAssistantApiController.kt"
+        )
+        val settingsMapper = source(
+            "app/src/main/java/com/example/dwpmclone/ui/web/LocalSettingsConfigMapper.kt",
+            "src/main/java/com/example/dwpmclone/ui/web/LocalSettingsConfigMapper.kt"
+        )
+        assertTrue(controller.contains("route == \"/api/military/future/save\""))
+        assertTrue(controller.contains("val dispatched = sharedPythonCore.dispatch("))
+        assertTrue(controller.contains("networkRequired"))
+        assertFalse(settingsMapper.contains("private fun future("))
     }
 
     @Test

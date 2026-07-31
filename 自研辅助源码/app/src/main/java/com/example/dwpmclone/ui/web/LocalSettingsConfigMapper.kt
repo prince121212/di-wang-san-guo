@@ -41,7 +41,6 @@ object LocalSettingsConfigMapper {
         "/api/liubu/save" -> ministries(body)
         "/api/lossless/execute" -> lossless(body)
         "/api/dungeon/execute" -> dungeon(body)
-        "/api/military/future/save" -> future(body)
         "/api/settings/save" -> scoped(body)
         else -> throw IllegalArgumentException("不支持的设置接口：$route")
     }
@@ -254,16 +253,6 @@ object LocalSettingsConfigMapper {
                 .put("boxPosition", chestIndex(active.optString("chest", "右")))
         }
         return LocalSettingsMapping(mapOf(DUNGEON to values), disabled = active == null)
-    }
-
-    private fun future(body: JSONObject): LocalSettingsMapping {
-        val feature = body.optString("feature").trim()
-        val label = when (feature) {
-            "escort" -> "押镖"
-            "treasure" -> "寻宝"
-            else -> "军事预备功能"
-        }
-        throw IllegalArgumentException("${label}当前版本暂不实现，设置未保存")
     }
 
     private fun scoped(body: JSONObject): LocalSettingsMapping {

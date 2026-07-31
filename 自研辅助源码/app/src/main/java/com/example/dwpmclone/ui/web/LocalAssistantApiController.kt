@@ -402,7 +402,28 @@ class LocalAssistantApiController(
     private fun saveMappedSettings(request: AssistantApiRequest, route: String): AssistantApiResponse {
         val account = requireAccount(request.body)
         val body = request.body ?: throw IllegalArgumentException("缺少设置内容")
-        val mapping = LocalSettingsConfigMapper.map(route, body)
+        val sharedPlan = if (route == "/api/military/future/save") {
+            val dispatched = sharedPythonCore.dispatch(
+                request.method,
+                route,
+                body,
+                JSONObject()
+                    .put("requestId", request.id)
+                    .put("source", "android-webview")
+                    .put("platform", "android")
+            )
+            val planned = dispatched.optJSONObject("body") ?: JSONObject()
+            check(dispatched.optInt("status", 500) == 200 && planned.optBoolean("ok", false)) {
+                planned.optString("error").ifBlank {
+                    "共享设置核心拒绝保存"
+                }
+            }
+            planned.getJSONObject("plan")
+        } else {
+            null
+        }
+        val mapping = sharedPlan?.let(::settingsMappingFromSharedPlan)
+            ?: LocalSettingsConfigMapper.map(route, body)
         mapping.configs.forEach { (featureId, values) ->
             configs.saveFeatureConfig(account.id, featureId, JSONObject().put("values", values))
         }
@@ -434,6 +455,9 @@ class LocalAssistantApiController(
                 .put("waitingForAccountStart", !mapping.disabled && !account.enabled)
                 .put("owner", "android-local-scheduler")
         )
+        sharedPlan?.optJSONObject("response")?.let { response ->
+            response.keys().forEach { key -> data.put(key, response.opt(key)) }
+        }
 
         when (route) {
             "/api/formations/save" -> {
@@ -522,6 +546,23 @@ class LocalAssistantApiController(
             }
         }
         return ok(request, data)
+    }
+
+    private fun settingsMappingFromSharedPlan(plan: JSONObject): LocalSettingsMapping {
+        check(!plan.optBoolean("networkRequired", true)) {
+            "本地设置保存不得等待游戏网络"
+        }
+        val configsJson = plan.optJSONObject("configs") ?: JSONObject()
+        val mapped = linkedMapOf<String, JSONObject>()
+        configsJson.keys().forEach { featureId ->
+            mapped[featureId] = configsJson.optJSONObject(featureId)
+                ?: throw IllegalArgumentException("共享设置写入计划无效：$featureId")
+        }
+        check(mapped.isNotEmpty()) { "共享设置写入计划为空" }
+        return LocalSettingsMapping(
+            configs = mapped,
+            disabled = plan.optBoolean("disabled", false)
+        )
     }
 
     private fun schedulerTaskState(

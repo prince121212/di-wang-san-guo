@@ -80,6 +80,13 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(military["currentDesktopOwner"], "desktop-python")
         self.assertEqual(military["currentAndroidOwner"], "shared-python")
+        future_settings = next(
+            row for row in normalized["routes"]
+            if (row["method"], row["path"])
+            == ("POST", "/api/military/future/save")
+        )
+        self.assertEqual(future_settings["currentDesktopOwner"], "shared-python")
+        self.assertEqual(future_settings["currentAndroidOwner"], "shared-python")
 
     def test_desktop_handler_paths_are_all_classified(self) -> None:
         source = DESKTOP_SERVER.read_text(encoding="utf-8")
@@ -93,6 +100,17 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         paths = set(re.findall(r"/api/[A-Za-z0-9_./-]+", source))
         missing = sorted(path for path in paths if not self._classified_path(path))
         self.assertEqual(missing, [])
+
+    def test_future_military_settings_route_delegates_to_shared_core(self) -> None:
+        source = DESKTOP_SERVER.read_text(encoding="utf-8")
+        route = source.split(
+            'if self.path == "/api/military/future/save":',
+            1,
+        )[1].split('if self.path == "/api/troops/refill":', 1)[0]
+
+        self.assertIn("SHARED_PYTHON_CORE.dispatch(", route)
+        self.assertIn('"POST"', route)
+        self.assertNotIn("normalize_military_future_settings(", route)
 
     def test_android_allow_list_is_covered_and_known_gaps_are_explicit(self) -> None:
         source = "\n".join(path.read_text(encoding="utf-8") for path in ANDROID_ROUTE_SOURCES)

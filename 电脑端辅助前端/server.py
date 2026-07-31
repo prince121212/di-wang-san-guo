@@ -61,6 +61,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dwpm_core import CoreFacade
+from dwpm_core.settings import (
+    MILITARY_FUTURE_READINESS as SHARED_MILITARY_FUTURE_READINESS,
+    normalize_military_future_settings as shared_normalize_military_future_settings,
+)
 from dwpm_core.account import (
     classify_reconnect_failure as shared_classify_reconnect_failure,
     area_catalog_signature as shared_area_catalog_signature,
@@ -11525,74 +11529,11 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
     return report
 
 
-MILITARY_FUTURE_READINESS: dict[str, dict[str, Any]] = {
-    "lossless": {
-        "name": "无损",
-        "status": "implemented",
-        "message": "已接入0x1900/02/04/06/08与0x1520/22；支持十级五阶段循环、10级卫兵阵容筛选和指挥中心优先级。",
-        "evidence": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260710_185601/live_analyzed",
-    },
-    "dungeon": {
-        "name": "副本",
-        "status": "implemented",
-        "message": "已接入固定关卡循环与打通副本模式；打通模式按0x8930目录逐关推进，战败即暂停并提示。",
-        "evidence": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/dungeon_capture_20260706_023009/game_flows.json",
-    },
-    "escort": {
-        "name": "押镖",
-        "status": "capture_needed",
-        "message": "已确认 0x6273 为镖车列表/状态查询；仍缺选择镖车、派将发车、召回或结算写接口，当前只保存配置。",
-        "evidence": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260711_150241/live_analyzed",
-        "knownOpcodes": ["0x6273"],
-        "neededCapture": ["选择一种镖车并派将出发", "发车成功后的状态查询", "如有撤军/被劫则保留完整返回"],
-    },
-    "treasure": {
-        "name": "寻宝",
-        "status": "capture_needed",
-        "message": "已确认 0x627a 为寻宝信息查询，可读取“金山银山/镇国之宝”；仍缺刷新、选宝藏、派将和结算写接口，当前只保存配置。",
-        "evidence": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/ctf_out/passive_pcap_hotspot_20260711_150241/live_analyzed",
-        "knownOpcodes": ["0x627a"],
-        "neededCapture": ["刷新藏宝图", "选择一个宝藏并派将出发", "寻宝结果/结算", "可选：加速或自动购买藏宝图"],
-    },
-}
+MILITARY_FUTURE_READINESS = SHARED_MILITARY_FUTURE_READINESS
 
 
 def normalize_military_future_settings(feature: str, settings: Any) -> dict[str, Any]:
-    key = str(feature or "").strip()
-    if key not in MILITARY_FUTURE_READINESS:
-        raise RuntimeError(f"未知军事功能：{feature}")
-    if not isinstance(settings, dict):
-        settings = {}
-    # 这里只做轻量规范化：前端控件的语义先完整落库，等抓包充足后再接真实协议。
-    rows = settings.get("rows")
-    if isinstance(rows, list):
-        next_rows = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            general_ids = row.get("generalIds")
-            if isinstance(general_ids, list):
-                gids = [str(x) for x in general_ids if str(x or "").strip()]
-            elif row.get("generalId"):
-                gids = [str(row.get("generalId"))]
-            else:
-                gids = []
-            next_row = dict(row)
-            if key in {"dungeon", "lossless"}:
-                next_row["enabled"] = row.get("enabled") is True
-            next_row["generalIds"] = list(dict.fromkeys(gids))
-            next_row["generalId"] = next_row["generalIds"][0] if next_row["generalIds"] else ""
-            next_rows.append(next_row)
-        settings = dict(settings)
-        settings["rows"] = next_rows
-    if key == "dungeon":
-        settings = dict(settings)
-        # Backward-compatible alias: older clients may send clearStages=true.
-        mode_value = settings.get("mode")
-        if mode_value in (None, "") and "clearStages" in settings:
-            mode_value = settings.get("clearStages")
-        settings["mode"] = normalize_dungeon_mode(mode_value)
-    return settings
+    return shared_normalize_military_future_settings(feature, settings)
 
 
 def printable(bs: bytes, limit: int = 512) -> str:
@@ -37094,9 +37035,25 @@ class Handler(SimpleHTTPRequestHandler):
             if self.path == "/api/military/future/save":
                 sid = str(body.get("sessionId") or "")
                 sess = get_session(sid)
-                feature = str(body.get("feature") or "").strip()
-                settings = normalize_military_future_settings(feature, body.get("settings") or {})
-                readiness = MILITARY_FUTURE_READINESS.get(feature) or {}
+                planned = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    self.path,
+                    body,
+                    {
+                        "requestId": f"desktop-settings-{now_ms()}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                if planned.status != 200 or not planned.body.get("ok"):
+                    raise RuntimeError(
+                        str(planned.body.get("error") or "共享设置核心拒绝保存")
+                    )
+                write_plan = planned.body.get("plan") or {}
+                response_fields = write_plan.get("response") or {}
+                feature = str(response_fields.get("feature") or "").strip()
+                settings = dict(response_fields.get("settings") or {})
+                readiness = dict(response_fields.get("readiness") or {})
                 saved_files = save_account_habits(sess, military_future={feature: settings})
                 account_log(sid, f"保存{readiness.get('name') or feature}配置：{readiness.get('status') or 'unknown'}", source="server", detail={"feature": feature, "settings": settings, "savedFiles": saved_files, "readiness": readiness})
                 self.send_json({

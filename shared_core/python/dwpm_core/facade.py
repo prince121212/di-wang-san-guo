@@ -24,6 +24,7 @@ from .operations import (
     OperationExecutionContext,
 )
 from .ports import PlatformPorts
+from .settings import settings_write_plan
 from .verification import verify_protocol_fixtures
 from .version import CORE_ID, CORE_VERSION
 
@@ -88,6 +89,10 @@ class CoreFacade:
         self._local_handlers: Dict[tuple[str, str], LocalRouteHandler] = {
             ("GET", "/api/health"): self._health_route,
             ("GET", "/api/accounts"): self._accounts_route,
+            (
+                "POST",
+                "/api/military/future/save",
+            ): self._settings_write_plan_route,
         }
         self._network_handlers: Dict[
             tuple[str, str],
@@ -350,6 +355,13 @@ class CoreFacade:
 
     def account_records_clear_json(self) -> str:
         return self._json({"ok": True, "deletedCount": self._accounts.clear()})
+
+    def settings_write_plan(
+        self,
+        route: str,
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return settings_write_plan(route, body)
 
     def route_metadata(self, method: str, path: str) -> Optional[Dict[str, Any]]:
         key = self._route_key(method, path)
@@ -788,6 +800,19 @@ class CoreFacade:
                     or self._ports.clock.now_millis()
                 ),
                 account_refs=account_refs,
+            ),
+        }
+
+    def _settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/military/future/save",
+                body,
             ),
         }
 

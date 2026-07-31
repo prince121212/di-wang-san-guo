@@ -38,6 +38,50 @@ SPEC.loader.exec_module(SERVER)
 
 
 class SharedPythonCoreTests(unittest.TestCase):
+    def test_future_military_settings_write_plan_is_local_and_shared(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        plan = facade.settings_write_plan(
+            "/api/military/future/save",
+            {
+                "feature": "escort",
+                "settings": {
+                    "enabled": True,
+                    "rows": [
+                        {
+                            "enabled": True,
+                            "generalIds": [7, "7", "", 8],
+                        }
+                    ],
+                },
+            },
+        )
+
+        self.assertFalse(plan["networkRequired"])
+        self.assertTrue(plan["disabled"])
+        self.assertEqual(
+            plan["configs"]["military_future_escort"]["rows"][0]["generalIds"],
+            ["7", "8"],
+        )
+        self.assertEqual(
+            plan["response"]["readiness"]["status"],
+            "capture_needed",
+        )
+        facade.close()
+
+    def test_future_military_settings_plan_rejects_unknown_feature(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        result = facade.dispatch(
+            "POST",
+            "/api/military/future/save",
+            {"feature": "unknown", "settings": {}},
+        )
+
+        self.assertEqual(result.status, 400)
+        self.assertFalse(result.body["ok"])
+        self.assertEqual(result.body["code"], "LOCAL_VALIDATION_FAILED")
+        self.assertIn("未知军事功能", result.body["error"])
+        facade.close()
+
     def test_hosted_military_refresh_is_accepted_then_completed_by_shared_operation(self) -> None:
         class HostBridge:
             def __init__(self) -> None:
