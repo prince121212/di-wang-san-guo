@@ -18,21 +18,30 @@ object AccountLoginState {
     const val NEED_RELOGIN = "REAL_PROTOCOL_NEED_RELOGIN"
     const val OFFLINE = "REAL_PROTOCOL_OFFLINE"
     const val STOPPED = "REAL_PROTOCOL_STOPPED"
+}
 
-    fun requiresRelogin(value: String): Boolean = value == NEED_RELOGIN || value == OFFLINE
+data class AccountLifecycleDecision(
+    val status: String,
+    val statusText: String,
+    val started: Boolean,
+    val canonicalLoginState: String,
+    val requiresRelogin: Boolean,
+    val shouldProbe: Boolean,
+    val mayUseLiveSession: Boolean,
+    val runnable: Boolean,
+    val heartbeatIntervalMillis: Long
+)
 
-    fun shouldProbe(
-        value: String,
+fun interface AccountLifecycleDecisionSource {
+    fun accountLifecycleDecision(
+        accountEnabled: Boolean,
+        executionOwnerActive: Boolean,
+        loginState: String,
+        sourceMode: Int,
         forceValidation: Boolean,
         lastValidatedAtMillis: Long?,
-        nowMillis: Long,
-        heartbeatIntervalMillis: Long
-    ): Boolean {
-        if (forceValidation || value == NETWORK_PAUSED || value == CHECKING) return true
-        if (value != ONLINE) return false
-        val last = lastValidatedAtMillis ?: return true
-        return nowMillis - last >= heartbeatIntervalMillis
-    }
+        nowMillis: Long
+    ): AccountLifecycleDecision
 }
 
 sealed interface SessionProbeResult {
@@ -194,8 +203,8 @@ class AccountSessionRecovery(
     private val loginService: LocalAccountLoginService,
     private val reconnects: SessionReconnectRepository,
     private val logs: TaskLogRepository,
+    private val lifecycleDecisions: AccountLifecycleDecisionSource,
     private val probe: SessionHealthProbe = RealSessionHealthProbe(),
-    private val heartbeatIntervalMillis: Long = 20_000L
 ) {
     fun reconcile(nowMillis: Long, forceValidation: Boolean): SessionRecoverySummary {
         var online = 0
@@ -204,7 +213,18 @@ class AccountSessionRecovery(
         var relogged = 0
         accounts.listAccounts().filter { it.enabled && it.session?.sourceMode == 1 }.forEach { account ->
             val state = account.loginState.uppercase()
-            if (AccountLoginState.requiresRelogin(state)) {
+            val lifecycle = lifecycleDecisions.accountLifecycleDecision(
+                accountEnabled = account.enabled,
+                executionOwnerActive = true,
+                loginState = state,
+                sourceMode = account.session?.sourceMode ?: 0,
+                forceValidation = forceValidation,
+                lastValidatedAtMillis = account.session?.channelExtra
+                    ?.get("lastValidatedAt")
+                    ?.toLongOrNull(),
+                nowMillis = nowMillis
+            )
+            if (lifecycle.requiresRelogin) {
                 val retry = reconnects.state(account.id)
                 if (retry.nextAttemptAtMillis > nowMillis) {
                     waiting += 1
@@ -233,13 +253,7 @@ class AccountSessionRecovery(
                     }
                 return@forEach
             }
-            val mustProbe = AccountLoginState.shouldProbe(
-                value = state,
-                forceValidation = forceValidation,
-                lastValidatedAtMillis = account.session?.channelExtra?.get("lastValidatedAt")?.toLongOrNull(),
-                nowMillis = nowMillis,
-                heartbeatIntervalMillis = heartbeatIntervalMillis
-            )
+            val mustProbe = lifecycle.shouldProbe
             if (!mustProbe && state == AccountLoginState.ONLINE) {
                 online += 1
                 return@forEach
@@ -322,7 +336,17 @@ class AccountSessionRecovery(
     }
 
     fun isRunnable(account: GameAccount): Boolean =
-        account.enabled && account.session?.sourceMode == 1 && account.loginState == AccountLoginState.ONLINE
+        lifecycleDecisions.accountLifecycleDecision(
+            accountEnabled = account.enabled,
+            executionOwnerActive = true,
+            loginState = account.loginState,
+            sourceMode = account.session?.sourceMode ?: 0,
+            forceValidation = false,
+            lastValidatedAtMillis = account.session?.channelExtra
+                ?.get("lastValidatedAt")
+                ?.toLongOrNull(),
+            nowMillis = System.currentTimeMillis()
+        ).runnable
 
     fun earliestRetryAtMillis(nowMillis: Long): Long? = accounts.listAccounts()
         .asSequence()
@@ -333,9 +357,30 @@ class AccountSessionRecovery(
 
     fun earliestValidationAtMillis(nowMillis: Long): Long? = accounts.listAccounts()
         .asSequence()
-        .filter { it.enabled && it.session?.sourceMode == 1 && it.loginState == AccountLoginState.ONLINE }
+        .filter { account ->
+            lifecycleDecisions.accountLifecycleDecision(
+                accountEnabled = account.enabled,
+                executionOwnerActive = true,
+                loginState = account.loginState,
+                sourceMode = account.session?.sourceMode ?: 0,
+                forceValidation = false,
+                lastValidatedAtMillis = account.session?.channelExtra
+                    ?.get("lastValidatedAt")
+                    ?.toLongOrNull(),
+                nowMillis = nowMillis
+            ).mayUseLiveSession
+        }
         .map { account ->
             val last = account.session?.channelExtra?.get("lastValidatedAt")?.toLongOrNull()
+            val heartbeatIntervalMillis = lifecycleDecisions.accountLifecycleDecision(
+                accountEnabled = account.enabled,
+                executionOwnerActive = true,
+                loginState = account.loginState,
+                sourceMode = account.session?.sourceMode ?: 0,
+                forceValidation = false,
+                lastValidatedAtMillis = last,
+                nowMillis = nowMillis
+            ).heartbeatIntervalMillis
             last?.plus(heartbeatIntervalMillis) ?: nowMillis
         }
         .minOrNull()

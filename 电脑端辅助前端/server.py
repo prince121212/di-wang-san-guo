@@ -62,10 +62,14 @@ if str(ROOT) not in sys.path:
 
 from dwpm_core import CoreFacade
 from dwpm_core.account import (
+    classify_reconnect_failure as shared_classify_reconnect_failure,
     area_catalog_signature as shared_area_catalog_signature,
     find_login_area as shared_find_login_area,
+    is_network_failure_message as shared_is_network_failure_message,
+    is_session_invalid_message as shared_is_session_invalid_message,
     parse_8003_login as shared_parse_8003_login,
     parse_passport_area_list as shared_parse_passport_area_list,
+    reconnect_kind_label as shared_reconnect_kind_label,
 )
 from dwpm_core.features.expedition import (
     build_brush_payloads as shared_build_brush_payloads,
@@ -23235,68 +23239,18 @@ def account_status_text(status: str) -> str:
 
 
 def is_session_invalid_message(message: str) -> bool:
-    text = str(message or "").lower()
-    # Keep this fallback intentionally narrow. Generic words such as
-    # "session", "会话", "角色信息" and the raw bytes "fffc0000" are not
-    # sufficient evidence on their own.
-    return any(marker in text for marker in (
-        "0x8016",
-        "没有角色信息",
-        "沒有角色信息",
-        "明确拒绝登录态",
-        "已确认会话失效",
-        "登录态已失效",
-        "登录/心跳拒绝帧",
-        "captured-compact-0xfffc-login-heartbeat",
-        "response-opcode-0x8016",
-    ))
+    return shared_is_session_invalid_message(message)
 
 
 def is_network_failure_message(message: str) -> bool:
-    """True only for transport-level evidence, never merely for an unknown error."""
-    text = str(message or "").lower()
-    hard_transport_markers = (
-        "timed out", "timeout", "超时", "connection reset", "connection refused",
-        "remote end closed", "network is unreachable", "no route to host",
-        "temporary failure", "name or service not known", "连接失败", "无法连接",
-        "http=0", "http 0", "http=502", "http=503", "http=504",
-        "http 502", "http 503", "http 504", "bytes=0", "响应0字节",
-        "socks连接游戏服失败", "broken pipe",
-    )
-    if any(marker in text for marker in hard_transport_markers):
-        return True
-    if any(marker in text for marker in (
-        "不是网络", "并非网络", "非网络", "未归因为网络",
-        "没有网络故障", "没有明确网络", "非网络故障",
-    )):
-        return False
-    return any(marker in text for marker in (
-        "网络连接中断", "网络请求暂时失败", "网络请求失败",
-        "网络问题失败", "网络不可达", "网络超时", "断网",
-    ))
+    return shared_is_network_failure_message(message)
 
 
 def classify_reconnect_failure(message: str, *, session_invalid: bool = False) -> str:
-    """Separate transport faults from server/auth rejection for reconnect backoff."""
-    if session_invalid:
-        return "server"
-    text = str(message or "").lower()
-    server_markers = (
-        "游戏服登录失败", "登录态已失效", "明确拒绝登录态", "拒绝登录",
-        "封禁", "封号", "认证失败", "鉴权失败", "未授权", "forbidden",
-        "unauthorized", "http=401", "http=403", "http 401", "http 403",
-        "0x8016", "没有角色信息", "沒有角色信息",
-        "captured-compact-0xfffc-login-heartbeat", "response-opcode-0x8016",
+    return shared_classify_reconnect_failure(
+        message,
+        session_invalid=session_invalid,
     )
-    if any(marker in text for marker in server_markers):
-        return "server"
-    if "http 429" in text or "http=429" in text or "服务器限流" in text:
-        return "throttle"
-    if is_network_failure_message(text):
-        return "network"
-    # Unknown/protocol/business failures must not be relabeled as network or
-    # authentication rejection merely to fit a two-way state model.
-    return "unknown"
 
 
 def classify_reconnect_exception(exc: BaseException) -> str:
@@ -23314,12 +23268,7 @@ def classify_reconnect_exception(exc: BaseException) -> str:
 
 
 def reconnect_kind_label(kind: str) -> str:
-    return {
-        "server": "服务器明确登录态拒绝",
-        "network": "网络连接故障",
-        "throttle": "服务器限流",
-        "unknown": "响应未确认/协议异常",
-    }.get(kind, "响应未确认/协议异常")
+    return shared_reconnect_kind_label(kind)
 
 
 def account_reconnect_delay_minutes(session_id: str) -> int:

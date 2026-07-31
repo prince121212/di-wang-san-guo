@@ -25,6 +25,7 @@ import com.example.dwpmclone.data.account.AccountLoginState
 import com.example.dwpmclone.data.account.AccountSessionRecovery
 import com.example.dwpmclone.data.account.LocalAccountLoginService
 import com.example.dwpmclone.data.account.RealSessionHealthProbe
+import com.example.dwpmclone.host.SharedPythonCoreHost
 import com.example.dwpmclone.data.local.KeystoreCredentialVault
 import com.example.dwpmclone.data.local.ExpeditionTransactionRepository
 import com.example.dwpmclone.data.local.LocalAccountRepository
@@ -134,8 +135,8 @@ class AssistantForegroundService : Service() {
             ),
             reconnects = SessionReconnectRepository(this),
             logs = logs,
+            lifecycleDecisions = SharedPythonCoreHost.get(this),
             probe = RealSessionHealthProbe(serviceReadOnlyProtocol),
-            heartbeatIntervalMillis = behaviorContract.accountLifecycle.heartbeatIntervalMillis
         )
         // 后台是绝大多数真实游戏请求的来源，这里也安装一次采集入口，
         // 保证开机自启（未打开界面）时账号卡的健康点依然有数据。

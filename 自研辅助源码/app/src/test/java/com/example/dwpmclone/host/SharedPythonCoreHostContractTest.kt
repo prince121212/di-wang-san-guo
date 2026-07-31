@@ -37,6 +37,7 @@ class SharedPythonCoreHostContractTest {
         assertTrue(host.contains("platformPorts"))
         assertTrue(host.contains("operations-v2.json"))
         assertTrue(host.contains("\"dispatch_json\""))
+        assertTrue(host.contains("\"account_lifecycle_snapshot_json\""))
     }
 
     @Test

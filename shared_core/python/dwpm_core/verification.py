@@ -6,10 +6,13 @@ from typing import Any, Dict, List
 
 from .contracts import load_json_contract
 from .account import (
+    AccountLifecyclePolicy,
     area_catalog_signature,
+    classify_reconnect_failure,
     find_login_area,
     parse_8003_login,
     parse_passport_area_list,
+    reconnect_delay_millis,
 )
 from .features.expedition import (
     build_brush_payloads,
@@ -223,6 +226,81 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
         "account.area.signature",
         area_catalog_signature(passport_areas),
         area_catalog_signature(list(reversed(passport_areas))),
+    )
+    lifecycle = AccountLifecyclePolicy.from_behavior_contract(
+        load_json_contract("assistant_behavior_contract.json")
+    )
+    online_lifecycle = lifecycle.snapshot(
+        account_enabled=True,
+        execution_owner_active=True,
+        login_state="REAL_PROTOCOL_ONLINE",
+        source_mode=1,
+        last_validated_at_millis=1_000,
+        now_millis=21_000,
+    )
+    check(
+        "account.lifecycle.online",
+        {
+            key: online_lifecycle[key]
+            for key in (
+                "status",
+                "statusText",
+                "started",
+                "shouldProbe",
+                "mayUseLiveSession",
+            )
+        },
+        {
+            "status": "online",
+            "statusText": "开启",
+            "started": True,
+            "shouldProbe": True,
+            "mayUseLiveSession": True,
+        },
+    )
+    stopped_lifecycle = lifecycle.snapshot(
+        account_enabled=True,
+        execution_owner_active=False,
+        login_state="REAL_PROTOCOL_ONLINE",
+        source_mode=1,
+    )
+    check(
+        "account.lifecycle.ownerGate",
+        {
+            key: stopped_lifecycle[key]
+            for key in ("status", "started", "mayUseLiveSession")
+        },
+        {
+            "status": "stopped",
+            "started": False,
+            "mayUseLiveSession": False,
+        },
+    )
+    check(
+        "account.lifecycle.failureKinds",
+        [
+            classify_reconnect_failure("HTTP=0 bytes=0"),
+            classify_reconnect_failure("HTTP 403 forbidden"),
+            classify_reconnect_failure("HTTP 429"),
+            classify_reconnect_failure("0x8152业务失败"),
+        ],
+        ["network", "server", "throttle", "unknown"],
+    )
+    check(
+        "account.lifecycle.networkBackoff",
+        [
+            reconnect_delay_millis("network", count)
+            for count in (1, 2, 3, 99)
+        ],
+        [180_000, 300_000, 600_000, 600_000],
+    )
+    check(
+        "account.lifecycle.serverBackoff",
+        [
+            reconnect_delay_millis("server", count)
+            for count in (1, 2, 3, 99)
+        ],
+        [600_000, 1_200_000, 1_800_000, 1_800_000],
     )
 
     assignment = fixtures["formationAssign1226"]

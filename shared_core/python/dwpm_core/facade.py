@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .contracts import load_route_ownership
+from .account.lifecycle import AccountLifecyclePolicy
+from .contracts import load_behavior_contract, load_route_ownership
 from .hashing import compute_core_hash
 from .models import CoreResponse
 from .operations import (
@@ -56,6 +57,9 @@ class CoreFacade:
         self._shared_root = shared_root
         self._ports = ports or PlatformPorts()
         self._route_contract = load_route_ownership(shared_root)
+        self._account_lifecycle = AccountLifecyclePolicy.from_behavior_contract(
+            load_behavior_contract(shared_root)
+        )
         self._route_index = {
             (str(row["method"]).upper(), str(row["path"])): dict(row)
             for row in self._route_contract["routes"]
@@ -113,6 +117,59 @@ class CoreFacade:
 
     def health_json(self) -> str:
         return self._json(self.health())
+
+    def account_lifecycle_snapshot(
+        self,
+        account_enabled: bool,
+        execution_owner_active: bool,
+        login_state: str,
+        source_mode: int,
+        force_validation: bool = False,
+        last_validated_at_millis: Optional[int] = None,
+        now_millis: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self._account_lifecycle.snapshot(
+            account_enabled=bool(account_enabled),
+            execution_owner_active=bool(execution_owner_active),
+            login_state=login_state,
+            source_mode=int(source_mode),
+            force_validation=bool(force_validation),
+            last_validated_at_millis=(
+                None
+                if (
+                    last_validated_at_millis is None
+                    or int(last_validated_at_millis) < 0
+                )
+                else int(last_validated_at_millis)
+            ),
+            now_millis=(
+                self._ports.clock.now_millis()
+                if now_millis is None
+                else int(now_millis)
+            ),
+        )
+
+    def account_lifecycle_snapshot_json(
+        self,
+        account_enabled: bool,
+        execution_owner_active: bool,
+        login_state: str,
+        source_mode: int,
+        force_validation: bool = False,
+        last_validated_at_millis: Optional[int] = None,
+        now_millis: Optional[int] = None,
+    ) -> str:
+        return self._json(
+            self.account_lifecycle_snapshot(
+                account_enabled,
+                execution_owner_active,
+                login_state,
+                source_mode,
+                force_validation,
+                last_validated_at_millis,
+                now_millis,
+            )
+        )
 
     def route_metadata(self, method: str, path: str) -> Optional[Dict[str, Any]]:
         key = self._route_key(method, path)

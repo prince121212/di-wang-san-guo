@@ -21,7 +21,6 @@ import com.example.dwpmclone.data.local.TaskRuntimeStatusRepository
 import com.example.dwpmclone.domain.model.GameAccount
 import com.example.dwpmclone.domain.model.GameSession
 import com.example.dwpmclone.domain.localmap.LocalMapKind
-import com.example.dwpmclone.domain.protocol.AccountLifecyclePresentationPolicy
 import com.example.dwpmclone.domain.protocol.AssistantBehaviorContract
 import com.example.dwpmclone.domain.protocol.ExpeditionTransactionState
 import com.example.dwpmclone.data.protocol.RealGameProtocolClient
@@ -615,11 +614,16 @@ class LocalAssistantApiController(
     }
 
     private fun accountJson(account: GameAccount): JSONObject {
-        val presentation = AccountLifecyclePresentationPolicy.resolve(
+        val lifecycle = sharedPythonCore.accountLifecycleDecision(
             accountEnabled = account.enabled,
             executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive(),
             loginState = account.loginState,
-            contract = behaviorContract.accountLifecycle
+            sourceMode = account.session?.sourceMode ?: 0,
+            forceValidation = false,
+            lastValidatedAtMillis = account.session?.channelExtra
+                ?.get("lastValidatedAt")
+                ?.toLongOrNull(),
+            nowMillis = System.currentTimeMillis()
         )
         val extra = account.session?.channelExtra.orEmpty()
         val level = extra["level"]?.toIntOrNull()
@@ -632,13 +636,7 @@ class LocalAssistantApiController(
             ?: retry.reason
         val nowMillis = System.currentTimeMillis()
         val overview = taskOverview(account.id)
-        val hasLiveSession = AccountLifecyclePresentationPolicy.mayUseLiveSession(
-            accountEnabled = account.enabled,
-            executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive(),
-            loginState = account.loginState,
-            sourceMode = account.session?.sourceMode ?: 0,
-            contract = behaviorContract.accountLifecycle
-        )
+        val hasLiveSession = lifecycle.mayUseLiveSession
         return JSONObject()
             .put("sessionId", account.id.toString())
             .put("username", account.username)
@@ -647,15 +645,15 @@ class LocalAssistantApiController(
             .put("areaName", account.serverName)
             .put("roleName", account.monarchName ?: account.displayName)
             .put("level", level ?: JSONObject.NULL)
-            .put("status", presentation.status)
-            .put("statusText", presentation.statusText)
-            .put("started", presentation.started)
+            .put("status", lifecycle.status)
+            .put("statusText", lifecycle.statusText)
+            .put("started", lifecycle.started)
             .put("desiredStarted", account.enabled)
             .put("hasLiveSession", hasLiveSession)
             .put("lastHeartbeat", checkedAt?.let {
                 JSONObject()
-                    .put("online", presentation.status == "online")
-                    .put("message", if (presentation.status == "online") "在线" else lastError)
+                    .put("online", lifecycle.status == "online")
+                    .put("message", if (lifecycle.status == "online") "在线" else lastError)
                     .put("checkedAt", it)
             } ?: JSONObject.NULL)
             .put("lastError", lastError)

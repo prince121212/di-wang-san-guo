@@ -8,8 +8,8 @@ import com.example.dwpmclone.data.local.RequestHealthRepository
 import com.example.dwpmclone.data.local.TaskLogRepository
 import com.example.dwpmclone.data.protocol.GameRequestHealthSink
 import com.example.dwpmclone.data.protocol.SessionAwareGameProtocolClient
+import com.example.dwpmclone.host.SharedPythonCoreHost
 import com.example.dwpmclone.domain.protocol.AssistantBehaviorContract
-import com.example.dwpmclone.domain.protocol.AccountLifecyclePresentationPolicy
 import com.example.dwpmclone.domain.protocol.GameProtocolClient
 import com.example.dwpmclone.domain.model.GameSession
 import com.example.dwpmclone.domain.protocol.ProtocolResult
@@ -34,6 +34,7 @@ class LocalProtocolOperationRunner(
     private val appContext = context.applicationContext
     private val behaviorContract: AssistantBehaviorContract =
         AssistantBehaviorContractAssetLoader.load(appContext)
+    private val sharedPythonCore = SharedPythonCoreHost.get(appContext)
 
     init {
         // The service installs the same sink during normal hosting. Installing it here also
@@ -81,14 +82,16 @@ class LocalProtocolOperationRunner(
             ?: return ProtocolResult.Err("LOCAL_ACCOUNT_NOT_FOUND", "账号不存在：$accountId", false)
         val session = account.session
             ?: return ProtocolResult.Err("LOCAL_SESSION_MISSING", "账号尚未完成真实登录", false)
-        if (!AccountLifecyclePresentationPolicy.mayUseLiveSession(
+        val lifecycle = sharedPythonCore.accountLifecycleDecision(
                 accountEnabled = account.enabled,
                 executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive(),
                 loginState = account.loginState,
                 sourceMode = session.sourceMode,
-                contract = behaviorContract.accountLifecycle
+                forceValidation = false,
+                lastValidatedAtMillis = session.channelExtra["lastValidatedAt"]?.toLongOrNull(),
+                nowMillis = System.currentTimeMillis()
             )
-        ) {
+        if (!lifecycle.mayUseLiveSession) {
             return ProtocolResult.Err(
                 "LOCAL_ACCOUNT_NOT_RUNNING",
                 "当前账号未启动且未在线，已拒绝发送游戏请求",

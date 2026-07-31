@@ -5,13 +5,15 @@ import android.os.SystemClock
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import com.example.dwpmclone.data.account.AccountLifecycleDecision
+import com.example.dwpmclone.data.account.AccountLifecycleDecisionSource
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
 /** Process-wide Android host for the repository's single shared Python core. */
-class SharedPythonCoreHost private constructor(context: Context) {
+class SharedPythonCoreHost private constructor(context: Context) : AccountLifecycleDecisionSource {
     private val appContext = context.applicationContext
     private val platformPorts = AndroidSharedCorePortBridge(appContext)
     private val initializationLock = Any()
@@ -58,6 +60,38 @@ class SharedPythonCoreHost private constructor(context: Context) {
         body.toString(),
         requestContext.toString()
     )
+
+    override fun accountLifecycleDecision(
+        accountEnabled: Boolean,
+        executionOwnerActive: Boolean,
+        loginState: String,
+        sourceMode: Int,
+        forceValidation: Boolean,
+        lastValidatedAtMillis: Long?,
+        nowMillis: Long
+    ): AccountLifecycleDecision {
+        val result = callJson(
+            "account_lifecycle_snapshot_json",
+            accountEnabled,
+            executionOwnerActive,
+            loginState,
+            sourceMode,
+            forceValidation,
+            lastValidatedAtMillis ?: -1L,
+            nowMillis
+        )
+        return AccountLifecycleDecision(
+            status = result.getString("status"),
+            statusText = result.getString("statusText"),
+            started = result.getBoolean("started"),
+            canonicalLoginState = result.getString("canonicalLoginState"),
+            requiresRelogin = result.getBoolean("requiresRelogin"),
+            shouldProbe = result.getBoolean("shouldProbe"),
+            mayUseLiveSession = result.getBoolean("mayUseLiveSession"),
+            runnable = result.getBoolean("runnable"),
+            heartbeatIntervalMillis = result.getLong("heartbeatIntervalMillis")
+        )
+    }
 
     fun submitSimulatedNetworkOperation(
         durationMillis: Long,
