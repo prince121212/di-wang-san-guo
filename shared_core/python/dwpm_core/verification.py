@@ -54,6 +54,13 @@ from .features.dungeon import (
     parse_dungeon_state,
     resolve_dungeon_stage_code,
 )
+from .features.generals import recover_generals_from_8004
+from .features.military import (
+    MILITARY_INTEL_REQUEST_PAYLOAD,
+    build_military_snapshot,
+    parse_8600_military_actions,
+    parse_8600_military_events,
+)
 
 
 def verify_protocol_fixtures() -> Dict[str, Any]:
@@ -547,6 +554,94 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
         },
     )
     check("dungeon.chest", dungeon_chest_index("右"), 2)
+
+    military_incoming_fixture = fixtures["militaryIncoming8600"]
+    check(
+        "military.request",
+        MILITARY_INTEL_REQUEST_PAYLOAD.hex(),
+        military_incoming_fixture["requestPayloadHex"],
+    )
+    military_actions = parse_8600_military_actions(
+        bytes.fromhex(military_incoming_fixture["responseHex"]),
+        [],
+    )
+    incoming = military_actions[0] if military_actions else {}
+    check(
+        "military.incoming",
+        {
+            key: incoming.get(key)
+            for key in (
+                "text",
+                "state",
+                "recordId",
+                "attackerName",
+                "actionType",
+                "targetName",
+                "targetId",
+                "marchValue",
+                "eventTimeMs",
+            )
+        },
+        military_incoming_fixture["expected"],
+    )
+    garrison_fixture = fixtures["militaryGarrisonEvent8600"]
+    garrison_events = parse_8600_military_events(
+        bytes.fromhex(garrison_fixture["responseHex"])
+    )
+    garrison = garrison_events[0] if garrison_events else {}
+    check(
+        "military.garrisonEvent",
+        {
+            key: garrison.get(key)
+            for key in (
+                "battleId",
+                "generalIds",
+                "targetId",
+                "targetName",
+                "x",
+                "y",
+            )
+        },
+        garrison_fixture["expected"],
+    )
+    general_fixture = fixtures["generalRecord8004"]
+    recovered_generals = recover_generals_from_8004(
+        general_fixture["responseHex"]
+    )
+    recovered_general = recovered_generals[0] if recovered_generals else {}
+    check(
+        "generals.8004",
+        {
+            key: recovered_general.get(key)
+            for key in (
+                "id",
+                "name",
+                "status",
+                "statusText",
+                "level",
+                "growth",
+                "tili",
+                "tiliLimit",
+                "troopLimit",
+            )
+        },
+        general_fixture["expected"],
+    )
+    incoming_payload = bytes.fromhex(military_incoming_fixture["responseHex"])
+    military_snapshot = build_military_snapshot(
+        [incoming_payload, incoming_payload],
+        [],
+        200,
+    )
+    check(
+        "military.snapshot",
+        {
+            "responded": military_snapshot.get("responded"),
+            "actionCount": military_snapshot.get("actionCount"),
+            "incomingCount": military_snapshot.get("incomingCount"),
+        },
+        {"responded": True, "actionCount": 1, "incomingCount": 1},
+    )
 
     for feature, fixture_name, target_name, prepare_builder, dispatch_builder in (
         (

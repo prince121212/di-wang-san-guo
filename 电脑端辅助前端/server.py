@@ -114,6 +114,29 @@ from dwpm_core.features.lossless import (
     parse_lossless_settlement as shared_parse_lossless_settlement,
     parse_lossless_status as shared_parse_lossless_status,
 )
+from dwpm_core.features.generals import (
+    general_status_text_from_code as shared_general_status_text_from_code,
+    recover_generals_from_8004 as shared_recover_generals_from_8004,
+)
+from dwpm_core.features.military import (
+    MILITARY_ACTION_STATE_BY_TAG as SHARED_MILITARY_ACTION_STATE_BY_TAG,
+    MILITARY_ACTION_TARGET_TYPES as SHARED_MILITARY_ACTION_TARGET_TYPES,
+    MILITARY_BATTLE_IN_PROGRESS_MARKER as SHARED_MILITARY_BATTLE_IN_PROGRESS_MARKER,
+    MILITARY_INCOMING_ACTION_TYPES as SHARED_MILITARY_INCOMING_ACTION_TYPES,
+    MILITARY_INTEL_REQUEST_PAYLOAD as SHARED_MILITARY_INTEL_REQUEST_PAYLOAD,
+    MILITARY_MARCH_KINDS as SHARED_MILITARY_MARCH_KINDS,
+    MILITARY_OUTBOUND_MARCH_KINDS as SHARED_MILITARY_OUTBOUND_MARCH_KINDS,
+    MILITARY_TIMESTAMP_MAX_MS as SHARED_MILITARY_TIMESTAMP_MAX_MS,
+    MILITARY_TIMESTAMP_MIN_MS as SHARED_MILITARY_TIMESTAMP_MIN_MS,
+    build_military_snapshot as shared_build_military_snapshot,
+    military_action_state as shared_military_action_state,
+    military_action_tag as shared_military_action_tag,
+    military_march_fields as shared_military_march_fields,
+    parse_8600_military_actions as shared_parse_8600_military_actions,
+    parse_8600_military_events as shared_parse_8600_military_events,
+    parse_8600_military_march_tail as shared_parse_8600_military_march_tail,
+    parse_8600_military_payload as shared_parse_8600_military_payload,
+)
 from dwpm_core.features.dungeon import (
     DUNGEON_CHAPTER_MAP as SHARED_DUNGEON_CHAPTER_MAP,
     DUNGEON_CHAPTER_STAGE_COUNTS as SHARED_DUNGEON_CHAPTER_STAGE_COUNTS,
@@ -9677,64 +9700,7 @@ def forget_pending_mine_garrison(
 
 def parse_8600_military_events(payload: bytes) -> list[dict[str, Any]]:
     """Parse battle IDs and formations following 0x8600 event UTF fields."""
-    events: list[dict[str, Any]] = []
-    for field in extract_utf_strings(payload, max_len=600):
-        text = str(field.get("text") or "")
-        if "【驻守】" not in text and "驻守在" not in text:
-            continue
-        p = int(field["offset"]) + 2 + int(field["length"])
-        # u16 state + u32 state + u64 battleId + u8 count
-        if p + 15 > len(payload):
-            continue
-        state16 = int.from_bytes(payload[p:p + 2], "big")
-        p += 2
-        state32 = int.from_bytes(payload[p:p + 4], "big")
-        p += 4
-        battle_id = int.from_bytes(payload[p:p + 8], "big")
-        p += 8
-        general_count = payload[p]
-        p += 1
-        # Each formation member is u64 generalId followed by a one-byte flag.
-        if not (1 <= general_count <= 32) or p + general_count * 9 + 11 > len(payload):
-            continue
-        general_ids: list[int] = []
-        general_flags: list[int] = []
-        for _index in range(general_count):
-            general_ids.append(int.from_bytes(payload[p:p + 8], "big"))
-            p += 8
-            general_flags.append(payload[p])
-            p += 1
-        target_id = int.from_bytes(payload[p:p + 8], "big")
-        p += 8
-        target_type = payload[p]
-        p += 1
-        try:
-            target_name, p = read_utf(payload, p)
-        except Exception:
-            continue
-        if p + 4 > len(payload):
-            continue
-        x = int.from_bytes(payload[p:p + 2], "big")
-        y = int.from_bytes(payload[p + 2:p + 4], "big")
-        if battle_id <= 0 or target_id <= 0 or not target_name:
-            continue
-        events.append({
-            "text": text,
-            "offset": field["offset"],
-            "state16": state16,
-            "state32": state32,
-            "battleId": battle_id,
-            "generalIds": general_ids,
-            "generalIdHexes": [f"{gid:016x}" for gid in general_ids],
-            "generalFlags": general_flags,
-            "targetId": target_id,
-            "targetIdHex": f"{target_id:016x}",
-            "targetType": target_type,
-            "targetName": target_name,
-            "x": x,
-            "y": y,
-        })
-    return events
+    return shared_parse_8600_military_events(payload)
 
 
 # --- 军情快照（0x1600 / 0x8600）---------------------------------------------
@@ -9767,77 +9733,20 @@ def parse_8600_military_events(payload: bytes) -> list[dict[str, Any]]:
 # The shared-contract assignment near the contract loader replaces this compatibility
 # value after module definitions have loaded; keeping the early value avoids a
 # forward-reference during import.
-MILITARY_INTEL_REQUEST_PAYLOAD = bytes.fromhex("07000000000000000000000014")
+MILITARY_INTEL_REQUEST_PAYLOAD = SHARED_MILITARY_INTEL_REQUEST_PAYLOAD
 
-MILITARY_ACTION_TARGET_TYPES: dict[int, str] = {
-    0x01: "封地",
-    0x02: "野外目标",
-    # 抓包 20260726_173635：【消灭】7级山贼(103,29) 的 targetType=0x03。
-    0x03: "山贼",
-    # 抓包 20260726_173635：【副本】…参与副本关卡宦官乱政 的 targetType=0x0e，
-    # targetName 是关卡名（宦官乱政/刺灭董卓/广宗决战）。
-    0x0E: "副本关卡",
-}
-
-# 事件文本的【标签】→ 军情页基础状态。未知标签保留原标签，不猜测语义。
-# 战斗类标签的最终状态还要看行军尾部（见 military_action_state）：
-# 剩余行军时间 > 0 说明部队仍在去程路上，是“出征”而不是“战斗”。
-MILITARY_ACTION_STATE_BY_TAG: dict[str, str] = {
-    "攻占": "战斗",
-    "夺取": "战斗",
-    "掠夺": "战斗",
-    "消灭": "战斗",
-    "驻守": "驻守",
-    "返回": "返回",
-}
-
-# type=2 来袭记录的 actionType。0x01 同时由真实来袭样本和 0x1520/0x1522
-# 出征请求确认表示“掠夺”；客户端展示动词使用本地文案“夺取”。未知值仍作为
-# “来袭”展示并显式标出类型号，不猜测成某种已知军事行动。
-MILITARY_INCOMING_ACTION_TYPES: dict[int, tuple[str, str]] = {
-    0x01: ("掠夺", "夺取"),
-}
-
-MILITARY_8600_MAX_SECTION_ITEMS = 512
-MILITARY_8600_JIANGLING_BODY_LEN = 114
-MILITARY_8600_S5_ENTRY_LEN = 21
-MILITARY_8600_ENERGY_OFFSET = 0x1B
-MILITARY_8600_ENERGY_LIMIT_OFFSET = 0x1D
-MILITARY_8600_TROOP_LIMIT_OFFSET = 0x23
-MILITARY_8600_LOYALTY_OFFSET = 0x27
-MILITARY_8600_PLACE_ID_OFFSET = 0x32
-MILITARY_8600_STATUS_OFFSET = 0x56
-
-# 行军类尾部的第一个字节。四种取值都在真实抓包里逐字节确认过
-# （ctf_out/passive_pcap_hotspot_20260714_* 与 20260726_173635）：
-#   0x09 野外目标去程（攻占矿点等）    0x0b 山贼去程（消灭山贼）
-#   0x0d 回程                        0x17 副本关卡（无行军，恒为 0 剩余）
-MILITARY_MARCH_KINDS: dict[int, str] = {
-    0x09: "去程",
-    0x0B: "去程",
-    0x0D: "回程",
-    0x17: "副本",
-}
-
-# 仍在赶路（而非战斗中）只可能出现在这两种去程尾部上。
-MILITARY_OUTBOUND_MARCH_KINDS = {0x09, 0x0B}
-
-# 0x8600 事件文本用这个后缀标注“部队已抵达、战斗已经打响”。
-MILITARY_BATTLE_IN_PROGRESS_MARKER = "战斗进行中"
-
-# 合法的毫秒时间戳窗口，用于判定尾部 u64 是不是时间戳。
-MILITARY_TIMESTAMP_MIN_MS = 1_600_000_000_000
-MILITARY_TIMESTAMP_MAX_MS = 2_000_000_000_000
+MILITARY_ACTION_TARGET_TYPES = SHARED_MILITARY_ACTION_TARGET_TYPES
+MILITARY_ACTION_STATE_BY_TAG = SHARED_MILITARY_ACTION_STATE_BY_TAG
+MILITARY_INCOMING_ACTION_TYPES = SHARED_MILITARY_INCOMING_ACTION_TYPES
+MILITARY_MARCH_KINDS = SHARED_MILITARY_MARCH_KINDS
+MILITARY_OUTBOUND_MARCH_KINDS = SHARED_MILITARY_OUTBOUND_MARCH_KINDS
+MILITARY_BATTLE_IN_PROGRESS_MARKER = SHARED_MILITARY_BATTLE_IN_PROGRESS_MARKER
+MILITARY_TIMESTAMP_MIN_MS = SHARED_MILITARY_TIMESTAMP_MIN_MS
+MILITARY_TIMESTAMP_MAX_MS = SHARED_MILITARY_TIMESTAMP_MAX_MS
 
 
 def military_action_tag(text: str) -> str:
-    """Return the 【tag】 prefix of a 0x8600 event text, or an empty string."""
-    if not text.startswith("【"):
-        return ""
-    end = text.find("】")
-    if end <= 1:
-        return ""
-    return text[1:end]
+    return shared_military_action_tag(text)
 
 
 def military_march_fields(
@@ -9845,531 +9754,40 @@ def military_march_fields(
     march_value: int,
     event_time_ms: int,
 ) -> dict[str, Any]:
-    """Validate and expose the confirmed march tuple."""
-    if march_kind not in MILITARY_MARCH_KINDS:
-        return {}
-    if not (MILITARY_TIMESTAMP_MIN_MS < event_time_ms < MILITARY_TIMESTAMP_MAX_MS):
-        return {}
-    return {
-        "marchKind": march_kind,
-        "marchKindText": MILITARY_MARCH_KINDS[march_kind],
-        "marchValue": march_value,
-        "eventTimeMs": event_time_ms,
-    }
-
-
-def parse_8600_military_march_tail(payload: bytes, p: int) -> dict[str, Any]:
-    """Decode the confirmed march tail (kind + u32 + u64 timestamp) if present.
-
-    Only known kind bytes (0x09/0x0b/0x0d/0x17) followed by a plausible
-    millisecond timestamp are accepted. 驻守 records use a different tail
-    shape (首字节 0x00) and simply return {}.
-
-    字段语义（抓包 20260726_173635 同一 battleId 连续刷新确认）：
-
-    - marchValue = 剩余行军毫秒。行军中逐次递减（矿点去程
-      93949→57857→41442→22448；回程 38322→24407→13988），战斗中恒为 0。
-      旧注释说它是“总时长”是错的——旧抓包只在出发/召回后立刻刷新过一次，
-      剩余≈总时长，两种解释当时都吻合；连续采样才区分得开。
-    - eventTimeMs：去程/回程时 = 预计到达/到家的时刻（连续刷新恒定不变，
-      且 eventTimeMs - marchValue = 本次刷新的时刻）；战斗中 ≈ 服务器当前
-      时间（逐次漂移），不能当倒计时；0x17 副本尾部同样 ≈ 服务器当前时间。
-    """
-    if p + 13 > len(payload):
-        return {}
-    march_kind = payload[p]
-    march_value = int.from_bytes(payload[p + 1:p + 5], "big")
-    event_time_ms = int.from_bytes(payload[p + 5:p + 13], "big")
-    return military_march_fields(march_kind, march_value, event_time_ms)
-
-
-def military_action_state(tag: str, text: str, march: dict[str, Any]) -> str:
-    """Derive the display state from the event tag, text and march tail.
-
-    真值对照（ctf_out/passive_pcap_hotspot_20260726_173635 + 口述时间线）：
-
-    - 【攻占】牧场 无“战斗进行中”后缀 + 去程剩余>0 → 行军中（操作者原话
-      “还在行军中”）；带“战斗进行中”后缀时剩余恒为 0 → 战斗。
-    - 【消灭】7级山贼 同上（山贼去程尾部是 0x0b）。
-    - 【副本】带“战斗进行中” → 战斗；不带后缀的是已建队未开战的多人副本
-      （广宗决战组队记录）→ 备战。
-    """
-    if tag == "副本":
-        if MILITARY_BATTLE_IN_PROGRESS_MARKER in text:
-            return "战斗"
-        return "备战"
-    base = MILITARY_ACTION_STATE_BY_TAG.get(tag, tag)
-    if base == "战斗":
-        march_kind = march.get("marchKind")
-        if (
-            march_kind in MILITARY_OUTBOUND_MARCH_KINDS
-            and int(march.get("marchValue") or 0) > 0
-        ):
-            return "出征"
-    return base
-
-
-class _Military8600Cursor:
-    """Bounds-checked cursor for the original client's 0x8600 read order."""
-
-    def __init__(self, payload: bytes):
-        self.payload = payload
-        self.offset = 0
-
-    def take(self, size: int, field: str) -> bytes:
-        if size < 0 or self.offset + size > len(self.payload):
-            raise ValueError(
-                f"0x8600 字段 {field} 越界：offset={self.offset}, "
-                f"size={size}, payload={len(self.payload)}"
-            )
-        start = self.offset
-        self.offset += size
-        return self.payload[start:self.offset]
-
-    def u8(self, field: str) -> int:
-        return self.take(1, field)[0]
-
-    def u16(self, field: str) -> int:
-        return int.from_bytes(self.take(2, field), "big")
-
-    def u32(self, field: str) -> int:
-        return int.from_bytes(self.take(4, field), "big")
-
-    def u64(self, field: str) -> int:
-        return int.from_bytes(self.take(8, field), "big")
-
-    def utf(self, field: str) -> dict[str, Any]:
-        start = self.offset
-        length = self.u16(f"{field}.length")
-        raw = self.take(length, field)
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"0x8600 字段 {field} 不是合法 UTF-8") from exc
-        return {"text": text, "offset": start, "length": length}
-
-
-def _military_8600_count(value: int, field: str) -> int:
-    if not (0 <= value <= MILITARY_8600_MAX_SECTION_ITEMS):
-        raise ValueError(f"0x8600 字段 {field} 数量异常：{value}")
-    return value
-
-
-def _parse_8600_descriptors(
-    cursor: _Military8600Cursor,
-    section_type: int,
-) -> list[dict[str, Any]]:
-    """Read the text/shape table that precedes each section's record table."""
-    count = _military_8600_count(
-        cursor.u16(f"section{section_type}.descriptorCount"),
-        f"section{section_type}.descriptorCount",
+    return shared_military_march_fields(
+        march_kind,
+        march_value,
+        event_time_ms,
     )
-    descriptors: list[dict[str, Any]] = []
-    for index in range(count):
-        descriptor = cursor.utf(f"section{section_type}.descriptors[{index}].text")
-        value_count = _military_8600_count(
-            cursor.u16(f"section{section_type}.descriptors[{index}].valueCount"),
-            f"section{section_type}.descriptors[{index}].valueCount",
-        )
-        if section_type in {1, 3}:
-            descriptor["recordIndexes"] = [
-                cursor.u16(f"section{section_type}.descriptors[{index}].values[{value_index}]")
-                for value_index in range(value_count)
-            ]
-        elif section_type == 2:
-            # The client allocates valueCount cells here, initially filled with -1;
-            # only the sparse update values below are present on the wire.
-            descriptor["valueCount"] = value_count
-            descriptor["objectId"] = cursor.u64(
-                f"section2.descriptors[{index}].objectId"
-            )
-            descriptor["width"] = cursor.u16(
-                f"section2.descriptors[{index}].width"
-            )
-            descriptor["height"] = cursor.u16(
-                f"section2.descriptors[{index}].height"
-            )
-            update_count = _military_8600_count(
-                cursor.u16(f"section2.descriptors[{index}].updateCount"),
-                f"section2.descriptors[{index}].updateCount",
-            )
-            descriptor["updates"] = [
-                cursor.u16(f"section2.descriptors[{index}].updates[{update_index}]")
-                for update_index in range(update_count)
-            ]
-        else:
-            raise ValueError(f"0x8600 未知分区类型：{section_type}")
-        descriptors.append(descriptor)
-    return descriptors
 
 
-def _military_descriptor_for_record(
-    descriptors: list[dict[str, Any]],
-    record_index: int,
+def parse_8600_military_march_tail(
+    payload: bytes,
+    p: int,
 ) -> dict[str, Any]:
-    # Real packets explicitly carry the record index in the descriptor table.
-    # Fall back to positional pairing for captures where that list is empty.
-    for descriptor in descriptors:
-        if record_index in (descriptor.get("recordIndexes") or []):
-            return descriptor
-    if record_index < len(descriptors):
-        return descriptors[record_index]
-    return {"text": "", "offset": 0, "length": 0}
+    return shared_parse_8600_military_march_tail(payload, p)
 
 
-def _parse_8600_formation_records(
-    cursor: _Military8600Cursor,
-    section_type: int,
-    descriptors: list[dict[str, Any]],
-    name_by_id: dict[int, str],
-) -> list[dict[str, Any]]:
-    """Parse type=1 mobile records and type=3 garrison records."""
-    count = _military_8600_count(
-        cursor.u16(f"section{section_type}.recordCount"),
-        f"section{section_type}.recordCount",
-    )
-    actions: list[dict[str, Any]] = []
-    for index in range(count):
-        record_offset = cursor.offset
-        battle_id = cursor.u64(f"section{section_type}.records[{index}].battleId")
-        general_count = cursor.u8(
-            f"section{section_type}.records[{index}].generalCount"
-        )
-        if not (1 <= general_count <= 32):
-            raise ValueError(
-                f"0x8600 section{section_type} 将领数异常：{general_count}"
-            )
-        general_ids: list[int] = []
-        general_flags: list[int] = []
-        for general_index in range(general_count):
-            general_ids.append(cursor.u64(
-                f"section{section_type}.records[{index}].generals[{general_index}].id"
-            ))
-            general_flags.append(cursor.u8(
-                f"section{section_type}.records[{index}].generals[{general_index}].flag"
-            ))
-        target_id = cursor.u64(f"section{section_type}.records[{index}].targetId")
-        target_type = cursor.u8(
-            f"section{section_type}.records[{index}].targetType"
-        )
-        target = cursor.utf(f"section{section_type}.records[{index}].targetName")
-        x = cursor.u16(f"section{section_type}.records[{index}].x")
-        y = cursor.u16(f"section{section_type}.records[{index}].y")
-        march: dict[str, Any] = {}
-        record_kind: int | None = None
-        if section_type == 1:
-            record_kind = cursor.u8(
-                f"section1.records[{index}].recordKind"
-            )
-            march_value = cursor.u32(
-                f"section1.records[{index}].marchValue"
-            )
-            event_time_ms = cursor.u64(
-                f"section1.records[{index}].eventTimeMs"
-            )
-            march = military_march_fields(
-                record_kind, march_value, event_time_ms,
-            )
-        else:
-            # The original client consumes this value as a server-time reference;
-            # garrison records do not expose it as a march countdown.
-            cursor.u64(f"section3.records[{index}].serverTimeReference")
-
-        descriptor = _military_descriptor_for_record(descriptors, index)
-        text = str(descriptor.get("text") or "")
-        tag = military_action_tag(text)
-        if (
-            not tag
-            or battle_id <= 0
-            or target_id <= 0
-            or not str(target.get("text") or "")
-            or any(general_id <= 0 for general_id in general_ids)
-        ):
-            continue
-        action: dict[str, Any] = {
-            "text": text,
-            "tag": tag,
-            "state": military_action_state(tag, text, march),
-            "incoming": False,
-            "direction": "outgoing",
-            "sourceSection": section_type,
-            "offset": int(descriptor.get("offset") or 0),
-            "recordOffset": record_offset,
-            "battleId": battle_id,
-            "generalIds": general_ids,
-            "generalIdHexes": [f"{general_id:016x}" for general_id in general_ids],
-            "generalFlags": general_flags,
-            "generalNames": [name_by_id.get(general_id, "") for general_id in general_ids],
-            "targetId": target_id,
-            "targetIdHex": f"{target_id:016x}",
-            "targetType": target_type,
-            "targetTypeText": MILITARY_ACTION_TARGET_TYPES.get(target_type, ""),
-            "targetName": str(target.get("text") or ""),
-            "x": x,
-            "y": y,
-            "hasCoord": bool(x or y),
-        }
-        if record_kind is not None:
-            action["recordKind"] = record_kind
-        action.update(march)
-        actions.append(action)
-    return actions
-
-
-def _parse_8600_incoming_records(
-    cursor: _Military8600Cursor,
-) -> list[dict[str, Any]]:
-    """Parse type=2 enemy movements, whose display sentence is client-built."""
-    count = _military_8600_count(
-        cursor.u16("section2.incomingCount"),
-        "section2.incomingCount",
-    )
-    actions: list[dict[str, Any]] = []
-    for index in range(count):
-        record_offset = cursor.offset
-        record_id = cursor.u64(f"section2.incoming[{index}].recordId")
-        attacker = cursor.utf(f"section2.incoming[{index}].attackerName")
-        action_type = cursor.u8(f"section2.incoming[{index}].actionType")
-        target = cursor.utf(f"section2.incoming[{index}].targetName")
-        target_id = cursor.u64(f"section2.incoming[{index}].targetId")
-        remaining_ms = cursor.u32(f"section2.incoming[{index}].remainingMs")
-        event_time_ms = cursor.u64(f"section2.incoming[{index}].eventTimeMs")
-        attacker_name = str(attacker.get("text") or "")
-        target_name = str(target.get("text") or "")
-        if record_id <= 0 or target_id <= 0 or not attacker_name or not target_name:
-            continue
-        known_action = MILITARY_INCOMING_ACTION_TYPES.get(action_type)
-        if known_action:
-            tag, verb = known_action
-            action_type_text = tag
-            text = f"【{tag}】{attacker_name}{verb}{target_name}"
-        else:
-            tag = "来袭"
-            action_type_text = f"未知类型 {action_type}"
-            text = f"【来袭】{attacker_name}对{target_name}发起军事行动（类型 {action_type}）"
-        action: dict[str, Any] = {
-            "text": text,
-            "tag": tag,
-            "state": "来袭",
-            "incoming": True,
-            "direction": "incoming",
-            "sourceSection": 2,
-            "offset": int(attacker.get("offset") or 0),
-            "recordOffset": record_offset,
-            "recordId": record_id,
-            "recordIdHex": f"{record_id:016x}",
-            "attackerName": attacker_name,
-            "actionType": action_type,
-            "actionTypeText": action_type_text,
-            "generalIds": [],
-            "generalIdHexes": [],
-            "generalFlags": [],
-            "generalNames": [],
-            "targetId": target_id,
-            "targetIdHex": f"{target_id:016x}",
-            "targetTypeText": "我方封地",
-            "targetName": target_name,
-            "x": 0,
-            "y": 0,
-            "hasCoord": False,
-            "marchKindText": "来袭",
-            "marchValue": remaining_ms,
-            "eventTimeMs": event_time_ms,
-        }
-        actions.append(action)
-    return actions
-
-
-def _parse_8600_trailing_evidence(
-    cursor: _Military8600Cursor,
-) -> dict[str, Any]:
-    """Parse the general/status block appended after the three military sections."""
-    payload = cursor.payload
-    reference_count = _military_8600_count(
-        cursor.u16("tail.activeBattleReferenceCount"),
-        "tail.activeBattleReferenceCount",
-    )
-    active_references = [
-        {
-            "battleId": cursor.u64(
-                f"tail.activeBattleReferences[{index}].battleId"
-            ),
-            "flag": cursor.u8(
-                f"tail.activeBattleReferences[{index}].flag"
-            ),
-        }
-        for index in range(reference_count)
-    ]
-    cursor.u8("tail.generalBlockFlag")
-
-    owned_chunks: list[bytes] = []
-    owned_count = _military_8600_count(
-        cursor.u16("tail.ownedGeneralCount"),
-        "tail.ownedGeneralCount",
-    )
-    for index in range(owned_count):
-        start = cursor.offset
-        cursor.u64(f"tail.ownedGenerals[{index}].id")
-        cursor.utf(f"tail.ownedGenerals[{index}].name")
-        cursor.take(
-            MILITARY_8600_JIANGLING_BODY_LEN,
-            f"tail.ownedGenerals[{index}].body",
-        )
-        owned_chunks.append(payload[start:cursor.offset])
-
-    captive_records: list[dict[str, Any]] = []
-    captive_count = _military_8600_count(
-        cursor.u8("tail.captiveGeneralCount"),
-        "tail.captiveGeneralCount",
-    )
-    for index in range(captive_count):
-        general_id = cursor.u64(f"tail.captiveGenerals[{index}].id")
-        name = str(cursor.utf(f"tail.captiveGenerals[{index}].name").get("text") or "")
-        body = cursor.take(
-            MILITARY_8600_JIANGLING_BODY_LEN,
-            f"tail.captiveGenerals[{index}].body",
-        )
-        cursor.u64(f"tail.captiveGenerals[{index}].ownerId")
-        fief_id = cursor.u16(f"tail.captiveGenerals[{index}].fiefId")
-        fief_name = str(
-            cursor.utf(f"tail.captiveGenerals[{index}].fiefName").get("text")
-            or ""
-        )
-        cursor.u64(f"tail.captiveGenerals[{index}].reservedId")
-        cursor.u16(f"tail.captiveGenerals[{index}].reservedFlag")
-        status = body[MILITARY_8600_STATUS_OFFSET]
-        captive_records.append({
-            "id": general_id,
-            "idHex": f"{general_id:016x}",
-            "name": name,
-            "source": "0x8600-captive-general-tail",
-            "militarySnapshotFresh": True,
-            "status": status,
-            "statusText": general_status_text_from_code(status),
-            "tili": int.from_bytes(
-                body[MILITARY_8600_ENERGY_OFFSET:MILITARY_8600_ENERGY_OFFSET + 2],
-                "big",
-            ),
-            "tiliLimit": int.from_bytes(
-                body[MILITARY_8600_ENERGY_LIMIT_OFFSET:MILITARY_8600_ENERGY_LIMIT_OFFSET + 2],
-                "big",
-            ),
-            "loyalty": body[MILITARY_8600_LOYALTY_OFFSET],
-            "troopLimit": int.from_bytes(
-                body[MILITARY_8600_TROOP_LIMIT_OFFSET:MILITARY_8600_TROOP_LIMIT_OFFSET + 4],
-                "big",
-            ),
-            "placeID": int.from_bytes(
-                body[MILITARY_8600_PLACE_ID_OFFSET:MILITARY_8600_PLACE_ID_OFFSET + 8],
-                "big",
-                signed=True,
-            ),
-            "captureFiefId": fief_id,
-            "captureFiefName": fief_name,
-        })
-
-    troop_start = cursor.offset
-    troop_assignment_count = _military_8600_count(
-        cursor.u8("tail.troopAssignmentCount"),
-        "tail.troopAssignmentCount",
-    )
-    for index in range(troop_assignment_count):
-        cursor.take(
-            MILITARY_8600_S5_ENTRY_LEN,
-            f"tail.troopAssignments[{index}]",
-        )
-    troop_blob = payload[troop_start:cursor.offset]
-    owned_records = recover_generals_from_8004(
-        (b"".join(owned_chunks) + troop_blob).hex()
-    )
-    for record in owned_records:
-        record["source"] = "0x8600-owned-general-tail"
-        record["militarySnapshotFresh"] = True
-    return {
-        "activeBattleReferences": active_references,
-        "generalStatusRecords": owned_records,
-        "captiveGeneralRecords": captive_records,
-        "troopAssignmentCount": troop_assignment_count,
-        "trailingEvidenceParsed": True,
-        "unparsedTailByteCount": len(payload) - cursor.offset,
-    }
+def military_action_state(
+    tag: str,
+    text: str,
+    march: dict[str, Any],
+) -> str:
+    return shared_military_action_state(tag, text, march)
 
 
 def parse_8600_military_payload(
     payload: bytes,
     generals: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Parse both the visible military sections and the appended live general state."""
-    name_by_id: dict[int, str] = {}
-    for general in generals or []:
-        try:
-            general_id = int(general.get("id") or 0)
-        except (TypeError, ValueError):
-            continue
-        name = str(general.get("name") or "")
-        if general_id > 0 and name:
-            name_by_id[general_id] = name
-
-    cursor = _Military8600Cursor(payload)
-    actions: list[dict[str, Any]] = []
-    try:
-        header_count = _military_8600_count(
-            cursor.u16("headerPairCount"), "headerPairCount",
-        )
-        for index in range(header_count):
-            cursor.u8(f"headerPairs[{index}].kind")
-            cursor.u16(f"headerPairs[{index}].value")
-        section_count = _military_8600_count(
-            cursor.u8("sectionCount"), "sectionCount",
-        )
-        for section_index in range(section_count):
-            section_type = cursor.u8(f"sections[{section_index}].type")
-            if section_type not in {1, 2, 3}:
-                raise ValueError(f"0x8600 未知分区类型：{section_type}")
-            descriptors = _parse_8600_descriptors(cursor, section_type)
-            if section_type in {1, 3}:
-                actions.extend(_parse_8600_formation_records(
-                    cursor, section_type, descriptors, name_by_id,
-                ))
-            else:
-                actions.extend(_parse_8600_incoming_records(cursor))
-    except ValueError as exc:
-        return {
-            "actions": [],
-            "trailingEvidenceParsed": False,
-            "unparsedTailByteCount": len(payload),
-            "trailingParseError": str(exc),
-        }
-
-    details: dict[str, Any] = {
-        "actions": actions,
-        "activeBattleReferences": [],
-        "generalStatusRecords": [],
-        "captiveGeneralRecords": [],
-        "troopAssignmentCount": 0,
-        "trailingEvidenceParsed": False,
-        "unparsedTailByteCount": 0,
-    }
-    if cursor.offset < len(payload):
-        try:
-            details.update(_parse_8600_trailing_evidence(cursor))
-        except ValueError as exc:
-            details.update({
-                "trailingEvidenceParsed": False,
-                "unparsedTailByteCount": len(payload) - cursor.offset,
-                "trailingParseError": str(exc),
-            })
-    return details
+    return shared_parse_8600_military_payload(payload, generals)
 
 
 def parse_8600_military_actions(
     payload: bytes,
     generals: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Compatibility wrapper returning only visible military actions."""
-    return list(parse_8600_military_payload(payload, generals).get("actions") or [])
-
-
+    return shared_parse_8600_military_actions(payload, generals)
 def parse_military_snapshot_from_packets(
     sess: dict[str, Any],
     packets: list[dict[str, Any]],
@@ -10380,59 +9798,20 @@ def parse_military_snapshot_from_packets(
     payloads = [
         packet["payload"]
         for packet in packets
-        if packet.get("opcode") == MILITARY_SNAPSHOT_RESPONSE_OPCODE and "payload" in packet
+        if packet.get("opcode") == MILITARY_SNAPSHOT_RESPONSE_OPCODE
+        and "payload" in packet
     ]
-    actions: list[dict[str, Any]] = []
-    active_references: dict[int, dict[str, Any]] = {}
-    general_records: dict[int, dict[str, Any]] = {}
-    captive_records: dict[int, dict[str, Any]] = {}
-    troop_assignment_count = 0
-    trailing_evidence_parsed = False
-    unparsed_tail_byte_count = 0
-    trailing_errors: list[str] = []
-    seen: set[tuple[str, int]] = set()
-    for payload in payloads:
-        parsed = parse_8600_military_payload(payload, generals)
-        for reference in parsed.get("activeBattleReferences") or []:
-            battle_id = int(reference.get("battleId") or 0)
-            if battle_id > 0:
-                active_references[battle_id] = dict(reference)
-        for record in parsed.get("generalStatusRecords") or []:
-            general_id = int(record.get("id") or 0)
-            if general_id > 0:
-                general_records[general_id] = dict(record)
-        for record in parsed.get("captiveGeneralRecords") or []:
-            general_id = int(record.get("id") or 0)
-            if general_id > 0:
-                captive_records[general_id] = dict(record)
-        troop_assignment_count += int(parsed.get("troopAssignmentCount") or 0)
-        trailing_evidence_parsed = (
-            trailing_evidence_parsed
-            or bool(parsed.get("trailingEvidenceParsed"))
-        )
-        unparsed_tail_byte_count += int(parsed.get("unparsedTailByteCount") or 0)
-        if parsed.get("trailingParseError"):
-            trailing_errors.append(str(parsed["trailingParseError"]))
-        for action in parsed.get("actions") or []:
-            if action.get("incoming"):
-                identity = ("incoming", int(action.get("recordId") or 0))
-            else:
-                identity = ("battle", int(action.get("battleId") or 0))
-            if identity[1] <= 0 or identity in seen:
-                continue
-            seen.add(identity)
-            actions.append(action)
-    # 敌军来袭必须置顶；其余按战斗 → 出征 → 驻守 → 返回 → 备战。
-    # 同状态以记录号/战斗号稳定排序。
-    state_order = {
-        "来袭": 0, "战斗": 1, "出征": 2,
-        "驻守": 3, "返回": 4, "备战": 5,
+    snapshot = shared_build_military_snapshot(
+        payloads,
+        generals,
+        http_code,
+        updated_at=now_ms(),
+    )
+    general_records = {
+        int(record.get("id") or 0): dict(record)
+        for record in snapshot.get("generalStatusRecords") or []
+        if int(record.get("id") or 0) > 0
     }
-    actions.sort(key=lambda item: (
-        state_order.get(str(item.get("state") or ""), 3),
-        int(item.get("recordId") or item.get("battleId") or 0),
-    ))
-    incoming_count = sum(1 for item in actions if item.get("incoming"))
     if general_records:
         existing_by_id = {
             int(record.get("id") or 0): dict(record)
@@ -10446,29 +9825,9 @@ def parse_military_snapshot_from_packets(
             }
         sess["generals"] = list(existing_by_id.values())
         sess["militaryGeneralStatus"] = list(general_records.values())
+    captive_records = list(snapshot.get("captiveGeneralRecords") or [])
     if captive_records:
-        sess["capturedGenerals"] = list(captive_records.values())
-    snapshot = {
-        "sourceOpcode": "0x1600/0x8600",
-        "actions": actions,
-        "actionCount": len(actions),
-        "incomingCount": incoming_count,
-        "activeBattleReferences": list(active_references.values()),
-        "generalStatusRecords": list(general_records.values()),
-        "generalStatusCount": len(general_records),
-        "captiveGeneralRecords": list(captive_records.values()),
-        "captiveGeneralCount": len(captive_records),
-        "troopAssignmentCount": troop_assignment_count,
-        "trailingEvidenceParsed": trailing_evidence_parsed,
-        "unparsedTailByteCount": unparsed_tail_byte_count,
-        "http": http_code,
-        # responded=True 表示这次真的拿到了 0x8600；用来把“当前无军情”
-        # 和“还没刷新过”在前端区分开，不让空列表冒充已确认的空。
-        "responded": bool(payloads),
-        "updatedAt": now_ms(),
-    }
-    if trailing_errors:
-        snapshot["trailingParseError"] = "；".join(trailing_errors)
+        sess["capturedGenerals"] = captive_records
     sess["militarySnapshot"] = snapshot
     return snapshot
 
@@ -12278,229 +11637,7 @@ def printable(bs: bytes, limit: int = 512) -> str:
 
 
 def recover_generals_from_8004(hexstr: str) -> list[dict[str, Any]]:
-    bs = bytes.fromhex(hexstr)
-    res = []
-    BODY_LEN = 114
-    # 体力/体力上限字段是无符号 16 位值，不是固定的 0~300。1608600
-    # 当前 0x8004 响应中已有真实将领的体力上限为 305；原先的 300
-    # 上限会把这些合法将领整条记录判成无效，导致英雄页少显示将领。
-    # 这里使用字段本身的完整取值范围，不再引入会随等级失效的人为上限。
-    GENERAL_ENERGY_WIRE_MAX = 0xFFFF
-    REPEATED_ID_OFFSET = 0x3a
-    PROFESSION_OFFSET = 0x03
-    GROWTH_OFFSET = 0x06
-    LEVEL_OFFSET = 0x08
-    ATTACK_OFFSET = 0x17
-    DEFENSE_OFFSET = 0x19
-    ENERGY_OFFSET = 0x1b
-    ENERGY_LIMIT_OFFSET = 0x1d
-    TROOP_LIMIT_OFFSET = 0x23
-    LOYALTY_OFFSET = 0x27
-    LOYALTY_LIMIT_OFFSET = 0x28
-    PLACE_ID_OFFSET = 0x32
-    # 原客户端 Lo/a.b6 解析 0x8215/0x8004 将领体时：
-    #   body+0x56 -> Lo/a.Vo，将领当前细状态，界面用它判断空闲/出征/修炼等；
-    #   body+0x58 是 Po 的高字节，实测空闲结构也常为 0，不能当状态。
-    HERO_STATUS_OFFSET = 0x56
-    LEGACY_STATUS58_OFFSET = 0x58
-    S5_ENTRY_LEN = 21
-
-    def u8(off: int) -> int | None:
-        return bs[off] if 0 <= off < len(bs) else None
-
-    def u16(off: int) -> int | None:
-        return int.from_bytes(bs[off:off + 2], "big") if 0 <= off <= len(bs) - 2 else None
-
-    def u32(off: int) -> int | None:
-        return int.from_bytes(bs[off:off + 4], "big") if 0 <= off <= len(bs) - 4 else None
-
-    def i64(off: int) -> int | None:
-        return int.from_bytes(bs[off:off + 8], "big", signed=True) if 0 <= off <= len(bs) - 8 else None
-
-    def profession_label(code: int | None) -> str:
-        return {0: "步将", 1: "弓将", 2: "骑将", 4: "勇士"}.get(code, "" if code is None else f"职业{code}")
-
-    def looks_like_body(body_off: int, gid: int) -> bool:
-        if body_off + BODY_LEN > len(bs):
-            return False
-        # Some live 0x8004 packets contain a valid general body whose
-        # embedded/repeated ID is offset from the preceding name record.
-        # Keep the repeated ID as evidence, but do not discard an otherwise
-        # structurally valid owned-general record because of that mismatch.
-        if bs[body_off + 112] != 0xFF or bs[body_off + 113] != 0xFF:
-            return False
-        profession = u8(body_off + PROFESSION_OFFSET)
-        growth = u16(body_off + GROWTH_OFFSET)
-        level = u8(body_off + LEVEL_OFFSET)
-        tili = u16(body_off + ENERGY_OFFSET)
-        tili_limit = u16(body_off + ENERGY_LIMIT_OFFSET)
-        troop_limit = u32(body_off + TROOP_LIMIT_OFFSET)
-        loyalty = u8(body_off + LOYALTY_OFFSET)
-        loyalty_limit = u8(body_off + LOYALTY_LIMIT_OFFSET)
-        hero_status = u8(body_off + HERO_STATUS_OFFSET)
-        legacy_status58 = u8(body_off + LEGACY_STATUS58_OFFSET)
-        return (
-            profession is not None and 0 <= profession <= 8 and
-            growth is not None and 1 <= growth <= 200 and
-            level is not None and 1 <= level <= 200 and
-            tili is not None and 0 <= tili <= GENERAL_ENERGY_WIRE_MAX and
-            tili_limit is not None and 1 <= tili_limit <= GENERAL_ENERGY_WIRE_MAX and
-            troop_limit is not None and 0 <= troop_limit <= 50000 and
-            loyalty is not None and 0 <= loyalty <= 200 and
-            loyalty_limit is not None and 1 <= loyalty_limit <= 200 and
-            hero_status is not None and 0 <= hero_status <= 16 and
-            legacy_status58 is not None and 0 <= legacy_status58 <= 16
-        )
-
-    # The name is a user-editable label, not an identity field.  Do not
-    # reject a structurally valid general because the player used a space,
-    # punctuation, Latin text, or a name without Chinese characters.
-    GENERAL_NAME_WIRE_MAX = 64
-    for pos in range(8, len(bs) - 2):
-        ln = int.from_bytes(bs[pos:pos + 2], "big")
-        if not (1 <= ln <= GENERAL_NAME_WIRE_MAX) or pos + 2 + ln > len(bs):
-            continue
-        raw_name = bs[pos + 2:pos + 2 + ln]
-        try:
-            name = raw_name.decode("utf-8").strip()
-        except UnicodeDecodeError:
-            continue
-        if not name:
-            continue
-        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name):
-            continue
-        gid = int.from_bytes(bs[pos - 8:pos], "big")
-        if gid <= 0:
-            continue
-        body_off = pos + 2 + ln
-        item = {"id": gid, "idHex": f"{gid:016x}", "name": name, "offset": pos, "nameUtf8Offset": pos}
-        if looks_like_body(body_off, gid):
-            place_id = i64(body_off + PLACE_ID_OFFSET)
-            profession = u8(body_off + PROFESSION_OFFSET)
-            hero_status = u8(body_off + HERO_STATUS_OFFSET)
-            status_text = general_status_text_from_code(hero_status)
-            item.update({
-                "source": "state8004-binary-jiangling",
-                "layout": "i64_id_u16_name_114_body_b6_common_v20260708b",
-                "bodyOffset": body_off,
-                "repeatedIdHex": bs[body_off + REPEATED_ID_OFFSET:body_off + REPEATED_ID_OFFSET + 8].hex(),
-                "repeatedIdMatches": bs[body_off + REPEATED_ID_OFFSET:body_off + REPEATED_ID_OFFSET + 8] == gid.to_bytes(8, "big", signed=False),
-                "status": hero_status,
-                "heroStatusCode": hero_status,
-                "stateCode56": hero_status,
-                "statusText": status_text,
-                "displayStatus": status_text,
-                "busy": False if status_text == "闲" else True,
-                "rawStatus58": u8(body_off + LEGACY_STATUS58_OFFSET),
-                "status58": u8(body_off + LEGACY_STATUS58_OFFSET),
-                "energyReliable": True,
-                "tili": u16(body_off + ENERGY_OFFSET),
-                "tiliLimit": u16(body_off + ENERGY_LIMIT_OFFSET),
-                "level": u8(body_off + LEVEL_OFFSET),
-                "growth": u16(body_off + GROWTH_OFFSET),
-                "kind": profession_label(profession),
-                "professionCode": profession,
-                "gongji": u16(body_off + ATTACK_OFFSET),
-                "fangyu": u16(body_off + DEFENSE_OFFSET),
-                "loyalty": u8(body_off + LOYALTY_OFFSET),
-                "loyaltyLimit": u8(body_off + LOYALTY_LIMIT_OFFSET),
-                "troopLimit": u32(body_off + TROOP_LIMIT_OFFSET),
-                "daiBingLimit": u32(body_off + TROOP_LIMIT_OFFSET),
-            })
-            if place_id and place_id > 0:
-                item.update({"placeID": place_id, "fiefId": place_id, "fiefIdHex": f"{place_id:016x}"})
-        else:
-            # 兼容旧的弱扫描候选；不要把名字后 byte 误当可靠体力。
-            item.update({
-                "source": "state8004-binary-name-candidate",
-                "status": bs[pos + 2 + ln] if pos + 2 + ln < len(bs) else None,
-                "tili": None,
-                "energyReliable": False,
-            })
-        res.append(item)
-    # Prefer a verified body over a weak name-only hit when the same ID is
-    # encountered more than once while scanning the binary payload.
-    by_id: dict[int, dict[str, Any]] = {}
-    for g in res:
-        # General IDs are not globally six/seven digit values. Newer records
-        # can use IDs such as 292989, so validate the structured body above
-        # instead of imposing an arbitrary lower bound.
-        if not (0 < g["id"] <= 0x7FFFFFFFFFFFFFFF):
-            continue
-        previous = by_id.get(int(g["id"]))
-        if previous is None or (
-            g.get("source") == "state8004-binary-jiangling"
-            and previous.get("source") != "state8004-binary-jiangling"
-        ):
-            by_id[int(g["id"])] = g
-    out = list(by_id.values())
-    # Only structured records with the verified 114-byte body are real owned generals.
-    # Name-only hits can be famous-general card descriptions inside 0x8004, e.g. "少·刘协之".
-    final = [g for g in out if g.get("source") == "state8004-binary-jiangling"]
-    if not final:
-        final = [g for g in res if g.get("source") == "state8004-binary-jiangling"]
-
-    # Recover the following Lo/a.S5 troop table: count + repeated
-    # (generalId, generalId, soldierTypeCode, currentSoldierCount) entries.
-    ids = {int(g["id"]) for g in final}
-    min_off = max((int(g.get("bodyOffset", 0)) + BODY_LEN for g in final if g.get("bodyOffset")), default=0)
-    best: tuple[int, list[dict[str, Any]]] | None = None
-    for pos in range(max(0, min_off), len(bs)):
-        count = bs[pos]
-        if not (1 <= count <= 30) or pos + 1 + count * S5_ENTRY_LEN > len(bs):
-            continue
-        assignments = []
-        plausible = True
-        for idx in range(count):
-            off = pos + 1 + idx * S5_ENTRY_LEN
-            nm = i64(off); om = i64(off + 8); typ = u8(off + 16); cnt = int.from_bytes(bs[off + 17:off + 21], "big", signed=True)
-            if nm is None or om is None or typ is None or not (0 <= typ <= 32) or not (0 <= cnt <= 500000):
-                plausible = False; break
-            # Most captures repeat the same general ID in both fields. Some
-            # live packets use a linked pair instead; the second ID points to
-            # the owned general whose troop row should be displayed.
-            assignment_id = (
-                om if om in ids
-                else nm if nm in ids
-                else None
-            )
-            if assignment_id is not None:
-                assignments.append({
-                    "generalId": assignment_id,
-                    "soldierTypeCode": typ,
-                    "soldierCount": cnt,
-                    "s5Offset": pos,
-                    "s5Count": count,
-                })
-        if plausible and assignments:
-            score = (len(assignments), 1 if count == len(assignments) else 0, -pos)
-            if best is None or score > (len(best[1]), 1 if count == len(best[1]) else 0, -best[0]):
-                best = (pos, assignments)
-    if best:
-        by_gid = {a["generalId"]: a for a in best[1]}
-        for g in final:
-            a = by_gid.get(int(g["id"]))
-            if a:
-                g.update({
-                    "soldierTypeCode": a["soldierTypeCode"],
-                    "soldierType": soldier_type_name(a["soldierTypeCode"]),
-                    "soldierCount": a["soldierCount"],
-                    "currentSoldierCount": a["soldierCount"],
-                    "s5Offset": a["s5Offset"],
-                    "s5Count": a["s5Count"],
-                })
-            else:
-                # The troop table only contains generals that currently carry soldiers.
-                # A missing row after a valid table means "无配兵", not "unknown".
-                g.update({
-                    "soldierTypeCode": -1,
-                    "soldierType": "无配兵",
-                    "soldierCount": 0,
-                    "currentSoldierCount": 0,
-                    "s5Offset": best[0],
-                    "s5Count": len(best[1]),
-                })
-    return final
+    return shared_recover_generals_from_8004(hexstr)
 
 
 def parse_idle_army_from_8004(hexstr: str, generals: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -12740,28 +11877,7 @@ def parse_e200_daily_activity(payload: bytes, source_opcode: str = "0x6200/0xe20
 
 
 def general_status_text_from_code(status_code: Any) -> str:
-    if status_code is None or status_code == "":
-        return "未知"
-    try:
-        code = int(status_code)
-    except Exception:
-        return str(status_code)
-    # 原客户端 LscriptPages/game/z.<clinit>/z() 的将领状态表：
-    # 0 空闲、1 出征、2 防守/驻防、3 被俘虏、4 阵亡、5 修炼/修炼中、
-    # 6 作战中、7 待招募、8 返回、9 解雇。
-    # 桌面端表格为节省列宽显示为短标签；状态机仍只允许 code=0/“闲”出征。
-    return {
-        0: "闲",
-        1: "征",
-        2: "防",
-        3: "俘",
-        4: "亡",
-        5: "修",
-        6: "战",
-        7: "招",
-        8: "返",
-        9: "解雇",
-    }.get(code, f"状态{code}")
+    return shared_general_status_text_from_code(status_code)
 
 
 def parse_a110_general_statuses(payload: bytes, generals: list[dict[str, Any]]) -> dict[str, Any]:
@@ -19092,9 +18208,7 @@ MILITARY_SNAPSHOT_REQUEST_OPCODE = _contract_opcode(
 MILITARY_SNAPSHOT_RESPONSE_OPCODE = _contract_opcode(
     MILITARY_SNAPSHOT_CONTRACT["responseOpcode"]
 )
-MILITARY_INTEL_REQUEST_PAYLOAD = bytes.fromhex(
-    str(MILITARY_SNAPSHOT_CONTRACT["requestPayloadHex"])
-)
+MILITARY_INTEL_REQUEST_PAYLOAD = SHARED_MILITARY_INTEL_REQUEST_PAYLOAD
 DAILY_SIGN_IN_DUPLICATE_LOG = str(DAILY_SIGN_IN_CONTRACT["duplicateMessage"])
 
 

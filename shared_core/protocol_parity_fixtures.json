@@ -197,6 +197,46 @@
       "successResponseHex": "0064617461",
       "finishedResponseHex": "fe"
     },
+    "militaryIncoming8600": {
+      "requestPayloadHex": "07000000000000000000000014",
+      "responseHex": "000301000001000102000003010000000002000100000001000000000018dc27000000320001000000010000000000a132870009e585a8e79b8ae6baaa01000fe5aebfe4bba3e88b91e59fbae59cb000000000000000b004464f8e0000019fae63bf1f0300000000",
+      "expected": {
+        "text": "【掠夺】全益溪夺取宿代苑基地",
+        "state": "来袭",
+        "recordId": 10564231,
+        "attackerName": "全益溪",
+        "actionType": 1,
+        "targetName": "宿代苑基地",
+        "targetId": 176,
+        "marchValue": 71716750,
+        "eventTimeMs": 1785337200415
+      }
+    },
+    "militaryGarrisonEvent8600": {
+      "responseHex": "0035e38090e9a9bbe5ae88e38091e6ada5312ce6ada5322ce8bda6312ce8bda632e9a9bbe5ae88e59ca8e789a7e59cba2839332c333029000100000001000000000098b4340400000000006b4d9a0000000000006b4dac0000000000006b4dae000000000000686b9900000000000000a51b02000a31e7baa7e789a7e59cba005d001e",
+      "expected": {
+        "battleId": 10007604,
+        "generalIds": [7032218, 7032236, 7032238, 6843289],
+        "targetId": 42267,
+        "targetName": "1级牧场",
+        "x": 93,
+        "y": 30
+      }
+    },
+    "generalRecord8004": {
+      "responseHex": "0000000000080fa20004e6ada532000000000000003b2a0000000000000000000000000000000000000131013100000000000004823c640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffff",
+      "expected": {
+        "id": 528290,
+        "name": "步2",
+        "status": 0,
+        "statusText": "闲",
+        "level": 42,
+        "growth": 59,
+        "tili": 305,
+        "tiliLimit": 305,
+        "troopLimit": 1154
+      }
+    },
     "raidActionType1": {
       "generalIds": [1, 2],
       "targetId": 101,

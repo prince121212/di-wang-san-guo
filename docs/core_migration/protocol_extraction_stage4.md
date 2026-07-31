@@ -36,15 +36,24 @@
 
 迁移过程中全量测试捕获到一次私有战败文本收集函数遗漏；现已将该函数也纳入共享模块，并由桌面兼容包装调用。修正后电脑端 555 项测试全部通过。
 
+## 批次 4：军情与将领底层记录
+
+军情包尾依赖将领记录解析，因此先建立 `dwpm_core.features.generals`，再由 `dwpm_core.features.military` 单向依赖它：
+
+- `generals`：0x8004/0x8600 共用的 114 字节将领体恢复、兵力表关联和将领状态短标签。
+- `military`：0x1600 请求体、0x8600 三分区严格解析、来袭文案重建、行军/战斗/驻守/返回状态、包尾在外/俘虏将领证据，以及多包快照去重和排序。
+
+共享实现已与 2026-07-14、2026-07-26 的多组真实军情抓包逐对象对比，包括完整包尾的 14 名自有将领、19 名俘虏和 6 条配兵记录。电脑端 561 项测试全部通过。
+
 ## 离线同源验证
 
 `CoreFacade.protocol_fixture_report()` 直接从共享 `protocol_parity_fixtures.json` 运行字节断言。Android Debug APK 通过进程内路由 `GET /api/core/verification/protocol` 执行了同一份 Python 代码：
 
 ```text
-checkCount   = 44
-passedCount  = 44
+checkCount   = 49
+passedCount  = 49
 failureCount = 0
-coreHash     = 9c409a1994dc2399b4f6823768f3c2f4274f060a5ee12526792a0597e76aa041
+coreHash     = 7be82b5c2d3164f418f09b5c75d164dabe39006349dbd3c9f8801924b891487b
 ```
 
 覆盖项包括：
@@ -55,11 +64,11 @@ coreHash     = 9c409a1994dc2399b4f6823768f3c2f4274f060a5ee12526792a0597e76aa041
 - 出征、打矿预览、召回和行军加速回执。
 - 0x8540/0x8542 目标解析、扫描顺序以及等级和归属筛选。
 - 掠夺封地、无损状态/结算/阵容和副本目录/通关选择/战斗状态。
+- 0x8600 来袭/行军/战斗/驻守/返回、军情快照和将领底层记录。
 
 该路由只在 Debug 版开放，全程不登录账号、不读取 Session、不访问网络。
 
 ## 后续批次
 
-- 军情回执解析。
 - 角色、将领、军队、背包与日常纯解析。
 - 全部协议 fixture 纳入 APK 内自检后，才结束阶段 4。
