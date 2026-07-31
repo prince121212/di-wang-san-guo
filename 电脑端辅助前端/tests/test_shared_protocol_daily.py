@@ -20,7 +20,10 @@ from dwpm_core.features.daily import (
     build_national_city_list_payload,
     build_owned_city_list_payload,
     build_salary_payload,
+    country_donation_limits,
     general_visit_already_visited,
+    national_citizen_daily_skip_result,
+    normalize_general_visit_ids,
     parse_arena_coin_claim_response,
     parse_daily_diamond_box_response,
     parse_daily_sign_in_packets,
@@ -30,6 +33,7 @@ from dwpm_core.features.daily import (
     parse_national_city_page,
     parse_owned_city_list,
     parse_salary_receipt,
+    role_is_national_citizen,
 )
 
 
@@ -185,6 +189,36 @@ class SharedDailyProtocolTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             build_national_city_list_payload(4, 1)
+
+    def test_daily_identity_and_donation_rules_are_shared(self) -> None:
+        citizen = {"roleState": {"officeIdUnsigned": 0x0100, "level": 30}}
+        non_citizen = {
+            "roleState": {"officeName": "太守", "level": 30},
+            "role": {"officeName": "国民", "level": 30},
+        }
+        self.assertTrue(role_is_national_citizen(citizen))
+        self.assertFalse(role_is_national_citizen(non_citizen))
+        self.assertEqual(
+            SERVER.role_is_national_citizen(citizen),
+            role_is_national_citizen(citizen),
+        )
+        self.assertEqual(
+            SERVER.national_citizen_daily_skip_result(citizen),
+            national_citizen_daily_skip_result(citizen),
+        )
+        self.assertEqual(
+            SERVER.country_donation_limits(citizen),
+            country_donation_limits(citizen),
+        )
+        value = ["123", "0x7b", "bad", "456", "789", "1000", "2000"]
+        self.assertEqual(
+            SERVER.normalize_general_visit_ids(value),
+            normalize_general_visit_ids(value),
+        )
+        self.assertEqual(
+            normalize_general_visit_ids(value),
+            ["123", "456", "789", "1000"],
+        )
 
 
 if __name__ == "__main__":

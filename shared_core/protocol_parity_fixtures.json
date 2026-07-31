@@ -21,6 +21,36 @@
       "expectedOpcode": "0x8016",
       "xy": { "x": 18, "y": 255, "hex": "001200ff" }
     },
+    "accountLogin8003": {
+      "responseHex": "00000ce799bbe5bd95e68890e58a9f00000000075bcd150000018bcfe56800000000010000000200000000000003e9015f0009e8a792e889b2e794b21e0003e9ad8f0006e5b9b3e6b09100000000000003ea01600009e8a792e889b2e4b9992d0003e89c800006e5a4aae5ae88aa",
+      "expected": {
+        "status": 0,
+        "message": "登录成功",
+        "dm": 123456789,
+        "loginTime": 1700000000000,
+        "selected": 1,
+        "roleCount": 2,
+        "firstRoleId": 1001,
+        "firstRoleName": "角色甲",
+        "firstRoleLevel": 30,
+        "trailingBytes": 1
+      }
+    },
+    "accountPassportAreas": {
+      "responseText": "session-token`user-1\ntargetA`351`1区 测试服`http://game-1`x4`x5`x6`x7`x8`x9`x10`qzone_1\ntargetB`352`2区 测试服`http://game-2`x4`x5`x6`x7`x8`x9`x10`qzone_2\n",
+      "queries": [
+        { "query": "qzone_1", "expectedServerKey": "qzone_1" },
+        { "query": "第2区", "expectedServerKey": "qzone_2" },
+        { "query": "测试服", "expectedServerKey": "qzone_1" }
+      ],
+      "expected": {
+        "session": "session-token",
+        "userId": "user-1",
+        "areaCount": 2,
+        "firstAreaId": "351",
+        "firstAreaName": "1区 测试服"
+      }
+    },
     "brushCenterMajorityFief": {
       "generalIds": [11, 12, 13],
       "generals": [
@@ -557,6 +587,136 @@
         "completed": true,
         "alreadyVisited": true,
         "candidateCount": 0
+      }
+    },
+    "maintenanceProtocols": {
+      "generalId": 22223140,
+      "loyaltyDelta": 41,
+      "addLoyaltyPayloadHex": "000000000153192400002900",
+      "addLoyaltyResponseHex": "00000000000001531924000000000000140500000000000f3ddb000000000000000a00000000000000140064006400",
+      "generalItemId": 12,
+      "generalItemCount": 1,
+      "generalItemPayloadHex": "0000000001531924000c0001",
+      "generalItemResponseHex": "00000000000000000000000000000000320002004c00030000000000000000000c000500000000000000000001000000000000007b0000020203000a01020004000500060006e6b58be8af95",
+      "resourceDirection": 1,
+      "resourceAmount": 10000,
+      "resourcePayloadHex": "010000000000002710",
+      "resourceResponseHex": "0000000000000396c1000000000004623a000000000000000000000000000002ee00000064",
+      "deleteMailPayloadHex": "0001ffffffffffffffff",
+      "deleteMailResponseHex": "00010000",
+      "discardKind": 0,
+      "discardObjectId": 4,
+      "discardCount": 50,
+      "discardPayloadHex": "00000000000000000400000032ffffffffffffffff",
+      "discardResponseHex": "00000ce4b8a2e5bc83e68890e58a9f000000000000000000000000000000320002004c00030000000000000000000c000500000000000000000001000000000000007b0000020203000a01020004000500060006e6b58be8af95",
+      "inventoryItemId": 99,
+      "inventoryItemCount": 3,
+      "inventoryItemPayloadHex": "00630003",
+      "expected": {
+        "loyaltyActualCost": 5125,
+        "loyaltyCopper": 998875,
+        "loyalty": 100,
+        "loyaltyLimit": 100,
+        "energyInventoryItemCount": 2,
+        "resourceCopper": 235201,
+        "resourceFood": 287290,
+        "mailRemaining": 0,
+        "discardMessage": "丢弃成功",
+        "discardInventoryItemCount": 2
+      }
+    },
+    "internalAffairsRequests": {
+      "fiefId": 2681,
+      "buildingSlot": 10,
+      "buildingType": 1,
+      "academyFiefId": 2479,
+      "academySlot": 3,
+      "technologyId": 5,
+      "technologyLevel": 2,
+      "countryCopper": 123,
+      "technologyDonation": 1234,
+      "expected": {
+        "fiefQueryPayloadHex": "000000000000000a79",
+        "buildingActionPayloadHex": "000000000000000a79000a0001",
+        "technologyUpgradePayloadHex": "00000000000009af030005020000",
+        "countryDonationPayloadHex": "000000000000007b00000000000000000000000000000000",
+        "technologyDonationPayloadHex": "00000004d2"
+      }
+    },
+    "internalAffairsBuilding8200": {
+      "responseHex": "00000000000000000a79040000000000000055e00001000000000000000000000000000000000000000000000055e00100000000000055e10101000000000000000000000000000000000000000000000055e10400000000000055e20101000000000000000000000000000000000000000000000055e20a0000000000005750010000001387000000000000019f4ffd5a20000000000000005750",
+      "expected": {
+        "success": true,
+        "fiefId": 2681,
+        "buildingCount": 4,
+        "lastSlot": 10,
+        "lastType": 1,
+        "lastName": "房屋"
+      }
+    },
+    "internalAffairsFief8246": {
+      "expectedFiefId": 2681,
+      "responseHex": "000000000000000a790100000ce4b99de4b89ae5b081e59cb000000000000000570000001f000000000000003c02000000320003190000000000000000173200000000000000001864000000000000000019031900000000000000001a3200000000000000001b6400000000000000001c010500000000000000001d0000040000000000000055e00001000000000000000000000000000000000000000000000055e00100000000000055e10101000000000000000000000000000000000000000000000055e10400000000000055e20101000000000000000000000000000000000000000000000055e20a0000000000005750010100000000000000000000000000000000000000000000005750",
+      "expected": {
+        "success": true,
+        "fiefId": 2681,
+        "fiefName": "九业封地",
+        "buildQueueCapacity": 2,
+        "buildingCount": 4
+      }
+    },
+    "internalAffairsTechnology8004": {
+      "responseHex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000102ffffffffffffffffffffffffffffffff0000000000000000010002ffffffffffffffffffffffffffffffff0000000000000000020002ffffffffffffffffffffffffffffffff0000000000000000030002ffffffffffffffffffffffffffffffff0000000000000000040002ffffffffffffffffffffffffffffffff00000000000000000502000000000000000986000000000000545200000000075bcd15060002ffffffffffffffffffffffffffffffff0000000000000000070002ffffffffffffffffffffffffffffffff0000000000000000080002ffffffffffffffffffffffffffffffff0000000000000000090002ffffffffffffffffffffffffffffffff00000000000000000a0002ffffffffffffffffffffffffffffffff00000000000000000b0002ffffffffffffffffffffffffffffffff00000000000000000c0002ffffffffffffffffffffffffffffffff00000000000000000d0002ffffffffffffffffffffffffffffffff00000000000000000e0002ffffffffffffffffffffffffffffffff00000000000000000f0002ffffffffffffffffffffffffffffffff0000000000000000100002ffffffffffffffffffffffffffffffff0000000000000000110002ffffffffffffffffffffffffffffffff0000000000000000120002ffffffffffffffffffffffffffffffff0000000000000000130002ffffffffffffffffffffffffffffffff0000000000000000140002ffffffffffffffffffffffffffffffff0000000000000000150002ffffffffffffffffffffffffffffffff0000000000000000bb",
+      "expected": {
+        "technologyCount": 22,
+        "firstLevel": 1,
+        "researchingTechnologyId": 5,
+        "researchingName": "建筑学",
+        "researchingLevel": 2,
+        "researchingFiefId": 2438,
+        "researchingAcademyInstanceId": 21586,
+        "researchingDeadlineMs": 123456789
+      }
+    },
+    "ministryHubuVerifiedPlant": {
+      "crop": "金银花",
+      "statusQueryPayloadHex": "",
+      "plantPayloadHex": "0100000001",
+      "emptyGardenResponseHex": "000000010000000000000028000003e80032020005002800000a000000000000000100000000000002000000000000030000000000000400000000000005000000000000060000000000000700000000000008000000000000090000000000000200000007000100010d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000",
+      "plantResponseHex": "00000fe6938de4bd9ce68890e58a9fe38082000003840100000100008ca000008ca0006400645a000000000000000000000000000032000100000000",
+      "expected": {
+        "garden": {
+          "plotCount": 10,
+          "occupiedCount": 0,
+          "emptyCount": 10
+        },
+        "receipt": {
+          "success": true,
+          "status": 0,
+          "message": "操作成功。"
+        }
+      }
+    },
+    "ministrySettingsSafety": {
+      "input": {
+        "settings": {
+          "cropEnabled": true,
+          "crop": "未验证作物",
+          "highPriority": false,
+          "stealEnabled": true,
+          "courtesyEnabled": true,
+          "salaryRefresh": false
+        }
+      },
+      "expected": {
+        "cropEnabled": true,
+        "crop": "金银花",
+        "highPriority": false,
+        "stealEnabled": true,
+        "courtesyEnabled": true,
+        "salaryRefresh": false,
+        "plantingAllowed": true,
+        "unconfirmedActions": ["偷菜", "礼部任务"]
       }
     },
     "formationAssign1226": {

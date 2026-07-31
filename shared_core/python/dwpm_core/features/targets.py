@@ -569,6 +569,20 @@ def normalize_drop_keywords(drop: Any, drops: Any = None) -> List[str]:
     return output
 
 
+def parse_composition_code(code: str) -> Dict[str, int] | None:
+    digits = "".join(
+        character for character in str(code or "") if character.isdigit()
+    )
+    if len(digits) != 4:
+        return None
+    return {
+        "maxFoot": int(digits[0]),
+        "maxBow": int(digits[1]),
+        "maxCavalry": int(digits[2]),
+        "maxChariot": int(digits[3]),
+    }
+
+
 def match_drop(target: Dict[str, Any], drop: Any) -> bool:
     keywords = normalize_drop_keywords(drop)
     if not keywords:

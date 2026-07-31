@@ -16,6 +16,7 @@ DAILY_ACTIONS_CONTRACT = DAILY_CONTRACT["actions"]
 DAILY_SALARY_CONTRACT = DAILY_ACTIONS_CONTRACT["salary"]
 DAILY_NATIONAL_CONTRACT = DAILY_ACTIONS_CONTRACT["nationalCollect"]
 DAILY_GENERAL_VISIT_CONTRACT = DAILY_ACTIONS_CONTRACT["generalVisit"]
+DAILY_DONATE_CONTRACT = DAILY_ACTIONS_CONTRACT["donate"]
 DAILY_SIGN_IN_CONTRACT = DAILY_CONTRACT["signIn"]
 DAILY_DIAMOND_BOX_CONTRACT = DAILY_SIGN_IN_CONTRACT["diamondBox"]
 DAILY_SIGN_IN_ACTIVITY_OPCODE = int(
@@ -29,6 +30,104 @@ DAILY_SIGN_IN_DUPLICATE_LOG = str(
 )
 ARENA_COINS_DUPLICATE_LOG = "领竞技币重复，22点后再领取！"
 utf = encode_utf
+
+
+def normalize_general_visit_ids(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        raw_values = list(value)
+    elif value in (None, ""):
+        raw_values = []
+    else:
+        raw_values = re.split(r"[,，;；|\s]+", str(value))
+    result: list[str] = []
+    for raw in raw_values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text.lower().startswith("0x"):
+            try:
+                text = str(int(text, 16))
+            except ValueError:
+                continue
+        if not re.fullmatch(r"\d+", text):
+            continue
+        if text not in result:
+            result.append(text)
+        if len(result) >= 4:
+            break
+    return result
+
+
+def role_is_national_citizen(session: dict[str, Any]) -> bool:
+    """Return true only when live role data identifies the office as 国民."""
+    role_state = (
+        session.get("roleState")
+        if isinstance(session.get("roleState"), dict)
+        else {}
+    )
+    role = session.get("role") if isinstance(session.get("role"), dict) else {}
+    for source in (role_state, role):
+        office_name = str(source.get("officeName") or "").strip()
+        has_office_data = bool(office_name)
+        office_matches_citizen = office_name == "国民"
+        for field in ("officeIdUnsigned", "officeId", "officeIdRaw"):
+            value = source.get(field)
+            if value in (None, ""):
+                continue
+            has_office_data = True
+            try:
+                if isinstance(value, str):
+                    try:
+                        parsed = int(value, 0)
+                    except ValueError:
+                        parsed = int(value)
+                else:
+                    parsed = int(value)
+                normalized = parsed & 0xFFFF
+            except (TypeError, ValueError):
+                continue
+            if normalized == 0x0100:
+                office_matches_citizen = True
+        if has_office_data:
+            return office_matches_citizen
+        if any(
+            source.get(field) not in (None, "")
+            for field in ("officeIdUnsigned", "officeId", "officeIdRaw")
+        ):
+            return office_matches_citizen
+    return False
+
+
+def national_citizen_daily_skip_result(
+    session: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not role_is_national_citizen(session):
+        return None
+    return {
+        "success": True,
+        "completed": True,
+        "skipped": True,
+        "skipReason": "national-citizen",
+        "message": "国民跳过",
+        "statusText": "已做（国民跳过）",
+        "officeId": 0x0100,
+        "officeName": "国民",
+    }
+
+
+def country_donation_limits(session: dict[str, Any]) -> dict[str, int]:
+    level = int(
+        (session.get("role") or {}).get("level")
+        or (session.get("roleState") or {}).get("level")
+        or 0
+    )
+    if level <= 0:
+        raise RuntimeError("无法读取当前角色等级，不能计算最高捐献额")
+    return {
+        "level": level,
+        "copper": level * int(DAILY_DONATE_CONTRACT["copperPerLevel"]),
+        "food": level * int(DAILY_DONATE_CONTRACT["foodPerLevel"]),
+    }
 
 
 def now_ms() -> int:

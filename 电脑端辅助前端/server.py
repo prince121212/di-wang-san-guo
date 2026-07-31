@@ -59,6 +59,12 @@ if str(SHARED_PYTHON_SOURCE_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_PYTHON_SOURCE_DIR))
 
 from dwpm_core import CoreFacade
+from dwpm_core.account import (
+    area_catalog_signature as shared_area_catalog_signature,
+    find_login_area as shared_find_login_area,
+    parse_8003_login as shared_parse_8003_login,
+    parse_passport_area_list as shared_parse_passport_area_list,
+)
 from dwpm_core.features.expedition import (
     build_brush_payloads as shared_build_brush_payloads,
     build_brush_payloads_variant as shared_build_brush_payloads_variant,
@@ -128,6 +134,21 @@ from dwpm_core.features.inventory import (
     parse_8104_equipment_records as shared_parse_8104_equipment_records,
     parse_8104_inventory as shared_parse_8104_inventory,
 )
+from dwpm_core.features.maintenance import (
+    build_add_loyalty_payload as shared_build_add_loyalty_payload,
+    build_delete_all_mail_payload as shared_build_delete_all_mail_payload,
+    build_discard_inventory_payload as shared_build_discard_inventory_payload,
+    build_resource_exchange_payload as shared_build_resource_exchange_payload,
+    build_use_general_item_payload as shared_build_use_general_item_payload,
+    build_use_inventory_item_payload as shared_build_use_inventory_item_payload,
+    equipment_is_safe_to_discard as shared_equipment_is_safe_to_discard,
+    parse_821f_loyalty_response as shared_parse_821f_loyalty_response,
+    parse_delete_mail_response as shared_parse_delete_mail_response,
+    parse_discard_inventory_response as shared_parse_discard_inventory_response,
+    parse_resource_exchange_response as shared_parse_resource_exchange_response,
+    parse_status_utf as shared_parse_status_utf,
+    parse_use_general_item_response as shared_parse_use_general_item_response,
+)
 from dwpm_core.features.daily import (
     DAILY_GENERAL_PAGE_SIZE as SHARED_DAILY_GENERAL_PAGE_SIZE,
     DAILY_NATIONAL_CATEGORIES as SHARED_DAILY_NATIONAL_CATEGORIES,
@@ -142,8 +163,11 @@ from dwpm_core.features.daily import (
     build_owned_city_list_payload as shared_build_owned_city_list_payload,
     build_salary_payload as shared_build_salary_payload,
     clean_activity_result_message as shared_clean_activity_result_message,
+    country_donation_limits as shared_country_donation_limits,
     extract_utf_fields as shared_extract_utf_fields,
     general_visit_already_visited as shared_general_visit_already_visited,
+    national_citizen_daily_skip_result as shared_national_citizen_daily_skip_result,
+    normalize_general_visit_ids as shared_normalize_general_visit_ids,
     parse_arena_coin_claim_response as shared_parse_arena_coin_claim_response,
     parse_daily_diamond_box_response as shared_parse_daily_diamond_box_response,
     parse_daily_sign_in_packets as shared_parse_daily_sign_in_packets,
@@ -156,7 +180,45 @@ from dwpm_core.features.daily import (
     parse_owned_city_list as shared_parse_owned_city_list,
     parse_salary_receipt as shared_parse_salary_receipt,
     parse_status_message_payload as shared_parse_status_message_payload,
+    role_is_national_citizen as shared_role_is_national_citizen,
     trailing_utf_message as shared_trailing_utf_message,
+)
+from dwpm_core.features.internal_affairs import (
+    BARRACK_BUILDING_TYPES as SHARED_BARRACK_BUILDING_TYPES,
+    BUILDING_NAME_TYPES as SHARED_BUILDING_NAME_TYPES,
+    BUILDING_TYPE_NAMES as SHARED_BUILDING_TYPE_NAMES,
+    TECHNOLOGY_NAMES as SHARED_TECHNOLOGY_NAMES,
+    apply_building_sync_to_fief as shared_apply_building_sync_to_fief,
+    auto_domestic_interval_seconds as shared_auto_domestic_interval_seconds,
+    auto_domestic_interval_text as shared_auto_domestic_interval_text,
+    build_building_action_payload as shared_build_building_action_payload,
+    build_country_donation_payload as shared_build_country_donation_payload,
+    build_fief_query_payload as shared_build_fief_query_payload,
+    build_technology_donation_payload as shared_build_technology_donation_payload,
+    build_technology_upgrade_payload as shared_build_technology_upgrade_payload,
+    building_action_was_applied as shared_building_action_was_applied,
+    building_can_follow_hall as shared_building_can_follow_hall,
+    building_level_limit as shared_building_level_limit,
+    fief_build_queue_state as shared_fief_build_queue_state,
+    fief_hall as shared_fief_hall,
+    fief_is_base as shared_fief_is_base,
+    hall_must_upgrade_first as shared_hall_must_upgrade_first,
+    parse_8200_building_result as shared_parse_8200_building_result,
+    parse_8246_fief_result as shared_parse_8246_fief_result,
+    parse_building_list as shared_parse_building_list,
+    parse_fief_base_block as shared_parse_fief_base_block,
+    parse_technology_states_from_8004 as shared_parse_technology_states_from_8004,
+    should_continue_filling_build_queues as shared_should_continue_filling_build_queues,
+)
+from dwpm_core.features.ministries import (
+    MINISTRY_CROP_OPTIONS as SHARED_MINISTRY_CROP_OPTIONS,
+    VERIFIED_MINISTRY_CROP as SHARED_VERIFIED_MINISTRY_CROP,
+    build_hubu_batch_plant_payload as shared_build_hubu_batch_plant_payload,
+    build_hubu_status_query_payload as shared_build_hubu_status_query_payload,
+    ministry_planting_allowed as shared_ministry_planting_allowed,
+    normalize_ministry_settings as shared_normalize_ministry_settings,
+    parse_hubu_plant_response as shared_parse_hubu_plant_response,
+    unconfirmed_ministry_actions as shared_unconfirmed_ministry_actions,
 )
 from dwpm_core.features.military import (
     MILITARY_ACTION_STATE_BY_TAG as SHARED_MILITARY_ACTION_STATE_BY_TAG,
@@ -216,6 +278,7 @@ from dwpm_core.features.targets import (
     normalize_drop_keywords as shared_normalize_drop_keywords,
     parse_bandit_targets as shared_parse_bandit_targets,
     parse_mine_resources as shared_parse_mine_resources,
+    parse_composition_code as shared_parse_composition_code,
     scan_targets as shared_scan_targets,
     target_distance_squared as shared_target_distance_squared,
     target_matches_search_filter as shared_target_matches_search_filter,
@@ -916,19 +979,9 @@ GAME_REQUEST_PURPOSES = {
     0x6328: "批量种菜",
 }
 
-BUILDING_TYPE_NAMES = {
-    -1: "空地", 0: "大厅", 1: "房屋", 2: "农场", 3: "书院",
-    4: "步兵营", 5: "弓兵营", 6: "战车营", 8: "骑兵营",
-}
-BUILDING_NAME_TYPES = {name: code for code, name in BUILDING_TYPE_NAMES.items() if code >= 0}
-TECHNOLOGY_NAMES = {
-    0: "工程设计", 1: "征召技巧", 2: "种植技术", 3: "行军技巧",
-    4: "市场贸易", 5: "建筑学", 6: "铸铁技术", 7: "甲胄制造",
-    8: "药草研究", 9: "阵法技巧", 10: "抛射技巧", 11: "驾驭技巧",
-    12: "战车设计", 13: "统帅能力", 14: "信仰", 15: "仓储",
-    16: "安置", 17: "格斗", 18: "精准", 19: "驯马",
-    20: "精工", 21: "悬赏",
-}
+BUILDING_TYPE_NAMES = SHARED_BUILDING_TYPE_NAMES
+BUILDING_NAME_TYPES = SHARED_BUILDING_NAME_TYPES
+TECHNOLOGY_NAMES = SHARED_TECHNOLOGY_NAMES
 TECH_LEVEL_RULES_PATH = (
     ASSET_DIR / "tech_levels.json"
     if (ASSET_DIR / "tech_levels.json").exists()
@@ -976,7 +1029,7 @@ def load_building_level_costs() -> dict[tuple[int, int], dict[str, int]]:
 
 
 BUILDING_LEVEL_COSTS = load_building_level_costs()
-BARRACK_BUILDING_TYPES = {4, 5, 6, 8}
+BARRACK_BUILDING_TYPES = SHARED_BARRACK_BUILDING_TYPES
 
 
 def now_ms() -> int:
@@ -8625,89 +8678,7 @@ def account_game_transaction_lock(account_id: str) -> threading.RLock:
 
 
 def parse8003(payload: bytes) -> dict[str, Any]:
-    p = 0
-    def need(n: int, field: str) -> None:
-        if p + n > len(payload):
-            raise ValueError(
-                f"0x8003 字段 {field} 不完整：pos={p}, need={n}, size={len(payload)}"
-            )
-
-    def i8(field: str) -> int:
-        nonlocal p
-        need(1, field)
-        value = struct.unpack(">b", payload[p:p + 1])[0]
-        p += 1
-        return value
-
-    def i16(field: str) -> int:
-        nonlocal p
-        need(2, field)
-        value = struct.unpack(">h", payload[p:p + 2])[0]
-        p += 2
-        return value
-
-    def i32(field: str) -> int:
-        nonlocal p
-        need(4, field)
-        value = struct.unpack(">i", payload[p:p + 4])[0]
-        p += 4
-        return value
-
-    def i64(field: str) -> int:
-        nonlocal p
-        need(8, field)
-        value = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        return value
-
-    def text(field: str) -> str:
-        nonlocal p
-        need(2, f"{field}.length")
-        length = int.from_bytes(payload[p:p + 2], "big")
-        p += 2
-        need(length, field)
-        raw = payload[p:p + length]
-        p += length
-        return raw.decode("utf-8", errors="replace")
-
-    status = i8("status")
-    msg = text("message")
-    dm = i64("dm")
-    selected = 0
-    roles: list[dict[str, Any]] = []
-    if status == 0:
-        login_time = i64("loginTime")
-        selected = i32("selectedRole")
-        count = i32("roleCount")
-        if count < 0 or count > 1000:
-            raise ValueError(f"0x8003 角色数量异常：{count}")
-        for index in range(count):
-            rid = i64(f"roles[{index}].roleId")
-            server_code = i16(f"roles[{index}].serverCode")
-            name = text(f"roles[{index}].roleName")
-            level = i8(f"roles[{index}].level")
-            country = text(f"roles[{index}].country")
-            title = text(f"roles[{index}].title")
-            roles.append({
-                "roleId": rid,
-                "serverCode": server_code,
-                "roleName": name,
-                "level": level,
-                "country": country,
-                "title": title,
-            })
-    else:
-        login_time = None
-    return {
-        "status": status,
-        "message": msg,
-        "dm": dm,
-        "loginTime": login_time,
-        "selected": selected,
-        "roles": roles,
-        "parsedBytes": p,
-        "trailingBytes": len(payload) - p,
-    }
+    return shared_parse_8003_login(payload)
 
 
 def summarize_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -8763,82 +8734,11 @@ MARCH_SPEED_STATUS_MESSAGES = SHARED_MARCH_SPEED_STATUS_MESSAGES
 
 
 def build_add_loyalty_payload(general_id: int, delta: int) -> bytes:
-    amount = int(delta)
-    if amount <= 0 or amount > 0xFFFF:
-        raise RuntimeError(f"加忠数值无效：{amount}")
-    return struct.pack(">qBHB", int(general_id), 0, amount, 0)
+    return shared_build_add_loyalty_payload(general_id, delta)
 
 
 def parse_821f_loyalty_response(payload: bytes) -> dict[str, Any]:
-    """Parse the add-loyalty reply, including its single and batch modes."""
-    out: dict[str, Any] = {
-        "rawHex": payload.hex()[:4096],
-        "success": False,
-        "generals": [],
-    }
-    if len(payload) < 42:
-        return {**out, "message": f"加忠响应长度不足：{len(payload)}/42"}
-    try:
-        p = 0
-        result = struct.unpack(">b", payload[p:p + 1])[0]
-        p += 1
-        mode = struct.unpack(">b", payload[p:p + 1])[0]
-        p += 1
-        general_id = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        actual_cost = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        copper = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        gold = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        resource_g = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        generals: list[dict[str, Any]] = []
-        if mode == 2:
-            if p >= len(payload):
-                raise ValueError("批量加忠响应缺少将领数量")
-            count = payload[p]
-            p += 1
-            for _ in range(count):
-                if p + 12 > len(payload):
-                    raise ValueError("批量加忠响应中的将领记录不完整")
-                row_id, loyalty, loyalty_limit = struct.unpack(
-                    ">qHH", payload[p:p + 12]
-                )
-                p += 12
-                generals.append({
-                    "generalId": row_id,
-                    "loyalty": loyalty,
-                    "loyaltyLimit": loyalty_limit,
-                })
-        else:
-            if p + 4 > len(payload):
-                raise ValueError("单将领加忠响应缺少忠诚度结果")
-            loyalty, loyalty_limit = struct.unpack(">HH", payload[p:p + 4])
-            p += 4
-            generals.append({
-                "generalId": general_id,
-                "loyalty": loyalty,
-                "loyaltyLimit": loyalty_limit,
-            })
-        success = result == 0
-        return {
-            **out,
-            "success": success,
-            "result": result,
-            "mode": mode,
-            "generalId": general_id,
-            "actualCost": actual_cost,
-            "copper": copper,
-            "gold": gold,
-            "resourceG": resource_g,
-            "generals": generals,
-            "message": "忠诚度增加成功" if success else f"忠诚度增加失败(result={result})",
-            "trailingHex": payload[p:].hex(),
-        }
-    except Exception as exc:
-        return {**out, "parseError": str(exc), "message": f"加忠响应解析失败：{exc}"}
+    return shared_parse_821f_loyalty_response(payload)
 
 
 def build_mine_speed_payload(battle_id: int, item_id: int) -> bytes:
@@ -11833,57 +11733,11 @@ def office_name_from_id(office_id: Any) -> str:
 
 
 def role_is_national_citizen(sess: dict[str, Any]) -> bool:
-    """Return true only when live role data identifies the office as 国民."""
-    role_state = sess.get("roleState") if isinstance(sess.get("roleState"), dict) else {}
-    role = sess.get("role") if isinstance(sess.get("role"), dict) else {}
-    for source in (role_state, role):
-        office_name = str(source.get("officeName") or "").strip()
-        has_office_data = bool(office_name)
-        office_matches_citizen = office_name == "国民"
-        for field in ("officeIdUnsigned", "officeId", "officeIdRaw"):
-            value = source.get(field)
-            if value in (None, ""):
-                continue
-            has_office_data = True
-            try:
-                if isinstance(value, str):
-                    try:
-                        parsed = int(value, 0)
-                    except ValueError:
-                        parsed = int(value)
-                else:
-                    parsed = int(value)
-                normalized = parsed & 0xFFFF
-            except (TypeError, ValueError):
-                continue
-            if normalized == 0x0100:
-                office_matches_citizen = True
-        if has_office_data:
-            # roleState is the live source.  Do not let stale role-list data
-            # override a current, non-citizen office value.
-            return office_matches_citizen
-        if any(
-            source.get(field) not in (None, "")
-            for field in ("officeIdUnsigned", "officeId", "officeIdRaw")
-        ):
-            return office_matches_citizen
-    return False
+    return shared_role_is_national_citizen(sess)
 
 
 def national_citizen_daily_skip_result(sess: dict[str, Any]) -> dict[str, Any] | None:
-    """Build the terminal daily-task result used by office-gated features."""
-    if not role_is_national_citizen(sess):
-        return None
-    return {
-        "success": True,
-        "completed": True,
-        "skipped": True,
-        "skipReason": "national-citizen",
-        "message": "国民跳过",
-        "statusText": "已做（国民跳过）",
-        "officeId": 0x0100,
-        "officeName": "国民",
-    }
+    return shared_national_citizen_daily_skip_result(sess)
 
 
 def parse_8004_head(
@@ -11962,24 +11816,11 @@ def parse_8104_inventory(
 
 
 def parse_status_utf(payload: bytes) -> tuple[int | None, str, int]:
-    if not payload:
-        return None, "空响应", 0
-    status = struct.unpack(">b", payload[:1])[0]
-    if len(payload) < 3:
-        return status, "", 1
-    message, p = read_utf(payload, 1)
-    return status, message, p
+    return shared_parse_status_utf(payload)
 
 
 def build_use_general_item_payload(general_id: int | str, item_id: int, count: int = 1) -> bytes:
-    gid = int(str(general_id), 16) if isinstance(general_id, str) and any(c in "abcdefABCDEF" for c in general_id) else int(general_id)
-    if gid <= 0:
-        raise RuntimeError("使用道具缺少有效将领 ID")
-    if not (0 <= int(item_id) <= 0xFFFF):
-        raise RuntimeError(f"道具 ID 超出范围：{item_id}")
-    if not (1 <= int(count) <= 0xFFFF):
-        raise RuntimeError(f"道具数量超出范围：{count}")
-    return struct.pack(">qHH", gid, int(item_id), int(count))
+    return shared_build_use_general_item_payload(general_id, item_id, count)
 
 
 def execute_use_energy_item(sess: dict[str, Any], general_id: str, *, confirm: str = "") -> dict[str, Any]:
@@ -12001,21 +11842,17 @@ def execute_use_energy_item(sess: dict[str, Any], general_id: str, *, confirm: s
     response = next((p["payload"] for p in packets if p.get("opcode") == 0x8218 and "payload" in p), None)
     if response is None:
         return {"success": False, "message": "未收到 0x8218 活血丹响应", "http": code, "payloadHex": payload.hex()}
-    status = struct.unpack(">b", response[:1])[0] if response else None
-    message = ""
-    inventory = None
-    if status == 0:
-        # 2026-07-10 live response: status byte followed directly by the 0x8104
-        # inventory body. There is no success UTF between them.
-        inventory = parse_8104_inventory(response[1:], "live/0x1218/0x8218")
-    elif response:
-        _status, message, _p = parse_status_utf(response)
+    parsed = shared_parse_use_general_item_response(
+        response,
+        item_names=item_names_by_id(),
+        equipment_templates=equipment_templates_by_id(),
+        quality_names=EQUIPMENT_QUALITY_NAMES,
+    )
+    inventory = parsed.get("inventory")
     if inventory and not inventory.get("parseError"):
         sess["inventory"] = inventory
     return {
-        "success": status == 0,
-        "status": status,
-        "message": message or ("活血丹使用成功" if status == 0 else f"使用失败状态 {status}"),
+        **parsed,
         "generalId": int(general["id"]),
         "generalName": general.get("name") or "",
         "itemId": 12,
@@ -12027,32 +11864,11 @@ def execute_use_energy_item(sess: dict[str, Any], general_id: str, *, confirm: s
 
 
 def build_resource_exchange_payload(direction: int, amount: int) -> bytes:
-    if direction not in (0, 1):
-        raise RuntimeError(f"资源转换方向无效：{direction}")
-    if amount <= 0:
-        raise RuntimeError("资源转换数量必须大于 0")
-    return struct.pack(">Bq", direction, int(amount))
+    return shared_build_resource_exchange_payload(direction, amount)
 
 
 def parse_resource_exchange_response(payload: bytes) -> dict[str, Any]:
-    if not payload:
-        return {"status": None, "success": False, "message": "资源转换响应为空", "rawHex": ""}
-    status = struct.unpack(">b", payload[:1])[0]
-    message = ""
-    p = 1
-    if status != 0 and len(payload) >= 3:
-        _status, message, p = parse_status_utf(payload)
-    out: dict[str, Any] = {
-        "status": status,
-        "success": status == 0,
-        "message": message or ("资源转换成功" if status == 0 else f"资源转换失败状态 {status}"),
-        "rawHex": payload.hex(),
-    }
-    # 2026-07-10 live response: status + i64 copper + i64 food.
-    if status == 0 and len(payload) >= 17:
-        out["copper"] = struct.unpack(">q", payload[p:p + 8])[0]
-        out["food"] = struct.unpack(">q", payload[p + 8:p + 16])[0]
-    return out
+    return shared_parse_resource_exchange_response(payload)
 
 
 def execute_food_to_copper(sess: dict[str, Any], food_amount: int, *, confirm: str = "") -> dict[str, Any]:
@@ -12087,24 +11903,11 @@ def execute_food_to_copper(sess: dict[str, Any], food_amount: int, *, confirm: s
 
 
 def build_delete_all_mail_payload() -> bytes:
-    return b"\x00\x01" + struct.pack(">q", -1)
+    return shared_build_delete_all_mail_payload()
 
 
 def parse_delete_mail_response(payload: bytes) -> dict[str, Any]:
-    if len(payload) < 4:
-        return {"success": False, "message": "邮件删除响应过短", "rawHex": payload.hex()}
-    action = payload[0]
-    box_type = payload[1]
-    remaining = int.from_bytes(payload[2:4], "big", signed=False)
-    success = action == 0 and box_type == 1
-    return {
-        "success": success,
-        "action": action,
-        "boxType": box_type,
-        "remaining": remaining,
-        "message": "邮件清理完成" if success else f"邮件清理响应异常 action={action} box={box_type}",
-        "rawHex": payload.hex(),
-    }
+    return shared_parse_delete_mail_response(payload)
 
 
 def execute_delete_all_mail(sess: dict[str, Any], *, confirm: str = "") -> dict[str, Any]:
@@ -12126,25 +11929,16 @@ def execute_delete_all_mail(sess: dict[str, Any], *, confirm: str = "") -> dict[
 
 
 def build_discard_inventory_payload(kind: int, object_id: int, count: int = 1) -> bytes:
-    if kind not in (0, 1):
-        raise RuntimeError(f"宝库丢弃类型无效：{kind}")
-    if object_id < 0:
-        raise RuntimeError("宝库丢弃对象 ID 无效")
-    if count <= 0:
-        raise RuntimeError("宝库丢弃数量必须大于 0")
-    return struct.pack(">Bqi", kind, int(object_id), int(count)) + struct.pack(">q", -1)
+    return shared_build_discard_inventory_payload(kind, object_id, count)
 
 
 def parse_discard_inventory_response(payload: bytes) -> dict[str, Any]:
-    status, message, p = parse_status_utf(payload)
-    inventory = parse_8104_inventory(payload[p:], "live/0x1103/0x8103") if status == 0 and p < len(payload) else None
-    return {
-        "success": status == 0,
-        "status": status,
-        "message": message or ("丢弃成功" if status == 0 else f"丢弃失败状态 {status}"),
-        "inventory": inventory,
-        "rawHex": payload.hex(),
-    }
+    return shared_parse_discard_inventory_response(
+        payload,
+        item_names=item_names_by_id(),
+        equipment_templates=equipment_templates_by_id(),
+        quality_names=EQUIPMENT_QUALITY_NAMES,
+    )
 
 
 def execute_discard_inventory(
@@ -12183,23 +11977,12 @@ def execute_discard_inventory(
 
 
 def equipment_is_safe_to_discard(equipment: dict[str, Any], *, max_quality: int, max_level: int) -> tuple[bool, str]:
-    if int(equipment.get("instanceId") or -1) <= 0:
-        return False, "装备实例 ID 无效"
-    if bool(equipment.get("famous")):
-        return False, "名将装备"
-    if int(equipment.get("strengthen") or 0) > 0:
-        return False, "已经强化"
-    if str(equipment.get("extraText") or "").strip():
-        return False, "存在炼魂/额外描述"
-    level = int(equipment.get("level") or 0)
-    if level >= 80:
-        return False, "80级以上保护"
-    if level >= int(max_level):
-        return False, f"等级不低于{max_level}"
-    quality = int(equipment.get("quality") if equipment.get("quality") is not None else -1)
-    if quality < 0 or quality > int(max_quality):
-        return False, f"品质高于{EQUIPMENT_QUALITY_NAMES[max_quality]}"
-    return True, ""
+    return shared_equipment_is_safe_to_discard(
+        equipment,
+        max_quality=max_quality,
+        max_level=max_level,
+        quality_names=EQUIPMENT_QUALITY_NAMES,
+    )
 
 
 def clean_inventory_by_policy(sess: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
@@ -12458,21 +12241,7 @@ def match_drop(target: dict[str, Any], drop: Any) -> bool:
 
 
 def parse_passport_area_list(text: str) -> tuple[str, str, list[dict[str, str]]]:
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    if not lines or "`" not in lines[0]:
-        raise RuntimeError("账号登录失败或 passport 返回异常")
-    head = lines[0].split("`")
-    if len(head) < 2:
-        raise RuntimeError("passport 区服列表响应缺少 session/userId")
-    session, user_id = head[0], head[1]
-    areas: list[dict[str, str]] = []
-    for line in lines[1:]:
-        p = line.split("`")
-        if len(p) >= 12:
-            areas.append({"target": p[0], "areaId": p[1], "areaName": p[2], "serverUrl": p[3], "serverKey": p[11]})
-    if not areas:
-        raise RuntimeError("passport 未返回任何区服")
-    return session, user_id, areas
+    return shared_parse_passport_area_list(text)
 
 
 def fetch_passport_area_list(
@@ -12511,17 +12280,7 @@ def fetch_passport_area_list(
 
 
 def area_catalog_signature(areas: list[dict[str, Any]]) -> str:
-    normalized = sorted(
-        [{
-            "target": str(area.get("target") or ""),
-            "areaId": str(area.get("areaId") or ""),
-            "areaName": str(area.get("areaName") or ""),
-            "serverUrl": str(area.get("serverUrl") or ""),
-            "serverKey": str(area.get("serverKey") or ""),
-        } for area in areas],
-        key=lambda area: (area["serverKey"], area["areaId"], area["areaName"]),
-    )
-    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return shared_area_catalog_signature(areas)
 
 
 def read_area_catalog(platform: Any = None) -> dict[str, Any]:
@@ -12620,45 +12379,7 @@ def update_area_catalog_if_changed(
 
 
 def find_login_area(areas: list[dict[str, str]], server_query: str) -> dict[str, str] | None:
-    query = str(server_query or "").strip()
-    if not query:
-        return None
-    exact = next((
-        area for area in areas
-        if query in {area.get("areaName"), area.get("serverKey"), area.get("areaId")}
-    ), None)
-    if exact:
-        return exact
-    query_lower = query.lower()
-    zone_match = (
-        re.search(r"qzone[_-]?(\d+)", query_lower)
-        or re.search(r"(\d+)\s*区", query_lower)
-    )
-    if zone_match:
-        zone_number = zone_match.group(1)
-        expected_key = f"qzone_{zone_number}"
-        by_key = next((
-            area for area in areas
-            if str(area.get("serverKey") or "").strip().lower() == expected_key
-        ), None)
-        if by_key:
-            return by_key
-        by_zone = next((
-            area for area in areas
-            if (
-                (match := re.search(r"(\d+)\s*区", str(area.get("areaName") or "")))
-                and match.group(1) == zone_number
-            )
-        ), None)
-        if by_zone:
-            return by_zone
-    return next((
-        area for area in areas
-        if (
-            query_lower in str(area.get("areaName") or "").lower()
-            or str(area.get("areaName") or "").lower() in query_lower
-        )
-    ), None)
+    return shared_find_login_area(areas, server_query)
 
 
 def fresh_login(
@@ -17132,7 +16853,7 @@ def parse_daily_diamond_box_response(payload: bytes) -> dict[str, Any]:
 def use_inventory_item(sess: dict[str, Any], item_id: int, count: int = 1, *, item_name: str = "") -> dict[str, Any]:
     item_id = int(item_id)
     count = max(1, min(int(count), 65535))
-    payload = struct.pack(">HH", item_id, count)
+    payload = shared_build_use_inventory_item_payload(item_id, count)
     purpose = f"开启{item_name}" if item_name else "使用道具"
     code, data, packets = post_game(
         sess["gameHttp"],
@@ -18237,249 +17958,46 @@ def execute_arena_automation_after_22_boundary(sess: dict[str, Any]) -> bool:
 
 
 def country_donation_limits(sess: dict[str, Any]) -> dict[str, int]:
-    level = int((sess.get("role") or {}).get("level") or (sess.get("roleState") or {}).get("level") or 0)
-    if level <= 0:
-        raise RuntimeError("无法读取当前角色等级，不能计算最高捐献额")
-    return {
-        "level": level,
-        "copper": level * int(DAILY_DONATE_CONTRACT["copperPerLevel"]),
-        "food": level * int(DAILY_DONATE_CONTRACT["foodPerLevel"]),
-    }
+    return shared_country_donation_limits(sess)
 
 
 def build_fief_query_payload(fief_id: int, mode: int = 0) -> bytes:
-    return struct.pack(">Bq", int(mode), int(fief_id))
+    return shared_build_fief_query_payload(fief_id, mode)
 
 
 def build_building_action_payload(fief_id: int, slot: int, building_type: int, action: int = 0) -> bytes:
-    if not (0 <= int(slot) <= 0xFFFF and 0 <= int(building_type) <= 0xFFFF):
-        raise RuntimeError("建筑槽位或类型超出范围")
-    return struct.pack(">BqHH", int(action), int(fief_id), int(slot), int(building_type))
+    return shared_build_building_action_payload(
+        fief_id, slot, building_type, action,
+    )
 
 
 def build_technology_upgrade_payload(
     fief_id: int, academy_slot: int, technology_id: int, target_level: int,
     mode: int = 0, use_gold: int = 0,
 ) -> bytes:
-    return struct.pack(
-        ">qBHBBB", int(fief_id), int(academy_slot), int(technology_id),
-        int(target_level), int(mode), int(use_gold),
+    return shared_build_technology_upgrade_payload(
+        fief_id, academy_slot, technology_id, target_level, mode, use_gold,
     )
 
 
 def parse_building_list(payload: bytes, offset: int) -> tuple[list[dict[str, Any]], int]:
-    if offset < 0 or offset >= len(payload):
-        raise RuntimeError("建筑列表偏移无效")
-    count = payload[offset]
-    if count > 32:
-        raise RuntimeError(f"建筑数量异常：{count}")
-    p = offset + 1
-    buildings: list[dict[str, Any]] = []
-    for index in range(count):
-        if p + 28 > len(payload):
-            raise RuntimeError(f"第 {index + 1} 条建筑记录不完整")
-        slot = payload[p]
-        instance_id = struct.unpack(">q", payload[p + 1:p + 9])[0]
-        building_type = struct.unpack(">b", payload[p + 9:p + 10])[0]
-        level = payload[p + 10]
-        timer_ms = struct.unpack(">i", payload[p + 11:p + 15])[0]
-        progress = struct.unpack(">i", payload[p + 15:p + 19])[0]
-        state_sign = struct.unpack(">q", payload[p + 19:p + 27])[0]
-        nested_action = payload[p + 27]
-        p += 28
-        nested: dict[str, Any] = {"action": nested_action}
-        if nested_action == 0:
-            if p + 8 > len(payload):
-                raise RuntimeError("建筑嵌套清理块不完整")
-            nested["ownerId"] = struct.unpack(">q", payload[p:p + 8])[0]
-            p += 8
-        elif nested_action == 1:
-            if p + 9 > len(payload):
-                raise RuntimeError("建筑嵌套任务头不完整")
-            nested["ownerId"] = struct.unpack(">q", payload[p:p + 8])[0]
-            task_count = payload[p + 8]
-            p += 9
-            nested["taskCount"] = task_count
-            nested["tasks"] = []
-            for _ in range(task_count):
-                if p + 32 > len(payload):
-                    raise RuntimeError("建筑嵌套任务记录不完整")
-                nested["tasks"].append({
-                    "taskId": struct.unpack(">q", payload[p:p + 8])[0],
-                    "state": payload[p + 8],
-                    "targetType": struct.unpack(">H", payload[p + 9:p + 11])[0],
-                    "current": struct.unpack(">i", payload[p + 11:p + 15])[0],
-                    "target": struct.unpack(">i", payload[p + 15:p + 19])[0],
-                    "remainingMs": struct.unpack(">q", payload[p + 19:p + 27])[0],
-                    "flag": payload[p + 27],
-                    "tickMs": struct.unpack(">i", payload[p + 28:p + 32])[0],
-                })
-                p += 32
-        else:
-            raise RuntimeError(f"未知建筑嵌套动作：{nested_action}")
-        buildings.append({
-            "slot": slot, "instanceId": instance_id, "type": building_type,
-            "name": BUILDING_TYPE_NAMES.get(building_type, f"建筑{building_type}"),
-            "level": level, "timerMs": timer_ms, "busy": timer_ms > 0,
-            "progress": progress, "stateSign": state_sign, "nested": nested,
-        })
-    return buildings, p
+    return shared_parse_building_list(payload, offset)
 
 
 def parse_fief_base_block(payload: bytes, offset: int, end: int) -> dict[str, Any]:
-    p = offset
-
-    def take(size: int) -> bytes:
-        nonlocal p
-        if p + size > end:
-            raise RuntimeError("封地基础状态不完整")
-        value = payload[p:p + size]
-        p += size
-        return value
-
-    flag1 = take(1)[0]
-    flag2 = take(1)[0]
-    name, p = read_utf(payload, p)
-    if p > end:
-        raise RuntimeError("封地名称越界")
-    base = {
-        "flag1": flag1,
-        "flag2": flag2,
-        "fiefName": name,
-        "longValue": struct.unpack(">q", take(8))[0],
-        "intValue1": struct.unpack(">i", take(4))[0],
-        "intValue2": struct.unpack(">i", take(4))[0],
-        "shortValue1": struct.unpack(">h", take(2))[0],
-        "shortValue2": struct.unpack(">h", take(2))[0],
-        "baseBuildQueueCapacity": take(1)[0],
-        "shortValue3": struct.unpack(">h", take(2))[0],
-        "shortValue4": struct.unpack(">h", take(2))[0],
-        "flag3": take(1)[0],
-    }
-
-    def parse_buff_group() -> list[dict[str, int]]:
-        rows = []
-        for _ in range(take(1)[0]):
-            rows.append({
-                "value": take(1)[0],
-                "remainingMs": struct.unpack(">q", take(8))[0],
-                "type": take(1)[0],
-            })
-        return rows
-
-    base["copperBoosts"] = parse_buff_group()
-    base["grainBoosts"] = parse_buff_group()
-    queue_boosts = parse_buff_group()
-    base["buildQueueBoosts"] = queue_boosts
-
-    def consume_byte_int_rows() -> list[dict[str, int]]:
-        return [
-            {"type": take(1)[0], "value": struct.unpack(">i", take(4))[0]}
-            for _ in range(take(1)[0])
-        ]
-
-    base["list1"] = consume_byte_int_rows()
-    base["list2"] = consume_byte_int_rows()
-    if p != end:
-        raise RuntimeError(f"封地基础状态有未解析尾部：{end - p}B")
-    active_capacities = [
-        int(row["value"]) for row in queue_boosts
-        if int(row.get("remainingMs") or 0) > 0 and int(row.get("value") or 0) > 0
-    ]
-    base["buildQueueCapacity"] = (
-        active_capacities[0] if active_capacities
-        else max(1, int(base["baseBuildQueueCapacity"] or 2))
-    )
-    base["buildQueueRemainingMs"] = max(
-        (int(row.get("remainingMs") or 0) for row in queue_boosts),
-        default=0,
-    )
-    return base
+    return shared_parse_fief_base_block(payload, offset, end)
 
 
 def parse_8200_building_result(payload: bytes) -> dict[str, Any]:
-    if len(payload) < 11:
-        raise RuntimeError("0x8200 建筑响应过短")
-    status = struct.unpack(">b", payload[:1])[0]
-    substatus = struct.unpack(">b", payload[1:2])[0]
-    fief_id = struct.unpack(">q", payload[2:10])[0]
-    buildings, end = parse_building_list(payload, 10)
-    if end != len(payload):
-        raise RuntimeError(f"0x8200 建筑响应有未解析尾部：{len(payload) - end}B")
-    return {
-        "success": status == 0 and substatus == 0, "status": status,
-        "substatus": substatus, "fiefId": fief_id, "buildings": buildings,
-    }
+    return shared_parse_8200_building_result(payload)
 
 
 def parse_8246_fief_result(payload: bytes, expected_fief_id: int | None = None) -> dict[str, Any]:
-    if len(payload) < 12:
-        raise RuntimeError("0x8246 封地响应过短")
-    status = struct.unpack(">b", payload[:1])[0]
-    fief_id = struct.unpack(">q", payload[1:9])[0]
-    if expected_fief_id is not None and fief_id != int(expected_fief_id):
-        raise RuntimeError(f"0x8246 封地不匹配：期望{expected_fief_id}，实际{fief_id}")
-    candidates = []
-    for offset in range(9, len(payload)):
-        if payload[offset] > 16:
-            continue
-        try:
-            buildings, end = parse_building_list(payload, offset)
-        except Exception:
-            continue
-        slots = [int(item["slot"]) for item in buildings]
-        if end == len(payload) and len(slots) == len(set(slots)) and all(slot <= 31 for slot in slots):
-            if all(int(item["type"]) in BUILDING_TYPE_NAMES for item in buildings):
-                try:
-                    base = parse_fief_base_block(payload, 9, offset)
-                except Exception:
-                    continue
-                candidates.append((offset, buildings, base))
-    if len(candidates) != 1:
-        raise RuntimeError(f"0x8246 建筑列表定位不唯一：候选{len(candidates)}个")
-    offset, buildings, base = candidates[0]
-    return {
-        "success": status == 0, "status": status, "fiefId": fief_id,
-        "buildingOffset": offset, "buildings": buildings, **base,
-    }
+    return shared_parse_8246_fief_result(payload, expected_fief_id)
 
 
 def parse_technology_states_from_8004(payload: bytes) -> list[dict[str, Any]]:
-    """Locate the verified 22-entry technology table in a role-state payload."""
-    candidates: list[list[dict[str, Any]]] = []
-    count = 22
-    record_size = 27
-    for offset in range(0, max(0, len(payload) - count * record_size + 1)):
-        if any(payload[offset + index * record_size] != index for index in range(count)):
-            continue
-        rows = []
-        plausible = True
-        for index in range(count):
-            p = offset + index * record_size
-            level = payload[p + 1]
-            state = payload[p + 2]
-            fief_id = struct.unpack(">q", payload[p + 3:p + 11])[0]
-            academy_id = struct.unpack(">q", payload[p + 11:p + 19])[0]
-            deadline_ms = struct.unpack(">q", payload[p + 19:p + 27])[0]
-            if level > 15 or state > 10:
-                plausible = False
-                break
-            rows.append({
-                "technologyId": index,
-                "name": TECHNOLOGY_NAMES.get(index, f"科技{index}"),
-                "level": level,
-                "state": state,
-                "researching": fief_id >= 0 and academy_id >= 0 and deadline_ms > 0,
-                "fiefId": None if fief_id < 0 else fief_id,
-                "academyInstanceId": None if academy_id < 0 else academy_id,
-                "deadlineMs": deadline_ms,
-                "offset": p,
-            })
-        if plausible:
-            candidates.append(rows)
-    if len(candidates) != 1:
-        raise RuntimeError(f"0x8004 科技状态表定位不唯一：候选{len(candidates)}个")
-    return candidates[0]
+    return shared_parse_technology_states_from_8004(payload)
 
 
 def current_technology_states(sess: dict[str, Any]) -> list[dict[str, Any]]:
@@ -18597,12 +18115,9 @@ def building_action_was_applied(
     buildings: list[dict[str, Any]], slot: int, building_type: int,
     previous_level: int | None,
 ) -> bool:
-    building = next((item for item in buildings if int(item.get("slot", -1)) == int(slot)), None)
-    if not building or int(building.get("type", -1)) != int(building_type):
-        return False
-    if previous_level is None:
-        return True
-    return int(building.get("level", 0)) > int(previous_level) or bool(building.get("busy"))
+    return shared_building_action_was_applied(
+        buildings, slot, building_type, previous_level,
+    )
 
 
 def execute_building_action(
@@ -18757,20 +18272,13 @@ def execute_technology_upgrade(
 
 
 def build_country_donation_payload(*, copper: int = 0, food: int = 0, technology: int = 0) -> bytes:
-    values = [int(copper), int(food), int(technology)]
-    if sum(value > 0 for value in values) != 1:
-        raise RuntimeError("每次国家捐献必须且只能指定一种资源")
-    if any(value < 0 for value in values):
-        raise RuntimeError("国家捐献数量不能为负数")
-    return struct.pack(">qqq", *values)
+    return shared_build_country_donation_payload(
+        copper=copper, food=food, technology=technology,
+    )
 
 
 def build_technology_donation_payload(amount: int) -> bytes:
-    """0x140a payload: mode byte 0 + signed int amount."""
-    value = int(amount)
-    if value <= 0:
-        raise RuntimeError("科技积分捐献数量必须大于0")
-    return struct.pack(">Bi", 0, value)
+    return shared_build_technology_donation_payload(amount)
 
 
 def execute_country_donation(
@@ -18914,7 +18422,7 @@ def execute_max_country_donations(sess: dict[str, Any]) -> dict[str, Any]:
 def query_hubu_plant_state(sess: dict[str, Any]) -> dict[str, Any]:
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x6320, b"")],
+        [(0x6320, shared_build_hubu_status_query_payload())],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
@@ -18931,8 +18439,7 @@ def query_hubu_plant_state(sess: dict[str, Any]) -> dict[str, Any]:
 def execute_hubu_batch_plant(sess: dict[str, Any], *, confirm: str = "") -> dict[str, Any]:
     if confirm != "hubu-batch-plant":
         raise RuntimeError("真实批量种菜需要 confirm=hubu-batch-plant")
-    # Exact payload observed repeatedly in the 20260711 original-client capture.
-    payload = b"\x01\x00\x00\x00\x01"
+    payload = shared_build_hubu_batch_plant_payload(SHARED_VERIFIED_MINISTRY_CROP)
     code, data, packets = post_game(
         sess["gameHttp"],
         [(0x6328, payload)],
@@ -18940,7 +18447,7 @@ def execute_hubu_batch_plant(sess: dict[str, Any], *, confirm: str = "") -> dict
         account_id=str(sess.get("sessionId") or ""),
     )
     response = next((p for p in packets if p.get("opcode") == 0xE328), None)
-    parsed = parse_status_message_payload(response["payload"]) if response else {
+    parsed = shared_parse_hubu_plant_response(response["payload"]) if response else {
         "success": False,
         "status": None,
         "message": "未收到 0xe328 批量种菜响应",
@@ -28198,38 +27705,11 @@ def heal_saved_formation_rules(sess: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def parse_composition_code(code: str) -> dict[str, int] | None:
-    digits = ''.join(ch for ch in str(code or '') if ch.isdigit())
-    if len(digits) != 4:
-        return None
-    return {"maxFoot": int(digits[0]), "maxBow": int(digits[1]), "maxCavalry": int(digits[2]), "maxChariot": int(digits[3])}
+    return shared_parse_composition_code(code)
 
 
 def normalize_general_visit_ids(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple)):
-        raw_values = list(value)
-    elif value in (None, ""):
-        raw_values = []
-    else:
-        raw_values = re.split(r"[,，;；|\s]+", str(value))
-    result: list[str] = []
-    for raw in raw_values:
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        # IDs are persisted as decimal strings; accept a captured hex form
-        # only for compatibility with older local drafts.
-        if text.lower().startswith("0x"):
-            try:
-                text = str(int(text, 16))
-            except ValueError:
-                continue
-        if not re.fullmatch(r"\d+", text):
-            continue
-        if text not in result:
-            result.append(text)
-        if len(result) >= 4:
-            break
-    return result
+    return shared_normalize_general_visit_ids(value)
 
 
 SETTINGS_SCOPE_FIELDS = {
@@ -30295,106 +29775,46 @@ def current_dashboard_snapshot() -> dict[str, Any]:
 
 
 def fief_is_base(state: dict[str, Any]) -> bool:
-    return "基地" in str(state.get("fiefName") or "")
+    return shared_fief_is_base(state)
 
 
 def building_level_limit(state: dict[str, Any], building_type: int) -> int:
-    if int(building_type) in BARRACK_BUILDING_TYPES:
-        return 10
-    return 15 if fief_is_base(state) else 10
+    return shared_building_level_limit(state, building_type)
 
 
 def fief_build_queue_state(state: dict[str, Any]) -> tuple[int, int]:
-    capacity = max(1, int(state.get("buildQueueCapacity") or 2))
-    busy = sum(bool(item.get("busy")) for item in state.get("buildings") or [])
-    return busy, capacity
+    return shared_fief_build_queue_state(state)
 
 
 def fief_hall(state: dict[str, Any]) -> dict[str, Any] | None:
-    return next((
-        building for building in state.get("buildings") or []
-        if int(building.get("type", -1)) == 0
-    ), None)
+    return shared_fief_hall(state)
 
 
 def hall_must_upgrade_first(state: dict[str, Any]) -> bool:
-    hall = fief_hall(state)
-    if not hall or hall.get("busy"):
-        return False
-    hall_level = int(hall.get("level", 0))
-    other_levels = [
-        int(building.get("level", 0))
-        for building in state.get("buildings") or []
-        if int(building.get("type", -1)) > 0
-    ]
-    return (
-        hall_level < building_level_limit(state, 0)
-        and (not other_levels or max(other_levels) >= hall_level)
-    )
+    return shared_hall_must_upgrade_first(state)
 
 
 def building_can_follow_hall(state: dict[str, Any], building: dict[str, Any]) -> bool:
-    hall = fief_hall(state)
-    building_type = int(building.get("type", -1))
-    level = int(building.get("level", 0))
-    return bool(
-        hall
-        and building_type > 0
-        and not building.get("busy")
-        and level < int(hall.get("level", 0))
-        and level < building_level_limit(state, building_type)
-    )
+    return shared_building_can_follow_hall(state, building)
 
 
 def auto_domestic_interval_seconds(states: list[dict[str, Any]]) -> int:
-    halls = [fief_hall(state) for state in states]
-    all_halls_at_least_seven = bool(halls) and all(
-        hall is not None and int(hall.get("level", 0)) >= 7
-        for hall in halls
-    )
-    normal_interval = 3600 if all_halls_at_least_seven else 600
-    remaining_ms = [
-        int(building.get("timerMs") or 0)
-        for state in states
-        for building in state.get("buildings") or []
-        if building.get("busy") and int(building.get("timerMs") or 0) > 0
-    ]
-    if not remaining_ms:
-        return normal_interval
-    # Recheck shortly after the next building completes instead of leaving a
-    # newly freed queue idle for the old fixed 10-minute/1-hour interval.
-    next_completion_seconds = (min(remaining_ms) + 999) // 1000
-    return max(5, min(normal_interval, next_completion_seconds + 2))
+    return shared_auto_domestic_interval_seconds(states)
 
 
 def auto_domestic_interval_text(interval_seconds: int) -> str:
-    seconds = max(1, int(interval_seconds))
-    if seconds % 3600 == 0:
-        return f"{seconds // 3600}小时"
-    if seconds % 60 == 0:
-        return f"{seconds // 60}分钟"
-    return f"{seconds}秒"
+    return shared_auto_domestic_interval_text(interval_seconds)
 
 
 def should_continue_filling_build_queues(acted: bool, technology_only: bool) -> bool:
-    """A successful building action should be followed by an immediate recheck."""
-    return bool(acted and not technology_only)
+    return shared_should_continue_filling_build_queues(acted, technology_only)
 
 
 def apply_building_sync_to_fief(
     state: dict[str, Any],
     action_result: dict[str, Any],
 ) -> bool:
-    """Reuse the authoritative 0x8200 building list for the next batch action."""
-    buildings = (
-        action_result.get("buildings")
-        or action_result.get("checkedBuildings")
-        or []
-    )
-    if not buildings:
-        return False
-    state["buildings"] = list(buildings)
-    return True
+    return shared_apply_building_sync_to_fief(state, action_result)
 
 
 def ensure_building_resources_after_failure(
@@ -34161,22 +33581,11 @@ def normalize_mine_settings(
     }
 
 
-MINISTRY_CROP_OPTIONS = ("金银花", "草药", "稻谷", "棉花")
+MINISTRY_CROP_OPTIONS = SHARED_MINISTRY_CROP_OPTIONS
 
 
 def normalize_ministry_settings(body: dict[str, Any]) -> dict[str, Any]:
-    settings = dict(body.get("settings") or body)
-    crop = str(settings.get("crop") or "金银花").strip()
-    if crop not in MINISTRY_CROP_OPTIONS:
-        crop = "金银花"
-    return {
-        "cropEnabled": bool(settings.get("cropEnabled", True)),
-        "crop": crop,
-        "highPriority": bool(settings.get("highPriority", True)),
-        "stealEnabled": bool(settings.get("stealEnabled", True)),
-        "courtesyEnabled": bool(settings.get("courtesyEnabled", True)),
-        "salaryRefresh": bool(settings.get("salaryRefresh", True)),
-    }
+    return shared_normalize_ministry_settings(body)
 
 
 def mine_target_owner_matches(target: dict[str, Any], player_name: str) -> bool:
@@ -34888,13 +34297,7 @@ def auto_ministry_worker(task_id: str) -> None:
             raise RuntimeError("六部账号会话不存在，请重新启动账号")
         task["status"] = "running"
         task_log(task, "六部常驻任务启动：已确认金银花批量种植；其他动作保持只保存不发送")
-        unsupported = []
-        if cfg.get("stealEnabled"):
-            unsupported.append("偷菜")
-        if cfg.get("courtesyEnabled"):
-            unsupported.append("礼部任务")
-        if cfg.get("salaryRefresh"):
-            unsupported.append("俸禄刷新")
+        unsupported = shared_unconfirmed_ministry_actions(cfg)
         if unsupported:
             task_log(task, f"协议尚未完整确认，当前不会发送：{'、'.join(unsupported)}")
         while not task["stopEvent"].is_set():
@@ -34959,7 +34362,7 @@ def start_auto_ministry(
             ),
             "reason": "种菜收菜未开启；偷菜和礼部动作协议尚未完整确认，当前不发送",
         }
-    if settings.get("crop") != "金银花":
+    if not shared_ministry_planting_allowed(settings):
         return {
             "started": False,
             "disabled": False,
@@ -37360,10 +36763,7 @@ class Handler(SimpleHTTPRequestHandler):
                 sess = get_session(sid)
                 settings = normalize_ministry_settings(body)
                 saved_files = save_account_habits(sess, ministry=settings)
-                supported_enabled = bool(
-                    settings.get("cropEnabled")
-                    and settings.get("crop") == "金银花"
-                )
+                supported_enabled = shared_ministry_planting_allowed(settings)
                 any_enabled = any(
                     settings.get(key)
                     for key in ("cropEnabled", "stealEnabled", "courtesyEnabled")

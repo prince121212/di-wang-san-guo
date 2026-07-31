@@ -24,6 +24,7 @@ from dwpm_core.features.targets import (
     normalize_drop_keyword,
     normalize_drop_keywords,
     parse_bandit_targets,
+    parse_composition_code,
     parse_mine_resources,
     scan_targets,
     target_distance_squared,
@@ -209,6 +210,10 @@ class SharedTargetProtocolTests(unittest.TestCase):
             (
                 SERVER.normalize_brush_levels("8,7,7"),
                 normalize_brush_levels("8,7,7"),
+            ),
+            (
+                SERVER.parse_composition_code("1步2弓3骑4车"),
+                parse_composition_code("1步2弓3骑4车"),
             ),
             (
                 SERVER.target_distance_squared(target, 100, 30),

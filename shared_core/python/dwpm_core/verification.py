@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from .contracts import load_json_contract
+from .account import (
+    area_catalog_signature,
+    find_login_area,
+    parse_8003_login,
+    parse_passport_area_list,
+)
 from .features.expedition import (
     build_brush_payloads,
     build_dungeon_expedition_payload,
@@ -35,6 +41,7 @@ from .features.targets import (
     brush_scan_coordinates,
     mine_target_matches,
     parse_bandit_targets,
+    parse_composition_code,
     parse_mine_resources,
     target_matches_search_filter,
 )
@@ -61,10 +68,27 @@ from .features.generals import (
     recover_generals_from_8004,
 )
 from .features.inventory import parse_8104_inventory
+from .features.maintenance import (
+    build_add_loyalty_payload,
+    build_delete_all_mail_payload,
+    build_discard_inventory_payload,
+    build_resource_exchange_payload,
+    build_use_general_item_payload,
+    build_use_inventory_item_payload,
+    equipment_is_safe_to_discard,
+    parse_821f_loyalty_response,
+    parse_delete_mail_response,
+    parse_discard_inventory_response,
+    parse_resource_exchange_response,
+    parse_use_general_item_response,
+)
 from .features.daily import (
     build_owned_city_list_payload,
     build_salary_payload,
+    country_donation_limits,
     general_visit_already_visited,
+    national_citizen_daily_skip_result,
+    normalize_general_visit_ids,
     parse_arena_coin_claim_response,
     parse_daily_diamond_box_response,
     parse_daily_sign_in_packets,
@@ -74,6 +98,25 @@ from .features.daily import (
     parse_national_city_page,
     parse_owned_city_list,
     parse_salary_receipt,
+)
+from .features.internal_affairs import (
+    build_building_action_payload,
+    build_country_donation_payload,
+    build_fief_query_payload,
+    build_technology_donation_payload,
+    build_technology_upgrade_payload,
+    parse_8200_building_result,
+    parse_8246_fief_result,
+    parse_technology_states_from_8004,
+)
+from .features.ministries import (
+    build_hubu_batch_plant_payload,
+    build_hubu_status_query_payload,
+    ministry_planting_allowed,
+    normalize_ministry_settings,
+    parse_hubu_garden_status,
+    parse_hubu_plant_response,
+    unconfirmed_ministry_actions,
 )
 from .features.military import (
     MILITARY_INTEL_REQUEST_PAYLOAD,
@@ -125,6 +168,62 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             packets[0]["payload"].hex() if packets else "",
             wire[expected_payload_name],
         )
+
+    login_fixture = fixtures["accountLogin8003"]
+    login_result = parse_8003_login(
+        bytes.fromhex(login_fixture["responseHex"])
+    )
+    first_role = (login_result.get("roles") or [{}])[0]
+    check(
+        "account.login.8003",
+        {
+            "status": login_result.get("status"),
+            "message": login_result.get("message"),
+            "dm": login_result.get("dm"),
+            "loginTime": login_result.get("loginTime"),
+            "selected": login_result.get("selected"),
+            "roleCount": len(login_result.get("roles") or []),
+            "firstRoleId": first_role.get("roleId"),
+            "firstRoleName": first_role.get("roleName"),
+            "firstRoleLevel": first_role.get("level"),
+            "trailingBytes": login_result.get("trailingBytes"),
+        },
+        login_fixture["expected"],
+    )
+    passport_fixture = fixtures["accountPassportAreas"]
+    passport_session, passport_user_id, passport_areas = (
+        parse_passport_area_list(passport_fixture["responseText"])
+    )
+    passport_expected = passport_fixture["expected"]
+    check(
+        "account.passport.parse",
+        {
+            "session": passport_session,
+            "userId": passport_user_id,
+            "areaCount": len(passport_areas),
+            "firstAreaId": passport_areas[0].get("areaId"),
+            "firstAreaName": passport_areas[0].get("areaName"),
+        },
+        passport_expected,
+    )
+    check(
+        "account.area.select",
+        [
+            (find_login_area(passport_areas, row["query"]) or {}).get(
+                "serverKey"
+            )
+            for row in passport_fixture["queries"]
+        ],
+        [
+            row["expectedServerKey"]
+            for row in passport_fixture["queries"]
+        ],
+    )
+    check(
+        "account.area.signature",
+        area_catalog_signature(passport_areas),
+        area_catalog_signature(list(reversed(passport_areas))),
+    )
 
     assignment = fixtures["formationAssign1226"]
     assignment_payload = build_assign_troops_payload(
@@ -364,6 +463,16 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             grid["limit"],
         ),
         [tuple(point) for point in grid["expectedCoordinates"]],
+    )
+    check(
+        "targets.composition.parse",
+        parse_composition_code("1步2弓3骑4车"),
+        {
+            "maxFoot": 1,
+            "maxBow": 2,
+            "maxCavalry": 3,
+            "maxChariot": 4,
+        },
     )
 
     exact_levels = fixtures["brushYellowExactLevels"]
@@ -695,16 +804,18 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
         status_fixture["expected"],
     )
     inventory_fixture = fixtures["inventory8104Compact"]
+    inventory_item_names = {
+        int(key): value
+        for key, value in inventory_fixture["itemNames"].items()
+    }
+    inventory_equipment_templates = {
+        int(key): value
+        for key, value in inventory_fixture["equipmentTemplates"].items()
+    }
     inventory = parse_8104_inventory(
         bytes.fromhex(inventory_fixture["responseHex"]),
-        item_names={
-            int(key): value
-            for key, value in inventory_fixture["itemNames"].items()
-        },
-        equipment_templates={
-            int(key): value
-            for key, value in inventory_fixture["equipmentTemplates"].items()
-        },
+        item_names=inventory_item_names,
+        equipment_templates=inventory_equipment_templates,
     )
     first_equipment = (inventory.get("equipment") or [{}])[0]
     check(
@@ -726,6 +837,177 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             "equipmentStrengthen": first_equipment.get("strengthen"),
         },
         inventory_fixture["expected"],
+    )
+    maintenance_fixture = fixtures["maintenanceProtocols"]
+    maintenance_expected = maintenance_fixture["expected"]
+    check(
+        "maintenance.loyalty.request",
+        build_add_loyalty_payload(
+            maintenance_fixture["generalId"],
+            maintenance_fixture["loyaltyDelta"],
+        ).hex(),
+        maintenance_fixture["addLoyaltyPayloadHex"],
+    )
+    loyalty_result = parse_821f_loyalty_response(
+        bytes.fromhex(maintenance_fixture["addLoyaltyResponseHex"])
+    )
+    loyalty_general = (loyalty_result.get("generals") or [{}])[0]
+    check(
+        "maintenance.loyalty.parse",
+        {
+            "actualCost": loyalty_result.get("actualCost"),
+            "copper": loyalty_result.get("copper"),
+            "loyalty": loyalty_general.get("loyalty"),
+            "loyaltyLimit": loyalty_general.get("loyaltyLimit"),
+        },
+        {
+            "actualCost": maintenance_expected["loyaltyActualCost"],
+            "copper": maintenance_expected["loyaltyCopper"],
+            "loyalty": maintenance_expected["loyalty"],
+            "loyaltyLimit": maintenance_expected["loyaltyLimit"],
+        },
+    )
+    check(
+        "maintenance.energy.request",
+        build_use_general_item_payload(
+            maintenance_fixture["generalId"],
+            maintenance_fixture["generalItemId"],
+            maintenance_fixture["generalItemCount"],
+        ).hex(),
+        maintenance_fixture["generalItemPayloadHex"],
+    )
+    energy_result = parse_use_general_item_response(
+        bytes.fromhex(maintenance_fixture["generalItemResponseHex"]),
+        item_names=inventory_item_names,
+        equipment_templates=inventory_equipment_templates,
+    )
+    check(
+        "maintenance.energy.parse",
+        {
+            "success": energy_result.get("success"),
+            "itemCount": (energy_result.get("inventory") or {}).get(
+                "itemCount"
+            ),
+        },
+        {
+            "success": True,
+            "itemCount": maintenance_expected["energyInventoryItemCount"],
+        },
+    )
+    check(
+        "maintenance.resource.request",
+        build_resource_exchange_payload(
+            maintenance_fixture["resourceDirection"],
+            maintenance_fixture["resourceAmount"],
+        ).hex(),
+        maintenance_fixture["resourcePayloadHex"],
+    )
+    resource_result = parse_resource_exchange_response(
+        bytes.fromhex(maintenance_fixture["resourceResponseHex"])
+    )
+    check(
+        "maintenance.resource.parse",
+        {
+            "success": resource_result.get("success"),
+            "copper": resource_result.get("copper"),
+            "food": resource_result.get("food"),
+        },
+        {
+            "success": True,
+            "copper": maintenance_expected["resourceCopper"],
+            "food": maintenance_expected["resourceFood"],
+        },
+    )
+    check(
+        "maintenance.mail.request",
+        build_delete_all_mail_payload().hex(),
+        maintenance_fixture["deleteMailPayloadHex"],
+    )
+    mail_result = parse_delete_mail_response(
+        bytes.fromhex(maintenance_fixture["deleteMailResponseHex"])
+    )
+    check(
+        "maintenance.mail.parse",
+        {
+            "success": mail_result.get("success"),
+            "remaining": mail_result.get("remaining"),
+        },
+        {
+            "success": True,
+            "remaining": maintenance_expected["mailRemaining"],
+        },
+    )
+    check(
+        "maintenance.discard.request",
+        build_discard_inventory_payload(
+            maintenance_fixture["discardKind"],
+            maintenance_fixture["discardObjectId"],
+            maintenance_fixture["discardCount"],
+        ).hex(),
+        maintenance_fixture["discardPayloadHex"],
+    )
+    discard_result = parse_discard_inventory_response(
+        bytes.fromhex(maintenance_fixture["discardResponseHex"]),
+        item_names=inventory_item_names,
+        equipment_templates=inventory_equipment_templates,
+    )
+    check(
+        "maintenance.discard.parse",
+        {
+            "success": discard_result.get("success"),
+            "message": discard_result.get("message"),
+            "itemCount": (discard_result.get("inventory") or {}).get(
+                "itemCount"
+            ),
+        },
+        {
+            "success": True,
+            "message": maintenance_expected["discardMessage"],
+            "itemCount": maintenance_expected[
+                "discardInventoryItemCount"
+            ],
+        },
+    )
+    check(
+        "maintenance.inventoryUse.request",
+        build_use_inventory_item_payload(
+            maintenance_fixture["inventoryItemId"],
+            maintenance_fixture["inventoryItemCount"],
+        ).hex(),
+        maintenance_fixture["inventoryItemPayloadHex"],
+    )
+    check(
+        "maintenance.equipment.safety",
+        {
+            "safe": equipment_is_safe_to_discard(
+                {
+                    "instanceId": 1,
+                    "famous": False,
+                    "strengthen": 0,
+                    "extraText": "",
+                    "level": 10,
+                    "quality": 1,
+                },
+                max_quality=1,
+                max_level=60,
+            ),
+            "strengthened": equipment_is_safe_to_discard(
+                {
+                    "instanceId": 1,
+                    "famous": False,
+                    "strengthen": 1,
+                    "extraText": "",
+                    "level": 10,
+                    "quality": 1,
+                },
+                max_quality=1,
+                max_level=60,
+            ),
+        },
+        {
+            "safe": (True, ""),
+            "strengthened": (False, "已经强化"),
+        },
     )
     for fixture_name in (
         "dailyNationalCity8404State",
@@ -833,6 +1115,30 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
         },
         visit_page_expected,
     )
+    citizen_session = {
+        "roleState": {"officeIdUnsigned": 0x0100, "level": 30}
+    }
+    check(
+        "daily.identity.rules",
+        {
+            "skipMessage": (
+                national_citizen_daily_skip_result(citizen_session) or {}
+            ).get("message"),
+            "donation": country_donation_limits(citizen_session),
+            "visitIds": normalize_general_visit_ids(
+                ["123", "0x7b", "bad", "456", "789", "1000", "2000"]
+            ),
+        },
+        {
+            "skipMessage": "国民跳过",
+            "donation": {
+                "level": 30,
+                "copper": 30000,
+                "food": 90000,
+            },
+            "visitIds": ["123", "456", "789", "1000"],
+        },
+    )
     activity_fixture = fixtures["dailyActivityE200"]
     activity = parse_e200_daily_activity(
         bytes.fromhex(activity_fixture["responseHex"])
@@ -886,6 +1192,187 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
         },
         diamond_fixture["expected"],
     )
+    internal_requests = fixtures["internalAffairsRequests"]
+    internal_request_expected = internal_requests["expected"]
+    check(
+        "internal.fief.request",
+        build_fief_query_payload(internal_requests["fiefId"]).hex(),
+        internal_request_expected["fiefQueryPayloadHex"],
+    )
+    check(
+        "internal.building.request",
+        build_building_action_payload(
+            internal_requests["fiefId"],
+            internal_requests["buildingSlot"],
+            internal_requests["buildingType"],
+        ).hex(),
+        internal_request_expected["buildingActionPayloadHex"],
+    )
+    check(
+        "internal.technology.request",
+        build_technology_upgrade_payload(
+            internal_requests["academyFiefId"],
+            internal_requests["academySlot"],
+            internal_requests["technologyId"],
+            internal_requests["technologyLevel"],
+        ).hex(),
+        internal_request_expected["technologyUpgradePayloadHex"],
+    )
+    check(
+        "internal.countryDonation.request",
+        build_country_donation_payload(
+            copper=internal_requests["countryCopper"],
+        ).hex(),
+        internal_request_expected["countryDonationPayloadHex"],
+    )
+    check(
+        "internal.technologyDonation.request",
+        build_technology_donation_payload(
+            internal_requests["technologyDonation"],
+        ).hex(),
+        internal_request_expected["technologyDonationPayloadHex"],
+    )
+
+    building_fixture = fixtures["internalAffairsBuilding8200"]
+    building_result = parse_8200_building_result(
+        bytes.fromhex(building_fixture["responseHex"])
+    )
+    last_building = (building_result.get("buildings") or [{}])[-1]
+    check(
+        "internal.building.parse",
+        {
+            "success": building_result.get("success"),
+            "fiefId": building_result.get("fiefId"),
+            "buildingCount": len(building_result.get("buildings") or []),
+            "lastSlot": last_building.get("slot"),
+            "lastType": last_building.get("type"),
+            "lastName": last_building.get("name"),
+        },
+        building_fixture["expected"],
+    )
+    fief_fixture = fixtures["internalAffairsFief8246"]
+    fief_result = parse_8246_fief_result(
+        bytes.fromhex(fief_fixture["responseHex"]),
+        fief_fixture["expectedFiefId"],
+    )
+    check(
+        "internal.fief.parse",
+        {
+            "success": fief_result.get("success"),
+            "fiefId": fief_result.get("fiefId"),
+            "fiefName": fief_result.get("fiefName"),
+            "buildQueueCapacity": fief_result.get("buildQueueCapacity"),
+            "buildingCount": len(fief_result.get("buildings") or []),
+        },
+        fief_fixture["expected"],
+    )
+    technology_fixture = fixtures["internalAffairsTechnology8004"]
+    technology_states = parse_technology_states_from_8004(
+        bytes.fromhex(technology_fixture["responseHex"])
+    )
+    researching = next(
+        (row for row in technology_states if row.get("researching")),
+        {},
+    )
+    check(
+        "internal.technology.parse",
+        {
+            "technologyCount": len(technology_states),
+            "firstLevel": (
+                technology_states[0].get("level")
+                if technology_states else None
+            ),
+            "researchingTechnologyId": researching.get("technologyId"),
+            "researchingName": researching.get("name"),
+            "researchingLevel": researching.get("level"),
+            "researchingFiefId": researching.get("fiefId"),
+            "researchingAcademyInstanceId": researching.get(
+                "academyInstanceId"
+            ),
+            "researchingDeadlineMs": researching.get("deadlineMs"),
+        },
+        technology_fixture["expected"],
+    )
+
+    ministry_fixture = fixtures["ministryHubuVerifiedPlant"]
+    check(
+        "ministry.status.request",
+        build_hubu_status_query_payload().hex(),
+        ministry_fixture["statusQueryPayloadHex"],
+    )
+    check(
+        "ministry.plant.request",
+        build_hubu_batch_plant_payload(ministry_fixture["crop"]).hex(),
+        ministry_fixture["plantPayloadHex"],
+    )
+    check(
+        "ministry.garden.parse",
+        parse_hubu_garden_status(
+            bytes.fromhex(ministry_fixture["emptyGardenResponseHex"])
+        ),
+        ministry_fixture["expected"]["garden"],
+    )
+    ministry_receipt = parse_hubu_plant_response(
+        bytes.fromhex(ministry_fixture["plantResponseHex"])
+    )
+    check(
+        "ministry.plant.parse",
+        {
+            key: ministry_receipt.get(key)
+            for key in ministry_fixture["expected"]["receipt"]
+        },
+        ministry_fixture["expected"]["receipt"],
+    )
+    ministry_safety_fixture = fixtures["ministrySettingsSafety"]
+    ministry_settings = normalize_ministry_settings(
+        ministry_safety_fixture["input"]
+    )
+    ministry_safety_expected = ministry_safety_fixture["expected"]
+    ministry_setting_keys = (
+        "cropEnabled",
+        "crop",
+        "highPriority",
+        "stealEnabled",
+        "courtesyEnabled",
+        "salaryRefresh",
+    )
+    check(
+        "ministry.settings.normalize",
+        {
+            key: ministry_settings.get(key)
+            for key in ministry_setting_keys
+        },
+        {
+            key: ministry_safety_expected[key]
+            for key in ministry_setting_keys
+        },
+    )
+    check(
+        "ministry.settings.safety",
+        {
+            "plantingAllowed": ministry_planting_allowed(ministry_settings),
+            "unconfirmedActions": unconfirmed_ministry_actions(
+                ministry_settings
+            ),
+        },
+        {
+            "plantingAllowed": ministry_safety_expected["plantingAllowed"],
+            "unconfirmedActions": ministry_safety_expected[
+                "unconfirmedActions"
+            ],
+        },
+    )
+    try:
+        build_hubu_batch_plant_payload("草药")
+        unverified_crop_rejected = False
+    except RuntimeError:
+        unverified_crop_rejected = True
+    check(
+        "ministry.unverified.failClosed",
+        unverified_crop_rejected,
+        True,
+    )
+
     incoming_payload = bytes.fromhex(military_incoming_fixture["responseHex"])
     military_snapshot = build_military_snapshot(
         [incoming_payload, incoming_payload],
