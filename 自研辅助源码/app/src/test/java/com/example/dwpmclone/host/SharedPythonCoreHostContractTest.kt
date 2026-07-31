@@ -67,6 +67,13 @@ class SharedPythonCoreHostContractTest {
         assertFalse(operationCore.contains("import socket"))
         assertFalse(operationCore.contains("import requests"))
         assertFalse(operationCore.contains("import urllib"))
+
+        val bridgeScript = source(
+            "../电脑端辅助前端/assistant-api.js",
+            "../../电脑端辅助前端/assistant-api.js"
+        )
+        assertTrue(bridgeScript.contains("waitForOperation"))
+        assertTrue(bridgeScript.contains("/api/core/operations/status"))
     }
 
     @Test
@@ -94,7 +101,23 @@ class SharedPythonCoreHostContractTest {
         assertTrue(ports.contains("TaskLogRepository"))
         assertFalse(ports.contains("0x1522"))
         assertFalse(ports.contains("SessionAwareGameProtocolClient"))
+        assertTrue(ports.contains("executeNetworkOperation"))
+        assertTrue(ports.contains("handleSharedCoreNetwork"))
+
+        val runner = source(
+            "app/src/main/java/com/example/dwpmclone/ui/web/LocalProtocolOperationRunner.kt",
+            "src/main/java/com/example/dwpmclone/ui/web/LocalProtocolOperationRunner.kt"
+        )
+        assertTrue(runner.contains("executeSharedCoreReadOnly"))
+        assertTrue(runner.contains("AccountOperationLockRegistry.tryAcquire(accountId)"))
+        assertTrue(runner.contains("LOCAL_ACCOUNT_BUSY"))
+        val sharedReadOnly = runner
+            .substringAfter("fun <T> executeSharedCoreReadOnly")
+            .substringBefore("private fun <T> executeInternal")
+        assertFalse(sharedReadOnly.contains("AccountOperationLockRegistry.acquire(accountId)"))
         assertTrue(facade.contains("def dispatch("))
+        assertTrue(facade.contains("HOST_ACCOUNT_BUSY_CODE"))
+        assertTrue(facade.contains("execution.wait(busy_backoff)"))
         assertTrue(facade.contains("sensitive field cannot enter operation ledger"))
         assertTrue(operations.contains("dwpm-network-"))
         assertTrue(operations.contains("UNCERTAIN"))

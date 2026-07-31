@@ -17,10 +17,21 @@ def create_hosted_core(
         if host_bridge is not None
         else None
     )
-    return CoreFacade(
+    facade = CoreFacade(
         operation_store_path=operation_store_path,
         ports=ports,
     )
+    if (
+        host_bridge is not None
+        and hasattr(host_bridge, "executeNetworkOperation")
+        and hasattr(host_bridge, "executionOwnerActive")
+    ):
+        facade.register_host_network_route(
+            "GET",
+            "/api/military/intel",
+            host_bridge,
+        )
+    return facade
 
 __all__ = [
     "CORE_ID",

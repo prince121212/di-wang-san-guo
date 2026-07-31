@@ -46,6 +46,9 @@ SENSITIVE_KEY_FRAGMENTS = (
 )
 SENSITIVE_KEY_SUFFIXES = ("token", "secret", "credential")
 SENSITIVE_EXACT_KEYS = frozenset(("dm", "session"))
+HOST_ACCOUNT_BUSY_CODE = "LOCAL_ACCOUNT_BUSY"
+HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS = 0.05
+HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS = 0.25
 
 
 class CoreFacade:
@@ -420,6 +423,90 @@ class CoreFacade:
             "payloadBuilder": persisted_payload_builder,
         }
 
+    def register_host_network_route(
+        self,
+        method: str,
+        path: str,
+        host_bridge: Any,
+    ) -> None:
+        """Register a host transport adapter behind shared operation semantics."""
+
+        if host_bridge is None or not hasattr(
+            host_bridge,
+            "executeNetworkOperation",
+        ):
+            raise TypeError("host bridge does not expose executeNetworkOperation")
+        if not hasattr(host_bridge, "executionOwnerActive"):
+            raise TypeError("host bridge does not expose executionOwnerActive")
+        route_method = str(method).upper()
+        route_path = str(path).split("?", 1)[0]
+
+        def hosted_handler(
+            body: Dict[str, Any],
+            context: Dict[str, Any],
+            execution: OperationExecutionContext,
+        ) -> Dict[str, Any]:
+            account_ref = self._account_ref(body, context)
+            self._require_live_account_for_host_operation(account_ref)
+            execution.publish_progress(
+                5,
+                {"phase": "waiting-for-account-lane-or-game-server"},
+            )
+            busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
+            while True:
+                if not bool(host_bridge.executionOwnerActive()):
+                    raise RuntimeError(
+                        "Android 前台执行所有者未激活，已拒绝游戏网络请求"
+                    )
+                execution.raise_if_cancelled()
+                raw_response = host_bridge.executeNetworkOperation(
+                    route_method,
+                    route_path,
+                    self._json(body),
+                    self._json(context),
+                )
+                try:
+                    response = json.loads(str(raw_response or "{}"))
+                except json.JSONDecodeError as error:
+                    raise RuntimeError(
+                        "host network adapter returned invalid JSON"
+                    ) from error
+                if not isinstance(response, dict):
+                    raise RuntimeError(
+                        "host network adapter response must be an object"
+                    )
+                status = int(response.get("status") or 500)
+                response_body = response.get("body")
+                if not isinstance(response_body, dict):
+                    raise RuntimeError(
+                        "host network adapter body must be an object"
+                    )
+                self._assert_no_sensitive_values(response_body)
+                if str(response_body.get("code") or "") == HOST_ACCOUNT_BUSY_CODE:
+                    execution.wait(busy_backoff)
+                    busy_backoff = min(
+                        busy_backoff * 2,
+                        HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                    )
+                    continue
+                if not 200 <= status < 300 or response_body.get("ok") is False:
+                    raise RuntimeError(
+                        str(
+                            response_body.get("error")
+                            or response_body.get("message")
+                            or f"host network adapter failed with status {status}"
+                        )
+                    )
+                break
+            execution.publish_progress(90, {"phase": "persisting-result"})
+            return dict(response_body)
+
+        self.register_network_route(
+            route_method,
+            route_path,
+            hosted_handler,
+        )
+
     def dispatch(
         self,
         method: str,
@@ -508,6 +595,9 @@ class CoreFacade:
                     "requestContext": persisted_context,
                 },
                 idempotency_key=idempotency_key,
+                coalesce_active=(
+                    str(registration["operationType"]) == "query"
+                ),
             )
             return CoreResponse(202, submission)
         except ValueError as error:
@@ -560,6 +650,7 @@ class CoreFacade:
         operation_kind: str,
         payload: Dict[str, Any],
         idempotency_key: str,
+        coalesce_active: bool = False,
     ) -> Dict[str, Any]:
         return self._operations.submit_network(
             account_ref=account_ref,
@@ -567,6 +658,7 @@ class CoreFacade:
             kind=operation_kind,
             idempotency_key=idempotency_key,
             payload=payload,
+            coalesce_active=coalesce_active,
         )
 
     def submit_simulated_network_operation(
@@ -698,6 +790,35 @@ class CoreFacade:
                 account_refs=account_refs,
             ),
         }
+
+    def _require_live_account_for_host_operation(
+        self,
+        account_ref: str,
+    ) -> None:
+        if not account_ref:
+            raise RuntimeError("network operation account is missing")
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise RuntimeError("network operation account does not exist")
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        public_state = session.get("publicState")
+        public_state = public_state if isinstance(public_state, dict) else {}
+        lifecycle = self._account_lifecycle.snapshot(
+            account_enabled=bool(account.get("enabled")),
+            execution_owner_active=True,
+            login_state=str(account.get("loginState") or ""),
+            source_mode=int(session.get("sourceMode") or 0),
+            force_validation=False,
+            last_validated_at_millis=(
+                int(public_state["lastValidatedAt"])
+                if str(public_state.get("lastValidatedAt") or "").isdigit()
+                else None
+            ),
+            now_millis=self._ports.clock.now_millis(),
+        )
+        if not lifecycle["mayUseLiveSession"]:
+            raise RuntimeError("当前账号没有可用于网络请求的已验证 Session")
 
     def _publish_operation_event(self, event: Dict[str, Any]) -> None:
         self._ports.events.publish(event)

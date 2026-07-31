@@ -79,8 +79,11 @@ class LocalAssistantApiController(
     )
 
     fun handle(request: AssistantApiRequest): AssistantApiResponse = runCatching {
-        localOperations.tryHandle(request)?.let { return@runCatching it }
         val route = request.path.substringBefore('?')
+        if (request.method == "GET" && route == "/api/military/intel") {
+            return@runCatching submitSharedNetworkOperation(request, route)
+        }
+        localOperations.tryHandle(request)?.let { return@runCatching it }
         when (request.method to route) {
             "GET" to "/api/health" -> sharedCoreHealth(request)
             "GET" to "/api/core/operations" -> sharedCoreOperations(request)
@@ -161,6 +164,30 @@ class LocalAssistantApiController(
         )
     }
 
+    private fun submitSharedNetworkOperation(
+        request: AssistantApiRequest,
+        route: String
+    ): AssistantApiResponse {
+        val accountId = query(request.path)["sessionId"]?.toLongOrNull()
+            ?: return failure(request, 400, "缺少账号")
+        val dispatched = sharedPythonCore.dispatch(
+            request.method,
+            route,
+            JSONObject()
+                .put("accountRef", accountId.toString())
+                .put("sessionId", accountId.toString()),
+            JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+                .put("platform", "android")
+        )
+        return AssistantApiResponse(
+            request.id,
+            dispatched.optInt("status", 500),
+            dispatched.optJSONObject("body") ?: JSONObject()
+        )
+    }
+
     private fun submitSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
         if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
         val body = request.body ?: JSONObject()
@@ -184,7 +211,6 @@ class LocalAssistantApiController(
     }
 
     private fun sharedCoreOperationStatus(request: AssistantApiRequest): AssistantApiResponse {
-        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
         val operationId = query(request.path)["operationId"].orEmpty()
         if (operationId.isBlank()) return failure(request, 400, "缺少 operationId")
         val result = sharedPythonCore.operationStatus(operationId)
@@ -196,7 +222,6 @@ class LocalAssistantApiController(
     }
 
     private fun sharedCoreOperations(request: AssistantApiRequest): AssistantApiResponse {
-        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
         return AssistantApiResponse(request.id, 200, sharedPythonCore.operationsSnapshot())
     }
 
@@ -228,7 +253,6 @@ class LocalAssistantApiController(
     }
 
     private fun cancelSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
-        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
         val operationId = request.body?.optString("operationId").orEmpty()
         if (operationId.isBlank()) return failure(request, 400, "缺少 operationId")
         val result = sharedPythonCore.cancelOperation(operationId)

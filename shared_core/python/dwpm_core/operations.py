@@ -145,6 +145,7 @@ class DurableOperationStore:
         kind: str,
         idempotency_key: str,
         payload: Optional[Dict[str, Any]] = None,
+        coalesce_active: bool = False,
     ) -> Dict[str, Any]:
         account = self._normalized_text(account_ref, "account ref", 200)
         normalized_type = str(operation_type or "").strip().lower()
@@ -154,6 +155,15 @@ class DurableOperationStore:
         key = self._normalized_text(idempotency_key, "idempotency key", 200)
         normalized_payload = self._json_object(payload or {}, "operation payload")
         with self._condition:
+            if coalesce_active:
+                active = self._find_active_equivalent_locked(
+                    account,
+                    normalized_type,
+                    normalized_kind,
+                    normalized_payload,
+                )
+                if active is not None:
+                    return self._submission_view(active, deduplicated=True)
             existing = self._find_idempotent_locked(
                 account,
                 normalized_kind,
@@ -199,6 +209,46 @@ class DurableOperationStore:
             submission = self._submission_view(record, deduplicated=False)
         self._emit("operation.accepted", record)
         return submission
+
+    def _find_active_equivalent_locked(
+        self,
+        account_ref: str,
+        operation_type: str,
+        kind: str,
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        signature = self._active_query_signature(payload)
+        candidates = [
+            record
+            for record in self._records.values()
+            if record.get("accountRef") == account_ref
+            and record.get("operationType") == operation_type
+            and record.get("kind") == kind
+            and record.get("status") in (QUEUED, RUNNING)
+            and self._active_query_signature(
+                self._json_object(
+                    record.get("payload") or {},
+                    "operation payload",
+                )
+            ) == signature
+        ]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda record: (
+                int(record.get("submittedAtMillis") or 0),
+                str(record.get("operationId") or ""),
+            ),
+        )
+
+    @staticmethod
+    def _active_query_signature(payload: Dict[str, Any]) -> Dict[str, Any]:
+        copied = json.loads(json.dumps(payload, ensure_ascii=False))
+        context = copied.get("requestContext")
+        if isinstance(context, dict):
+            context.pop("requestId", None)
+        return copied
 
     def submit_simulated(
         self,

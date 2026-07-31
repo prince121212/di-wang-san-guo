@@ -90,6 +90,18 @@ class LocalProtocolOperationService(
         }
     }
 
+    /** Network adapter called only from a durable shared Python operation worker. */
+    fun handleSharedCoreNetwork(request: AssistantApiRequest): AssistantApiResponse {
+        val route = request.path.substringBefore('?')
+        return when (request.method to route) {
+            "GET" to "/api/military/intel" -> militaryIntel(
+                request,
+                lifecycleOwnedBySharedCore = true
+            )
+            else -> failure(request, 404, "共享核心尚未注册该 Android 网络适配：${request.method} $route")
+        }
+    }
+
     private fun stateRefresh(request: AssistantApiRequest): AssistantApiResponse {
         val accountId = query(request.path)["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
@@ -979,11 +991,20 @@ class LocalProtocolOperationService(
         }
     }
 
-    private fun militaryIntel(request: AssistantApiRequest): AssistantApiResponse {
+    private fun militaryIntel(
+        request: AssistantApiRequest,
+        lifecycleOwnedBySharedCore: Boolean = false
+    ): AssistantApiResponse {
         val accountId = query(request.path)["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
-        val result = runner.executeImmediateReadOnly(accountId, "military/intel") { session, client ->
-            client.queryMilitarySnapshot(session)
+        val result = if (lifecycleOwnedBySharedCore) {
+            runner.executeSharedCoreReadOnly(accountId, "military/intel") { session, client ->
+                client.queryMilitarySnapshot(session)
+            }
+        } else {
+            runner.executeImmediateReadOnly(accountId, "military/intel") { session, client ->
+                client.queryMilitarySnapshot(session)
+            }
         }
         return when (result) {
             is ProtocolResult.Ok -> success(request, JSONObject()

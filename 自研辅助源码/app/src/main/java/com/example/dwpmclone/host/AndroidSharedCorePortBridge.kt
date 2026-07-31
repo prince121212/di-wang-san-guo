@@ -15,8 +15,15 @@ import android.os.Build
 import com.example.dwpmclone.AssistantWebActivity
 import com.example.dwpmclone.data.local.KeystoreCredentialVault
 import com.example.dwpmclone.data.local.KeystoreSessionSecretVault
+import com.example.dwpmclone.data.local.LocalAccountRepository
+import com.example.dwpmclone.data.local.LocalDailySuccessStatsRepository
+import com.example.dwpmclone.data.local.LocalMapRepository
+import com.example.dwpmclone.data.local.RequestHealthRepository
 import com.example.dwpmclone.data.local.TaskLogRepository
 import com.example.dwpmclone.service.AssistantForegroundService
+import com.example.dwpmclone.ui.web.AssistantApiRequest
+import com.example.dwpmclone.ui.web.AssistantApiResponse
+import com.example.dwpmclone.ui.web.LocalProtocolOperationService
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
@@ -35,6 +42,16 @@ class AndroidSharedCorePortBridge(context: Context) {
     private val credentials = KeystoreCredentialVault(appContext)
     private val sessionSecrets = KeystoreSessionSecretVault(appContext)
     private val logs = TaskLogRepository(appContext)
+    private val sharedNetworkOperations by lazy {
+        LocalProtocolOperationService(
+            context = appContext,
+            accounts = LocalAccountRepository(appContext),
+            logs = logs,
+            requestHealth = RequestHealthRepository(appContext),
+            dailyStats = LocalDailySuccessStatsRepository(appContext),
+            localMaps = LocalMapRepository(appContext)
+        )
+    }
 
     fun dataDirectory(): String = appContext.filesDir.absolutePath
 
@@ -78,6 +95,46 @@ class AndroidSharedCorePortBridge(context: Context) {
         val capabilities = manager.getNetworkCapabilities(network) ?: return false
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    fun executionOwnerActive(): Boolean = AssistantForegroundService.isExecutionOwnerActive()
+
+    fun executeNetworkOperation(
+        method: String,
+        path: String,
+        bodyJson: String,
+        contextJson: String
+    ): String {
+        val normalizedMethod = method.uppercase()
+        val normalizedPath = path.substringBefore('?')
+        val body = runCatching { JSONObject(bodyJson) }.getOrDefault(JSONObject())
+        val context = runCatching { JSONObject(contextJson) }.getOrDefault(JSONObject())
+        if (normalizedMethod != "GET" || normalizedPath != "/api/military/intel") {
+            return AssistantApiResponse(
+                id = context.optString("requestId").ifBlank { "shared-network" },
+                status = 404,
+                body = JSONObject()
+                    .put("ok", false)
+                    .put("error", "Android 网络适配路由未开放：$normalizedMethod $normalizedPath")
+            ).toJson().toString()
+        }
+        val accountId = sequenceOf(
+            body.optString("accountRef"),
+            body.optString("accountId"),
+            body.optString("sessionId")
+        ).firstOrNull { it.isNotBlank() && it.toLongOrNull()?.let { id -> id > 0L } == true }
+            ?: return AssistantApiResponse(
+                id = context.optString("requestId").ifBlank { "shared-network" },
+                status = 400,
+                body = JSONObject().put("ok", false).put("error", "共享网络 operation 缺少账号")
+            ).toJson().toString()
+        val request = AssistantApiRequest(
+            id = context.optString("requestId").ifBlank { "shared-network-$accountId" },
+            method = normalizedMethod,
+            path = "$normalizedPath?sessionId=${java.net.URLEncoder.encode(accountId, "UTF-8")}",
+            body = body
+        )
+        return sharedNetworkOperations.handleSharedCoreNetwork(request).toJson().toString()
     }
 
     fun writeLog(eventJson: String) {

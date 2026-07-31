@@ -18,7 +18,13 @@ SERVER_PATH = ROOT / "电脑端辅助前端" / "server.py"
 if str(CORE_SOURCE) not in sys.path:
     sys.path.insert(0, str(CORE_SOURCE))
 
-from dwpm_core import CORE_ID, CORE_VERSION, CoreFacade, compute_core_hash
+from dwpm_core import (
+    CORE_ID,
+    CORE_VERSION,
+    CoreFacade,
+    compute_core_hash,
+    create_hosted_core,
+)
 from dwpm_core.hashing import hash_records, source_manifest
 from dwpm_core.operations import OperationUncertainError
 from dwpm_core.ports import PlatformPorts
@@ -32,6 +38,245 @@ SPEC.loader.exec_module(SERVER)
 
 
 class SharedPythonCoreTests(unittest.TestCase):
+    def test_hosted_military_refresh_is_accepted_then_completed_by_shared_operation(self) -> None:
+        class HostBridge:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def executeNetworkOperation(self, method, path, body_json, context_json):
+                self.calls.append((method, path, json.loads(body_json)))
+                return json.dumps(
+                    {
+                        "status": 200,
+                        "body": {
+                            "ok": True,
+                            "militarySnapshot": {
+                                "responded": True,
+                                "actions": [],
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+
+            def executionOwnerActive(self):
+                return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = HostBridge()
+            facade = create_hosted_core(
+                str(Path(directory) / "operations-v2.json"),
+                bridge,
+            )
+            try:
+                facade.account_record_upsert(
+                    {
+                        "accountRef": "202",
+                        "id": 202,
+                        "username": "fixture",
+                        "serverName": "fixture",
+                        "enabled": True,
+                        "loginState": "REAL_PROTOCOL_ONLINE",
+                        "session": {
+                            "accountId": 202,
+                            "sourceMode": 1,
+                            "publicState": {"lastValidatedAt": "1000"},
+                        },
+                    }
+                )
+                accepted = facade.dispatch(
+                    "GET",
+                    "/api/military/intel",
+                    {"accountRef": "202", "sessionId": "202"},
+                    {"requestId": "military-fixture-1", "platform": "android"},
+                )
+
+                self.assertEqual(accepted.status, 202)
+                self.assertTrue(accepted.body["accepted"])
+                operation = self.wait_for_operation(
+                    facade,
+                    accepted.body["operationId"],
+                )
+                self.assertEqual(operation["status"], "SUCCEEDED")
+                self.assertTrue(operation["result"]["ok"])
+                self.assertTrue(operation["result"]["militarySnapshot"]["responded"])
+                self.assertEqual(len(bridge.calls), 1)
+                self.assertEqual(bridge.calls[0][0:2], ("GET", "/api/military/intel"))
+            finally:
+                facade.close()
+
+    def test_hosted_network_operation_rechecks_shared_session_gate_before_host_call(self) -> None:
+        class HostBridge:
+            calls = 0
+
+            def executionOwnerActive(self):
+                return True
+
+            def executeNetworkOperation(self, *_args):
+                self.calls += 1
+                return json.dumps({"status": 200, "body": {"ok": True}})
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = HostBridge()
+            facade = create_hosted_core(
+                str(Path(directory) / "operations-v2.json"),
+                bridge,
+            )
+            try:
+                facade.account_record_upsert(
+                    {
+                        "accountRef": "202",
+                        "id": 202,
+                        "username": "fixture",
+                        "serverName": "fixture",
+                        "enabled": False,
+                        "loginState": "REAL_PROTOCOL_STOPPED",
+                        "session": {
+                            "accountId": 202,
+                            "sourceMode": 1,
+                            "publicState": {},
+                        },
+                    }
+                )
+                accepted = facade.dispatch(
+                    "GET",
+                    "/api/military/intel",
+                    {"accountRef": "202"},
+                    {"requestId": "military-stopped-1"},
+                )
+                operation = self.wait_for_operation(
+                    facade,
+                    accepted.body["operationId"],
+                )
+
+                self.assertEqual(operation["status"], "FAILED")
+                self.assertIn("Session", operation["error"]["message"])
+                self.assertEqual(bridge.calls, 0)
+            finally:
+                facade.close()
+
+    def test_hosted_network_operation_requires_a_live_platform_owner(self) -> None:
+        class HostBridge:
+            calls = 0
+
+            def executionOwnerActive(self):
+                return False
+
+            def executeNetworkOperation(self, *_args):
+                self.calls += 1
+                return json.dumps({"status": 200, "body": {"ok": True}})
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = HostBridge()
+            facade = create_hosted_core(
+                str(Path(directory) / "operations-v2.json"),
+                bridge,
+            )
+            try:
+                facade.account_record_upsert(
+                    {
+                        "accountRef": "202",
+                        "id": 202,
+                        "username": "fixture",
+                        "serverName": "fixture",
+                        "enabled": True,
+                        "loginState": "REAL_PROTOCOL_ONLINE",
+                        "session": {
+                            "accountId": 202,
+                            "sourceMode": 1,
+                            "publicState": {"lastValidatedAt": "1000"},
+                        },
+                    }
+                )
+                accepted = facade.dispatch(
+                    "GET",
+                    "/api/military/intel",
+                    {"accountRef": "202"},
+                    {"requestId": "military-owner-off-1"},
+                )
+                operation = self.wait_for_operation(
+                    facade,
+                    accepted.body["operationId"],
+                )
+
+                self.assertEqual(operation["status"], "FAILED")
+                self.assertIn("执行所有者未激活", operation["error"]["message"])
+                self.assertEqual(bridge.calls, 0)
+            finally:
+                facade.close()
+
+    def test_hosted_network_operation_retries_busy_account_lane_without_blocking_host_call(self) -> None:
+        class HostBridge:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def executionOwnerActive(self):
+                return True
+
+            def executeNetworkOperation(self, *_args):
+                self.calls += 1
+                if self.calls < 3:
+                    return json.dumps(
+                        {
+                            "status": 503,
+                            "body": {
+                                "ok": False,
+                                "code": "LOCAL_ACCOUNT_BUSY",
+                                "error": "account lane busy",
+                            },
+                        }
+                    )
+                return json.dumps(
+                    {
+                        "status": 200,
+                        "body": {
+                            "ok": True,
+                            "militarySnapshot": {
+                                "responded": True,
+                                "actions": [],
+                            },
+                        },
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = HostBridge()
+            facade = create_hosted_core(
+                str(Path(directory) / "operations-v2.json"),
+                bridge,
+            )
+            try:
+                facade.account_record_upsert(
+                    {
+                        "accountRef": "202",
+                        "id": 202,
+                        "username": "fixture",
+                        "serverName": "fixture",
+                        "enabled": True,
+                        "loginState": "REAL_PROTOCOL_ONLINE",
+                        "session": {
+                            "accountId": 202,
+                            "sourceMode": 1,
+                            "publicState": {"lastValidatedAt": "1000"},
+                        },
+                    }
+                )
+                accepted = facade.dispatch(
+                    "GET",
+                    "/api/military/intel",
+                    {"accountRef": "202"},
+                    {"requestId": "military-busy-1"},
+                )
+                operation = self.wait_for_operation(
+                    facade,
+                    accepted.body["operationId"],
+                )
+
+                self.assertEqual(operation["status"], "SUCCEEDED")
+                self.assertEqual(bridge.calls, 3)
+            finally:
+                facade.close()
+
     def test_core_health_reports_deterministic_source_identity(self) -> None:
         first = CoreFacade(ROOT / "shared_core").health()
         second = CoreFacade(ROOT / "shared_core").health()
@@ -203,6 +448,58 @@ class SharedPythonCoreTests(unittest.TestCase):
         times = {(phase, label): stamp for phase, label, stamp in events}
         self.assertGreaterEqual(times[("start", "a2")], times[("end", "a1")])
         self.assertLess(times[("start", "b1")], times[("end", "a1")])
+        facade.close()
+
+    def test_active_query_clicks_coalesce_but_completed_refresh_can_run_again(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        started = threading.Event()
+        release = threading.Event()
+        executions = []
+
+        def query(body, context, execution):
+            executions.append(body["scope"])
+            started.set()
+            while not release.wait(0.01):
+                execution.raise_if_cancelled()
+            return {"ok": True, "scope": body["scope"]}
+
+        facade.register_network_route("GET", "/api/state/refresh", query)
+        first = facade.dispatch(
+            "GET",
+            "/api/state/refresh",
+            {"accountRef": "account-a", "scope": "military"},
+            {"requestId": "coalesce-1"},
+        )
+        self.assertTrue(started.wait(1))
+        duplicate = facade.dispatch(
+            "GET",
+            "/api/state/refresh",
+            {"accountRef": "account-a", "scope": "military"},
+            {"requestId": "coalesce-2"},
+        )
+
+        self.assertEqual(first.body["operationId"], duplicate.body["operationId"])
+        self.assertTrue(duplicate.body["deduplicated"])
+        self.assertEqual(executions, ["military"])
+        release.set()
+        self.assertEqual(
+            self.wait_for_operation(facade, first.body["operationId"])["status"],
+            "SUCCEEDED",
+        )
+
+        repeated = facade.dispatch(
+            "GET",
+            "/api/state/refresh",
+            {"accountRef": "account-a", "scope": "military"},
+            {"requestId": "coalesce-3"},
+        )
+        self.assertNotEqual(first.body["operationId"], repeated.body["operationId"])
+        self.assertFalse(repeated.body["deduplicated"])
+        self.assertEqual(
+            self.wait_for_operation(facade, repeated.body["operationId"])["status"],
+            "SUCCEEDED",
+        )
+        self.assertEqual(executions, ["military", "military"])
         facade.close()
 
     def test_sent_mutation_timeout_becomes_uncertain_and_is_not_replayed(self) -> None:

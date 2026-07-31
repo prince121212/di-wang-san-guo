@@ -5980,7 +5980,9 @@ async function refreshLiveState({ silent = false, scope = "all", side = activeSi
     return;
   }
   try {
-    const url = `/api/state/refresh?sessionId=${encodeURIComponent(appState.sessionId)}&scope=${encodeURIComponent(scope)}`;
+    const url = scope === "military"
+      ? `/api/military/intel?sessionId=${encodeURIComponent(appState.sessionId)}`
+      : `/api/state/refresh?sessionId=${encodeURIComponent(appState.sessionId)}&scope=${encodeURIComponent(scope)}`;
     const res = await fetch(url);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "刷新失败");
