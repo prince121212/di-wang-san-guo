@@ -16,9 +16,11 @@ from .protocol import (
     parse_passport_area_list,
 )
 from .store import DurableAccountStore, assert_public_account_record
+from .state_machine import ACCOUNT_EVENTS, reduce_account_event
 
 __all__ = [
     "AccountLifecyclePolicy",
+    "ACCOUNT_EVENTS",
     "area_catalog_signature",
     "classify_reconnect_failure",
     "DurableAccountStore",
@@ -29,6 +31,7 @@ __all__ = [
     "parse_passport_area_list",
     "reconnect_delay_millis",
     "reconnect_kind_label",
+    "reduce_account_event",
     "requires_relogin",
     "assert_public_account_record",
 ]

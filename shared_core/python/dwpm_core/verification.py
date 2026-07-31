@@ -127,6 +127,14 @@ from .features.military import (
     parse_8600_military_actions,
     parse_8600_military_events,
 )
+from .account.state_machine import (
+    EVENT_LOGIN_FAILED,
+    EVENT_LOGIN_SUCCEEDED,
+    EVENT_PROCESS_RECOVERED,
+    EVENT_SESSION_EXPIRED,
+    EVENT_USER_START,
+    reduce_account_event,
+)
 
 
 def verify_protocol_fixtures() -> Dict[str, Any]:
@@ -301,6 +309,102 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             for count in (1, 2, 3, 99)
         ],
         [600_000, 1_200_000, 1_800_000, 1_800_000],
+    )
+    transition_started = reduce_account_event(
+        {
+            "desiredStarted": False,
+            "loginState": "REAL_PROTOCOL_STOPPED",
+            "sessionCredentialPresent": False,
+        },
+        EVENT_USER_START,
+        now_millis=1_000,
+    )
+    transition_online = reduce_account_event(
+        transition_started,
+        EVENT_LOGIN_SUCCEEDED,
+        now_millis=2_000,
+    )
+    check(
+        "account.stateMachine.startLogin",
+        {
+            "startedState": transition_started["loginState"],
+            "startedOperation": transition_started["nextOperation"],
+            "onlineState": transition_online["loginState"],
+            "onlineUsable": transition_online["liveSessionUsable"],
+        },
+        {
+            "startedState": "REAL_PROTOCOL_CHECKING",
+            "startedOperation": "login",
+            "onlineState": "REAL_PROTOCOL_ONLINE",
+            "onlineUsable": True,
+        },
+    )
+    transition_network_failure = reduce_account_event(
+        transition_started,
+        EVENT_LOGIN_FAILED,
+        now_millis=3_000,
+        details={"message": "HTTP=0 bytes=0"},
+    )
+    check(
+        "account.stateMachine.failure",
+        {
+            key: transition_network_failure[key]
+            for key in (
+                "loginState",
+                "failureKind",
+                "failureCount",
+                "nextRetryAtMillis",
+                "liveSessionUsable",
+                "sessionSecretAction",
+            )
+        },
+        {
+            "loginState": "REAL_PROTOCOL_OFFLINE",
+            "failureKind": "network",
+            "failureCount": 1,
+            "nextRetryAtMillis": 183_000,
+            "liveSessionUsable": False,
+            "sessionSecretAction": "delete",
+        },
+    )
+    transition_recovered = reduce_account_event(
+        transition_online,
+        EVENT_PROCESS_RECOVERED,
+        now_millis=4_000,
+    )
+    check(
+        "account.stateMachine.processRecovery",
+        {
+            "loginState": transition_recovered["loginState"],
+            "nextOperation": transition_recovered["nextOperation"],
+            "liveSessionUsable": transition_recovered["liveSessionUsable"],
+        },
+        {
+            "loginState": "REAL_PROTOCOL_CHECKING",
+            "nextOperation": "probe",
+            "liveSessionUsable": False,
+        },
+    )
+    transition_expired = reduce_account_event(
+        transition_online,
+        EVENT_SESSION_EXPIRED,
+        now_millis=5_000,
+        details={"message": "response-opcode-0x8016"},
+    )
+    check(
+        "account.stateMachine.sessionExpired",
+        {
+            "loginState": transition_expired["loginState"],
+            "nextOperation": transition_expired["nextOperation"],
+            "sessionSecretAction": transition_expired["sessionSecretAction"],
+            "liveSessionUsable": transition_expired["liveSessionUsable"],
+        },
+        {
+            "loginState": "REAL_PROTOCOL_NEED_RELOGIN",
+            "nextOperation": "login",
+            "sessionSecretAction": "retain",
+            "liveSessionUsable": False,
+        },
     )
 
     assignment = fixtures["formationAssign1226"]

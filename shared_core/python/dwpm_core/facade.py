@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional
 
 from .account.lifecycle import AccountLifecyclePolicy
 from .account.store import DurableAccountStore
+from .account.state_machine import reduce_account_event
 from .contracts import load_behavior_contract, load_route_ownership
 from .hashing import compute_core_hash
 from .models import CoreResponse
@@ -228,6 +229,53 @@ class CoreFacade:
                 "ok": False,
                 "error": {
                     "code": "ACCOUNT_READ_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_transition(
+        self,
+        state: Dict[str, Any],
+        event: str,
+        details: Optional[Dict[str, Any]] = None,
+        now_millis: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return reduce_account_event(
+            state,
+            event,
+            now_millis=(
+                self._ports.clock.now_millis()
+                if now_millis is None
+                else int(now_millis)
+            ),
+            details=details,
+        )
+
+    def account_transition_json(
+        self,
+        state_json: str,
+        event: str,
+        details_json: str = "{}",
+        now_millis: Optional[int] = None,
+    ) -> str:
+        try:
+            state = json.loads(state_json or "{}")
+            details = json.loads(details_json or "{}")
+            result = {
+                "ok": True,
+                "transition": self.account_transition(
+                    state,
+                    event,
+                    details,
+                    now_millis,
+                ),
+            }
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_TRANSITION_REJECTED",
                     "message": str(error),
                 },
             }
