@@ -1,0 +1,70 @@
+package com.example.dwpmclone.host
+
+import java.io.File
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SharedPythonCoreHostContractTest {
+    @Test
+    fun androidBuildPackagesTheRepositorySharedSourceInsteadOfACopy() {
+        val rootBuild = source("../build.gradle.kts", "build.gradle.kts")
+        val appBuild = source("app/build.gradle.kts", "build.gradle.kts")
+
+        assertTrue(rootBuild.contains("id(\"com.chaquo.python\") version \"17.0.0\""))
+        assertTrue(appBuild.contains("srcDir(sharedPythonSource.asFile)"))
+        assertTrue(appBuild.contains("generateSharedPythonBundle"))
+        assertTrue(appBuild.contains("minSdk = 24"))
+        assertTrue(appBuild.contains("version = \"3.10\""))
+        assertFalse(resolve("app/src/main/python/dwpm_core", "src/main/python/dwpm_core").exists())
+    }
+
+    @Test
+    fun applicationWarmsTheInterpreterOffTheUiThread() {
+        val application = source(
+            "app/src/main/java/com/example/dwpmclone/SharedCoreApplication.kt",
+            "src/main/java/com/example/dwpmclone/SharedCoreApplication.kt"
+        )
+        val host = source(
+            "app/src/main/java/com/example/dwpmclone/host/SharedPythonCoreHost.kt",
+            "src/main/java/com/example/dwpmclone/host/SharedPythonCoreHost.kt"
+        )
+
+        assertTrue(application.contains("warmUpAsync()"))
+        assertTrue(host.contains("Thread(runnable, \"shared-python-warmup\")"))
+        assertTrue(host.contains("Python.start(AndroidPlatform(appContext))"))
+        assertTrue(host.contains("callAttr(\"create_hosted_core\", operationStore)"))
+        assertTrue(host.contains("operations-v1.json"))
+    }
+
+    @Test
+    fun pocOperationIsDurableImmediateAndCannotReachTheNetwork() {
+        val controller = source(
+            "app/src/main/java/com/example/dwpmclone/ui/web/LocalAssistantApiController.kt",
+            "src/main/java/com/example/dwpmclone/ui/web/LocalAssistantApiController.kt"
+        )
+        val operationCore = source(
+            "../shared_core/python/dwpm_core/operations.py",
+            "../../shared_core/python/dwpm_core/operations.py"
+        )
+
+        assertTrue(controller.contains("/api/core/operations/simulate"))
+        assertTrue(controller.contains("/api/core/operations/status"))
+        assertTrue(controller.contains("ApplicationInfo.FLAG_DEBUGGABLE"))
+        assertTrue(operationCore.contains("idempotencyKey"))
+        assertTrue(operationCore.contains("temporary.replace(self._path)"))
+        assertTrue(operationCore.contains("daemon=True"))
+        assertFalse(operationCore.contains("import socket"))
+        assertFalse(operationCore.contains("import requests"))
+        assertFalse(operationCore.contains("import urllib"))
+    }
+
+    private fun source(vararg candidates: String): String {
+        val file = candidates.asSequence().map(::File).firstOrNull(File::isFile)
+        checkNotNull(file) { "Source not found: ${candidates.joinToString()}" }
+        return file.readText()
+    }
+
+    private fun resolve(vararg candidates: String): File =
+        candidates.asSequence().map(::File).firstOrNull(File::exists) ?: File(candidates.first())
+}

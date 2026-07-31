@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from importlib import resources
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
@@ -20,6 +21,42 @@ def development_shared_root() -> Path:
     """Return the repository shared_core directory for an editable checkout."""
 
     return Path(__file__).resolve().parents[2]
+
+
+def has_development_sources(shared_root: Path) -> bool:
+    """Return whether a path is an editable shared_core checkout."""
+
+    return (
+        (shared_root / "python" / "dwpm_core").is_dir()
+        and all((shared_root / name).is_file() for name in CORE_CONTRACT_NAMES)
+    )
+
+
+def bundled_source_manifest() -> dict:
+    """Load the build-generated identity used when sources live inside an APK."""
+
+    raw = (
+        resources.files("dwpm_core._embedded_bundle")
+        .joinpath("source_manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    manifest = json.loads(raw)
+    if manifest.get("schemaVersion") != 1:
+        raise ValueError("unsupported bundled source-manifest schema")
+    core_hash = manifest.get("coreHash")
+    if not isinstance(core_hash, str) or len(core_hash) != 64:
+        raise ValueError("bundled source manifest has an invalid core hash")
+    return manifest
+
+
+def bundled_contract_text(name: str) -> str:
+    if name not in CORE_CONTRACT_NAMES:
+        raise ValueError(f"unknown shared-core contract: {name}")
+    return (
+        resources.files("dwpm_core._embedded_bundle")
+        .joinpath(name)
+        .read_text(encoding="utf-8")
+    )
 
 
 def source_records(shared_root: Path | None = None) -> List[Tuple[str, Path]]:
@@ -60,6 +97,10 @@ def hash_records(records: Iterable[Tuple[str, bytes]]) -> str:
 def compute_core_hash(shared_root: Path | None = None) -> str:
     """Compute a deterministic SHA-256 over source and behavior contracts."""
 
+    if shared_root is None:
+        development_root = development_shared_root()
+        if not has_development_sources(development_root):
+            return str(bundled_source_manifest()["coreHash"])
     return hash_records(
         (name, path.read_bytes())
         for name, path in source_records(shared_root)

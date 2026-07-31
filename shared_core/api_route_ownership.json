@@ -68,6 +68,11 @@
     { "method": "POST", "path": "/api/domestic/action", "feature": "domestic", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "missing" }
   ],
   "hostOnlyRoutes": [
+    { "method": "GET", "path": "/api/core/operations", "owner": "android-debug-poc", "note": "阶段 3 离线异步模型验证，Release 不开放" },
+    { "method": "GET", "path": "/api/core/operations/status", "owner": "android-debug-poc", "note": "阶段 3 离线异步模型验证，Release 不开放" },
+    { "method": "POST", "path": "/api/core/operations/simulate", "owner": "android-debug-poc", "note": "只模拟延迟，不访问任何网络" },
+    { "method": "POST", "path": "/api/core/operations/cancel", "owner": "android-debug-poc", "note": "只取消离线模拟任务" },
+
     { "method": "GET", "path": "/api/dashboard", "owner": "desktop-host", "note": "电脑多账号总控；Android 当前有多余实现，目标移除" },
     { "method": "POST", "path": "/api/dashboard/mine-settings", "owner": "desktop-host" },
     { "method": "GET", "path": "/api/diagnostics/stacks", "owner": "desktop-host" },

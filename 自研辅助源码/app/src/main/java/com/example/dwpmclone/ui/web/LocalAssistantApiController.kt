@@ -1,6 +1,7 @@
 package com.example.dwpmclone.ui.web
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import com.example.dwpmclone.data.account.AccountLoginState
 import com.example.dwpmclone.data.account.LocalAccountLoginService
 import com.example.dwpmclone.data.local.KeystoreCredentialVault
@@ -32,6 +33,7 @@ import com.example.dwpmclone.domain.scheduler.ResidentTaskActivationPolicy
 import com.example.dwpmclone.domain.scheduler.SavedConfigTaskPlanFactory
 import com.example.dwpmclone.domain.scheduler.SchedulerTaskOrdering
 import com.example.dwpmclone.domain.scheduler.TaskRuntimeState
+import com.example.dwpmclone.host.SharedPythonCoreHost
 import com.example.dwpmclone.service.AssistantForegroundService
 import java.net.URLDecoder
 import java.text.SimpleDateFormat
@@ -46,6 +48,7 @@ class LocalAssistantApiController(
     private val onHostingStarted: () -> Unit = {}
 ) {
     private val appContext = context.applicationContext
+    private val sharedPythonCore = SharedPythonCoreHost.get(appContext)
     private val accounts = LocalAccountRepository(appContext)
     private val configs = LocalConfigRepository(appContext)
     private val logs = TaskLogRepository(appContext)
@@ -77,7 +80,9 @@ class LocalAssistantApiController(
         localOperations.tryHandle(request)?.let { return@runCatching it }
         val route = request.path.substringBefore('?')
         when (request.method to route) {
-            "GET" to "/api/health" -> ok(request, JSONObject().put("apiVersion", "v1").put("core", "android-local"))
+            "GET" to "/api/health" -> sharedCoreHealth(request)
+            "GET" to "/api/core/operations" -> sharedCoreOperations(request)
+            "GET" to "/api/core/operations/status" -> sharedCoreOperationStatus(request)
             "GET" to "/api/accounts" -> ok(request, JSONObject().put("accounts", accountArray()))
             "GET" to "/api/areas" -> ok(request, JSONObject().put("areas", JSONArray()).put("updatedAt", System.currentTimeMillis()))
             "GET" to "/api/accounts/settings" -> accountSettings(request)
@@ -95,6 +100,8 @@ class LocalAssistantApiController(
             "POST" to "/api/accounts/start" -> startAccount(request)
             "POST" to "/api/accounts/stop" -> stopAccount(request)
             "POST" to "/api/accounts/delete" -> deleteAccount(request)
+            "POST" to "/api/core/operations/simulate" -> submitSimulatedCoreOperation(request)
+            "POST" to "/api/core/operations/cancel" -> cancelSimulatedCoreOperation(request)
             "POST" to "/api/automation/start-saved" -> startSavedTasks(request)
             "POST" to "/api/automation/stop" -> stopAccount(request)
             "POST" to "/api/formations/save",
@@ -114,6 +121,67 @@ class LocalAssistantApiController(
             error.message ?: "手机本地核心处理失败"
         )
     }
+
+    private fun sharedCoreHealth(request: AssistantApiRequest): AssistantApiResponse {
+        val health = sharedPythonCore.health()
+            .put("apiVersion", AssistantApiResponse.API_VERSION)
+            .put("androidBusinessOwner", "migration-poc-only")
+        return ok(request, health)
+    }
+
+    private fun submitSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
+        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
+        val body = request.body ?: JSONObject()
+        val durationMillis = if (body.has("durationMillis")) {
+            body.optLong("durationMillis", -1L)
+        } else {
+            90_000L
+        }
+        if (durationMillis !in 0L..600_000L) {
+            return failure(request, 400, "durationMillis 必须在 0 到 600000 之间")
+        }
+        val idempotencyKey = body.optString("idempotencyKey", request.id).trim()
+        if (idempotencyKey.isEmpty()) return failure(request, 400, "缺少幂等键")
+        val payload = body.optJSONObject("payload") ?: JSONObject()
+        val accepted = sharedPythonCore.submitSimulatedNetworkOperation(
+            durationMillis,
+            idempotencyKey,
+            payload
+        )
+        return AssistantApiResponse(request.id, 202, accepted)
+    }
+
+    private fun sharedCoreOperationStatus(request: AssistantApiRequest): AssistantApiResponse {
+        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
+        val operationId = query(request.path)["operationId"].orEmpty()
+        if (operationId.isBlank()) return failure(request, 400, "缺少 operationId")
+        val result = sharedPythonCore.operationStatus(operationId)
+        return if (result.optBoolean("ok", false)) {
+            AssistantApiResponse(request.id, 200, result)
+        } else {
+            AssistantApiResponse(request.id, 404, result)
+        }
+    }
+
+    private fun sharedCoreOperations(request: AssistantApiRequest): AssistantApiResponse {
+        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
+        return AssistantApiResponse(request.id, 200, sharedPythonCore.operationsSnapshot())
+    }
+
+    private fun cancelSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
+        if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
+        val operationId = request.body?.optString("operationId").orEmpty()
+        if (operationId.isBlank()) return failure(request, 400, "缺少 operationId")
+        val result = sharedPythonCore.cancelOperation(operationId)
+        return if (result.optBoolean("ok", false)) {
+            AssistantApiResponse(request.id, 200, result)
+        } else {
+            AssistantApiResponse(request.id, 404, result)
+        }
+    }
+
+    private fun pocRoutesEnabled(): Boolean =
+        appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     private fun addAccount(request: AssistantApiRequest): AssistantApiResponse {
         val body = request.body ?: return failure(request, 400, "缺少账号信息")

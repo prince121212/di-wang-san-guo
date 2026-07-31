@@ -10,6 +10,7 @@
 - 目标范围是电脑端“单账号容器”的完整业务能力，不包括多账号总控、起号、代理、诊断和服务关闭。
 - 当前共识别 55 个共享方法/路径，其中 26 个必须是纯本地即时响应，29 个必须是按账号异步执行的网络操作。
 - 电脑宿主保留 32 个专属方法/路径；历史 Mobile API 与 `/api/login` 别名只保留兼容，不进入共享核心主接口。
+- 阶段 3 另有 4 个 `android-debug-poc` 方法/路径，只验证离线异步 operation 模型，不属于正式业务接口，Release 版不开放。
 - Android 当前明确缺少 4 个电脑单容器接口：六部查询、六部种植、内政查询、内政动作。
 - Android 当前实现了桌面总控 `/api/dashboard`，它不属于手机目标范围，迁移后应从 Android 正式业务入口移除。
 
@@ -83,7 +84,7 @@ Android 宿主不得保留 opcode、协议解析、目标选择、成功判定�
 1. `server.py` 的业务函数直接访问模块级 `ACCOUNTS`、`SESSIONS`、`AUTO_TASKS` 和路径常量。
 2. HTTP Handler 同时承担参数解析、业务执行、线程等待和响应组装。
 3. 电脑端线程 worker 内含大量 `sleep/wait`，尚未形成可恢复的统一 operation 模型。
-4. Android 的 `AssistantWebBridge` 使用全局单工作线程，长网络操作会阻塞纯本地请求。
+4. Android 旧 Kotlin 网络路由仍会在 `AssistantWebBridge` 全局单工作线程中等待；阶段 3 的共享核心 POC 已改为只提交 operation，后续阶段需逐路由切换。
 5. Android 设置映射、任务工厂、协议客户端和任务类共同构成第二套业务事实源。
 6. 电脑端账号记录含密码字段；Android 迁移只能通过 `CredentialPort` 临时取得 Keystore 凭据。
 

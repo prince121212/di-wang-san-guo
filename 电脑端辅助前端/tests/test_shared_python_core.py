@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -41,6 +43,12 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertEqual(first["sharedRouteCount"], 55)
         self.assertEqual(first["localRouteCount"], 26)
         self.assertEqual(first["networkOperationRouteCount"], 29)
+        self.assertEqual(first["operationModel"]["submission"], "immediate")
+
+    def test_health_json_is_a_stable_android_bridge_contract(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+
+        self.assertEqual(json.loads(facade.health_json()), facade.health())
 
     def test_hash_is_path_independent_and_content_sensitive(self) -> None:
         first = hash_records((("core/a.py", b"one"), ("contract.json", b"two")))
@@ -69,6 +77,63 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertTrue(health.body["ok"])
         self.assertEqual(unmigrated.status, 404)
         self.assertIn("not migrated", unmigrated.body["error"])
+
+    def test_simulated_network_operation_is_immediate_and_idempotent(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        started = time.perf_counter()
+
+        submitted = facade.submit_simulated_network_operation(
+            2_000,
+            "shared-core-test-immediate",
+            {"probe": "offline-only"},
+        )
+        elapsed_millis = (time.perf_counter() - started) * 1000
+        duplicate = facade.submit_simulated_network_operation(
+            2_000,
+            "shared-core-test-immediate",
+            {"probe": "offline-only"},
+        )
+
+        self.assertLess(elapsed_millis, 100)
+        self.assertTrue(submitted["accepted"])
+        self.assertFalse(submitted["deduplicated"])
+        self.assertTrue(duplicate["deduplicated"])
+        self.assertEqual(submitted["operationId"], duplicate["operationId"])
+        with self.assertRaisesRegex(ValueError, "different input"):
+            facade.submit_simulated_network_operation(
+                2_000,
+                "shared-core-test-immediate",
+                {"probe": "different-input"},
+            )
+        self.assertTrue(facade.health()["ok"])
+        self.assertEqual(
+            facade.operation_status(submitted["operationId"])["operation"]["status"],
+            "RUNNING",
+        )
+        cancelled = facade.cancel_operation(submitted["operationId"])
+        self.assertEqual(cancelled["operation"]["status"], "CANCELLED")
+        facade.close()
+
+    def test_simulated_operation_result_survives_facade_recreation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "operations.json"
+            first = CoreFacade(ROOT / "shared_core", str(ledger))
+            submitted = first.submit_simulated_network_operation(
+                40,
+                "shared-core-test-recovery",
+                {"value": 7},
+            )
+            first.close()
+            time.sleep(0.08)
+
+            recovered = CoreFacade(ROOT / "shared_core", str(ledger))
+            status = recovered.operation_status(submitted["operationId"])
+
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["operation"]["status"], "SUCCEEDED")
+            self.assertEqual(status["operation"]["result"]["echo"], {"value": 7})
+            self.assertEqual(recovered.operations_snapshot()["count"], 1)
+            recovered.close()
 
     def test_desktop_health_exposes_the_same_core_hash(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)

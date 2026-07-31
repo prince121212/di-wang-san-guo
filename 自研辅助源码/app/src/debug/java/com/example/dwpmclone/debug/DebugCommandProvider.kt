@@ -10,6 +10,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
+import android.os.SystemClock
 import android.util.Base64
 import android.webkit.WebView
 import com.example.dwpmclone.ui.web.AssistantApiMessageCodec
@@ -71,7 +72,11 @@ class DebugCommandProvider : ContentProvider() {
                     "POST 可能改变真实账号状态，必须使用 --allow-post 显式确认"
                 ).toJson()
             }
-            controller.handle(request).toJson()
+            val startedAt = SystemClock.elapsedRealtimeNanos()
+            controller.handle(request).toJson().put(
+                DEBUG_CONTROLLER_MICROS,
+                (SystemClock.elapsedRealtimeNanos() - startedAt) / 1_000L
+            )
         }.getOrElse { error ->
             AssistantApiMessageCodec.error(
                 "invalid",
@@ -179,6 +184,7 @@ class DebugCommandProvider : ContentProvider() {
         const val RESULT_PROTOCOL_KEY = "debug_protocol"
         const val RESULT_ENCODING = "base64url"
         const val RESULT_PROTOCOL_VERSION = 1
+        const val DEBUG_CONTROLLER_MICROS = "debugControllerMicros"
         const val EXTRA_ALLOW_POST = "allow_post"
         const val EXTRA_POST_CONFIRMATION = "post_confirmation"
         const val POST_CONFIRMATION = "ALLOW_REAL_POST"
