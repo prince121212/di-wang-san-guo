@@ -98,6 +98,18 @@ class SharedAccountLifecycleTests(unittest.TestCase):
         self.assertTrue(due["shouldProbe"])
         self.assertTrue(checking["shouldProbe"])
 
+    def test_unknown_persisted_state_fails_closed(self) -> None:
+        unknown = self.policy.snapshot(
+            account_enabled=True,
+            execution_owner_active=True,
+            login_state="LEGACY_UNRECOGNIZED_STATE",
+            source_mode=1,
+        )
+        self.assertEqual(unknown["canonicalLoginState"], "offline")
+        self.assertEqual(unknown["status"], "offline")
+        self.assertTrue(unknown["requiresRelogin"])
+        self.assertFalse(unknown["mayUseLiveSession"])
+
     def test_failure_evidence_stays_fail_closed(self) -> None:
         self.assertTrue(is_session_invalid_message("response-opcode-0x8016"))
         self.assertFalse(is_session_invalid_message("generic session error"))

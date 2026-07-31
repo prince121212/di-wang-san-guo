@@ -3,6 +3,9 @@ package com.example.dwpmclone.ui.web
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import com.example.dwpmclone.data.account.AccountLoginState
+import com.example.dwpmclone.data.account.AccountStateEvents
+import com.example.dwpmclone.data.account.AccountTransitionDetails
+import com.example.dwpmclone.data.account.AccountTransitionInput
 import com.example.dwpmclone.data.account.LocalAccountLoginService
 import com.example.dwpmclone.data.local.KeystoreCredentialVault
 import com.example.dwpmclone.data.local.DismissedNoticeRepository
@@ -182,6 +185,23 @@ class LocalAssistantApiController(
     private fun sharedCoreProtocolVerification(request: AssistantApiRequest): AssistantApiResponse {
         if (!pocRoutesEnabled()) return failure(request, 404, "共享核心 POC 路由仅在 Debug 版本开放")
         val report = sharedPythonCore.protocolFixtureReport()
+        val typedTransition = sharedPythonCore.accountStateTransition(
+            state = AccountTransitionInput(
+                desiredStarted = false,
+                loginState = AccountLoginState.STOPPED,
+                sessionCredentialPresent = false
+            ),
+            event = AccountStateEvents.USER_START,
+            details = AccountTransitionDetails(),
+            nowMillis = 1_000L
+        )
+        report.put(
+            "androidTypedAccountTransition",
+            JSONObject()
+                .put("loginState", typedTransition.loginState)
+                .put("nextOperation", typedTransition.nextOperation)
+                .put("liveSessionUsable", typedTransition.liveSessionUsable)
+        )
         return AssistantApiResponse(
             request.id,
             if (report.optBoolean("ok", false)) 200 else 500,

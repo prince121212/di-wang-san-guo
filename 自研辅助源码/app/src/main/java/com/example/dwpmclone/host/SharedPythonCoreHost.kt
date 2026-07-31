@@ -7,6 +7,10 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.example.dwpmclone.data.account.AccountLifecycleDecision
 import com.example.dwpmclone.data.account.AccountLifecycleDecisionSource
+import com.example.dwpmclone.data.account.AccountStateTransition
+import com.example.dwpmclone.data.account.AccountStateTransitionSource
+import com.example.dwpmclone.data.account.AccountTransitionDetails
+import com.example.dwpmclone.data.account.AccountTransitionInput
 import com.example.dwpmclone.data.local.SharedAccountStateGateway
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -16,6 +20,7 @@ import org.json.JSONObject
 /** Process-wide Android host for the repository's single shared Python core. */
 class SharedPythonCoreHost private constructor(context: Context) :
     AccountLifecycleDecisionSource,
+    AccountStateTransitionSource,
     SharedAccountStateGateway {
     private val appContext = context.applicationContext
     private val platformPorts = AndroidSharedCorePortBridge(appContext)
@@ -93,6 +98,54 @@ class SharedPythonCoreHost private constructor(context: Context) :
             mayUseLiveSession = result.getBoolean("mayUseLiveSession"),
             runnable = result.getBoolean("runnable"),
             heartbeatIntervalMillis = result.getLong("heartbeatIntervalMillis")
+        )
+    }
+
+    override fun accountStateTransition(
+        state: AccountTransitionInput,
+        event: String,
+        details: AccountTransitionDetails,
+        nowMillis: Long
+    ): AccountStateTransition {
+        val stateJson = JSONObject()
+            .put("desiredStarted", state.desiredStarted)
+            .put("loginState", state.loginState)
+            .put("sessionCredentialPresent", state.sessionCredentialPresent)
+            .put("failureKind", state.failureKind)
+            .put("failureCount", state.failureCount)
+            .put("nextRetryAtMillis", state.nextRetryAtMillis ?: JSONObject.NULL)
+            .put("lastError", state.lastError)
+            .put("lastValidatedAtMillis", state.lastValidatedAtMillis ?: JSONObject.NULL)
+        val detailsJson = JSONObject()
+            .put("message", details.message)
+            .put("sessionInvalid", details.sessionInvalid)
+            .put("validatedAtMillis", details.validatedAtMillis ?: JSONObject.NULL)
+        val response = callJson(
+            "account_transition_json",
+            stateJson.toString(),
+            event,
+            detailsJson.toString(),
+            nowMillis
+        )
+        check(response.optBoolean("ok", false)) {
+            response.optJSONObject("error")?.optString("message")
+                ?: "共享账号状态转换失败"
+        }
+        val result = response.getJSONObject("transition")
+        return AccountStateTransition(
+            desiredStarted = result.getBoolean("desiredStarted"),
+            loginState = result.getString("loginState"),
+            sessionCredentialPresent = result.getBoolean("sessionCredentialPresent"),
+            liveSessionUsable = result.getBoolean("liveSessionUsable"),
+            failureKind = result.getString("failureKind"),
+            failureCount = result.getInt("failureCount"),
+            nextRetryAtMillis = result.optLongOrNull("nextRetryAtMillis"),
+            lastError = result.getString("lastError"),
+            lastValidatedAtMillis = result.optLongOrNull("lastValidatedAtMillis"),
+            nextOperation = result.getString("nextOperation"),
+            sessionSecretAction = result.getString("sessionSecretAction"),
+            event = result.getString("event"),
+            updatedAtMillis = result.getLong("updatedAtMillis")
         )
     }
 
@@ -204,6 +257,9 @@ class SharedPythonCoreHost private constructor(context: Context) :
             maxCallMicros.updateAndGet { previous -> maxOf(previous, elapsedMicros) }
         }
     }
+
+    private fun JSONObject.optLongOrNull(key: String): Long? =
+        if (has(key) && !isNull(key)) getLong(key) else null
 
     companion object {
         private val WARMUP_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->

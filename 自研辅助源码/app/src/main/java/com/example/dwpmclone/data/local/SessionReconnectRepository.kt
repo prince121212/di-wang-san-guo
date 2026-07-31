@@ -6,14 +6,9 @@ import org.json.JSONObject
 data class SessionReconnectState(
     val failures: Int = 0,
     val nextAttemptAtMillis: Long = 0L,
-    val reason: String = ""
+    val reason: String = "",
+    val failureKind: String = ""
 )
-
-object SessionReconnectBackoff {
-    private val delays = longArrayOf(5_000L, 15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
-
-    fun delayMillis(failureCount: Int): Long = delays[(failureCount - 1).coerceIn(0, delays.lastIndex)]
-}
 
 class SessionReconnectRepository(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -24,24 +19,28 @@ class SessionReconnectRepository(context: Context) {
             SessionReconnectState(
                 failures = json.optInt("failures", 0).coerceAtLeast(0),
                 nextAttemptAtMillis = json.optLong("nextAttemptAtMillis", 0L).coerceAtLeast(0L),
-                reason = json.optString("reason")
+                reason = json.optString("reason"),
+                failureKind = json.optString("failureKind")
             )
         } ?: SessionReconnectState()
     }
 
-    fun recordFailure(accountId: Long, nowMillis: Long, reason: String): SessionReconnectState {
-        val failures = state(accountId).failures + 1
-        val next = SessionReconnectState(
-            failures = failures,
-            nextAttemptAtMillis = nowMillis + SessionReconnectBackoff.delayMillis(failures),
-            reason = reason.take(500)
-        )
-        save(accountId, next)
-        return next
-    }
-
-    fun requestImmediate(accountId: Long, reason: String) {
-        save(accountId, state(accountId).copy(nextAttemptAtMillis = 0L, reason = reason.take(500)))
+    fun replace(accountId: Long, state: SessionReconnectState) {
+        if (
+            state.failures <= 0 &&
+            state.nextAttemptAtMillis <= 0L &&
+            state.reason.isBlank() &&
+            state.failureKind.isBlank()
+        ) {
+            reset(accountId)
+        } else {
+            save(accountId, state.copy(
+                failures = state.failures.coerceAtLeast(0),
+                nextAttemptAtMillis = state.nextAttemptAtMillis.coerceAtLeast(0L),
+                reason = state.reason.take(500),
+                failureKind = state.failureKind.take(40)
+            ))
+        }
     }
 
     fun reset(accountId: Long) {
@@ -58,6 +57,7 @@ class SessionReconnectRepository(context: Context) {
                     .put("failures", state.failures)
                     .put("nextAttemptAtMillis", state.nextAttemptAtMillis)
                     .put("reason", state.reason)
+                    .put("failureKind", state.failureKind)
                     .toString()
             ).commit()
         ) { "无法持久化自动重连状态" }

@@ -278,7 +278,8 @@ def normalize_login_state(value: Any) -> str:
         return STOPPED
     if "ONLINE" in state:
         return ONLINE
-    return ONLINE
+    # Unknown persisted states are never proof of a usable live Session.
+    return OFFLINE
 
 
 def requires_relogin(login_state: Any) -> bool:

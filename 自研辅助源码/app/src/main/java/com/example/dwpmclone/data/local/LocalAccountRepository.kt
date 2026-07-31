@@ -84,6 +84,10 @@ class LocalAccountRepository(
         }
     }
 
+    fun deleteSessionSecrets(accountId: Long) {
+        sessionSecrets.delete(accountId)
+    }
+
     fun clear() {
         sessionSecrets.clear()
         val result = sharedAccounts.accountRecordsClear()

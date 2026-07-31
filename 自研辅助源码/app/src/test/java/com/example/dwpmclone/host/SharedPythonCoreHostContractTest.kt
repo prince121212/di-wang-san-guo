@@ -38,6 +38,8 @@ class SharedPythonCoreHostContractTest {
         assertTrue(host.contains("operations-v2.json"))
         assertTrue(host.contains("\"dispatch_json\""))
         assertTrue(host.contains("\"account_lifecycle_snapshot_json\""))
+        assertTrue(host.contains("\"account_transition_json\""))
+        assertTrue(host.contains("AccountStateTransitionSource"))
         assertTrue(host.contains("\"account_records_snapshot_json\""))
         assertTrue(host.contains("\"account_record_presentation_json\""))
         assertTrue(host.contains("SharedAccountStateGateway"))

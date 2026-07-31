@@ -2,6 +2,7 @@ package com.example.dwpmclone.data.account
 
 import com.example.dwpmclone.data.local.LocalAccountRepository
 import com.example.dwpmclone.data.local.SessionReconnectRepository
+import com.example.dwpmclone.data.local.SessionReconnectState
 import com.example.dwpmclone.data.local.TaskLogRepository
 import com.example.dwpmclone.data.protocol.RealGameProtocolClient
 import com.example.dwpmclone.domain.model.GameAccount
@@ -204,6 +205,7 @@ class AccountSessionRecovery(
     private val reconnects: SessionReconnectRepository,
     private val logs: TaskLogRepository,
     private val lifecycleDecisions: AccountLifecycleDecisionSource,
+    private val stateTransitions: AccountStateTransitionSource,
     private val probe: SessionHealthProbe = RealSessionHealthProbe(),
 ) {
     fun reconcile(nowMillis: Long, forceValidation: Boolean): SessionRecoverySummary {
@@ -211,7 +213,7 @@ class AccountSessionRecovery(
         var paused = 0
         var waiting = 0
         var relogged = 0
-        accounts.listAccounts().filter { it.enabled && it.session?.sourceMode == 1 }.forEach { account ->
+        accounts.listAccounts().filter { it.enabled }.forEach { account ->
             val state = account.loginState.uppercase()
             val lifecycle = lifecycleDecisions.accountLifecycleDecision(
                 accountEnabled = account.enabled,
@@ -231,24 +233,38 @@ class AccountSessionRecovery(
                     return@forEach
                 }
                 runCatching { loginService.relogin(account, preserveTaskRuntime = true) }
-                    .onSuccess {
-                        reconnects.reset(account.id)
-                        accounts.updateLoginState(account.id, AccountLoginState.ONLINE, mapOf("lastReloginAt" to nowMillis.toString()))
+                    .onSuccess { loggedIn ->
+                        val transition = transition(
+                            loggedIn,
+                            AccountStateEvents.LOGIN_SUCCEEDED,
+                            nowMillis,
+                            validatedAtMillis = nowMillis
+                        )
+                        applyTransition(
+                            loggedIn,
+                            transition,
+                            mapOf("lastReloginAt" to nowMillis.toString())
+                        )
                         logs.append("账号 ${account.id} 自动重新登录成功", "session-recovery", account.id)
                         relogged += 1
                         online += 1
                     }
                     .onFailure { error ->
-                        val next = reconnects.recordFailure(account.id, nowMillis, error.message ?: "自动重登失败")
-                        accounts.updateLoginState(
-                            account.id,
-                            AccountLoginState.OFFLINE,
+                        val transition = transition(
+                            account,
+                            AccountStateEvents.LOGIN_FAILED,
+                            nowMillis,
+                            message = error.message ?: "自动重登失败"
+                        )
+                        applyTransition(
+                            account,
+                            transition,
                             mapOf(
-                                "nextReloginAt" to next.nextAttemptAtMillis.toString(),
-                                "lastReloginError" to next.reason
+                                "nextReloginAt" to (transition.nextRetryAtMillis ?: 0L).toString(),
+                                "lastReloginError" to transition.lastError
                             )
                         )
-                        logs.append("账号 ${account.id} 自动重登失败，第${next.failures}次；将在${next.nextAttemptAtMillis}后重试", "session-recovery", account.id)
+                        logs.append("账号 ${account.id} 自动重登失败，第${transition.failureCount}次；将在${transition.nextRetryAtMillis}后重试", "session-recovery", account.id)
                         waiting += 1
                     }
                 return@forEach
@@ -273,15 +289,20 @@ class AccountSessionRecovery(
             when (val result = probe.probe(account, fullStateRefresh)) {
                 is SessionProbeResult.Valid -> {
                     val session = account.session ?: return@forEach
-                    accounts.upsert(
-                        account.copy(
-                            displayName = result.updates["roleName"] ?: account.displayName,
-                            monarchName = result.updates["roleName"] ?: account.monarchName,
-                            loginState = AccountLoginState.ONLINE,
-                            session = session.copy(channelExtra = session.channelExtra + result.updates)
-                        )
+                    val updated = account.copy(
+                        displayName = result.updates["roleName"] ?: account.displayName,
+                        monarchName = result.updates["roleName"] ?: account.monarchName,
+                        session = session.copy(channelExtra = session.channelExtra + result.updates)
                     )
-                    reconnects.reset(account.id)
+                    val transition = transition(
+                        updated,
+                        AccountStateEvents.PROBE_VALID,
+                        nowMillis,
+                        validatedAtMillis = result.updates["lastValidatedAt"]
+                            ?.toLongOrNull()
+                            ?: nowMillis
+                    )
+                    applyTransition(updated, transition, result.updates)
                     online += 1
                 }
                 is SessionProbeResult.Expired -> {
@@ -289,18 +310,23 @@ class AccountSessionRecovery(
                     paused += 1
                 }
                 is SessionProbeResult.Unavailable -> {
-                    val next = reconnects.recordFailure(account.id, nowMillis, result.reason)
-                    accounts.updateLoginState(
-                        account.id,
-                        AccountLoginState.NETWORK_PAUSED,
+                    val transition = transition(
+                        account,
+                        AccountStateEvents.PROBE_UNAVAILABLE,
+                        nowMillis,
+                        message = result.reason
+                    )
+                    applyTransition(
+                        account,
+                        transition,
                         mapOf(
-                            "lastNetworkPauseReason" to result.reason,
+                            "lastNetworkPauseReason" to transition.lastError,
                             "lastNetworkPauseAt" to nowMillis.toString(),
-                            "nextSessionProbeAt" to next.nextAttemptAtMillis.toString()
+                            "nextSessionProbeAt" to (transition.nextRetryAtMillis ?: 0L).toString()
                         )
                     )
                     logs.append(
-                        "账号 ${account.id} 状态同步暂停，第${next.failures}次；将在${next.nextAttemptAtMillis}后重试",
+                        "账号 ${account.id} 状态同步暂停，第${transition.failureCount}次；将在${transition.nextRetryAtMillis}后重试",
                         "session-recovery",
                         account.id
                     )
@@ -312,26 +338,42 @@ class AccountSessionRecovery(
     }
 
     fun markNeedsRelogin(accountId: Long, reason: String) {
-        accounts.updateLoginState(
-            accountId,
-            AccountLoginState.NEED_RELOGIN,
-            mapOf("lastOfflineReason" to reason, "lastOfflineAt" to System.currentTimeMillis().toString())
+        val account = accounts.get(accountId) ?: return
+        val nowMillis = System.currentTimeMillis()
+        val transition = transition(
+            account,
+            AccountStateEvents.SESSION_EXPIRED,
+            nowMillis,
+            message = reason,
+            sessionInvalid = true
         )
-        reconnects.requestImmediate(accountId, reason)
+        applyTransition(
+            account,
+            transition,
+            mapOf(
+                "lastOfflineReason" to transition.lastError,
+                "lastOfflineAt" to nowMillis.toString()
+            )
+        )
         logs.append("账号 $accountId Session 已失效，已进入自动重登队列", "session-recovery", accountId)
     }
 
     fun markNetworkPaused(nowMillis: Long, reason: String) {
         accounts.listAccounts().filter { it.enabled && it.session?.sourceMode == 1 }.forEach { account ->
-            accounts.updateLoginState(
-                account.id,
-                AccountLoginState.NETWORK_PAUSED,
+            val transition = transition(
+                account,
+                AccountStateEvents.NETWORK_UNAVAILABLE,
+                nowMillis,
+                message = reason
+            )
+            applyTransition(
+                account,
+                transition,
                 mapOf(
                     "lastNetworkPauseAt" to nowMillis.toString(),
-                    "lastNetworkPauseReason" to reason
+                    "lastNetworkPauseReason" to transition.lastError
                 )
             )
-            reconnects.requestImmediate(account.id, reason)
         }
     }
 
@@ -384,4 +426,82 @@ class AccountSessionRecovery(
             last?.plus(heartbeatIntervalMillis) ?: nowMillis
         }
         .minOrNull()
+
+    private fun transition(
+        account: GameAccount,
+        event: String,
+        nowMillis: Long,
+        message: String = "",
+        sessionInvalid: Boolean = false,
+        validatedAtMillis: Long? = null
+    ): AccountStateTransition {
+        val retry = reconnects.state(account.id)
+        return stateTransitions.accountStateTransition(
+            state = AccountTransitionInput(
+                desiredStarted = account.enabled,
+                loginState = account.loginState,
+                sessionCredentialPresent = account.session?.sourceMode == 1,
+                failureKind = retry.failureKind,
+                failureCount = retry.failures,
+                nextRetryAtMillis = retry.nextAttemptAtMillis.takeIf { it > 0L },
+                lastError = retry.reason,
+                lastValidatedAtMillis = account.session?.channelExtra
+                    ?.get("lastValidatedAt")
+                    ?.toLongOrNull()
+            ),
+            event = event,
+            details = AccountTransitionDetails(
+                message = message,
+                sessionInvalid = sessionInvalid,
+                validatedAtMillis = validatedAtMillis
+            ),
+            nowMillis = nowMillis
+        )
+    }
+
+    private fun applyTransition(
+        account: GameAccount,
+        transition: AccountStateTransition,
+        extraUpdates: Map<String, String> = emptyMap()
+    ) {
+        if (transition.sessionSecretAction == "delete") {
+            accounts.deleteSessionSecrets(account.id)
+        }
+        val lifecycleUpdates = buildMap {
+            transition.lastValidatedAtMillis?.let {
+                put("lastValidatedAt", it.toString())
+            }
+            transition.nextRetryAtMillis?.let {
+                put("nextReloginAt", it.toString())
+            }
+            put("lifecycleFailureKind", transition.failureKind)
+            put("lifecycleFailureCount", transition.failureCount.toString())
+            putAll(extraUpdates)
+        }
+        val session = account.session?.copy(
+            tokenCiphertext = if (transition.sessionCredentialPresent) {
+                LocalAccountRepository.SESSION_PRESENT_MARKER
+            } else {
+                ""
+            },
+            sourceMode = if (transition.sessionCredentialPresent) 1 else 0,
+            channelExtra = account.session.channelExtra + lifecycleUpdates
+        )
+        accounts.upsert(
+            account.copy(
+                enabled = transition.desiredStarted,
+                loginState = transition.loginState,
+                session = session
+            )
+        )
+        reconnects.replace(
+            account.id,
+            SessionReconnectState(
+                failures = transition.failureCount,
+                nextAttemptAtMillis = transition.nextRetryAtMillis ?: 0L,
+                reason = transition.lastError,
+                failureKind = transition.failureKind
+            )
+        )
+    }
 }

@@ -36,8 +36,17 @@ class AccountLoginStateTest {
         )
         assertFalse(service.contains("heartbeatIntervalMillis = behaviorContract.accountLifecycle"))
         assertEquals(true, service.contains("lifecycleDecisions = SharedPythonCoreHost.get(this)"))
+        assertEquals(true, service.contains("stateTransitions = SharedPythonCoreHost.get(this)"))
         assertEquals(true, host.contains("AccountLifecycleDecisionSource,"))
         assertEquals(true, host.contains("account_lifecycle_snapshot_json"))
+        assertEquals(true, host.contains("account_transition_json"))
+
+        val reconnect = source(
+            "app/src/main/java/com/example/dwpmclone/data/local/SessionReconnectRepository.kt",
+            "src/main/java/com/example/dwpmclone/data/local/SessionReconnectRepository.kt"
+        )
+        assertFalse(reconnect.contains("SessionReconnectBackoff"))
+        assertFalse(reconnect.contains("fun recordFailure("))
     }
 
     private fun source(vararg candidates: String): String {

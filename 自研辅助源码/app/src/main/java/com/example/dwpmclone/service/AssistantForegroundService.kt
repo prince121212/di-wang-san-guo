@@ -136,6 +136,7 @@ class AssistantForegroundService : Service() {
             reconnects = SessionReconnectRepository(this),
             logs = logs,
             lifecycleDecisions = SharedPythonCoreHost.get(this),
+            stateTransitions = SharedPythonCoreHost.get(this),
             probe = RealSessionHealthProbe(serviceReadOnlyProtocol),
         )
         // 后台是绝大多数真实游戏请求的来源，这里也安装一次采集入口，
