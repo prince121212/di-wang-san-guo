@@ -35,7 +35,7 @@ class LosslessTaskMigrationTest {
                 )
             )
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put(
                 "configs",
                 JSONObject().put(
@@ -44,7 +44,8 @@ class LosslessTaskMigrationTest {
                 )
             )
 
-        val task = SavedConfigTaskPlanFactory.plan(77L, export).tasks.single() as LosslessTask
+        val task = SavedConfigTaskPlanFactory.plan(77L, export)
+            .tasks.single { it.type == TaskType.LOSSLESS } as LosslessTask
 
         assertEquals(TaskType.LOSSLESS, task.type)
         assertTrue(task.config.enabled)

@@ -10,8 +10,7 @@ object ConfigDefaults {
         accountId = accountId,
         autoStart = false,
         reconnectDelaySeconds = 10,
-        antiIpBanEnabled = false,
-        requestDelayMillis = 100,
+        requestDelayMillis = 300,
         sameServerMutex = true,
         protectBackgroundHintAcknowledged = false
     )
@@ -59,7 +58,7 @@ object ConfigDefaults {
         keepFullLoyalty = false,
         autoEnergy = true,
         minEnergy = 50,
-        autoRescue = true,
+        autoRescue = false,
         requireChineseNamePrefix = true
     )
 
@@ -77,6 +76,7 @@ object ConfigDefaults {
         upgradeLowestFirst = true,
         buildingPriority = emptyList(),
         buildWhenEmpty = null,
+        upgradeBuildings = true,
         upgradeTechnology = false,
         technologyIds = setOf(5)
     )
@@ -97,7 +97,7 @@ object ConfigDefaults {
         chapter = 0,
         stage = 1,
         formationIds = emptyList(),
-        autoUnlockUntilTarget = true
+        mode = "loop"
     )
 
     fun inventory() = InventoryConfig(
@@ -151,12 +151,10 @@ object ConfigDefaults {
         rules = emptyList()
     )
 
-    fun alarmWithdraw() = AlarmWithdrawConfig(
+    fun alarm() = AlarmConfig(
         enabled = false,
         keywords = setOf("掠夺", "夺取", "攻城", "敌军"),
-        vibrateOnAlarm = true,
-        withdrawDefense = false,
-        mockOnlyProtection = true
+        vibrateOnAlarm = true
     )
 
     val discardableItemNames: Set<String> = setOf(

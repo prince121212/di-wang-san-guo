@@ -12,7 +12,8 @@ data class BrushYellowDispatchResponse(
     val message: String?,
     val usedAount: Int?,
     val rawText: String,
-    val evidence: String
+    val evidence: String,
+    val battleId: Long? = null
 ) {
     val consumedTimes: Int
         get() = when {
@@ -28,6 +29,7 @@ data class BrushYellowDispatchResponse(
             put("${prefix}UsedAount", it.toString())
             put("${prefix}UsedCount", it.toString())
         }
+        battleId?.takeIf { it > 0L }?.let { put("${prefix}BattleId", it.toString()) }
         put("${prefix}Evidence", evidence)
         if (rawText.isNotBlank()) put("${prefix}RawText", rawText.take(MAX_RAW_PREVIEW))
     }
@@ -93,6 +95,7 @@ object BrushYellowDispatchResponseParser {
             else -> null
         }
         val used = extractUsedAount(text)
+        val battleId = extractBattleId(text)
         val evidence = when {
             failure != null -> "failure-marker:$failure"
             success != null -> "success-marker:$success"
@@ -104,13 +107,20 @@ object BrushYellowDispatchResponseParser {
             message = message,
             usedAount = used,
             rawText = text,
-            evidence = evidence
+            evidence = evidence,
+            battleId = battleId
         )
     }
 
-    fun parseHex(responseHex: String): BrushYellowDispatchResponse {
+    fun parseHex(
+        responseHex: String,
+        contract: ExpeditionBehaviorContract = ExpeditionBehaviorContract.defaults()
+    ): BrushYellowDispatchResponse {
         val normalizedHex = responseHex.filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }.lowercase()
-        if (normalizedHex == "ff0000") {
+        val softRejectHex = contract.softRejectPayload.joinToString("") {
+            (it.toInt() and 0xff).toString(16).padStart(2, '0')
+        }
+        if (normalizedHex == softRejectHex) {
             return BrushYellowDispatchResponse(
                 success = false,
                 message = "游戏服拒绝出征(0x8522=ff0000)，通常是将领体力/兵力/出征状态/目标状态不满足",
@@ -134,9 +144,13 @@ object BrushYellowDispatchResponseParser {
         )
     }
 
-    fun parse(responseText: String? = null, responseHex: String? = null): BrushYellowDispatchResponse? {
+    fun parse(
+        responseText: String? = null,
+        responseHex: String? = null,
+        contract: ExpeditionBehaviorContract = ExpeditionBehaviorContract.defaults()
+    ): BrushYellowDispatchResponse? {
         responseText?.takeIf { it.isNotBlank() }?.let { return parseText(it) }
-        responseHex?.takeIf { it.isNotBlank() }?.let { return parseHex(it) }
+        responseHex?.takeIf { it.isNotBlank() }?.let { return parseHex(it, contract) }
         return null
     }
 
@@ -154,6 +168,14 @@ object BrushYellowDispatchResponseParser {
         }
         return null
     }
+
+    private fun extractBattleId(text: String): Long? =
+        Regex("battleId\\s*[:=]\\s*[\"']?(\\d+)", RegexOption.IGNORE_CASE)
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
+            ?.takeIf { it > 0L }
 
     private fun extractMessage(text: String): String? {
         if (text.isBlank()) return null
@@ -196,12 +218,21 @@ object BrushYellowDispatchResponseParser {
                 for (i in 0 until 8) v = (v shl 8) or (bytes[3 + utfLen + i].toLong() and 0xffL)
                 v
             } else null
+            val confirmedBattleId = battleId?.takeIf { it > 0L }
             return BrushYellowDispatchResponse(
-                success = true,
-                message = msg.ifBlank { "出征成功${battleId?.let { " battleId=$it" } ?: ""}" },
+                success = confirmedBattleId != null,
+                message = msg.ifBlank {
+                    confirmedBattleId?.let { "出征成功 battleId=$it" }
+                        ?: "出征响应缺少有效 battleId"
+                },
                 usedAount = null,
                 rawText = msg,
-                evidence = evidence
+                evidence = if (confirmedBattleId == null) {
+                    "$evidence-battle-id-missing"
+                } else {
+                    evidence
+                },
+                battleId = confirmedBattleId
             )
         }
         return BrushYellowDispatchResponse(

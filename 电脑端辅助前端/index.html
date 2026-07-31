@@ -2,17 +2,11 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta id="viewportMeta" name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script>
-    if (new URLSearchParams(location.search).get("mobile") === "1") {
-      document.getElementById("viewportMeta").setAttribute(
-        "content",
-        "width=1080, initial-scale=1.0, maximum-scale=3.0, user-scalable=yes"
-      );
-    }
-  </script>
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; object-src 'none'; base-uri 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'" />
+  <meta id="viewportMeta" name="viewport" content="width=1080, maximum-scale=3.0, user-scalable=yes" />
   <title>帝王三国电脑端辅助</title>
-  <link rel="stylesheet" href="./styles.css?v=20260725-mobile-core-complete-2" />
+  <link rel="stylesheet" href="./styles.css?v=V0.0.15" />
 </head>
 <body>
   <div class="desktop-toolbar" id="desktopToolbar">
@@ -39,12 +33,6 @@
             <button class="quick-switch-btn active" data-page="助手" type="button">助手</button>
             <button class="quick-switch-btn" data-page="日志" type="button">日志</button>
           </div>
-          <header class="status-bar" aria-hidden="true">
-            <span class="status-time">4:06</span>
-            <span class="status-tool">🔧</span>
-            <span class="status-icons">HD&nbsp;▂▃▅&nbsp;⌁&nbsp;<b>79</b>▯&nbsp;↯</span>
-          </header>
-
           <main class="app-shell">
             <h1 class="app-title">助手</h1>
 
@@ -54,6 +42,7 @@
                   <span class="open-count">1开</span>
                   <span class="expire-label">到期时间2026-07-08 03:59:04</span>
                   <button class="renew-btn">续期</button>
+                  <span class="mobile-app-version" id="mobileAppVersion" hidden></span>
                   <button class="refresh-btn" title="刷新">⟳</button>
                 </div>
                 <div class="server-line">
@@ -117,6 +106,30 @@
             <section id="otherPage" class="page-hidden other-page">
               <div id="otherHome" class="other-home">
                 <div class="other-section-title">游戏资料</div>
+                <button class="other-entry-button native-guide-entry" id="openFamousGeneralBtn" type="button">
+                  <span class="other-entry-icon native-guide-general-icon" aria-hidden="true">将</span>
+                  <span class="other-entry-copy">
+                    <b>查名将</b>
+                    <small>搜索原 APK 名将表，查看突围、属性和国家</small>
+                  </span>
+                  <span class="other-entry-arrow" aria-hidden="true">›</span>
+                </button>
+                <button class="other-entry-button native-guide-entry" id="openOpenServerBtn" type="button">
+                  <span class="other-entry-icon native-guide-server-icon" aria-hidden="true">服</span>
+                  <span class="other-entry-copy">
+                    <b>查开服时间</b>
+                    <small>7 个旧版本的区服锚点、间隔规则与日期计算</small>
+                  </span>
+                  <span class="other-entry-arrow" aria-hidden="true">›</span>
+                </button>
+                <button class="other-entry-button native-guide-entry" id="openGuideArticlesBtn" type="button">
+                  <span class="other-entry-icon native-guide-article-icon" aria-hidden="true">攻</span>
+                  <span class="other-entry-copy">
+                    <b>查攻略</b>
+                    <small>阅读原 APK 保留的 10 篇本地攻略全文</small>
+                  </span>
+                  <span class="other-entry-arrow" aria-hidden="true">›</span>
+                </button>
                 <button class="other-entry-button" id="openDungeonGuideBtn" type="button">
                   <span class="other-entry-icon" aria-hidden="true">副</span>
                   <span class="other-entry-copy">
@@ -131,6 +144,71 @@
                   <p>您勾选出征将领的顺序决定将领的坑位，逻辑与原服中相同，即最先勾选的将领将会占据首排居中的坑位。</p>
                 </section>
               </div>
+
+              <article id="famousGeneralGuide" class="page-hidden dungeon-guide reference-tool-page">
+                <header class="dungeon-guide-head">
+                  <button id="closeFamousGeneralBtn" class="guide-back-button" type="button" aria-label="返回攻略页">‹</button>
+                  <div>
+                    <h2>查名将</h2>
+                    <p>原 APK 本地名将资料表</p>
+                  </div>
+                </header>
+                <section class="guide-lead reference-tool-lead">
+                  <span class="guide-status">离线资料</span>
+                  <p>支持按名字、属性或国家搜索；留空则显示前 40 条。</p>
+                </section>
+                <section class="guide-section reference-tool-card">
+                  <label class="reference-field-label" for="famousGeneralQuery">名将关键词</label>
+                  <div class="reference-search-row">
+                    <input id="famousGeneralQuery" class="reference-text-input" type="search"
+                      autocomplete="off" placeholder="例如：诸葛亮 / 攻骑 / 蜀" />
+                    <button id="searchFamousGeneralBtn" class="reference-primary-button" type="button">搜索</button>
+                  </div>
+                  <p id="famousGeneralMeta" class="reference-result-meta" aria-live="polite">正在读取名将资料…</p>
+                </section>
+                <section id="famousGeneralResults" class="reference-general-list" aria-live="polite"></section>
+              </article>
+
+              <article id="openServerGuide" class="page-hidden dungeon-guide reference-tool-page">
+                <header class="dungeon-guide-head">
+                  <button id="closeOpenServerBtn" class="guide-back-button" type="button" aria-label="返回攻略页">‹</button>
+                  <div>
+                    <h2>查开服时间</h2>
+                    <p>原 APP 版本选项与固定计算规则</p>
+                  </div>
+                </header>
+                <section class="guide-lead reference-tool-lead">
+                  <span class="guide-status">本地计算</span>
+                  <p>选择游戏版本和区服后，根据原 APK 恢复的锚点日期与开服间隔计算。</p>
+                </section>
+                <section class="guide-section reference-tool-card">
+                  <label class="reference-field-label" for="openServerVersionSelect">游戏版本</label>
+                  <select id="openServerVersionSelect" class="reference-select"></select>
+                  <p id="openServerVersionSummary" class="reference-help-text"></p>
+                  <label class="reference-field-label" for="openServerNumberSelect">区服</label>
+                  <select id="openServerNumberSelect" class="reference-select"></select>
+                  <button id="calculateOpenServerBtn" class="reference-primary-button reference-full-button" type="button">查询开服时间</button>
+                </section>
+                <section id="openServerResult" class="guide-section reference-result-card" aria-live="polite">
+                  <h3>开服时间：等待查询</h3>
+                </section>
+              </article>
+
+              <article id="guideArticlesPage" class="page-hidden dungeon-guide reference-tool-page">
+                <header class="dungeon-guide-head">
+                  <button id="closeGuideArticlesBtn" class="guide-back-button" type="button" aria-label="返回攻略页">‹</button>
+                  <div>
+                    <h2 id="guideArticlesTitle">查攻略</h2>
+                    <p id="guideArticlesSubtitle">原 APK 保留的本地攻略</p>
+                  </div>
+                </header>
+                <section id="guideArticleList" class="reference-article-list" aria-live="polite"></section>
+                <section id="guideArticleDetail" class="page-hidden reference-article-detail">
+                  <button id="backToGuideArticleListBtn" class="reference-list-back" type="button">← 返回攻略列表</button>
+                  <h3 id="guideArticleDetailTitle">攻略详情</h3>
+                  <div id="guideArticleDetailBody" class="reference-article-body"></div>
+                </section>
+              </article>
 
               <article id="dungeonGuide" class="page-hidden dungeon-guide">
                 <header class="dungeon-guide-head">
@@ -305,8 +383,8 @@
                 <option value="当乐帝王三国">当乐帝王三国</option>
               </select></label>
               <label><span>游戏区服</span><select id="loginServer"><option value="">正在读取区服目录...</option></select></label>
-              <label><span>游戏账号</span><input id="loginUsername" value="1608601" /></label>
-              <label><span>游戏密码（明文）</span><input id="loginPassword" type="text" value="123459" autocomplete="off" placeholder="请输入测试账号密码（明文显示）" /><em>✎</em></label>
+              <label><span>游戏账号</span><input id="loginUsername" value="" autocomplete="username" placeholder="请输入游戏账号" /></label>
+              <label><span>游戏密码</span><input id="loginPassword" type="password" value="" autocomplete="current-password" placeholder="请输入游戏密码" /><em>✎</em></label>
               <label><span>连体序号</span><input id="loginSerial" value="0" /></label>
               <button class="modal-ok" id="loginSubmit" type="button">确定</button>
             </div>
@@ -388,6 +466,31 @@
       </div>
     </section>
   </main>
+
+  <div class="starter-batch-mask page-hidden" id="starterBatchModal" role="dialog" aria-modal="true" aria-labelledby="starterBatchTitle">
+    <section class="starter-batch-dialog">
+      <header>
+        <div>
+          <h2 id="starterBatchTitle">批量添加起号账号</h2>
+          <p>勾选账号，并为每个账号选择本次起号区服。</p>
+        </div>
+        <button id="closeStarterBatchModalBtn" type="button" aria-label="关闭">✕</button>
+      </header>
+      <div class="starter-batch-toolbar">
+        <label><input id="starterBatchSelectAll" type="checkbox" /> 全选</label>
+        <span id="starterBatchSelectedCount">已选 0 个账号</span>
+      </div>
+      <div class="starter-batch-account-list" id="starterBatchAccountList">
+        <div class="starter-batch-empty">正在读取账号和区服...</div>
+      </div>
+      <p class="starter-batch-ip-note">系统会优先为账号分配不同公网 IP，均衡使用线路；同一 IP 最多同时登录 2 个账号，线路登录失败时自动尝试下一个可用 IP。</p>
+      <div class="starter-batch-result page-hidden" id="starterBatchResult"></div>
+      <footer>
+        <button class="secondary" id="cancelStarterBatchBtn" type="button">取消</button>
+        <button class="primary" id="submitStarterBatchBtn" type="button">确定并批量登录</button>
+      </footer>
+    </section>
+  </div>
 
   <main class="desktop-bandit-map page-hidden" id="desktopBanditMap">
     <header class="desktop-bandit-map-head">
@@ -493,6 +596,7 @@
     </section>
   </main>
 
-  <script src="./app.js?v=20260722-starter-records-2"></script>
+  <script src="./assistant-api.js?v=V0.0.15"></script>
+  <script src="./app.js?v=V0.0.15"></script>
 </body>
 </html>

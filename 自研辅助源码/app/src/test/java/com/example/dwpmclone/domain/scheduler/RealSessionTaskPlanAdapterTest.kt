@@ -41,6 +41,30 @@ class RealSessionTaskPlanAdapterTest {
     }
 
     @Test
+    fun explicitSavedGeneralSelectionWinsOverLegacySessionHints() {
+        val export = JSONObject().put("configs", JSONObject().put(
+            "10001::shua_huang",
+            JSONObject().put("values", JSONObject()
+                .put("enabled", true)
+                .put("selectedFormationIds", org.json.JSONArray().put(99L))
+            )
+        ))
+        val savedPlan = SavedConfigTaskPlanFactory.plan(10001L, export)
+        val realSession = GameSession(
+            accountId = 10001L,
+            tokenCiphertext = "real-session-token",
+            expiresAtMillis = null,
+            channelExtra = fullOfflineReplayChannelExtraSample(),
+            sourceMode = 1
+        )
+
+        val aligned = RealSessionTaskPlanAdapter.attachRealSession(savedPlan, realSession)
+        val task = aligned.tasks.single { it.type == TaskType.SHUA_HUANG } as ShuaHuangTask
+
+        assertEquals(setOf(99L), task.config.selectedFormationIds)
+    }
+
+    @Test
     fun alignedSavedUiPlanRunsBrushYellowClosedLoopThroughServiceLifecycleRunner() {
         val savedPlan = SavedConfigTaskPlanFactory.plan(10001L, shuaHuangSavedConfigExport())
         val realSession = GameSession(
@@ -51,15 +75,20 @@ class RealSessionTaskPlanAdapterTest {
             sourceMode = 1
         )
         val aligned = RealSessionTaskPlanAdapter.attachRealSession(savedPlan, realSession)
-        val runner = LocalSchedulerLifecycleRunner(TaskScheduler(SessionAwareGameProtocolClient()))
+        val runner = LocalSchedulerLifecycleRunner(
+            TaskScheduler(SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true))
+        )
 
         val batch = SuspendRunner.run {
             runner.runPlansOnceAndStopOnTerminal(tick = 12, plans = listOf(aligned), nowMillis = 1_000L)
         }
 
-        assertEquals(1, batch.runReports.size)
-        assertEquals(TaskType.SHUA_HUANG, batch.runReports.single().type)
-        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(1_000)), batch.runReports.single().decisions)
+        val brushReport = batch.runReports.single { it.type == TaskType.SHUA_HUANG }
+        assertEquals(2, batch.runReports.size)
+        assertEquals(1, batch.deferredIdleTaskCount)
+        assertTrue(batch.runReports.none { it.type == TaskType.BANDIT_PREFETCH })
+        assertEquals(TaskType.SHUA_HUANG, brushReport.type)
+        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(1_000)), brushReport.decisions)
         assertEquals(emptyList<TerminalTaskDecision>(), batch.terminalDecisions)
         assertEquals(emptyList<TaskStopReport>(), batch.stopReports)
     }
@@ -67,7 +96,7 @@ class RealSessionTaskPlanAdapterTest {
 
     @Test
     fun realSessionWithoutSavedConfigDoesNotRunSyntheticDefaultTasks() {
-        val savedPlan = SavedConfigTaskPlanFactory.plan(764L, JSONObject().put("schema_version", "0.1-static-mock").put("configs", JSONObject()))
+        val savedPlan = SavedConfigTaskPlanFactory.plan(764L, JSONObject().put("schema_version", "1.0-local").put("configs", JSONObject()))
         val realSession = GameSession(
             accountId = 764L,
             tokenCiphertext = "real-session-token",
@@ -84,8 +113,8 @@ class RealSessionTaskPlanAdapterTest {
     }
 
     @Test
-    fun realSessionWithoutSavedConfigDerivesBrushYellowTaskOnlyWhenExplicitGateAndFormationExist() {
-        val savedPlan = SavedConfigTaskPlanFactory.plan(764L, JSONObject().put("schema_version", "0.1-static-mock").put("configs", JSONObject()))
+    fun realSessionHintsNeverCreateBrushYellowTaskWithoutSavedConfig() {
+        val savedPlan = SavedConfigTaskPlanFactory.plan(764L, JSONObject().put("schema_version", "1.0-local").put("configs", JSONObject()))
         val realSession = GameSession(
             accountId = 764L,
             tokenCiphertext = "real-session-token",
@@ -104,17 +133,14 @@ class RealSessionTaskPlanAdapterTest {
         )
 
         val aligned = RealSessionTaskPlanAdapter.attachRealSession(savedPlan, realSession)
-        val task = aligned.tasks.single() as ShuaHuangTask
 
         assertEquals(1, aligned.session.sourceMode)
-        assertEquals(TaskType.SHUA_HUANG, task.type)
-        assertEquals(setOf(7066185L), task.config.selectedFormationIds)
-        assertEquals(1, task.config.dailyLimit)
-        assertTrue(aligned.sourceDescription.contains("session-derived-brush-yellow-task"))
+        assertEquals(emptyList<TaskType>(), aligned.tasks.map { it.type })
+        assertTrue(aligned.sourceDescription.contains("no-background-tasks"))
     }
 
     private fun shuaHuangSavedConfigExport(): JSONObject = JSONObject()
-        .put("schema_version", "0.1-static-mock")
+        .put("schema_version", "1.0-local")
         .put(
             "configs",
             JSONObject().put(
@@ -157,7 +183,7 @@ class RealSessionTaskPlanAdapterTest {
                 "targetId":"101",
                 "status":"成功",
                 "usedCount":1,
-                "responseBody":"刷黄出征成功！继续搜索... usedCount=1",
+                "responseBody":"刷黄出征成功！继续搜索... battleId=7094993 usedCount=1",
                 "generalIdHexChunks":["0000000000000007"]
             }
         ]""",

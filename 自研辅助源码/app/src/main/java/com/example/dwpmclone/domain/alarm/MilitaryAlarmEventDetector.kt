@@ -1,7 +1,7 @@
 package com.example.dwpmclone.domain.alarm
 
 import com.example.dwpmclone.domain.model.AlarmNotificationKind
-import com.example.dwpmclone.domain.model.AlarmWithdrawConfig
+import com.example.dwpmclone.domain.model.AlarmConfig
 import org.json.JSONObject
 
 data class DetectedAlarmEvent(
@@ -20,7 +20,7 @@ data class DetectedAlarmEvent(
  * a fresh baseline instead of replaying old notifications.
  */
 object MilitaryAlarmEventDetector {
-    fun detect(channelExtra: Map<String, String>, config: AlarmWithdrawConfig): List<DetectedAlarmEvent> {
+    fun detect(channelExtra: Map<String, String>, config: AlarmConfig): List<DetectedAlarmEvent> {
         if (!config.enabled) return emptyList()
         val intel = firstJson(channelExtra["militaryIntelJson"], channelExtra["militaryIntel"])
             ?: return emptyList()

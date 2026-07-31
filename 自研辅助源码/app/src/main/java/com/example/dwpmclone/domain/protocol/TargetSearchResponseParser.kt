@@ -3,16 +3,16 @@ package com.example.dwpmclone.domain.protocol
 import com.example.dwpmclone.domain.model.MapCoordinate
 
 /**
- * Conservative parser for recovered 041540 target-search responses.
+ * Parser for the 0x8540 response returned by the recovered 0x1540 target search.
  *
  * Evidence:
  * - Landroid/o/ۦۤ۠;->ۦۖ۫(String,ZZZ)[Landroid/o/ۦۤ۠;
- * - id = record[0:12]
- * - kind is decoded from hex text markers such as 山贼/黄巾/渠帅/主将
- * - kv/kw are parsed from 4-hex-char coordinate fields adjacent to the kind marker
+ * - structured records use the same field order as desktop `parse_8540_targets`
+ * - the four composition counters come from the real unit rows, never from level templates
+ * - marker scanning remains only as a compatibility fallback for incomplete captures
  *
- * This parser is intentionally tolerant because live response captures are still missing.
- * It is used as a response-shape bridge, not as proof that true network execution is done.
+ * A partial record is still surfaced for diagnostics, but it deliberately has no usable
+ * composition. This prevents a configured 步/弓/骑/车 filter from accepting guessed data.
  */
 object TargetSearchResponseParser {
     private val KIND_MARKERS = linkedMapOf(
@@ -65,88 +65,214 @@ object TargetSearchResponseParser {
     private fun parseStructured8540Candidate(hex: String): List<MapTarget> {
         val payload = hex.hexToBytesOrNull() ?: return emptyList()
         if (payload.size < 5) return emptyList()
-        return runCatching {
-            val mapWidth = payload.u16(0)
-            val mapHeight = payload.u16(2)
-            val count = payload.u8(4).coerceIn(0, 80)
-            var p = 5
-            val targets = mutableListOf<MapTarget>()
-            repeat(count) {
-                if (p + 10 > payload.size) return@repeat
-                val recordStart = p
-                val id = payload.u64(p)
-                p += 8
-                if (id <= 0L) return@repeat
-                val nameResult = payload.readUtfAt(p) ?: return@repeat
-                val name = nameResult.first
-                p = nameResult.second
-                if (p + 7 > payload.size) return@repeat
-                val metaA = payload.u8(p)
-                val metaB = payload.u8(p + 1)
-                val levelByte = payload.u8(p + 2)
-                p += 3
-                val metaD = payload.u16(p)
-                p += 2
-                val metaE = payload.u16(p)
-                p += 2
-                val resourceResult = payload.readUtfAt(p) ?: return@repeat
-                val resource = resourceResult.first
-                p = resourceResult.second
-                if (p + 8 > payload.size) return@repeat
-                val x = payload.i32(p)
-                p += 4
-                val y = payload.i32(p)
-                p += 4
+        return parseCompleteStructured8540(payload)
+            ?: parsePartialStructured8540(payload)
+    }
 
-                val nextPos = payload.nextStructuredRecordOffset(p) ?: payload.size
-                val tailHex = payload.copyOfRange(p, nextPos.coerceIn(p, payload.size)).toHexUpper().take(120)
-                p = nextPos
-
-                val level = Regex("""(\d+)级""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                    ?: levelByte.takeIf { it in 1..99 }
-                    ?: defaultRankForKind(name.normalizedKind()) ?: 0
-                val kind = name.normalizedKind()
-                val composition = inferCompositionFromLevel(level)
-                val rawRecord = payload.copyOfRange(recordStart, (recordStart + 8 + 2 + name.toByteArray(Charsets.UTF_8).size).coerceAtMost(payload.size))
-                    .toHexUpper()
-                targets += MapTarget(
-                    id = id,
-                    coordinate = MapCoordinate(x, y),
-                    type = kind,
-                    raw = mapOf(
-                        "idHex" to id.toString(16).padStart(12, '0'),
-                        "targetIdHex" to id.toString(16).padStart(16, '0'),
-                        "kind" to kind,
-                        "name" to name,
-                        "rank" to level.toString(),
-                        "level" to level.toString(),
-                        "kv" to x.toString(),
-                        "kw" to y.toString(),
-                        "x" to x.toString(),
-                        "y" to y.toString(),
-                        "resource" to resource,
-                        "rawRecord" to rawRecord,
-                        "mapWidth" to mapWidth.toString(),
-                        "mapHeight" to mapHeight.toString(),
-                        "metaA" to metaA.toString(),
-                        "metaB" to metaB.toString(),
-                        "levelByte" to levelByte.toString(),
-                        "metaD" to metaD.toString(),
-                        "metaE" to metaE.toString(),
-                        "tailHex" to tailHex,
-                        "foot" to composition[0].toString(),
-                        "bow" to composition[1].toString(),
-                        "cavalry" to composition[2].toString(),
-                        "chariot" to composition[3].toString(),
-                        "compositionCode" to composition.joinToString(""),
-                        "compositionSource" to "level-template",
-                        "source" to "8540-structured"
-                    )
+    /** Exact port of the desktop 0x8540 field order. */
+    private fun parseCompleteStructured8540(payload: ByteArray): List<MapTarget>? = runCatching {
+        val cursor = BinaryCursor(payload)
+        val mapWidth = cursor.u16()
+        val mapHeight = cursor.u16()
+        val count = cursor.u8().also { require(it in 0..80) }
+        val targets = mutableListOf<MapTarget>()
+        repeat(count) { recordIndex ->
+            val recordStart = cursor.position
+            val id = cursor.u64().also { require(it > 0L) }
+            val nameStart = cursor.position
+            val name = cursor.utf()
+            val nameEnd = cursor.position
+            val metaA = cursor.u8()
+            val metaB = cursor.u8()
+            val levelByte = cursor.u8()
+            val metaD = cursor.u16()
+            val metaE = cursor.u16()
+            val resource = cursor.utf()
+            val resource1 = cursor.i32()
+            val resource2 = cursor.i32()
+            val lootCount = cursor.u8().also { require(it in 0..80) }
+            val lootIds = List(lootCount) { cursor.i32().toLong() and 0xffff_ffffL }
+            val unitCount = cursor.u8().also { require(it in 0..80) }
+            val composition = linkedMapOf(
+                "foot" to 0,
+                "bow" to 0,
+                "cavalry" to 0,
+                "chariot" to 0
+            )
+            val units = mutableListOf<Structured8540Unit>()
+            repeat(unitCount) {
+                val generalName = cursor.utf()
+                val unitA = cursor.u16()
+                val unitUid = cursor.u16()
+                val unitB = cursor.u8()
+                val majorCode = cursor.u8()
+                val soldierTypeCode = cursor.u8()
+                val soldierCount = cursor.i32()
+                val majorKey = when (majorCode) {
+                    0 -> "foot"
+                    1 -> "bow"
+                    2 -> "cavalry"
+                    4 -> "chariot"
+                    else -> error("unknown 0x8540 major troop code=$majorCode")
+                }
+                composition[majorKey] = composition.getValue(majorKey) + 1
+                units += Structured8540Unit(
+                    generalName = generalName,
+                    unitA = unitA,
+                    unitUid = unitUid,
+                    unitB = unitB,
+                    majorCode = majorCode,
+                    soldierTypeCode = soldierTypeCode,
+                    soldierCount = soldierCount
                 )
             }
-            targets
-        }.getOrDefault(emptyList())
-    }
+
+            val kind = name.normalizedKind()
+            val level = Regex("""(\d+)级""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: levelByte.takeIf { it in 1..99 }
+                ?: fixedRankForKind(kind)
+                ?: 0
+            val rawRecord = payload.copyOfRange(recordStart, nameEnd).toHexUpper()
+            val structuredRecord = payload.copyOfRange(recordStart, cursor.position).toHexUpper()
+            val compositionCode = listOf("foot", "bow", "cavalry", "chariot")
+                .joinToString("") { composition.getValue(it).toString() }
+            targets += MapTarget(
+                id = id,
+                // Desktop uses metaD/metaE as the target coordinate. The two i32 values
+                // after the reward text are resource metadata, not x/y.
+                coordinate = MapCoordinate(metaD, metaE),
+                type = kind,
+                raw = linkedMapOf(
+                    "idHex" to id.toString(16).padStart(12, '0'),
+                    "targetIdHex" to id.toString(16).padStart(16, '0'),
+                    "kind" to kind,
+                    "name" to name,
+                    "rank" to level.toString(),
+                    "level" to level.toString(),
+                    "kv" to metaD.toString(),
+                    "kw" to metaE.toString(),
+                    "x" to metaD.toString(),
+                    "y" to metaE.toString(),
+                    "resource" to resource,
+                    "resource1" to resource1.toString(),
+                    "resource2" to resource2.toString(),
+                    "lootIds" to lootIds.joinToString(","),
+                    "dropCategories" to resource.dropCategories().joinToString(","),
+                    "unitGeneralNames" to units.joinToString("|") { it.generalName },
+                    "unitMajorCodes" to units.joinToString(",") { it.majorCode.toString() },
+                    "unitSoldierTypeCodes" to units.joinToString(",") { it.soldierTypeCode.toString() },
+                    "unitSoldierCounts" to units.joinToString(",") { it.soldierCount.toString() },
+                    "unitUids" to units.joinToString(",") { it.unitUid.toString() },
+                    "unitMetaA" to units.joinToString(",") { it.unitA.toString() },
+                    "unitMetaB" to units.joinToString(",") { it.unitB.toString() },
+                    "unitCount" to unitCount.toString(),
+                    "foot" to composition.getValue("foot").toString(),
+                    "bow" to composition.getValue("bow").toString(),
+                    "cavalry" to composition.getValue("cavalry").toString(),
+                    "chariot" to composition.getValue("chariot").toString(),
+                    "compositionCode" to compositionCode,
+                    "compositionSource" to "8540-units",
+                    "rawRecord" to rawRecord,
+                    "structuredRecordHex" to structuredRecord,
+                    "mapWidth" to mapWidth.toString(),
+                    "mapHeight" to mapHeight.toString(),
+                    "recordIndex" to recordIndex.toString(),
+                    "nameStart" to nameStart.toString(),
+                    "metaA" to metaA.toString(),
+                    "metaB" to metaB.toString(),
+                    "levelByte" to levelByte.toString(),
+                    "metaD" to metaD.toString(),
+                    "metaE" to metaE.toString(),
+                    "source" to "8540-structured"
+                )
+            )
+        }
+        targets
+    }.getOrNull()
+
+    /**
+     * Compatibility parser for old/truncated fixtures. It never invents composition.
+     * Complete live payloads are consumed by [parseCompleteStructured8540] first.
+     */
+    private fun parsePartialStructured8540(payload: ByteArray): List<MapTarget> = runCatching {
+        val mapWidth = payload.u16(0)
+        val mapHeight = payload.u16(2)
+        val count = payload.u8(4).coerceIn(0, 80)
+        var p = 5
+        val targets = mutableListOf<MapTarget>()
+        repeat(count) { recordIndex ->
+            if (p + 10 > payload.size) return@repeat
+            val recordStart = p
+            val id = payload.u64(p)
+            p += 8
+            if (id <= 0L) return@repeat
+            val nameResult = payload.readUtfAt(p) ?: return@repeat
+            val name = nameResult.first
+            p = nameResult.second
+            val nameEnd = p
+            if (p + 7 > payload.size) return@repeat
+            val metaA = payload.u8(p)
+            val metaB = payload.u8(p + 1)
+            val levelByte = payload.u8(p + 2)
+            p += 3
+            val metaD = payload.u16(p)
+            p += 2
+            val metaE = payload.u16(p)
+            p += 2
+            val resourceResult = payload.readUtfAt(p) ?: return@repeat
+            val resource = resourceResult.first
+            p = resourceResult.second
+            if (p + 8 > payload.size) return@repeat
+            val resource1 = payload.i32(p)
+            p += 4
+            val resource2 = payload.i32(p)
+            p += 4
+            val nextPos = payload.nextStructuredRecordOffset(p) ?: payload.size
+            val tailHex = payload.copyOfRange(p, nextPos.coerceIn(p, payload.size)).toHexUpper().take(120)
+            p = nextPos
+
+            val kind = name.normalizedKind()
+            val level = Regex("""(\d+)级""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: levelByte.takeIf { it in 1..99 }
+                ?: fixedRankForKind(kind)
+                ?: 0
+            targets += MapTarget(
+                id = id,
+                coordinate = MapCoordinate(metaD, metaE),
+                type = kind,
+                raw = linkedMapOf(
+                    "idHex" to id.toString(16).padStart(12, '0'),
+                    "targetIdHex" to id.toString(16).padStart(16, '0'),
+                    "kind" to kind,
+                    "name" to name,
+                    "rank" to level.toString(),
+                    "level" to level.toString(),
+                    "kv" to metaD.toString(),
+                    "kw" to metaE.toString(),
+                    "x" to metaD.toString(),
+                    "y" to metaE.toString(),
+                    "resource" to resource,
+                    "resource1" to resource1.toString(),
+                    "resource2" to resource2.toString(),
+                    "dropCategories" to resource.dropCategories().joinToString(","),
+                    "compositionCode" to "",
+                    "compositionSource" to "unavailable",
+                    "rawRecord" to payload.copyOfRange(recordStart, nameEnd).toHexUpper(),
+                    "mapWidth" to mapWidth.toString(),
+                    "mapHeight" to mapHeight.toString(),
+                    "recordIndex" to recordIndex.toString(),
+                    "metaA" to metaA.toString(),
+                    "metaB" to metaB.toString(),
+                    "levelByte" to levelByte.toString(),
+                    "metaD" to metaD.toString(),
+                    "metaE" to metaE.toString(),
+                    "tailHex" to tailHex,
+                    "source" to "8540-structured-partial"
+                )
+            )
+        }
+        targets
+    }.getOrDefault(emptyList())
 
     internal fun parsePoints(responseHex: String): List<TargetSearchPoint> {
         val candidates = responseHex
@@ -256,13 +382,6 @@ object TargetSearchResponseParser {
         else -> null
     }
 
-    private fun inferCompositionFromLevel(level: Int): List<Int> = when {
-        level <= 1 -> listOf(1, 0, 0, 0)
-        level == 2 -> listOf(1, 1, 0, 0)
-        level == 3 -> listOf(1, 1, 1, 0)
-        else -> listOf(1, 1, 1, 1)
-    }
-
     private fun String.normalizedKind(): String = when {
         contains("山贼") || contains("山賊") -> "山贼"
         contains("黄巾") || contains("黃巾") -> "黄巾"
@@ -271,6 +390,9 @@ object TargetSearchResponseParser {
         contains("主帅") || contains("主帥") -> "主帅"
         else -> this
     }
+
+    private fun String.dropCategories(): List<String> =
+        listOf("资源", "宝箱", "装备", "宝物").filter(::contains)
 
     private fun String.filterHexUppercase(): String =
         filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }.uppercase()
@@ -330,6 +452,54 @@ object TargetSearchResponseParser {
             }
             String(bytes, Charsets.UTF_8)
         }.getOrNull()
+    }
+
+    private data class Structured8540Unit(
+        val generalName: String,
+        val unitA: Int,
+        val unitUid: Int,
+        val unitB: Int,
+        val majorCode: Int,
+        val soldierTypeCode: Int,
+        val soldierCount: Int
+    )
+
+    private class BinaryCursor(private val bytes: ByteArray) {
+        var position: Int = 0
+            private set
+
+        fun u8(): Int {
+            need(1)
+            return bytes[position++].toInt() and 0xff
+        }
+
+        fun u16(): Int = (u8() shl 8) or u8()
+
+        fun u64(): Long {
+            need(8)
+            var value = 0L
+            repeat(8) { value = (value shl 8) or u8().toLong() }
+            return value
+        }
+
+        fun i32(): Int {
+            need(4)
+            return (u8() shl 24) or (u8() shl 16) or (u8() shl 8) or u8()
+        }
+
+        fun utf(): String {
+            val length = u16()
+            need(length)
+            val start = position
+            position += length
+            return String(bytes, start, length, Charsets.UTF_8)
+        }
+
+        private fun need(count: Int) {
+            require(count >= 0 && position + count <= bytes.size) {
+                "truncated 0x8540 payload at offset=$position need=$count size=${bytes.size}"
+            }
+        }
     }
 }
 

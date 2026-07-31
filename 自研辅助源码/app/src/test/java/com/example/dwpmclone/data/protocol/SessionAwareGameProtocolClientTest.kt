@@ -1,13 +1,14 @@
 package com.example.dwpmclone.data.protocol
 
 import com.example.dwpmclone.domain.model.DailyStep
-import com.example.dwpmclone.domain.model.AlarmWithdrawConfig
+import com.example.dwpmclone.domain.model.AlarmConfig
 import com.example.dwpmclone.domain.model.AutoLootConfig
 import com.example.dwpmclone.domain.model.BuildingType
 import com.example.dwpmclone.domain.model.BulkToolAction
 import com.example.dwpmclone.domain.model.CityDefenseSearchConfig
 import com.example.dwpmclone.domain.model.DungeonConfig
 import com.example.dwpmclone.domain.model.FormationRuntimeStatus
+import com.example.dwpmclone.domain.model.FormationRuntime
 import com.example.dwpmclone.domain.model.FormationConfig
 import com.example.dwpmclone.domain.model.GameSession
 import com.example.dwpmclone.domain.model.InternalAffairsConfig
@@ -25,22 +26,31 @@ import com.example.dwpmclone.domain.model.VipFeatureConfig
 import com.example.dwpmclone.domain.protocol.GameCoordinateCodec
 import com.example.dwpmclone.domain.protocol.MapTarget
 import com.example.dwpmclone.domain.protocol.MineSearchResult
+import com.example.dwpmclone.domain.protocol.MinePendingGarrison
 import com.example.dwpmclone.domain.protocol.RemainingAutomationProtocolShapes
 import com.example.dwpmclone.domain.model.HuangTargetType
 import com.example.dwpmclone.domain.protocol.ConvertMode
+import com.example.dwpmclone.domain.protocol.DailyProtocolShapes
+import com.example.dwpmclone.domain.protocol.DungeonPendingRun
+import com.example.dwpmclone.domain.protocol.BrushPendingRecovery
+import com.example.dwpmclone.domain.protocol.ExpeditionTransactionRecord
+import com.example.dwpmclone.domain.protocol.ExpeditionTransactionState
+import com.example.dwpmclone.domain.protocol.InMemoryExpeditionTransactionStore
 import com.example.dwpmclone.domain.protocol.InventoryAction
 import com.example.dwpmclone.domain.protocol.MapSearchPolicy
 import com.example.dwpmclone.domain.protocol.ProtocolResult
 import com.example.dwpmclone.domain.scheduler.SuspendRunner
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
+import java.net.SocketTimeoutException
 
 class SessionAwareGameProtocolClientTest {
-    private val client = SessionAwareGameProtocolClient()
+    private val client = SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true)
 
     @Test
     fun realMinistryPlantingFailsClosedBeforeAnyNetworkWhenGateIsMissing() {
@@ -64,7 +74,7 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
-    fun realMinistryStealScanFailsClosedBeforeNetworkWhenReadGateIsMissing() {
+    fun realMinistryStealOnlyConfigurationNeverEntersTheRuntimeNetworkPath() {
         val result = SuspendRunner.run {
             client.runSixMinistries(
                 realSession(),
@@ -81,7 +91,7 @@ class SessionAwareGameProtocolClientTest {
 
         assertTrue(result is ProtocolResult.Err)
         assertEquals(
-            "REAL_MINISTRY_STEAL_SCAN_GATE_NOT_READY",
+            "REAL_MINISTRY_CONFIG_UNSUPPORTED",
             (result as ProtocolResult.Err).code
         )
         assertFalse(result.retryable)
@@ -111,6 +121,381 @@ class SessionAwareGameProtocolClientTest {
         assertEquals("fighting", step.raw["phase"])
         assertEquals("5", step.raw["stageCode"])
         assertEquals(listOf(0x1938, 0x1930, 0x1520, 0x1522), transport.opcodes)
+    }
+
+    @Test
+    fun realDungeonStopAfterPrepareNeverSends1522OrLeavesTransactionGuard() {
+        var executionAllowed = true
+        val store = InMemoryExpeditionTransactionStore()
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "00"),
+                0x1930 to listOf(0x8930 to CAPTURED_DUNGEON_CATALOG),
+                0x1520 to listOf(0x8520 to "00"),
+                0x1522 to listOf(0x8522 to "00")
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = { gameHttp, dm, gameHex, phase ->
+                transport.execute(gameHttp, dm, gameHex, phase).also {
+                    if (phase == "dungeon/prepare") executionAllowed = false
+                }
+            },
+            expeditionTransactionStore = store,
+            executionAllowed = { executionAllowed }
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(dungeonSession(status = 0), dungeonConfig())
+        }
+
+        assertTrue(result is ProtocolResult.Err)
+        assertEquals("EXECUTION_REVOKED", (result as ProtocolResult.Err).code)
+        assertFalse(result.retryable)
+        assertEquals(listOf(0x1938, 0x1930, 0x1520), transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
+        assertTrue(store.list(10001L).isEmpty())
+    }
+
+    @Test
+    fun realDungeonAllowsZeroLoyaltyLikeDesktop() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "00"),
+                0x1930 to listOf(0x8930 to CAPTURED_DUNGEON_CATALOG),
+                0x1520 to listOf(0x8520 to "00"),
+                0x1522 to listOf(0x8522 to "00")
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(dungeonSession(status = 0, loyalty = 0), dungeonConfig())
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertTrue((result as ProtocolResult.Ok).value.success)
+        assertEquals(listOf(0x1938, 0x1930, 0x1520, 0x1522), transport.opcodes)
+    }
+
+    @Test
+    fun realDungeonMissingStateReceiptWithoutPendingRunContinuesLikeDesktop() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to emptyList(),
+                0x1930 to listOf(0x8930 to CAPTURED_DUNGEON_CATALOG),
+                0x1520 to listOf(0x8520 to "00"),
+                0x1522 to listOf(0x8522 to "00")
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(dungeonSession(status = 0), dungeonConfig())
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("fighting", step.raw["phase"])
+        assertEquals("missing-0x8938-assumed-idle", step.raw["stateEvidence"])
+        assertEquals(listOf(0x1938, 0x1930, 0x1520, 0x1522), transport.opcodes)
+    }
+
+    @Test
+    fun realDungeonMissingStateReceiptWithPendingRunDoesNotDispatchAgain() {
+        val pending = DungeonPendingRun(
+            generalIds = listOf(7L),
+            chapter = 0,
+            stage = 5,
+            chestPosition = 2,
+            mode = "clear",
+            launchedAtMillis = 1L
+        )
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1938 to emptyList())
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val baseSession = dungeonSession(status = 3)
+        val session = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pending.toJson().toString())
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(session, dungeonConfig().copy(mode = "clear"))
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertEquals("fighting", step.raw["phase"])
+        assertTrue(step.raw["stateEvidence"].orEmpty().contains("pending-run+generals-busy"))
+        assertEquals(listOf(0x1938), transport.opcodes)
+    }
+
+    @Test
+    fun realDungeonRecoversLostPendingMetadataFromDurableTransactionBeforeAnyRedispatch() {
+        val store = InMemoryExpeditionTransactionStore().apply {
+            save(
+                ExpeditionTransactionRecord(
+                    id = "accepted-dungeon",
+                    accountId = 10001L,
+                    action = "副本",
+                    targetKey = "chapter=0,stage=5,code=5,chest=2,mode=clear",
+                    generalIds = listOf(7L),
+                    state = ExpeditionTransactionState.ACCEPTED,
+                    createdAtMillis = 1_000L,
+                    updatedAtMillis = 1_001L,
+                    reason = "explicit 0x8522 success"
+                )
+            )
+        }
+        val persisted = mutableListOf<Map<String, String>>()
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "00"),
+                0x193d to listOf(0x893d to "00"),
+                0x193e to listOf(0x893e to "00"),
+                0x1930 to listOf(0x8930 to dungeonCatalog(stageFiveCompleted = true))
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            expeditionTransactionStore = store,
+            sessionExtraSink = { _, updates -> persisted += updates }
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(
+                dungeonSession(status = 0),
+                dungeonConfig().copy(mode = "clear")
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("chest-opened", step.raw["phase"])
+        assertEquals(listOf(0x1938, 0x193d, 0x193e, 0x1930), transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
+        assertTrue(store.list(10001L).isEmpty())
+        assertEquals("{}", persisted.last()["dungeonPendingRunJson"])
+    }
+
+    @Test
+    fun realDungeonStatusThreeRecoversCompletedDurableRunInsteadOfStopping() {
+        val store = InMemoryExpeditionTransactionStore().apply {
+            save(
+                ExpeditionTransactionRecord(
+                    id = "accepted-status-three",
+                    accountId = 10001L,
+                    action = "副本",
+                    targetKey = "chapter=0,stage=5,code=5,chest=2,mode=clear",
+                    generalIds = listOf(7L),
+                    state = ExpeditionTransactionState.ACCEPTED,
+                    createdAtMillis = 1_000L,
+                    updatedAtMillis = 1_001L,
+                    reason = "explicit 0x8522 success"
+                )
+            )
+        }
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "03", 0x880d to "00"),
+                0x193d to listOf(0x893d to "03", 0x880d to "00"),
+                0x193e to listOf(0x893e to "00", 0x880d to "00"),
+                0x1930 to listOf(
+                    0x8930 to dungeonCatalog(stageFiveCompleted = true),
+                    0x880d to "00"
+                )
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            expeditionTransactionStore = store
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(
+                dungeonSession(status = 0),
+                dungeonConfig().copy(mode = "clear")
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("chest-opened", step.raw["phase"])
+        assertEquals(listOf(0x1938, 0x193d, 0x193e, 0x1930), transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
+        assertTrue(store.list(10001L).isEmpty())
+    }
+
+    @Test
+    fun realDungeonOldStatusThreeUncompletedClearRunPausesAsDefeatAndReleasesLedger() {
+        val store = InMemoryExpeditionTransactionStore().apply {
+            save(
+                ExpeditionTransactionRecord(
+                    id = "accepted-defeat-status-three",
+                    accountId = 10001L,
+                    action = "副本",
+                    targetKey = "chapter=0,stage=5,code=5,chest=2,mode=clear",
+                    generalIds = listOf(7L),
+                    state = ExpeditionTransactionState.ACCEPTED,
+                    createdAtMillis = 1_000L,
+                    updatedAtMillis = 1_001L,
+                    reason = "explicit 0x8522 success"
+                )
+            )
+        }
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "03"),
+                0x193d to listOf(0x893d to "00"),
+                0x193e to listOf(0x893e to "00"),
+                0x1930 to listOf(0x8930 to dungeonCatalog(stageFiveCompleted = false))
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            expeditionTransactionStore = store
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(
+                dungeonSession(status = 0),
+                dungeonConfig().copy(mode = "clear")
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertFalse(step.success)
+        assertEquals("clear-unconfirmed", step.raw["phase"])
+        assertTrue(step.message.contains("打通副本已暂停"))
+        assertEquals(listOf(0x1938, 0x193d, 0x193e, 0x1930), transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
+        assertTrue(store.list(10001L).isEmpty())
+    }
+
+    @Test
+    fun realDungeonPersistedStatusThreeRewardThreeOpensChestBeforeCatalogConfirmation() {
+        val pending = DungeonPendingRun(
+            generalIds = listOf(7L),
+            chapter = 0,
+            stage = 5,
+            chestPosition = 2,
+            mode = "clear",
+            launchedAtMillis = 1L,
+            battleId = 668285L,
+            recoveredFromTransaction = false
+        )
+        val updates = mutableListOf<Map<String, String>>()
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "03"),
+                0x193d to listOf(0x893d to "03"),
+                0x193e to listOf(0x893e to "00"),
+                0x1930 to listOf(0x8930 to dungeonCatalog(stageFiveCompleted = true))
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            sessionExtraSink = { _, persisted -> updates += persisted }
+        )
+        val baseSession = dungeonSession(status = 0)
+        val session = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pending.toJson().toString())
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(session, dungeonConfig().copy(mode = "clear"))
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("chest-opened", step.raw["phase"])
+        assertTrue(step.raw["completionEvidence"].orEmpty().contains("desktop-nonactive-recovery"))
+        assertEquals(listOf(0x1938, 0x193d, 0x193e, 0x1930), transport.opcodes)
+        assertEquals("{}", updates.last()["dungeonPendingRunJson"])
+    }
+
+    @Test
+    fun realDungeonRecentTerminalPendingWaitsForSafetyWindowBeforeOpeningChest() {
+        val pending = DungeonPendingRun(
+            generalIds = listOf(7L),
+            chapter = 0,
+            stage = 5,
+            chestPosition = 2,
+            mode = "clear",
+            launchedAtMillis = System.currentTimeMillis(),
+            battleId = 668285L
+        )
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "03"),
+                0x193d to listOf(0x893d to "03")
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute
+        )
+        val baseSession = dungeonSession(status = 0)
+        val session = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pending.toJson().toString())
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(session, dungeonConfig().copy(mode = "clear"))
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("fighting", step.raw["phase"])
+        assertTrue(step.message.contains("等待安全窗口"))
+        assertEquals(listOf(0x1938, 0x193d), transport.opcodes)
+        assertFalse(0x193e in transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
+    }
+
+    @Test
+    fun realDungeonMissingStateReceiptRecoversPendingChestOnlyWithRewardEvidence() {
+        val pending = DungeonPendingRun(
+            generalIds = listOf(7L),
+            chapter = 0,
+            stage = 5,
+            chestPosition = 2,
+            mode = "loop",
+            launchedAtMillis = 1L,
+            battleId = 0x123L
+        )
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to emptyList(),
+                0x193d to listOf(0x893d to "010000000000000123"),
+                0x193e to listOf(0x893e to "00")
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val baseSession = dungeonSession(status = 0)
+        val session = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pending.toJson().toString())
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(session, dungeonConfig())
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertEquals("chest-opened", step.raw["phase"])
+        assertTrue(step.raw["completionEvidence"].orEmpty().contains("pending-run"))
+        assertEquals(listOf(0x1938, 0x193d, 0x193e), transport.opcodes)
     }
 
     @Test
@@ -153,8 +538,261 @@ class SessionAwareGameProtocolClientTest {
         assertTrue(result is ProtocolResult.Ok)
         val step = (result as ProtocolResult.Ok).value
         assertEquals("chest-opened", step.raw["phase"])
-        assertEquals("generals-idle+0x893d", step.raw["completionEvidence"])
+        assertEquals("generals-idle+0x893d+0x893e", step.raw["completionEvidence"])
         assertEquals(listOf(0x1938, 0x193d, 0x193e), transport.opcodes)
+    }
+
+    @Test
+    fun dungeonPendingRunSurvivesClientRecreationAndKeepsOriginalChest() {
+        val persisted = mutableListOf<Map<String, String>>()
+        val launchTransport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "00"),
+                0x1930 to listOf(0x8930 to CAPTURED_DUNGEON_CATALOG),
+                0x1520 to listOf(0x8520 to "00"),
+                0x1522 to listOf(0x8522 to "00")
+            )
+        )
+        val launchClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = launchTransport::execute,
+            sessionExtraSink = { _, updates -> persisted += updates }
+        )
+
+        val launched = SuspendRunner.run {
+            launchClient.runDungeon(dungeonSession(status = 0), dungeonConfig())
+        }
+
+        assertTrue(launched is ProtocolResult.Ok)
+        val pendingJson = persisted.last()["dungeonPendingRunJson"]
+        val pending = DungeonPendingRun.fromJson(pendingJson)
+        assertTrue(pending != null)
+        assertEquals(2, pending?.chestPosition)
+
+        val completionUpdates = mutableListOf<Map<String, String>>()
+        val completionTransport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "04"),
+                0x193e to listOf(0x893e to "00")
+            )
+        )
+        val recreatedClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = completionTransport::execute,
+            sessionExtraSink = { _, updates -> completionUpdates += updates }
+        )
+        val baseSession = dungeonSession(status = 0)
+        val recoveredSession = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pendingJson.orEmpty())
+        )
+
+        val completed = SuspendRunner.run {
+            recreatedClient.runDungeon(
+                recoveredSession,
+                dungeonConfig().copy(boxPosition = 0)
+            )
+        }
+
+        assertTrue(completed is ProtocolResult.Ok)
+        assertEquals("chest-opened", (completed as ProtocolResult.Ok).value.raw["phase"])
+        assertTrue(completionTransport.gameHexes.last().endsWith("02"))
+        assertEquals("{}", completionUpdates.last()["dungeonPendingRunJson"])
+    }
+
+    @Test
+    fun clearDungeonAfterRestartRequiresCompletedCatalogBeforeSuccess() {
+        val persisted = mutableListOf<Map<String, String>>()
+        val launchTransport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "00"),
+                0x1930 to listOf(0x8930 to dungeonCatalog(stageFiveCompleted = false)),
+                0x1520 to listOf(0x8520 to "00"),
+                0x1522 to listOf(0x8522 to "00")
+            )
+        )
+        val launchClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = launchTransport::execute,
+            sessionExtraSink = { _, updates -> persisted += updates }
+        )
+        val clearConfig = dungeonConfig().copy(mode = "clear")
+
+        val launched = SuspendRunner.run {
+            launchClient.runDungeon(dungeonSession(status = 0), clearConfig)
+        }
+
+        assertTrue(launched is ProtocolResult.Ok)
+        assertEquals("5", (launched as ProtocolResult.Ok).value.raw["stageCode"])
+        val pendingJson = persisted.last()["dungeonPendingRunJson"].orEmpty()
+
+        val completionUpdates = mutableListOf<Map<String, String>>()
+        val completionTransport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "01000000000000012300"),
+                0x193d to listOf(0x893d to "010000000000000123"),
+                0x193e to listOf(0x893e to "00"),
+                0x1930 to listOf(0x8930 to dungeonCatalog(stageFiveCompleted = true))
+            )
+        )
+        val recreatedClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = completionTransport::execute,
+            sessionExtraSink = { _, updates -> completionUpdates += updates }
+        )
+        val baseSession = dungeonSession(status = 0)
+        val recoveredSession = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pendingJson)
+        )
+
+        val completed = SuspendRunner.run {
+            recreatedClient.runDungeon(recoveredSession, clearConfig)
+        }
+
+        assertTrue(completed is ProtocolResult.Ok)
+        val step = (completed as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("chest-opened", step.raw["phase"])
+        assertTrue(step.raw["completionEvidence"].orEmpty().contains("catalog-result-confirmed"))
+        assertEquals(listOf(0x1938, 0x193d, 0x193e, 0x1930), completionTransport.opcodes)
+        assertEquals("{}", completionUpdates.last()["dungeonPendingRunJson"])
+    }
+
+    @Test
+    fun clearDungeonUncompletedCatalogCannotReportSuccess() {
+        val pending = DungeonPendingRun(
+            generalIds = listOf(7L),
+            chapter = 0,
+            stage = 5,
+            chestPosition = 2,
+            mode = "clear",
+            launchedAtMillis = 1L,
+            battleId = 0x123L
+        )
+        val updates = mutableListOf<Map<String, String>>()
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "01000000000000012300"),
+                0x193d to listOf(0x893d to "010000000000000123"),
+                0x193e to listOf(0x893e to "00"),
+                0x1930 to listOf(0x8930 to dungeonCatalog(stageFiveCompleted = false))
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            sessionExtraSink = { _, persisted -> updates += persisted }
+        )
+        val baseSession = dungeonSession(status = 0)
+        val session = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pending.toJson().toString())
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(session, dungeonConfig().copy(mode = "clear"))
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertFalse(step.success)
+        assertEquals("clear-unconfirmed", step.raw["phase"])
+        assertEquals("{}", updates.last()["dungeonPendingRunJson"])
+    }
+
+    @Test
+    fun clearDungeonExplicitDefeatPausesUsingRecoveredMode() {
+        val pending = DungeonPendingRun(
+            generalIds = listOf(7L),
+            chapter = 0,
+            stage = 5,
+            chestPosition = 2,
+            mode = "clear",
+            launchedAtMillis = 1L
+        )
+        val updates = mutableListOf<Map<String, String>>()
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1938 to listOf(0x8938 to "01000000000000012300"),
+                0x1702 to listOf(0x8702 to "本场战斗战败".utf8Hex())
+            )
+        )
+        val dungeonClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            sessionExtraSink = { _, persisted -> updates += persisted }
+        )
+        val baseSession = dungeonSession(status = 3)
+        val session = baseSession.copy(
+            channelExtra = baseSession.channelExtra +
+                ("dungeonPendingRunJson" to pending.toJson().toString())
+        )
+
+        val result = SuspendRunner.run {
+            dungeonClient.runDungeon(session, dungeonConfig().copy(mode = "loop"))
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertFalse(step.success)
+        assertEquals("defeat-paused", step.raw["phase"])
+        assertEquals("{}", updates.last()["dungeonPendingRunJson"])
+    }
+
+    @Test
+    fun losslessMissingPrepareReceiptNeverDispatches() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1900 to listOf(0x8900 to losslessReadyStatus(level = 1)),
+                0x1906 to listOf(0x8906 to losslessLineup(stageId = 1)),
+                0x1520 to listOf(0x9999 to "00")
+            )
+        )
+        val losslessClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute
+        )
+
+        val result = SuspendRunner.run {
+            losslessClient.runLossless(losslessSession(), losslessConfig(level = 1))
+        }
+
+        assertTrue(result is ProtocolResult.Err)
+        assertEquals("REAL_LOSSLESS_PREPARE_UNCONFIRMED", (result as ProtocolResult.Err).code)
+        assertEquals(listOf(0x1900, 0x1906, 0x1520), transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
+    }
+
+    @Test
+    fun losslessLevelTenRerollStopsAtConfiguredCap() {
+        val unqualified = losslessLineup(
+            stageId = 0x3011,
+            soldierTypes = listOf("投石车", "弩车", "冲车", "弓兵", "步兵")
+        )
+        val transport = SequentialDirectBinaryTransport(
+            mapOf(
+                0x1900 to listOf(
+                    listOf(0x8900 to losslessReadyStatus(level = 10, stageId = 0x3011)),
+                    listOf(0x8900 to losslessReadyStatus(level = 10, stageId = 0x3011))
+                ),
+                0x1906 to listOf(
+                    listOf(0x8906 to unqualified),
+                    listOf(0x8906 to unqualified)
+                ),
+                0x1908 to listOf(
+                    listOf(0x8908 to losslessSelect(level = 7, stageId = 0x3007)),
+                    listOf(0x8908 to losslessSelect(level = 10, stageId = 0x3011))
+                )
+            )
+        )
+        val losslessClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute
+        )
+        val config = losslessConfig(level = 10, maxRerolls = 1)
+
+        val first = SuspendRunner.run { losslessClient.runLossless(losslessSession(), config) }
+        val second = SuspendRunner.run { losslessClient.runLossless(losslessSession(), config) }
+
+        assertTrue(first is ProtocolResult.Ok)
+        assertEquals("lineup-rerolled", (first as ProtocolResult.Ok).value.raw["phase"])
+        assertTrue(second is ProtocolResult.Err)
+        assertEquals("REAL_LOSSLESS_REROLL_LIMIT_REACHED", (second as ProtocolResult.Err).code)
+        assertFalse(0x1520 in transport.opcodes)
+        assertFalse(0x1522 in transport.opcodes)
     }
 
     @Test
@@ -228,6 +866,86 @@ class SessionAwareGameProtocolClientTest {
         assertEquals(22, resource.foodPerHour)
         assertEquals(333L, resource.populationCurrent)
         assertEquals(8, resource.resourcePointCap)
+    }
+
+    @Test
+    fun raidFiefQueryUsesTargetPlayerPayloadAnd8310Receipt() {
+        val payload = java.io.ByteArrayOutputStream().also { output ->
+            DataOutputStream(output).use { data ->
+                data.writeShort(0)
+                data.writeUTF("目标玩家")
+                data.writeUTF("蜀")
+                data.writeByte(1)
+                data.writeLong(4567L)
+                data.writeUTF("目标基地")
+                data.writeByte(1)
+                data.writeUTF("成都")
+                data.write(byteArrayOf(1, 0, 91, 0, 28))
+            }
+        }.toByteArray().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1310 to listOf(0x8310 to payload))
+        )
+        val raidClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+
+        val result = SuspendRunner.run { raidClient.queryRaidFiefs(realSession(), "目标玩家") }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val fief = (result as ProtocolResult.Ok).value.single()
+        assertEquals("目标基地", fief.name)
+        assertEquals("成都", fief.cityName)
+        assertEquals(4567L, fief.targetId)
+        assertEquals(listOf(0x1310), transport.opcodes)
+        assertTrue(transport.gameHexes.single().endsWith("0001000ce79baee6a087e78ea9e5aeb6"))
+    }
+
+    @Test
+    fun militarySnapshotQueryUses1600PayloadAndPersistsParsedAction() {
+        val payload = java.io.ByteArrayOutputStream().also { output ->
+            DataOutputStream(output).use { data ->
+                data.writeShort(0) // header pairs
+                data.writeByte(1) // section count
+                data.writeByte(3) // garrison section
+                data.writeShort(1) // descriptor count
+                data.writeUTF("【驻守】驻守在水晶矿")
+                data.writeShort(1)
+                data.writeShort(0)
+                data.writeShort(1) // record count
+                data.writeLong(789L)
+                data.writeByte(1)
+                data.writeLong(7L)
+                data.writeByte(0)
+                data.writeLong(99L)
+                data.writeByte(2)
+                data.writeUTF("水晶矿(1级)")
+                data.writeShort(18)
+                data.writeShort(22)
+                data.writeLong(1_800_000_000_000L)
+            }
+        }.toByteArray().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1600 to listOf(
+                    0x8004 to "00010203",
+                    0x8600 to payload
+                )
+            )
+        )
+        val persisted = mutableMapOf<String, String>()
+        val militaryClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            sessionExtraSink = { _, updates -> persisted.putAll(updates) }
+        )
+
+        val result = SuspendRunner.run { militaryClient.queryMilitarySnapshot(realSession()) }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val action = (result as ProtocolResult.Ok).value.actions.single()
+        assertEquals(789L, action.battleId)
+        assertEquals("驻守", action.state)
+        assertEquals(listOf(0x1600), transport.opcodes)
+        assertTrue(transport.gameHexes.single().endsWith("07000000000000000000000014"))
+        assertTrue(persisted["militarySnapshotJson"].orEmpty().contains("\"battleId\":789"))
     }
 
     @Test
@@ -764,7 +1482,7 @@ class SessionAwareGameProtocolClientTest {
         assertEquals("候选刷黄编队-赵云", selectedGeneralFallback.name)
         assertEquals(listOf(7L), selectedGeneralFallback.generalIds)
         assertEquals(FormationRuntimeStatus.IDLE, selectedGeneralFallback.status)
-        assertEquals(200, selectedGeneralFallback.troopCount)
+        assertNull(selectedGeneralFallback.troopCount)
         assertEquals("recovered-state8004-general-fallback", selectedGeneralFallback.raw["source"])
     }
 
@@ -894,13 +1612,13 @@ class SessionAwareGameProtocolClientTest {
         val mine = unitMine()
 
         val occupy = SuspendRunner.run { client.occupyMine(realSession(), mine, formationId = 3L) }
-        val withdraw = SuspendRunner.run { client.withdrawMineDefense(realSession(), mineId = mine.id) }
+        val withdraw = SuspendRunner.run { client.withdrawMineDefense(realSession(), battleId = 7001L) }
 
         assertTrue(occupy is ProtocolResult.Err)
         assertEquals("REAL_OCCUPY_MINE_METADATA_MISSING", (occupy as ProtocolResult.Err).code)
         assertFalse(occupy.retryable)
         assertTrue(withdraw is ProtocolResult.Err)
-        assertEquals("REAL_WITHDRAW_MINE_METADATA_MISSING", (withdraw as ProtocolResult.Err).code)
+        assertEquals("REAL_WITHDRAW_MINE_GATE_NOT_READY", (withdraw as ProtocolResult.Err).code)
         assertFalse(withdraw.retryable)
     }
 
@@ -972,26 +1690,91 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
-    fun realSessionCanReturnRecoveredWithdrawMineResultWithPayloadShape() {
+    fun realSessionWithdrawsTheExactBattleIdWithShared1526AndRequires8526() {
+        val battleId = 257L
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1526 to listOf(0x8526 to "0000000000000101"))
+        )
+        val persistedUpdates = mutableListOf<Map<String, String>>()
+        val withdrawClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            sessionExtraSink = { _, updates -> persistedUpdates += updates }
+        )
+        val pending = MinePendingGarrison(
+            battleId = battleId,
+            mineId = 99L,
+            generalIds = listOf(7L),
+            x = 18,
+            y = 22,
+            targetName = "GOLD",
+            dispatchAtMillis = 1_000L,
+            marchSeconds = 60
+        )
         val session = realSession(
             extras = mapOf(
-                "withdrawMineResultsJson" to """[
-                    {"mineId":"257","success":true,"message":"撤回驻防完成","defenseRecordIdHex":"0000000000000007","raw":{"evidence":"0a15260101"}}
-                ]"""
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "mine",
+                "minePendingGarrisonJson" to pending.toJson().toString()
             )
         )
 
-        val result = SuspendRunner.run { client.withdrawMineDefense(session, mineId = 257L) }
+        val result = SuspendRunner.run { withdrawClient.withdrawMineDefense(session, battleId = battleId) }
 
         assertTrue(result is ProtocolResult.Ok)
         val step = (result as ProtocolResult.Ok).value
         assertTrue(step.success)
-        assertEquals("撤回驻防完成", step.message)
-        assertEquals("0a15260101", step.raw["evidence"])
-        assertEquals(
-            "0000000000000000000a152601010000000000000007",
-            step.raw["withdrawPayload"]
+        assertEquals("撤防请求已受理", step.message)
+        assertEquals("257", step.raw["battleId"])
+        assertEquals("0101000000000000010100", step.raw["requestPayloadHex"])
+        assertEquals("0x8526", step.raw["responseOpcode"])
+        assertEquals(listOf(0x1526), transport.opcodes)
+        assertTrue(transport.gameHexes.single().endsWith("0101000000000000010100"))
+        val persistedPending = MinePendingGarrison.fromJson(
+            persistedUpdates.single().getValue("minePendingGarrisonJson")
+        ) ?: error("accepted recall must keep durable pending state")
+        assertEquals(battleId, persistedPending.battleId)
+        assertTrue(persistedPending.recallRequestedAtMillis > 0L)
+    }
+
+    @Test
+    fun realSessionWithdrawRejectsMismatchedBattleIdReceipt() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1526 to listOf(0x8526 to "0000000000000102"))
         )
+        val withdrawClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(extras = mapOf(
+            "realActionNetworkAllowed" to "true",
+            "realActionSendReady" to "true",
+            "realActionScope" to "mine"
+        ))
+
+        val result = SuspendRunner.run { withdrawClient.withdrawMineDefense(session, battleId = 257L) }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertFalse(step.success)
+        assertTrue(step.message.contains("battleId 不匹配"))
+        assertEquals("257", step.raw["battleId"])
+    }
+
+    @Test
+    fun realSessionWithdrawFailsWhen8526ReceiptIsMissing() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1526 to listOf(0x9999 to "0000000000000101"))
+        )
+        val withdrawClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(extras = mapOf(
+            "realActionNetworkAllowed" to "true",
+            "realActionSendReady" to "true",
+            "realActionScope" to "mine"
+        ))
+
+        val result = SuspendRunner.run { withdrawClient.withdrawMineDefense(session, battleId = 257L) }
+
+        assertTrue(result is ProtocolResult.Err)
+        assertEquals("REAL_WITHDRAW_MINE_RESPONSE_MISSING", (result as ProtocolResult.Err).code)
+        assertTrue(result.retryable)
     }
 
     @Test
@@ -1121,6 +1904,37 @@ class SessionAwareGameProtocolClientTest {
         assertEquals("丢弃成功！", step.message)
         assertEquals(listOf(0x1103), transport.opcodes)
         assertTrue(transport.gameHexes.single().endsWith("0000000000000000090000001bffffffffffffffff"))
+    }
+
+    @Test
+    fun realEquipmentDiscardUsesKindOneAndLongInstanceId() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1103 to listOf(0x8103 to "00000fe4b8a2e5bc83e68890e58a9fefbc81"))
+        )
+        val inventoryClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScopes" to "inventory"
+            )
+        )
+
+        val result = SuspendRunner.run {
+            inventoryClient.useOrDiscardItem(
+                session,
+                0xC95F8L,
+                InventoryAction.DISCARD_EQUIPMENT,
+                1
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertTrue((result as ProtocolResult.Ok).value.success)
+        assertTrue(
+            transport.gameHexes.single()
+                .endsWith("0100000000000c95f800000001ffffffffffffffff")
+        )
     }
 
     @Test
@@ -1327,13 +2141,101 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
+    fun resourceDonationDailyQuotaReceiptIsNormalizedAsAlreadyCompleted() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x140c to listOf(0x840c to "fd"))
+        )
+        val donationClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "level" to "88",
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "daily"
+            )
+        )
+
+        val result = SuspendRunner.run {
+            donationClient.runDailyStep(session, DailyStep.DONATE_COPPER)
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("true", step.raw["alreadyCompleted"])
+        assertEquals("-3", step.raw["statusSigned"])
+        assertTrue(step.message.contains("按已完成处理"))
+    }
+
+    @Test
+    fun technologyDonationDailyQuotaReceiptIsNormalizedAsAlreadyCompleted() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x140a to listOf(0x840a to "fc"))
+        )
+        val donationClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "level" to "88",
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "daily"
+            )
+        )
+
+        val result = SuspendRunner.run {
+            donationClient.runDailyStep(session, DailyStep.DONATE_TECH)
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("true", step.raw["alreadyCompleted"])
+        assertEquals("-4", step.raw["statusSigned"])
+    }
+
+    @Test
+    fun otherDonationBusinessRejectionsRemainFailures() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x140c to listOf(0x840c to "ff"))
+        )
+        val donationClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "level" to "88",
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "daily"
+            )
+        )
+
+        val result = SuspendRunner.run {
+            donationClient.runDailyStep(session, DailyStep.DONATE_COPPER)
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertFalse(step.success)
+        assertEquals("-1", step.raw["statusSigned"])
+        assertEquals(null, step.raw["alreadyCompleted"])
+    }
+
+    @Test
     fun realInternalAffairsDiscoversOwnedFiefsPrioritizesHallAndConfirms8200Sync() {
         val fiefId = 0x0a79L
         val transport = ScriptedDirectBinaryTransport(
             mapOf(
-                0x1310 to listOf(0x8310 to ownedFiefListPayload("测试君主", fiefId).testHex()),
-                0x1246 to listOf(0x8246 to fiefStatePayload(fiefId, hallLevel = 1).testHex()),
-                0x1200 to listOf(0x8200 to buildingActionPayload(fiefId, hallLevel = 2).testHex())
+                0x1310 to listOf(
+                    0x8310 to ownedFiefListPayload("测试君主", fiefId).testHex(),
+                    0x880d to ByteArray(56).testHex()
+                ),
+                0x1246 to listOf(
+                    0x8246 to fiefStatePayload(fiefId, hallLevel = 1).testHex(),
+                    0x880d to ByteArray(56).testHex()
+                ),
+                0x1200 to listOf(
+                    0x8200 to buildingActionPayload(fiefId, hallLevel = 2).testHex(),
+                    0x880d to ByteArray(56).testHex()
+                )
             )
         )
         val internalClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
@@ -1418,6 +2320,44 @@ class SessionAwareGameProtocolClientTest {
         assertEquals("3", step.raw["targetLevel"])
         assertEquals(listOf(0x1310, 0x1246, 0x123F), transport.opcodes)
         assertTrue(transport.gameHexes.last().endsWith("0000000000000a79030005030000"))
+    }
+
+    @Test
+    fun disabledBuildingUpgradeSwitchDoesNotUpgradeExistingBuildings() {
+        val fiefId = 0x0a79L
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1310 to listOf(0x8310 to ownedFiefListPayload("测试君主", fiefId).testHex()),
+                0x1246 to listOf(0x8246 to fiefStatePayload(fiefId, hallLevel = 6).testHex())
+            )
+        )
+        val internalClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "internal-affairs",
+                "generalsJson" to """[{"id":7,"name":"赵云","status":0,"placeID":$fiefId}]"""
+            )
+        )
+
+        val result = SuspendRunner.run {
+            internalClient.runInternalAffairs(
+                session,
+                InternalAffairsConfig(
+                    enabled = true,
+                    upgradeLowestFirst = true,
+                    buildingPriority = emptyList(),
+                    buildWhenEmpty = null,
+                    upgradeBuildings = false
+                )
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertTrue((result as ProtocolResult.Ok).value.success)
+        assertEquals("当前封地没有可执行的内政操作", result.value.message)
+        assertEquals(listOf(0x1310, 0x1246), transport.opcodes)
     }
 
     @Test
@@ -1756,7 +2696,7 @@ class SessionAwareGameProtocolClientTest {
         assertTrue(result is ProtocolResult.Ok)
         val step = (result as ProtocolResult.Ok).value
         assertTrue(step.success)
-        assertEquals("签到请求已确认；每日金钻宝箱已领取", step.message)
+        assertEquals("签到请求已由服务器确认；每日金钻宝箱已领取", step.message)
         assertEquals(listOf(0x6202, 0x1134), transport.opcodes)
         assertTrue(transport.gameHexes.last().endsWith("00000000000de2b100"))
     }
@@ -1836,6 +2776,35 @@ class SessionAwareGameProtocolClientTest {
         assertTrue(step.success)
         assertEquals("铜钱:50000获得成功。竞技币:100获得成功。", step.message)
         assertEquals(listOf(0x6260, 0x6266), transport.opcodes)
+    }
+
+    @Test
+    fun realDailyArenaDuplicateReceiptCompletesTheCurrentTwentyTwoHourCycle() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x6260 to emptyList(),
+                0x6266 to listOf(0xE266 to "fe00000100000000000325e40000012c")
+            )
+        )
+        val dailyClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "daily"
+            )
+        )
+
+        val result = SuspendRunner.run {
+            dailyClient.runDailyStep(session, DailyStep.ARENA_REWARD)
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals(DailyProtocolShapes.ARENA_DUPLICATE_MESSAGE, step.message)
+        assertEquals("true", step.raw["arenaAlreadyClaimed"])
+        assertEquals("true", step.raw["arenaDuplicateClaim"])
     }
 
     @Test
@@ -1939,11 +2908,129 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
+    fun realFormationAssignmentClampsPrechecksAndDoesNotImplicitlyRefill() {
+        val generalId = 7L
+        val assigned8226 = "01" +
+            generalId.toString(16).padStart(16, '0') +
+            "0003006400030096"
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1226 to listOf(0x8226 to assigned8226))
+        )
+        val formationClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow",
+                "generalsJson" to
+                    """[{"id":7,"name":"赵云","status":0,"troopLimit":150,"soldierTypeCode":3,"soldierCount":100}]""",
+                "armyJson" to
+                    """[{"soldierTypeCode":3,"idleCount":50}]"""
+            )
+        )
+
+        val result = SuspendRunner.run {
+            formationClient.updateFormation(
+                session,
+                FormationConfig(
+                    formationId = generalId,
+                    generalIds = listOf(generalId),
+                    autoAssignTroops = true,
+                    troopType = "轻骑兵",
+                    troopCount = 200,
+                    fillToMaxWhenAutoAssignDisabled = false
+                )
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("150", step.raw["assign.7.effectiveCount"])
+        assertEquals(listOf(0x1226), transport.opcodes)
+        assertEquals(0, transport.opcodes.count { it == 0x1229 })
+        assertTrue(transport.gameHexes.single().endsWith("000000000000000700000300000096"))
+    }
+
+    @Test
+    fun realFormationShortageKeepsOriginalTroopsAndSendsNothing() {
+        val transport = ScriptedDirectBinaryTransport(emptyMap())
+        val formationClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow",
+                "generalsJson" to
+                    """[{"id":7,"name":"赵云","status":0,"troopLimit":200,"soldierTypeCode":3,"soldierCount":100}]""",
+                "armyJson" to
+                    """[{"soldierTypeCode":3,"idleCount":50}]"""
+            )
+        )
+
+        val result = SuspendRunner.run {
+            formationClient.updateFormation(
+                session,
+                FormationConfig(7L, listOf(7L), true, "轻骑兵", 200, false)
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertFalse((result as ProtocolResult.Ok).value.success)
+        assertTrue(result.value.message.contains("缺少50轻骑兵"))
+        assertTrue(transport.opcodes.isEmpty())
+    }
+
+    @Test
+    fun clearOtherGeneralsClearsIdleAndSkipsBusyBeforeSelectedRule() {
+        val cleared8226 = "0100000000000000080002001effff0000"
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(0x1226 to listOf(0x8226 to cleared8226))
+        )
+        val formationClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow",
+                "generalsJson" to """[
+                    {"id":7,"name":"赵云","status":0,"troopLimit":100,"soldierTypeCode":3,"soldierCount":100},
+                    {"id":8,"name":"马超","status":0,"troopLimit":100,"soldierTypeCode":2,"soldierCount":30},
+                    {"id":9,"name":"黄忠","status":2,"troopLimit":100,"soldierTypeCode":4,"soldierCount":40}
+                ]"""
+            )
+        )
+
+        val result = SuspendRunner.run {
+            formationClient.updateFormation(
+                session,
+                FormationConfig(
+                    7L,
+                    listOf(7L),
+                    true,
+                    "轻骑兵",
+                    100,
+                    false,
+                    clearOtherGeneralIds = setOf(7L)
+                )
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        val step = (result as ProtocolResult.Ok).value
+        assertTrue(step.success)
+        assertEquals("1", step.raw["clear.clearedCount"])
+        assertEquals("1", step.raw["clear.skippedCount"])
+        assertEquals(listOf(0x1226), transport.opcodes)
+        assertTrue(transport.gameHexes.single().endsWith("000000000000000800000200000000"))
+    }
+
+    @Test
     fun realMineOccupyUsesP2TwoPrepareAndDispatchWithStrict8522Success() {
         val transport = ScriptedDirectBinaryTransport(
             mapOf(
-                0x1520 to listOf(0x8520 to "000000"),
-                0x1522 to listOf(0x8522 to "000000")
+                0x1520 to listOf(0x8520 to "0000003c000000000000000000000000000000006400120016"),
+                0x1522 to listOf(0x8522 to "000000000000000000007b")
             )
         )
         val mineClient = SessionAwareGameProtocolClient(
@@ -1954,8 +3041,9 @@ class SessionAwareGameProtocolClientTest {
                 "realActionNetworkAllowed" to "true",
                 "realActionSendReady" to "true",
                 "realActionScope" to "mine",
+                "unifiedExpeditionPreflight" to "true",
                 "generalsJson" to
-                    """[{"id":7,"name":"赵云","status":0,"tili":50,"soldierTypeCode":1,"soldierCount":100}]"""
+                    """[{"id":7,"name":"赵云","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100}]"""
             )
         )
         val mine = MineSearchResult(
@@ -1974,6 +3062,7 @@ class SessionAwareGameProtocolClientTest {
 
         assertTrue(result is ProtocolResult.Ok)
         assertTrue((result as ProtocolResult.Ok).value.success)
+        assertEquals("123", result.value.raw["battleId"])
         assertEquals(listOf(0x1520, 0x1522), transport.opcodes)
         assertTrue(
             transport.gameHexes[0]
@@ -1983,6 +3072,87 @@ class SessionAwareGameProtocolClientTest {
             transport.gameHexes[1]
                 .endsWith("020100000000000000070000000000000063ffffffffffffffff000000")
         )
+    }
+
+    @Test
+    fun mineDispatchTimeoutSurvivesClientReconstructionAndNeverResends1522() {
+        val store = InMemoryExpeditionTransactionStore()
+        val opcodes = mutableListOf<Int>()
+        var dispatchAttempts = 0
+        val transport: (String, Long, String, String) -> DirectBinaryResponse = { gameHttp, dm, gameHex, phase ->
+            check(gameHttp.isNotBlank())
+            check(dm > 0L)
+            val normalized = gameHex.filterNot(Char::isWhitespace).lowercase()
+            val opcode = normalized.substring(20, 24).toInt(16)
+            opcodes += opcode
+            when (opcode) {
+                0x1520 -> DirectBinaryResponse(
+                    phase = phase,
+                    httpCode = 200,
+                    ok = true,
+                    responseBytes = 25,
+                    responseHex = "0000003c000000000000000000000000000000006400120016",
+                    textPreview = "",
+                    responseOpcodes = listOf(0x8520)
+                )
+                0x1522 -> {
+                    dispatchAttempts += 1
+                    if (dispatchAttempts == 1) throw SocketTimeoutException("simulated read timeout")
+                    DirectBinaryResponse(
+                        phase = phase,
+                        httpCode = 200,
+                        ok = true,
+                        responseBytes = 3,
+                        responseHex = "000000",
+                        textPreview = "",
+                        responseOpcodes = listOf(0x8522)
+                    )
+                }
+                else -> error("unexpected opcode 0x${opcode.toString(16)}")
+            }
+        }
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "mine",
+                "unifiedExpeditionPreflight" to "true",
+                "generalsJson" to
+                    """[{"id":7,"name":"赵云","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100}]"""
+            )
+        )
+        val mine = MineSearchResult(
+            id = 99L,
+            coordinate = MapCoordinate(18, 22),
+            mineType = MineType.GOLD,
+            level = 5,
+            reserve = 1000L,
+            isEmpty = true,
+            defenseCount = 0
+        )
+
+        val firstClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport,
+            expeditionTransactionStore = store
+        )
+        val first = SuspendRunner.run { firstClient.occupyMine(session, mine, 7L) }
+
+        assertTrue(first is ProtocolResult.Err)
+        assertEquals("REAL_MINE_DISPATCH_EXCEPTION", (first as ProtocolResult.Err).code)
+        assertTrue(first.retryable)
+        assertEquals(ExpeditionTransactionState.UNCERTAIN, store.list(session.accountId).single().state)
+
+        // A new protocol client models process reconstruction while retaining the durable store.
+        val reconstructedClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport,
+            expeditionTransactionStore = store
+        )
+        val second = SuspendRunner.run { reconstructedClient.occupyMine(session, mine, 7L) }
+
+        assertTrue(second is ProtocolResult.Err)
+        assertEquals("EXPEDITION_TRANSACTION_UNRESOLVED", (second as ProtocolResult.Err).code)
+        assertEquals(1, dispatchAttempts)
+        assertEquals(1, opcodes.count { it == 0x1522 })
     }
 
     @Test
@@ -1998,8 +3168,9 @@ class SessionAwareGameProtocolClientTest {
                 "realActionNetworkAllowed" to "true",
                 "realActionSendReady" to "true",
                 "realActionScope" to "mine",
+                "unifiedExpeditionPreflight" to "true",
                 "generalsJson" to
-                    """[{"id":7,"name":"赵云","status":0,"tili":50,"soldierTypeCode":1,"soldierCount":100}]"""
+                    """[{"id":7,"name":"赵云","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100}]"""
             )
         )
         val mine = MineSearchResult(
@@ -2022,11 +3193,54 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
+    fun realMineOccupyDoesNotDispatchWhenPreviewExceedsConfiguredMarchLimit() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                // 3601 seconds, x=18, y=22.
+                0x1520 to listOf(
+                    0x8520 to "00000e11000000000000000000000000000000006400120016"
+                )
+            )
+        )
+        val mineClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute
+        )
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "mine",
+                "unifiedExpeditionPreflight" to "true",
+                "generalsJson" to
+                    """[{"id":7,"name":"赵云","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100}]"""
+            )
+        )
+        val mine = MineSearchResult(
+            99L,
+            MapCoordinate(18, 22),
+            MineType.GOLD,
+            5,
+            1000L,
+            true,
+            0
+        )
+
+        val result = SuspendRunner.run {
+            mineClient.occupyMine(session, mine, listOf(7L), maxMarchMinutes = 60)
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertFalse((result as ProtocolResult.Ok).value.success)
+        assertTrue(result.value.message.contains("超过设定的60分钟"))
+        assertEquals(listOf(0x1520), transport.opcodes)
+    }
+
+    @Test
     fun realMineOccupyEncodesAndValidatesEverySelectedGeneral() {
         val transport = ScriptedDirectBinaryTransport(
             mapOf(
-                0x1520 to listOf(0x8520 to "000000"),
-                0x1522 to listOf(0x8522 to "000000")
+                0x1520 to listOf(0x8520 to "0000003c000000000000000000000000000000006400120016"),
+                0x1522 to listOf(0x8522 to "000000000000000000007b")
             )
         )
         val mineClient = SessionAwareGameProtocolClient(directBinaryTransport = transport::execute)
@@ -2035,9 +3249,10 @@ class SessionAwareGameProtocolClientTest {
                 "realActionNetworkAllowed" to "true",
                 "realActionSendReady" to "true",
                 "realActionScope" to "mine",
+                "unifiedExpeditionPreflight" to "true",
                 "generalsJson" to """[
-                    {"id":7,"name":"赵云","status":0,"tili":50,"soldierTypeCode":1,"soldierCount":100},
-                    {"id":8,"name":"关羽","status":0,"tili":40,"soldierTypeCode":2,"soldierCount":80}
+                    {"id":7,"name":"赵云","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100},
+                    {"id":8,"name":"关羽","status":0,"tili":40,"zhongChengdu":100,"soldierTypeCode":2,"soldierCount":80}
                 ]"""
             )
         )
@@ -2046,6 +3261,7 @@ class SessionAwareGameProtocolClientTest {
         val result = SuspendRunner.run { mineClient.occupyMine(session, mine, listOf(7L, 8L)) }
 
         assertTrue(result is ProtocolResult.Ok && result.value.success)
+        assertEquals("123", (result as ProtocolResult.Ok).value.raw["battleId"])
         assertEquals(listOf(0x1520, 0x1522), transport.opcodes)
         assertTrue(
             transport.gameHexes[0].endsWith(
@@ -2068,9 +3284,10 @@ class SessionAwareGameProtocolClientTest {
                 "realActionNetworkAllowed" to "true",
                 "realActionSendReady" to "true",
                 "realActionScope" to "mine",
+                "unifiedExpeditionPreflight" to "true",
                 "generalsJson" to """[
-                    {"id":7,"name":"赵云","status":0,"tili":50,"soldierTypeCode":1,"soldierCount":100},
-                    {"id":8,"name":"关羽","status":1,"tili":40,"soldierTypeCode":2,"soldierCount":80}
+                    {"id":7,"name":"赵云","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100},
+                    {"id":8,"name":"关羽","status":1,"tili":40,"zhongChengdu":100,"soldierTypeCode":2,"soldierCount":80}
                 ]"""
             )
         )
@@ -2078,8 +3295,9 @@ class SessionAwareGameProtocolClientTest {
 
         val result = SuspendRunner.run { mineClient.occupyMine(session, mine, listOf(7L, 8L)) }
 
-        assertTrue(result is ProtocolResult.Ok)
-        assertFalse((result as ProtocolResult.Ok).value.success)
+        assertTrue(result is ProtocolResult.Err)
+        assertEquals("EXPEDITION_GENERAL_BUSY", (result as ProtocolResult.Err).code)
+        assertTrue(result.retryable)
         assertEquals(emptyList<Int>(), transport.opcodes)
     }
 
@@ -2165,6 +3383,29 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
+    fun productionClientIgnoresCapturedActionReceiptEvenWhenSessionContainsIt() {
+        val productionClient = SessionAwareGameProtocolClient()
+        val session = realSession(
+            extras = mapOf(
+                "dispatchResultsJson" to """[
+                    {"formationId":3,"targetId":"101","success":true,"consumedTimes":1}
+                ]"""
+            )
+        )
+
+        val result = SuspendRunner.run {
+            productionClient.dispatchFormation(
+                session,
+                3L,
+                MapTarget(101L, MapCoordinate(11, 22), HuangTargetType.HUANG_JIN.name)
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Err)
+        assertEquals("REAL_DISPATCH_LIVE_UNAVAILABLE", (result as ProtocolResult.Err).code)
+    }
+
+    @Test
     fun realActionDispatchRequiresExplicitBrushYellowScopeWhenBothSendGatesAreOpen() {
         val session = realSession(
             extras = mapOf(
@@ -2216,6 +3457,86 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
+    fun liveBrushDispatchUsesOneMultiGeneralActionTypeThreeFormationAndCanonicalTargetId() {
+        val transport = ScriptedDirectBinaryTransport(
+            mapOf(
+                0x1520 to listOf(0x8520 to "000000"),
+                0x1522 to listOf(0x8522 to "000000000000000000007b")
+            )
+        )
+        val persisted = mutableListOf<Map<String, String>>()
+        val liveClient = SessionAwareGameProtocolClient(
+            directBinaryTransport = transport::execute,
+            sessionExtraSink = { _, updates -> persisted += updates }
+        )
+        val session = realSession(
+            extras = mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow",
+                "allowRecoveredGeneralFallbackFormation" to "true",
+                "roleStateJson" to """{"roleId":1,"roleName":"测试","level":88}""",
+                "generalsJson" to """[
+                    {"id":7,"name":"将1","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100,"troopLimit":100},
+                    {"id":8,"name":"将2","status":0,"tili":50,"zhongChengdu":100,"soldierTypeCode":1,"soldierCount":100,"troopLimit":100}
+                ]"""
+            )
+        )
+        val target = MapTarget(
+            id = 4_604_785L,
+            coordinate = MapCoordinate(157, 42),
+            type = "山贼",
+            raw = mapOf(
+                "source" to "8540-structured",
+                "rawRecord" to "0000000000464371000a31e7baa7e5b1b1e8b4bc"
+            )
+        )
+
+        val result = SuspendRunner.run {
+            liveClient.dispatchFormation(
+                session,
+                FormationRuntime(
+                    id = 7L,
+                    name = "双将编队",
+                    generalIds = listOf(7L, 8L),
+                    status = FormationRuntimeStatus.IDLE,
+                    troopCount = 200
+                ),
+                target
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertTrue((result as ProtocolResult.Ok).value.success)
+        assertEquals(listOf(0x1520, 0x1522), transport.opcodes)
+        assertTrue(
+            transport.gameHexes[0].endsWith(
+                "0302000000000000000700000000000000080000000000464371"
+            )
+        )
+        assertTrue(
+            transport.gameHexes[1].endsWith(
+                "0302000000000000000700000000000000080000000000464371" +
+                    "ffffffffffffffff000000"
+                )
+        )
+        val recoveryStates = persisted.mapNotNull { updates ->
+            BrushPendingRecovery.fromJson(updates[BrushPendingRecovery.SESSION_KEY])?.sendState
+        }
+        assertEquals(listOf("sending", "accepted"), recoveryStates)
+        assertEquals(
+            listOf(7L, 8L),
+            BrushPendingRecovery.fromJson(
+                persisted.last()[BrushPendingRecovery.SESSION_KEY]
+            )?.generalIds
+        )
+
+        val cleared = SuspendRunner.run { liveClient.clearBrushPendingRecovery(session) }
+        assertTrue(cleared is ProtocolResult.Ok)
+        assertEquals("{}", persisted.last()[BrushPendingRecovery.SESSION_KEY])
+    }
+
+    @Test
     fun realSessionCanReturnRecoveredDispatchResultAndComputedBrushYellowPayloads() {
         val session = realSession(
             extras = mapOf(
@@ -2250,14 +3571,14 @@ class SessionAwareGameProtocolClientTest {
         assertEquals("lx,key,lb", battle.raw["prepareWrapperMissingFields"])
         assertTrue(battle.raw["nativeWrapperBlocker"]!!.contains("禁止真实发送"))
         assertEquals(
-            "0000000000000000001a15200a02000000000000000100000000000000020000000000000065",
+            "0000000000000000001a15200302000000000000000100000000000000020000000000000065",
             battle.raw["preparePayload"]
         )
         assertEquals(
-            "0000000000000000002515220a02000000000000000100000000000000020000000000000065ffffffffffffffff000000",
+            "0000000000000000002515220302000000000000000100000000000000020000000000000065ffffffffffffffff000000",
             battle.raw["expeditionPayload"]
         )
-        assertEquals("2026-07-08 bridge100 flows #30/#31/#32 and #38/#39", battle.raw["passiveWireEvidence"])
+        assertEquals("shared-contract canonical brush-yellow actionType=3", battle.raw["passiveWireEvidence"])
         assertEquals("false", battle.raw["passiveWireNetworkAllowed"])
         assertTrue(battle.raw["passiveWireBlocker"]!!.contains("未进入真实发送 allowlist"))
         assertEquals(
@@ -2269,19 +3590,19 @@ class SessionAwareGameProtocolClientTest {
             battle.raw["batchRefill1229CapturedWireTail"]
         )
         assertEquals(
-            "0000000000000000001a15200a02000000000000000100000000000000020000000000000065",
+            "0000000000000000001a15200302000000000000000100000000000000020000000000000065",
             battle.raw["prepare1520GameHex"]
         )
         assertEquals(
-            "0000000000000000001a152000000a02000000000000000100000000000000020000000000000065",
+            "0000000000000000001a152000000302000000000000000100000000000000020000000000000065",
             battle.raw["prepare1520CapturedWireTail"]
         )
         assertEquals(
-            "0000000000000000002515220a02000000000000000100000000000000020000000000000065ffffffffffffffff000000",
+            "0000000000000000002515220302000000000000000100000000000000020000000000000065ffffffffffffffff000000",
             battle.raw["dispatch1522GameHex"]
         )
         assertEquals(
-            "00000000000000000025152200000a02000000000000000100000000000000020000000000000065ffffffffffffffff000000",
+            "00000000000000000025152200000302000000000000000100000000000000020000000000000065ffffffffffffffff000000",
             battle.raw["dispatch1522CapturedWireTail"]
         )
     }
@@ -2294,7 +3615,7 @@ class SessionAwareGameProtocolClientTest {
                     {
                       "formationId":3,
                       "targetId":"101",
-                      "responseText":"刷黄出征成功！继续搜索... usedAount=18",
+                      "responseText":"刷黄出征成功！继续搜索... usedAount=18 battleId=101",
                       "targetIdHex":"0000000000000065",
                       "generalIdHexChunks":["0000000000000001"]
                     }
@@ -2331,7 +3652,7 @@ class SessionAwareGameProtocolClientTest {
                       "generalIdHexChunks":["0000000000000007"],
                       "success":true,
                       "consumedTimes":2,
-                      "responseText":"刷黄出征成功！继续搜索... usedAount=2",
+                      "responseText":"刷黄出征成功！继续搜索... usedAount=2 battleId=101",
                       "raw":{
                         "source":"tools/calibrate_action_responses.py",
                         "opcode":"1522030",
@@ -2384,7 +3705,7 @@ class SessionAwareGameProtocolClientTest {
                       "targetIdHex":"0000000000000065",
                       "status":"成功",
                       "usedCount":2,
-                      "responseBody":"刷黄出征成功！继续搜索... usedCount=2",
+                      "responseBody":"刷黄出征成功！继续搜索... usedCount=2 battleId=101",
                       "generalIdHexChunks":["0000000000000001"]
                     }
                 ]"""
@@ -2490,77 +3811,39 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
-    fun brushYellowPayloadBuilderUsesRecoveredP2ZeroFormula() {
+    fun brushYellowPayloadBuilderUsesSharedActionTypeThreeFormula() {
         val payloads = BrushYellowDispatchPayloadBuilder.buildBrushYellowPayloads(
             generalIdHexChunks = listOf("0000000000000001", "0000000000000002"),
             targetIdHex = "0000000000000065"
         )
 
         assertEquals(
-            "0000000000000000001a15200a02000000000000000100000000000000020000000000000065",
+            "0000000000000000001a15200302000000000000000100000000000000020000000000000065",
             payloads.preparePayload
         )
         assertEquals(
-            "0000000000000000002515220a02000000000000000100000000000000020000000000000065ffffffffffffffff000000",
+            "0000000000000000002515220302000000000000000100000000000000020000000000000065ffffffffffffffff000000",
             payloads.expeditionPayload
         )
     }
 
     @Test
-    fun brushYellowPayloadBuilderCanBuildAllRecoveredP2Variants() {
-        val variants = BrushYellowDispatchPayloadBuilder.buildAllBrushYellowPayloadVariants(
+    fun brushYellowPayloadBuilderExposesDesktopCanonicalActionTypeThree() {
+        val payloads = BrushYellowDispatchPayloadBuilder.buildBrushYellowPayloads(
             generalIdHexChunks = listOf("0000000000000007"),
             targetIdHex = "0000000000000101"
         )
 
-        assertEquals(listOf(10, 0, 1, 2, 3, 4), variants.map { it.variant })
-        assertEquals(
-            "0000000000000000001215200a0100000000000000070000000000000101",
-            variants[0].preparePayload
-        )
-        assertEquals(
-            "0000000000000000001d15220a0100000000000000070000000000000101ffffffffffffffff000000",
-            variants[0].expeditionPayload
-        )
+        assertEquals(3, payloads.variant)
+        assertEquals("1520030", payloads.prepareOpcode)
+        assertEquals("1522030", payloads.expeditionOpcode)
         assertEquals(
             "000000000000000000121520030100000000000000070000000000000101",
-            variants[1].preparePayload
+            payloads.preparePayload
         )
         assertEquals(
             "0000000000000000001d1522030100000000000000070000000000000101ffffffffffffffff000000",
-            variants[1].expeditionPayload
-        )
-        assertEquals(
-            "0000000000000000001215200201000000000000000700000000000000000101",
-            variants[2].preparePayload
-        )
-        assertEquals(
-            "0000000000000000001d15220201000000000000000700000000000000000101ffffffffffffffff000000",
-            variants[2].expeditionPayload
-        )
-        assertEquals(
-            "0000000000000000001615200e010000000000000007ffffffff00040000000000000101",
-            variants[3].preparePayload
-        )
-        assertEquals(
-            "0000000000000000002115220e010000000000000007ffffffff00040000000000000101ffffffffffffffff000000",
-            variants[3].expeditionPayload
-        )
-        assertEquals(
-            "000000000000000000101520010100000000000000070000000000000101",
-            variants[4].preparePayload
-        )
-        assertEquals(
-            "0000000000000000001b1522010100000000000000070000000000000101ffffffffffffffff000000",
-            variants[4].expeditionPayload
-        )
-        assertEquals(
-            "0000000000000000001015200b0100000000000000070000000000000101",
-            variants[5].preparePayload
-        )
-        assertEquals(
-            "0000000000000000001b15220b0100000000000000070000000000000101ffffffffffffffff000000",
-            variants[5].expeditionPayload
+            payloads.expeditionPayload
         )
     }
 
@@ -2573,6 +3856,7 @@ class SessionAwareGameProtocolClientTest {
         val session = realSession(
             extras = mapOf(
                 "recoveredReadOnlyLiveGate" to "true",
+                "recoveredReadOnlyScanMode" to "SINGLE",
                 "gameHttp" to "http://game.example/kingWapServer/HttpClient"
             )
         )
@@ -2589,6 +3873,30 @@ class SessionAwareGameProtocolClientTest {
         assertEquals(999L, executor.calls.single().dm)
         assertEquals(GameCoordinateCodec.buildTargetSearch(6, 6), executor.calls.single().gameHex)
         assertTrue(executor.calls.single().liveGate)
+    }
+
+    @Test
+    fun realSessionDefaultsToDesktopNearbyEightyCoordinatePool() {
+        val executor = FakeRecoveredReadOnlyExecutor()
+        val liveClient = SessionAwareGameProtocolClient(recoveredReadOnlyExecutor = executor)
+        val session = realSession(
+            extras = mapOf("recoveredReadOnlyLiveGate" to "true")
+        )
+
+        val result = SuspendRunner.run {
+            liveClient.searchMap(
+                session,
+                MapCoordinate(100, 30),
+                MapSearchPolicy(targetType = HuangTargetType.SHAN_ZEI)
+            )
+        }
+
+        assertTrue(result is ProtocolResult.Ok)
+        assertEquals(80, executor.calls.size)
+        assertEquals(
+            GameCoordinateCodec.buildTargetSearch(102, 30),
+            executor.calls.first().gameHex
+        )
     }
 
     @Test
@@ -2714,7 +4022,7 @@ class SessionAwareGameProtocolClientTest {
                         chapter = 1,
                         stage = 1,
                         formationIds = listOf(3L),
-                        autoUnlockUntilTarget = false
+                        mode = "loop"
                     )
                 )
             },
@@ -2823,10 +4131,10 @@ class SessionAwareGameProtocolClientTest {
                 ]}"""
             )
         )
-        val config = AlarmWithdrawConfig(enabled = true)
+        val config = AlarmConfig(enabled = true)
 
-        val first = SuspendRunner.run { alarmClient.scanAlarmAndMaybeWithdraw(baseline, config) }
-        val second = SuspendRunner.run { alarmClient.scanAlarmAndMaybeWithdraw(updated, config) }
+        val first = SuspendRunner.run { alarmClient.scanAlarms(baseline, config) }
+        val second = SuspendRunner.run { alarmClient.scanAlarms(updated, config) }
 
         assertTrue(first is ProtocolResult.Ok)
         assertTrue(second is ProtocolResult.Ok)
@@ -2835,6 +4143,34 @@ class SessionAwareGameProtocolClientTest {
         assertEquals(1, notifications.size)
         assertEquals("敌军正在掠夺基地", notifications.single().text)
         assertEquals(com.example.dwpmclone.domain.model.AlarmNotificationKind.INCOMING, notifications.single().kind)
+    }
+
+    @Test
+    fun logOnlyIncomingModeStillEmitsAnAuditableEventWithoutRequestingANotification() {
+        val events = mutableListOf<com.example.dwpmclone.domain.model.AlarmNotificationEvent>()
+        val alarmClient = SessionAwareGameProtocolClient(alarmEventSink = events::add)
+        val baseline = realSession(
+            extras = mapOf("militaryIntelJson" to """{"events":[]}""")
+        )
+        val updated = realSession(
+            extras = mapOf(
+                "militaryIntelJson" to """{"events":[
+                    {"timeText":"12:01","text":"敌军正在攻城","state":"征"}
+                ]}"""
+            )
+        )
+        val config = AlarmConfig(
+            enabled = true,
+            incomingMode = "仅日志",
+            militaryEnabled = false
+        )
+
+        SuspendRunner.run { alarmClient.scanAlarms(baseline, config) }
+        SuspendRunner.run { alarmClient.scanAlarms(updated, config) }
+
+        assertEquals(1, events.size)
+        assertEquals("敌军正在攻城", events.single().text)
+        assertFalse(events.single().showNotification)
     }
 
     @Test
@@ -2862,7 +4198,7 @@ class SessionAwareGameProtocolClientTest {
         val session = realSession(extras = mapOf("militaryIntelLiveGate" to "true"))
 
         val result = SuspendRunner.run {
-            alarmClient.scanAlarmAndMaybeWithdraw(session, AlarmWithdrawConfig(enabled = true))
+            alarmClient.scanAlarms(session, AlarmConfig(enabled = true))
         }
 
         assertTrue(result is ProtocolResult.Ok)
@@ -2888,7 +4224,7 @@ class SessionAwareGameProtocolClientTest {
         val session = realSession(extras = mapOf("militaryIntelLiveGate" to "true"))
 
         val result = SuspendRunner.run {
-            alarmClient.scanAlarmAndMaybeWithdraw(session, AlarmWithdrawConfig(enabled = true))
+            alarmClient.scanAlarms(session, AlarmConfig(enabled = true))
         }
 
         assertTrue(result is ProtocolResult.Err)
@@ -2897,9 +4233,10 @@ class SessionAwareGameProtocolClientTest {
     }
 
     @Test
-    fun mockSessionStillSupportsLocalSmokeBehavior() {
+    fun explicitlyInjectedDebugFakeSupportsLocalSmokeBehavior() {
+        val debugClient = SessionAwareGameProtocolClient(fallback = MockGameProtocolClient())
         val result = SuspendRunner.run {
-            client.queryResourceState(GameSession(1L, "mock", null, emptyMap(), sourceMode = 0))
+            debugClient.queryResourceState(GameSession(1L, "mock", null, emptyMap(), sourceMode = 0))
         }
 
         assertTrue(result is ProtocolResult.Ok)
@@ -2980,13 +4317,13 @@ class SessionAwareGameProtocolClientTest {
         sourceMode = 1
     )
 
-    private fun dungeonSession(status: Int): GameSession = realSession(
+    private fun dungeonSession(status: Int, loyalty: Int = 100): GameSession = realSession(
         extras = mapOf(
             "realActionNetworkAllowed" to "true",
             "realActionSendReady" to "true",
             "realActionScopes" to "dungeon",
             "generalsJson" to """
-                [{"id":7,"name":"赵云","growth":90,"loyalty":100,"energy":88,"status":$status}]
+                [{"id":7,"name":"赵云","growth":90,"loyalty":$loyalty,"energy":88,"status":$status,"soldierTypeCode":3,"soldierCount":1999,"troopLimit":1999}]
             """.trimIndent(),
             "formationsJson" to """
                 [{"id":7,"name":"副本编队","generalIds":[7],"status":"IDLE","troopCount":1999}]
@@ -3001,8 +4338,110 @@ class SessionAwareGameProtocolClientTest {
         chapter = 0,
         stage = 5,
         formationIds = listOf(7L),
-        autoUnlockUntilTarget = false
+        mode = "loop"
     )
+
+    private fun losslessSession(): GameSession = realSession(
+        extras = mapOf(
+            "roleId" to "202",
+            "realActionNetworkAllowed" to "true",
+            "realActionSendReady" to "true",
+            "realActionScopes" to "lossless",
+            "generalsJson" to """
+                [{"id":7,"name":"赵云","growth":90,"loyalty":100,"energy":88,"status":0,"soldierTypeCode":3,"soldierCount":1999,"troopLimit":1999}]
+            """.trimIndent(),
+            "formationsJson" to """
+                [{"id":7,"name":"无损编队","generalIds":[7],"status":"IDLE","troopCount":1999}]
+            """.trimIndent()
+        )
+    )
+
+    private fun losslessConfig(
+        level: Int,
+        maxRerolls: Int = 80
+    ): LosslessConfig = LosslessConfig(
+        enabled = true,
+        fullTroops = false,
+        dailyLimit = 5,
+        rules = listOf(
+            LosslessRule(
+                enabled = true,
+                generalIds = listOf(7L),
+                level = level,
+                maxLineupRerolls = maxRerolls
+            )
+        )
+    )
+
+    private fun losslessReadyStatus(level: Int, stageId: Int = 1): String =
+        ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { out ->
+                out.writeLong(0L)
+                out.writeByte(1)
+                out.writeByte(5)
+                out.writeByte(0)
+                out.writeByte(0)
+                out.writeByte(0)
+                out.writeLong((level - 1).toLong())
+                out.writeShort(stageId)
+            }
+        }.toByteArray().testHex()
+
+    private fun losslessLineup(
+        stageId: Int,
+        soldierTypes: List<String> = emptyList()
+    ): String = ByteArrayOutputStream().also { bytes ->
+        DataOutputStream(bytes).use { out ->
+            out.writeByte(0)
+            out.writeShort(stageId)
+            out.writeUTF(if (stageId == 0x3011) "10级关卡" else "1级关卡")
+            out.writeUTF(if (stageId == 0x3011) "卫兵" else "普通")
+            out.writeInt(soldierTypes.size)
+            soldierTypes.forEachIndexed { index, type ->
+                out.writeUTF("敌将${index + 1}")
+                out.writeInt(0)
+                out.writeShort(0)
+                out.writeInt(0)
+                out.writeUTF(type)
+                out.writeInt(100)
+            }
+        }
+    }.toByteArray().testHex()
+
+    private fun losslessSelect(level: Int, stageId: Int): String =
+        ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { out ->
+                out.writeInt(1)
+                out.writeUTF("选择成功")
+                out.writeLong((level - 1).toLong())
+                out.writeShort(stageId)
+            }
+        }.toByteArray().testHex()
+
+    private fun dungeonCatalog(stageFiveCompleted: Boolean): String =
+        ByteArrayOutputStream().also { bytes ->
+            DataOutputStream(bytes).use { out ->
+                out.writeByte(0)
+                out.writeByte(1)
+                out.writeShort(0)
+                out.writeShort(0)
+                out.writeShort(0)
+                out.writeShort(0)
+                out.writeUTF("测试章节")
+                out.writeByte(1)
+                out.writeByte(6)
+                listOf(0, 1, 2, 4, 5, 6).forEachIndexed { index, stageCode ->
+                    out.writeShort(stageCode)
+                    out.writeByte(1)
+                    out.writeByte(
+                        if (index < 4 || (index == 4 && stageFiveCompleted)) 0 else 0xff
+                    )
+                }
+            }
+        }.toByteArray().testHex()
+
+    private fun String.utf8Hex(): String =
+        toByteArray(Charsets.UTF_8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private fun heartbeatPayload(copper: Long, food: Long, text: String): String {
         val bytes = ByteArrayOutputStream().also { bos ->
@@ -3155,7 +4594,8 @@ private class ScriptedDirectBinaryTransport(
             responseBytes = scripted.sumOf { it.second.length / 2 },
             responseHex = scripted.joinToString("") { it.second },
             textPreview = "",
-            responseOpcodes = scripted.map { it.first }
+            responseOpcodes = scripted.map { it.first },
+            responsePayloads = scripted.map { DirectBinaryPayload(it.first, it.second) }
         )
     }
 }
@@ -3191,7 +4631,8 @@ private class SequentialDirectBinaryTransport(
             responseBytes = scripted.sumOf { it.second.length / 2 },
             responseHex = scripted.joinToString("") { it.second },
             textPreview = "",
-            responseOpcodes = scripted.map { it.first }
+            responseOpcodes = scripted.map { it.first },
+            responsePayloads = scripted.map { DirectBinaryPayload(it.first, it.second) }
         )
     }
 }

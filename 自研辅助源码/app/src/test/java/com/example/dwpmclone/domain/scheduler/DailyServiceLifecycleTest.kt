@@ -20,46 +20,62 @@ class DailyServiceLifecycleTest {
             sourceMode = 1
         )
         val aligned = RealSessionTaskPlanAdapter.attachRealSession(savedPlan, realSession)
-        val protocol = RecordingDailyProtocol(SessionAwareGameProtocolClient())
+        val protocol = RecordingDailyProtocol(
+            SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true)
+        )
         val runner = LocalSchedulerLifecycleRunner(TaskScheduler(protocol))
 
-        val batch = SuspendRunner.run {
-            runner.runPlansOnceAndStopOnTerminal(tick = 21, plans = listOf(aligned), nowMillis = 1_000L)
-        }
-
-        assertEquals(
-            listOf(TaskType.DAILY, TaskType.DAILY_DONATE, TaskType.DAILY_SALARY),
-            batch.runReports.map { it.type }
-        )
-        assertTrue(
-            batch.runReports.all {
-                it.decisions == listOf(
-                    TaskDecision.Continue,
-                    TaskDecision.Sleep(24 * 60 * 60 * 1000L)
+        val batches = (0 until 4).map { index ->
+            SuspendRunner.run {
+                runner.runPlansOnceAndStopOnTerminal(
+                    tick = 21 + index,
+                    plans = listOf(aligned),
+                    nowMillis = 1_000L + index
                 )
             }
-        )
-        assertEquals(emptyList<TerminalTaskDecision>(), batch.terminalDecisions)
-        assertEquals(emptyList<TaskStopReport>(), batch.stopReports)
+        }
+        val dailyReports = batches.flatMap { it.runReports }
+            .filter { it.type != TaskType.STATE_REFRESH }
+
         assertEquals(
             listOf(
-                "validateSession",
+                TaskType.DAILY_SIGN_IN,
+                TaskType.DAILY_ARENA_COINS,
+                TaskType.DAILY_DONATE,
+                TaskType.DAILY_SALARY
+            ),
+            dailyReports.map { it.type }
+        )
+        assertEquals(4, batches.sumOf { batch ->
+            batch.runReports.count { it.type == TaskType.STATE_REFRESH }
+        })
+        assertTrue(
+            dailyReports.all {
+                it.decisions.size == 2 &&
+                    it.decisions.first() == TaskDecision.Continue &&
+                    it.decisions[1] is TaskDecision.Sleep &&
+                    (it.decisions[1] as TaskDecision.Sleep).millis > 0L
+            }
+        )
+        assertTrue(batches.all { it.terminalDecisions.isEmpty() })
+        assertTrue(batches.all { it.stopReports.isEmpty() })
+        assertEquals(
+            listOf(
                 "runDailyStep:SIGN_IN",
                 "runDailyStep:ARENA_REWARD",
-                "validateSession",
                 "runDailyStep:DONATE_COPPER",
                 "runDailyStep:DONATE_FOOD",
                 "runDailyStep:DONATE_TECH",
-                "validateSession",
                 "runDailyStep:SALARY"
             ),
-            protocol.calls
+            protocol.calls.filter { it.startsWith("runDailyStep:") }
         )
+        assertEquals(8, protocol.calls.count { it == "validateSession" })
         assertTrue(aligned.sourceDescription.contains("session-metadata-aligned"))
     }
 
     private fun dailySavedConfigExport(): JSONObject = JSONObject()
-        .put("schema_version", "0.1-static-mock")
+        .put("schema_version", "1.0-local")
         .put(
             "configs",
             JSONObject().put(

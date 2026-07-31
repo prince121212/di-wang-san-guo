@@ -21,7 +21,7 @@ class TaskSchedulerStopAndShuaHuangTest {
                 InventoryItem(9001, "未知装备", "equipment", EquipmentQuality.NORMAL, 1, false, false)
             )
         }
-        val task = InventoryCleanupMockTask(
+        val task = InventoryCleanupTask(
             accountId = 123L,
             config = InventoryConfig(
                 enabled = true,
@@ -277,7 +277,7 @@ class TaskSchedulerStopAndShuaHuangTest {
     }
 
     @Test
-    fun realSessionFormationUpdateWithoutConfirmationStopsBeforeBrushYellowDispatch() {
+    fun oneFormationFailureDoesNotGloballyBlockBrushYellowDispatch() {
         val protocol = RecordingProtocol().apply {
             updateFormationResult = ProtocolResult.Err(
                 code = "REAL_UPDATE_FORMATION_NOT_IMPLEMENTED",
@@ -286,7 +286,7 @@ class TaskSchedulerStopAndShuaHuangTest {
             )
         }
         val runner = LocalSchedulerLifecycleRunner(TaskScheduler(protocol))
-        val formationTask = FormationUpdateMockTask(
+        val formationTask = FormationUpdateTask(
             accountId = 123L,
             config = FormationConfig(
                 formationId = 7L,
@@ -328,12 +328,12 @@ class TaskSchedulerStopAndShuaHuangTest {
             batch.runReports[0].decisions
         )
         assertEquals(TaskType.SHUA_HUANG, batch.runReports[1].type)
-        assertTrue(
-            (batch.runReports[1].decisions.single() as TaskDecision.Stop).reason
-                .contains("formation prerequisite")
+        assertEquals(
+            listOf(TaskDecision.Continue, TaskDecision.Sleep(1_000L)),
+            batch.runReports[1].decisions
         )
         assertEquals(0, batch.terminalDecisions.size)
-        assertTrue("dispatchFormation" !in protocol.calls)
+        assertEquals(1, protocol.calls.count { it == "dispatchFormation" })
         assertTrue("logout" !in protocol.calls)
     }
 
@@ -373,12 +373,59 @@ class TaskSchedulerStopAndShuaHuangTest {
                 "queryGenerals",
                 "queryFormations",
                 "searchMap",
-                "dispatchFormation"
+                "dispatchFormation",
+                "healGeneral:1"
             ),
             protocol.calls
         )
         assertEquals(7L, protocol.lastDispatchFormationId)
         assertEquals(88L, protocol.lastDispatchTargetId)
+    }
+
+    @Test
+    fun shuaHuangTaskRejectsRoleBelowSharedMinimumLevel() {
+        val protocol = RecordingProtocol().apply { monarchLevel = 29 }
+        val task = ShuaHuangTask(
+            123L,
+            ConfigDefaults.shuaHuang().copy(enabled = true, selectedFormationIds = setOf(7L))
+        )
+
+        val decision = SuspendRunner.run {
+            task.step(TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L))
+        }
+
+        assertEquals(TaskDecision.Stop("请30级之后再开启刷黄！"), decision)
+        assertEquals(listOf("queryMonarch"), protocol.calls)
+    }
+
+    @Test
+    fun shuaHuangTaskRejectsFormationAboveSharedGeneralLimit() {
+        val protocol = RecordingProtocol().apply {
+            generals = (1L..6L).map { id ->
+                General(id = id, name = "将$id", growth = 80, loyalty = 100, energy = 100)
+            }
+            formations = listOf(
+                FormationRuntime(
+                    id = 7L,
+                    name = "六将编队",
+                    generalIds = (1L..6L).toList(),
+                    status = FormationRuntimeStatus.IDLE,
+                    troopCount = 1999
+                )
+            )
+        }
+        val task = ShuaHuangTask(
+            123L,
+            ConfigDefaults.shuaHuang().copy(enabled = true, selectedFormationIds = setOf(7L))
+        )
+
+        val decision = SuspendRunner.run {
+            task.step(TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L))
+        }
+
+        assertEquals(TaskDecision.Stop("刷黄编队六将编队最多选择5名出征将领"), decision)
+        assertTrue("searchMap" !in protocol.calls)
+        assertTrue("dispatchFormation" !in protocol.calls)
     }
 
     @Test
@@ -503,8 +550,10 @@ class TaskSchedulerStopAndShuaHuangTest {
 
 
     @Test
-    fun shuaHuangTaskRunsDeleteMailForSpeedOnceBeforeDispatch() {
-        val protocol = RecordingProtocol()
+    fun shuaHuangTaskCleansMailAfterEveryConfirmedReturn() {
+        val protocol = RecordingProtocol().apply {
+            generals = generals.map { it.copy(status = 0) }
+        }
         val task = ShuaHuangTask(
             accountId = 123L,
             config = ShuaHuangConfig(
@@ -519,22 +568,170 @@ class TaskSchedulerStopAndShuaHuangTest {
                 autoConvertFoodToCopper = false
             )
         )
-        val ctx = TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L)
+        val runtime = AutomationRuntimeStateStore(enforceCommandGate = false)
+        val session = GameSession(
+            123L,
+            "unit-token",
+            null,
+            mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow"
+            ),
+            0
+        )
+        runtime.addPendingBrushRecovery(123L, TaskType.SHUA_HUANG, listOf(1L))
+        val ctx = TaskContext(session, protocol, 1_000L, runtime = runtime)
 
         val first = SuspendRunner.run { task.step(ctx) }
-        val second = SuspendRunner.run { task.step(ctx) }
+        runtime.addPendingBrushRecovery(123L, TaskType.SHUA_HUANG, listOf(1L))
+        val rebuiltTask = ShuaHuangTask(123L, task.config)
+        val second = SuspendRunner.run { rebuiltTask.step(ctx) }
 
         assertEquals(TaskDecision.Sleep(1_000), first)
-        assertTrue(second is TaskDecision.Sleep)
-        assertTrue((second as TaskDecision.Sleep).millis > 1_000L)
-        assertEquals(1, protocol.calls.count { it == "runDailyStep:DELETE_MAIL" })
-        assertTrue(protocol.calls.indexOf("runDailyStep:DELETE_MAIL") < protocol.calls.indexOf("queryGenerals"))
-        assertEquals(2, protocol.calls.count { it == "dispatchFormation" })
+        assertEquals(TaskDecision.Sleep(1_000), second)
+        assertEquals(2, protocol.calls.count { it == "runDailyStep:DELETE_MAIL" })
+        assertTrue(protocol.calls.indexOf("healGeneral:1") < protocol.calls.indexOf("runDailyStep:DELETE_MAIL"))
+        assertEquals(0, protocol.calls.count { it == "dispatchFormation" })
     }
 
     @Test
-    fun shuaHuangTaskStopsWhenDeleteMailForSpeedFails() {
+    fun postReturnMaintenanceHealsOncePerFiefForMultiGeneralFormation() {
         val protocol = RecordingProtocol().apply {
+            generals = listOf(
+                General(1L, "将1", 80, 100, 100, status = 0, placeId = 205L),
+                General(2L, "将2", 80, 100, 100, status = 0, placeId = 205L)
+            )
+            formations = listOf(
+                FormationRuntime(99L, "双将", listOf(1L, 2L), FormationRuntimeStatus.IDLE, 200)
+            )
+        }
+        val runtime = AutomationRuntimeStateStore(enforceCommandGate = false).also {
+            it.addPendingBrushRecovery(123L, TaskType.SHUA_HUANG, listOf(1L, 2L))
+        }
+        val task = ShuaHuangTask(
+            123L,
+            ConfigDefaults.shuaHuang().copy(
+                enabled = true,
+                selectedFormationIds = setOf(1L, 2L),
+                rules = listOf(ShuaHuangRule(generalIds = listOf(1L, 2L)))
+            )
+        )
+        val session = GameSession(
+            123L,
+            "unit-token",
+            null,
+            mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow"
+            ),
+            0
+        )
+
+        val decision = SuspendRunner.run {
+            task.step(TaskContext(session, protocol, 1_000L, runtime = runtime))
+        }
+
+        assertEquals(TaskDecision.Sleep(1_000L), decision)
+        assertEquals(listOf("healGeneral:1"), protocol.calls.filter { it.startsWith("healGeneral:") })
+        assertTrue(runtime.pendingBrushRecoveryGeneralIds(123L, TaskType.SHUA_HUANG).isEmpty())
+    }
+
+    @Test
+    fun processRestartRestoresBrushPostReturnMaintenanceFromSessionState() {
+        val protocol = RecordingProtocol().apply {
+            generals = listOf(
+                General(1L, "将1", 80, 100, 100, status = 0, placeId = 205L)
+            )
+            formations = listOf(
+                FormationRuntime(1L, "单将", listOf(1L), FormationRuntimeStatus.IDLE, 200)
+            )
+        }
+        val persisted = BrushPendingRecovery(
+            generalIds = listOf(1L),
+            formationId = 1L,
+            targetId = 9001L,
+            targetX = 91,
+            targetY = 26,
+            createdAtMillis = 500L,
+            sendState = "accepted"
+        )
+        val session = GameSession(
+            123L,
+            "unit-token",
+            null,
+            mapOf(
+                "realActionNetworkAllowed" to "true",
+                "realActionSendReady" to "true",
+                "realActionScope" to "brush-yellow",
+                BrushPendingRecovery.SESSION_KEY to persisted.toJson().toString()
+            ),
+            0
+        )
+        val runtimeAfterRestart = AutomationRuntimeStateStore(enforceCommandGate = false)
+        val savedFormation = FormationConfig(
+            formationId = 1L,
+            generalIds = listOf(1L),
+            autoAssignTroops = true,
+            troopType = "重步兵",
+            troopCount = 500,
+            fillToMaxWhenAutoAssignDisabled = false
+        )
+        val task = ShuaHuangTask(
+            123L,
+            ConfigDefaults.shuaHuang().copy(
+                enabled = true,
+                selectedFormationIds = setOf(1L),
+                rules = listOf(ShuaHuangRule(generalIds = listOf(1L))),
+                formationRules = listOf(savedFormation)
+            )
+        )
+
+        val decision = SuspendRunner.run {
+            task.step(TaskContext(session, protocol, 1_000L, runtime = runtimeAfterRestart))
+        }
+
+        assertEquals(TaskDecision.Sleep(1_000L), decision)
+        assertEquals(listOf("healGeneral:1"), protocol.calls.filter { it.startsWith("healGeneral:") })
+        assertEquals(listOf(savedFormation), protocol.updatedFormationConfigs)
+        assertTrue(
+            runtimeAfterRestart.pendingBrushRecoveryGeneralIds(123L, TaskType.SHUA_HUANG).isEmpty()
+        )
+        assertTrue("dispatchFormation" !in protocol.calls)
+    }
+
+    @Test
+    fun dungeonDailyLimitUsesPersistedSuccessSourceAfterTaskReconstruction() {
+        val protocol = RecordingProtocol()
+        val runtime = AutomationRuntimeStateStore(
+            enforceCommandGate = false,
+            dailySuccessSource = { _, type, _ -> if (type == TaskType.DUNGEON) 1 else 0 }
+        )
+        val config = ConfigDefaults.dungeon().copy(
+            enabled = true,
+            dailyTimes = 1,
+            formationIds = listOf(1L)
+        )
+        val session = GameSession(123L, "unit-token", null, emptyMap(), 0)
+        val first = DungeonTask(123L, config)
+        val firstDecision = SuspendRunner.run {
+            first.step(TaskContext(session, protocol, 1_000L, runtime = runtime))
+        }
+        val rebuilt = DungeonTask(123L, config)
+        val rebuiltDecision = SuspendRunner.run {
+            rebuilt.step(TaskContext(session, protocol, 1_000L, runtime = runtime))
+        }
+
+        assertTrue(firstDecision is TaskDecision.Sleep)
+        assertTrue(rebuiltDecision is TaskDecision.Sleep)
+        assertTrue(protocol.calls.none { it == "runDungeon" })
+    }
+
+    @Test
+    fun shuaHuangTaskStopsWhenPostReturnDeleteMailFails() {
+        val protocol = RecordingProtocol().apply {
+            generals = generals.map { it.copy(status = 0) }
             dailyStepResults[DailyStep.DELETE_MAIL] = StepResult(false, "删信失败")
         }
         val task = ShuaHuangTask(
@@ -551,12 +748,30 @@ class TaskSchedulerStopAndShuaHuangTest {
                 autoConvertFoodToCopper = false
             )
         )
-        val ctx = TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L)
+        val runtime = AutomationRuntimeStateStore(enforceCommandGate = false).also {
+            it.addPendingBrushRecovery(123L, TaskType.SHUA_HUANG, listOf(1L))
+        }
+        val ctx = TaskContext(
+            GameSession(
+                123L,
+                "unit-token",
+                null,
+                mapOf(
+                    "realActionNetworkAllowed" to "true",
+                    "realActionSendReady" to "true",
+                    "realActionScope" to "brush-yellow"
+                ),
+                0
+            ),
+            protocol,
+            1_000L,
+            runtime = runtime
+        )
 
         val step = SuspendRunner.run { task.step(ctx) }
 
-        assertEquals(TaskDecision.Stop("delete mail before shua huang failed: 删信失败"), step)
-        assertTrue("queryGenerals" !in protocol.calls)
+        assertEquals(TaskDecision.Stop("刷黄战后清理邮件失败：删信失败"), step)
+        assertTrue("healGeneral:1" in protocol.calls)
         assertTrue("dispatchFormation" !in protocol.calls)
     }
 
@@ -726,7 +941,12 @@ class TaskSchedulerStopAndShuaHuangTest {
 
         val step = SuspendRunner.run { task.step(ctx) }
 
-        assertEquals(TaskDecision.Sleep(30_000), step)
+        assertEquals(
+            TaskDecision.Sleep(
+                AssistantBehaviorContract.defaults().brushYellow.schedule.targetUnavailableRetryMillis
+            ),
+            step
+        )
         assertTrue("dispatchFormation" !in protocol.calls)
     }
 
@@ -756,7 +976,12 @@ class TaskSchedulerStopAndShuaHuangTest {
 
         val step = SuspendRunner.run { task.step(ctx) }
 
-        assertEquals(TaskDecision.Sleep(30_000), step)
+        assertEquals(
+            TaskDecision.Sleep(
+                AssistantBehaviorContract.defaults().brushYellow.schedule.targetUnavailableRetryMillis
+            ),
+            step
+        )
         assertTrue("dispatchFormation" !in protocol.calls)
     }
 
@@ -787,8 +1012,84 @@ class TaskSchedulerStopAndShuaHuangTest {
 
         val step = SuspendRunner.run { task.step(ctx) }
 
-        assertEquals(TaskDecision.Sleep(30_000), step)
+        assertEquals(
+            TaskDecision.Sleep(
+                AssistantBehaviorContract.defaults().brushYellow.schedule.targetUnavailableRetryMillis
+            ),
+            step
+        )
         assertTrue("dispatchFormation" !in protocol.calls)
+    }
+
+    @Test
+    fun shuaHuangTaskExpiresUnusableCacheAndScansAgainNextTick() {
+        val protocol = RecordingProtocol().apply {
+            mapTargets = listOf(
+                MapTarget(
+                    701L,
+                    MapCoordinate(11, 22),
+                    HuangTargetType.SHAN_ZEI.name,
+                    raw = mapOf(
+                        "level" to "6",
+                        "compositionCode" to "9999",
+                        "compositionSource" to "8540-units"
+                    )
+                )
+            )
+        }
+        val task = ShuaHuangTask(
+            accountId = 123L,
+            config = ShuaHuangConfig(
+                enabled = true,
+                dailyLimit = 500,
+                start = MapCoordinate(11, 22),
+                minCopperWan = 0,
+                targetType = HuangTargetType.SHAN_ZEI,
+                selectedFormationIds = setOf(7L),
+                formationFilterMode = FormationFilterMode.UNIFIED,
+                deleteMailForSpeed = false,
+                autoConvertFoodToCopper = false,
+                targetFilter = ShuaHuangTargetFilter(
+                    minLevel = 6,
+                    maxLevel = 8,
+                    maxFoot = 1,
+                    maxBow = 5,
+                    maxCavalry = 0,
+                    maxChariot = 0
+                )
+            )
+        )
+        val ctx = TaskContext(
+            GameSession(123L, "unit-token", null, emptyMap(), 0),
+            protocol,
+            1_000L
+        )
+
+        val emptyCandidatePool = SuspendRunner.run { task.step(ctx) }
+        protocol.mapTargets = listOf(
+            MapTarget(
+                702L,
+                MapCoordinate(12, 22),
+                HuangTargetType.SHAN_ZEI.name,
+                raw = mapOf(
+                    "level" to "6",
+                    "compositionCode" to "1500",
+                    "compositionSource" to "8540-units"
+                )
+            )
+        )
+        val rescanned = SuspendRunner.run { task.step(ctx) }
+
+        assertEquals(
+            TaskDecision.Sleep(
+                AssistantBehaviorContract.defaults()
+                    .brushYellow.schedule.targetUnavailableRetryMillis
+            ),
+            emptyCandidatePool
+        )
+        assertEquals(TaskDecision.Sleep(1_000L), rescanned)
+        assertEquals(2, protocol.calls.count { it == "searchMap" })
+        assertEquals(702L, protocol.lastDispatchTargetId)
     }
 
     @Test
@@ -822,6 +1123,83 @@ class TaskSchedulerStopAndShuaHuangTest {
         assertEquals(TaskDecision.Sleep(1_000), step)
         assertEquals(7L, protocol.lastDispatchFormationId)
         assertEquals(203L, protocol.lastDispatchTargetId)
+    }
+
+    @Test
+    fun shuaHuangTaskMatchesOnlyExactSelectedLevels() {
+        val protocol = RecordingProtocol().apply {
+            mapTargets = listOf(
+                MapTarget(701L, MapCoordinate(11, 22), "山贼", raw = mapOf("level" to "9")),
+                MapTarget(702L, MapCoordinate(12, 24), "山贼", raw = mapOf("level" to "8")),
+                MapTarget(703L, MapCoordinate(18, 24), "山贼", raw = mapOf("level" to "7"))
+            )
+        }
+        val task = ShuaHuangTask(
+            accountId = 123L,
+            config = ShuaHuangConfig(
+                enabled = true,
+                dailyLimit = 500,
+                start = MapCoordinate(11, 22),
+                minCopperWan = 0,
+                targetType = HuangTargetType.SHAN_ZEI,
+                selectedFormationIds = setOf(7L),
+                formationFilterMode = FormationFilterMode.UNIFIED,
+                deleteMailForSpeed = false,
+                autoConvertFoodToCopper = false,
+                targetFilter = ShuaHuangTargetFilter(levels = setOf(7, 8))
+            )
+        )
+
+        val step = SuspendRunner.run {
+            task.step(TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L))
+        }
+
+        assertEquals(TaskDecision.Sleep(1_000), step)
+        assertEquals(702L, protocol.lastDispatchTargetId)
+    }
+
+    @Test
+    fun desktopBrushRowKeepsMultipleGeneralsInOneDispatchFormation() {
+        val protocol = RecordingProtocol().apply {
+            generals = listOf(
+                General(1L, "将1", 80, 100, 100),
+                General(2L, "将2", 80, 100, 100)
+            )
+            formations = listOf(
+                FormationRuntime(
+                    id = 99L,
+                    name = "双将编队",
+                    generalIds = listOf(1L, 2L),
+                    status = FormationRuntimeStatus.IDLE,
+                    troopCount = 3000
+                )
+            )
+            mapTargets = listOf(
+                MapTarget(801L, MapCoordinate(12, 24), "山贼", raw = mapOf("level" to "8"))
+            )
+        }
+        val task = ShuaHuangTask(
+            123L,
+            ConfigDefaults.shuaHuang().copy(
+                enabled = true,
+                selectedFormationIds = setOf(1L, 2L),
+                targetType = HuangTargetType.SHAN_ZEI,
+                rules = listOf(
+                    ShuaHuangRule(
+                        generalIds = listOf(1L, 2L),
+                        targetFilter = ShuaHuangTargetFilter(levels = setOf(8))
+                    )
+                )
+            )
+        )
+
+        val decision = SuspendRunner.run {
+            task.step(TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L))
+        }
+
+        assertEquals(TaskDecision.Sleep(1_000L), decision)
+        assertEquals(99L, protocol.lastDispatchFormationId)
+        assertEquals(listOf(1L, 2L), protocol.lastDispatchGeneralIds)
     }
 
     @Test
@@ -862,6 +1240,117 @@ class TaskSchedulerStopAndShuaHuangTest {
         assertEquals(TaskDecision.Sleep(1_000), step)
         assertEquals(7L, protocol.lastDispatchFormationId)
         assertEquals(402L, protocol.lastDispatchTargetId)
+    }
+
+    @Test
+    fun shuaHuangTaskRejectsLegacyLevelTemplateCompositionWhenFilterIsConfigured() {
+        val protocol = RecordingProtocol().apply {
+            mapTargets = listOf(
+                MapTarget(
+                    601L,
+                    MapCoordinate(11, 22),
+                    "山贼",
+                    raw = mapOf(
+                        "level" to "1",
+                        "compositionCode" to "0500",
+                        "compositionSource" to "level-template"
+                    )
+                ),
+                MapTarget(
+                    602L,
+                    MapCoordinate(12, 23),
+                    "山贼",
+                    raw = mapOf(
+                        "level" to "1",
+                        "compositionCode" to "0500",
+                        "compositionSource" to "8540-units"
+                    )
+                )
+            )
+        }
+        val task = ShuaHuangTask(
+            accountId = 123L,
+            config = ShuaHuangConfig(
+                enabled = true,
+                dailyLimit = 500,
+                start = MapCoordinate(11, 22),
+                minCopperWan = 0,
+                targetType = HuangTargetType.SHAN_ZEI,
+                selectedFormationIds = setOf(7L),
+                formationFilterMode = FormationFilterMode.UNIFIED,
+                deleteMailForSpeed = false,
+                autoConvertFoodToCopper = false,
+                targetFilter = ShuaHuangTargetFilter(
+                    maxFoot = 0,
+                    maxBow = 5,
+                    maxCavalry = 0,
+                    maxChariot = 0
+                )
+            )
+        )
+
+        val step = SuspendRunner.run {
+            task.step(TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L))
+        }
+
+        assertEquals(TaskDecision.Sleep(1_000), step)
+        assertEquals(602L, protocol.lastDispatchTargetId)
+    }
+
+    @Test
+    fun shuaHuangTaskHonorsRequireFootLikeDesktop() {
+        val protocol = RecordingProtocol().apply {
+            mapTargets = listOf(
+                MapTarget(
+                    611L,
+                    MapCoordinate(11, 22),
+                    "山贼",
+                    raw = mapOf(
+                        "level" to "1",
+                        "compositionCode" to "0500",
+                        "compositionSource" to "8540-units"
+                    )
+                ),
+                MapTarget(
+                    612L,
+                    MapCoordinate(13, 24),
+                    "山贼",
+                    raw = mapOf(
+                        "level" to "1",
+                        "compositionCode" to "1000",
+                        "compositionSource" to "8540-units"
+                    )
+                )
+            )
+        }
+        val task = ShuaHuangTask(
+            accountId = 123L,
+            config = ShuaHuangConfig(
+                enabled = true,
+                dailyLimit = 500,
+                start = MapCoordinate(11, 22),
+                minCopperWan = 0,
+                targetType = HuangTargetType.SHAN_ZEI,
+                selectedFormationIds = setOf(7L),
+                formationFilterMode = FormationFilterMode.UNIFIED,
+                deleteMailForSpeed = false,
+                autoConvertFoodToCopper = false,
+                targetFilter = ShuaHuangTargetFilter(
+                    maxFoot = 5,
+                    maxBow = 0,
+                    maxCavalry = 0,
+                    maxChariot = 0,
+                    requireFoot = true
+                )
+            )
+        )
+
+        val step = SuspendRunner.run {
+            task.step(TaskContext(GameSession(123L, "unit-token", null, emptyMap(), 0), protocol, 1_000L))
+        }
+
+        assertEquals(TaskDecision.Sleep(1_000), step)
+        assertEquals(612L, protocol.lastDispatchTargetId)
     }
 
     @Test
@@ -937,6 +1426,65 @@ class TaskSchedulerStopAndShuaHuangTest {
         assertEquals(TaskDecision.Stop("shua huang dispatch failed: 体力不足，无法出征"), step)
         assertEquals(7L, protocol.lastDispatchFormationId)
         assertEquals(88L, protocol.lastDispatchTargetId)
+    }
+
+    @Test
+    fun shuaHuangTaskInvalidatesMissingTargetAndContinuesWithNextCandidate() {
+        val protocol = RecordingProtocol().apply {
+            mapTargets = listOf(
+                MapTarget(
+                    id = 88L,
+                    coordinate = MapCoordinate(11, 22),
+                    type = HuangTargetType.HUANG_JIN.name,
+                    raw = mapOf("level" to "1")
+                ),
+                MapTarget(
+                    id = 89L,
+                    coordinate = MapCoordinate(12, 22),
+                    type = HuangTargetType.HUANG_JIN.name,
+                    raw = mapOf("level" to "1")
+                )
+            )
+            dispatchResult = BattleResult(
+                success = false,
+                consumedTimes = 0,
+                raw = mapOf("responseText" to "目标不存在，不能到达。")
+            )
+        }
+        val task = ShuaHuangTask(
+            accountId = 123L,
+            config = ShuaHuangConfig(
+                enabled = true,
+                dailyLimit = 500,
+                start = MapCoordinate(11, 22),
+                minCopperWan = 0,
+                targetType = HuangTargetType.HUANG_JIN,
+                selectedFormationIds = setOf(7L),
+                formationFilterMode = FormationFilterMode.UNIFIED,
+                deleteMailForSpeed = false,
+                autoConvertFoodToCopper = false
+            )
+        )
+        val ctx = TaskContext(
+            GameSession(123L, "unit-token", null, emptyMap(), 0),
+            protocol,
+            1_000L
+        )
+
+        val rejected = SuspendRunner.run { task.step(ctx) }
+        protocol.dispatchResult = BattleResult(success = true, consumedTimes = 1)
+        val retried = SuspendRunner.run { task.step(ctx) }
+
+        assertEquals(
+            TaskDecision.Sleep(
+                AssistantBehaviorContract.defaults()
+                    .brushYellow.schedule.targetUnavailableRetryMillis
+            ),
+            rejected
+        )
+        assertEquals(TaskDecision.Sleep(1_000L), retried)
+        assertEquals(89L, protocol.lastDispatchTargetId)
+        assertEquals(2, protocol.calls.count { it == "dispatchFormation" })
     }
 
     @Test
@@ -1070,7 +1618,7 @@ class TaskSchedulerStopAndShuaHuangTest {
 
     @Test
     fun realSessionMetadataDrivesOfflineShuaHuangClosedLoopThroughStopLogout() {
-        val protocol = SessionAwareGameProtocolClient()
+        val protocol = SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true)
         val events = mutableListOf<String>()
         val scheduler = TaskScheduler(protocol, AutomationRuntimeStateStore(eventSink = events::add))
         val task = ShuaHuangTask(
@@ -1113,7 +1661,7 @@ class TaskSchedulerStopAndShuaHuangTest {
                     {
                       "formationId":3,
                       "targetId":"101",
-                      "responseText":"刷黄出征成功！继续搜索... usedAount=1",
+                      "responseText":"刷黄出征成功！继续搜索... usedAount=1 battleId=101",
                       "targetIdHex":"0000000000000065",
                       "generalIdHexChunks":["0000000000000007"]
                     }
@@ -1128,16 +1676,20 @@ class TaskSchedulerStopAndShuaHuangTest {
         assertEquals(TaskType.SHUA_HUANG, reports.single().type)
         assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(1_000)), reports.single().decisions)
         assertEquals(null, reports.single().error)
-        assertTrue(events.any { it.contains("dispatch-dry-run evidence=2026-07-08 bridge100 flows #30/#31/#32 and #38/#39") })
+        assertTrue(events.any {
+            it.contains("dispatch-dry-run evidence=shared-contract canonical brush-yellow actionType=3")
+        })
         assertTrue(events.any { it.contains("networkAllowed=false") && it.contains("1229=000000000000000000091229000001") })
         assertTrue(stop.logoutRequested)
         assertTrue(stop.logoutSucceeded)
-        assertEquals("real read-only session marked logged out locally", stop.logoutMessage)
+        assertEquals("real session marked logged out locally", stop.logoutMessage)
     }
 
     @Test
     fun fullChannelExtraSampleDrivesKotlinSchedulerAndSessionAwareProtocolClosedLoop() {
-        val protocol = RecordingDelegatingProtocol(SessionAwareGameProtocolClient())
+        val protocol = RecordingDelegatingProtocol(
+            SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true)
+        )
         val scheduler = TaskScheduler(protocol)
         val task = ShuaHuangTask(
             accountId = 10001L,
@@ -1190,7 +1742,7 @@ class TaskSchedulerStopAndShuaHuangTest {
         )
         assertTrue(stop.logoutRequested)
         assertTrue(stop.logoutSucceeded)
-        assertEquals("real read-only session marked logged out locally", stop.logoutMessage)
+        assertEquals("real session marked logged out locally", stop.logoutMessage)
     }
 
     @Test
@@ -1400,6 +1952,12 @@ class TaskSchedulerStopAndShuaHuangTest {
 
         SuspendRunner.run { scheduler.runOnce(session, listOf(task), nowMillis = 1_000L) }
         SuspendRunner.run { scheduler.runOnce(session, listOf(task), nowMillis = 2_000L) }
+        protocol.generals = protocol.generals.map {
+            it.copy(status = 0, raw = it.raw + ("liveStateMillis" to "12000"))
+        }
+        protocol.formations = protocol.formations.map {
+            it.copy(status = FormationRuntimeStatus.IDLE, raw = it.raw + ("liveStateMillis" to "12000"))
+        }
         SuspendRunner.run { scheduler.runOnce(session, listOf(task), nowMillis = 12_000L) }
 
         assertTrue(events.any { it.contains("account=123 state LOGGED_OUT -> RUNNING") })
@@ -1436,6 +1994,12 @@ class TaskSchedulerStopAndShuaHuangTest {
 
         val first = SuspendRunner.run { scheduler.runOnce(session, listOf(task), nowMillis = 1_000L) }
         val secondTooSoon = SuspendRunner.run { scheduler.runOnce(session, listOf(task), nowMillis = 2_000L) }
+        protocol.generals = protocol.generals.map {
+            it.copy(status = 0, raw = it.raw + ("liveStateMillis" to "12000"))
+        }
+        protocol.formations = protocol.formations.map {
+            it.copy(status = FormationRuntimeStatus.IDLE, raw = it.raw + ("liveStateMillis" to "12000"))
+        }
         val thirdAfterServerIdleWindow = SuspendRunner.run { scheduler.runOnce(session, listOf(task), nowMillis = 12_000L) }
 
         assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(1_000)), first.single().decisions)
@@ -1480,6 +2044,48 @@ class TaskSchedulerStopAndShuaHuangTest {
         assertEquals(1, protocol.calls.count { it == "dispatchFormation" })
     }
 
+    @Test
+    fun retryableBrushPreflightFailureReleasesDispatchingLeaseImmediately() {
+        val protocol = RecordingProtocol().apply {
+            dispatchProtocolResult = ProtocolResult.Err(
+                "EXPEDITION_AUTO_ENERGY_APPLIED",
+                "刷黄已加体，等待刷新真实状态",
+                retryable = true
+            )
+        }
+        val scheduler = TaskScheduler(protocol)
+        val task = ShuaHuangTask(
+            accountId = 123L,
+            config = ShuaHuangConfig(
+                enabled = true,
+                dailyLimit = 500,
+                start = MapCoordinate(11, 22),
+                minCopperWan = 0,
+                targetType = HuangTargetType.HUANG_JIN,
+                selectedFormationIds = setOf(7L),
+                formationFilterMode = FormationFilterMode.UNIFIED,
+                deleteMailForSpeed = false,
+                autoConvertFoodToCopper = false
+            )
+        )
+        val session = GameSession(123L, "unit-token", null, emptyMap(), 0)
+
+        val report = SuspendRunner.run {
+            scheduler.runOnce(session, listOf(task), nowMillis = 1_000L)
+        }.single()
+        val gate = scheduler.runtime.commandGate.tryReserveFormationForDispatch(
+            accountId = 123L,
+            owner = TaskType.DUNGEON,
+            taskKey = "unit-dungeon-after-preflight",
+            formation = protocol.formations.single(),
+            nowMillis = 2_000L,
+            reason = "verify retryable preflight released brush lease"
+        )
+
+        assertTrue(report.decisions.last() is TaskDecision.RetryAfter)
+        assertTrue(gate is GateResult.Allowed)
+    }
+
 }
 
 private fun fullOfflineReplayChannelExtraSample(): Map<String, String> = mapOf(
@@ -1507,7 +2113,7 @@ private fun fullOfflineReplayChannelExtraSample(): Map<String, String> = mapOf(
             "targetId":"101",
             "status":"成功",
             "usedCount":1,
-            "responseBody":"刷黄出征成功！继续搜索... usedCount=1",
+            "responseBody":"刷黄出征成功！继续搜索... usedCount=1 battleId=101",
             "generalIdHexChunks":["0000000000000007"],
             "raw":{"source":"generate_shuahuang_channel_extra_sample.py"}
         }
@@ -1620,14 +2226,39 @@ private class RecordingDelegatingProtocol(
         lastDispatchTargetId = target.id
         return delegate.dispatchFormation(session, formationId, target)
     }
+
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formation: FormationRuntime,
+        target: MapTarget
+    ): ProtocolResult<BattleResult> {
+        calls += "dispatchFormation"
+        lastDispatchFormationId = formation.id
+        lastDispatchTargetId = target.id
+        return delegate.dispatchFormation(session, formation, target)
+    }
+
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formation: FormationRuntime,
+        target: MapTarget,
+        formationRules: List<FormationConfig>
+    ): ProtocolResult<BattleResult> {
+        calls += "dispatchFormation"
+        lastDispatchFormationId = formation.id
+        lastDispatchTargetId = target.id
+        return delegate.dispatchFormation(session, formation, target, formationRules)
+    }
 }
 
 private class RecordingProtocol : GameProtocolClient {
     val calls = mutableListOf<String>()
     var lastDispatchFormationId: Long? = null
     var lastDispatchTargetId: Long? = null
+    var lastDispatchGeneralIds: List<Long> = emptyList()
     var resources: ResourceState = ResourceState(copper = 1_000_000L, food = 1_000_000L)
     var convertedResources: ResourceState = ResourceState(copper = 1_000_000L, food = 900_000L)
+    var monarchLevel: Int = 42
     var generals: List<General> = listOf(General(id = 1L, name = "赵云", growth = 90, loyalty = 100, energy = 100))
     var formations: List<FormationRuntime> = listOf(
         FormationRuntime(
@@ -1647,7 +2278,9 @@ private class RecordingProtocol : GameProtocolClient {
         )
     )
     var dispatchResult: BattleResult = BattleResult(success = true, consumedTimes = 1)
+    var dispatchProtocolResult: ProtocolResult<BattleResult>? = null
     var updateFormationResult: ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "formation"))
+    val updatedFormationConfigs = mutableListOf<FormationConfig>()
     val dailyStepResults: MutableMap<DailyStep, StepResult> = mutableMapOf()
     var inventory: List<InventoryItem> = emptyList()
     val inventoryActions = mutableListOf<Triple<Long, InventoryAction, Int>>()
@@ -1667,7 +2300,7 @@ private class RecordingProtocol : GameProtocolClient {
 
     override suspend fun queryMonarch(session: GameSession): ProtocolResult<MonarchProfile> {
         calls += "queryMonarch"
-        return ProtocolResult.Ok(MonarchProfile(level = 42, nation = "蜀", name = "测试君主"))
+        return ProtocolResult.Ok(MonarchProfile(level = monarchLevel, nation = "蜀", name = "测试君主"))
     }
 
     override suspend fun queryResourceState(session: GameSession): ProtocolResult<ResourceState> {
@@ -1684,7 +2317,26 @@ private class RecordingProtocol : GameProtocolClient {
         calls += "dispatchFormation"
         lastDispatchFormationId = formationId
         lastDispatchTargetId = target.id
-        return ProtocolResult.Ok(dispatchResult)
+        return dispatchProtocolResult ?: ProtocolResult.Ok(dispatchResult)
+    }
+
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formation: FormationRuntime,
+        target: MapTarget
+    ): ProtocolResult<BattleResult> {
+        lastDispatchGeneralIds = formation.generalIds
+        return dispatchFormation(session, formation.id, target)
+    }
+
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formation: FormationRuntime,
+        target: MapTarget,
+        formationRules: List<FormationConfig>
+    ): ProtocolResult<BattleResult> {
+        lastDispatchGeneralIds = formation.generalIds
+        return dispatchFormation(session, formation, target)
     }
 
     override suspend fun convertFoodToCopper(session: GameSession, mode: ConvertMode): ProtocolResult<ResourceState> {
@@ -1694,7 +2346,7 @@ private class RecordingProtocol : GameProtocolClient {
 
     override suspend fun searchMines(session: GameSession, config: MineConfig): ProtocolResult<List<MineSearchResult>> = ProtocolResult.Ok(emptyList())
     override suspend fun occupyMine(session: GameSession, mine: MineSearchResult, formationId: Long): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "occupy"))
-    override suspend fun withdrawMineDefense(session: GameSession, mineId: Long): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "withdraw"))
+    override suspend fun withdrawMineDefense(session: GameSession, battleId: Long): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "withdraw"))
     override suspend fun runDailyStep(session: GameSession, step: DailyStep): ProtocolResult<StepResult> {
         calls += "runDailyStep:$step"
         return ProtocolResult.Ok(dailyStepResults[step] ?: StepResult(true, "daily"))
@@ -1710,14 +2362,21 @@ private class RecordingProtocol : GameProtocolClient {
         return ProtocolResult.Ok(formations)
     }
 
-    override suspend fun healGeneral(session: GameSession, generalId: Long): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "heal"))
+    override suspend fun healGeneral(session: GameSession, generalId: Long): ProtocolResult<StepResult> {
+        calls += "healGeneral:$generalId"
+        return ProtocolResult.Ok(StepResult(true, "heal"))
+    }
     override suspend fun addEnergy(session: GameSession, generalId: Long): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "energy"))
     override suspend fun updateFormation(session: GameSession, config: FormationConfig): ProtocolResult<StepResult> {
         calls += "updateFormation"
+        updatedFormationConfigs += config
         return updateFormationResult
     }
     override suspend fun runInternalAffairs(session: GameSession, config: InternalAffairsConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "internal"))
-    override suspend fun runDungeon(session: GameSession, config: DungeonConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "dungeon"))
+    override suspend fun runDungeon(session: GameSession, config: DungeonConfig): ProtocolResult<StepResult> {
+        calls += "runDungeon"
+        return ProtocolResult.Ok(StepResult(true, "dungeon"))
+    }
     override suspend fun queryInventory(session: GameSession): ProtocolResult<List<InventoryItem>> = ProtocolResult.Ok(inventory)
     override suspend fun useOrDiscardItem(session: GameSession, itemId: Long, action: InventoryAction, count: Int): ProtocolResult<StepResult> {
         inventoryActions += Triple(itemId, action, count)
@@ -1727,7 +2386,7 @@ private class RecordingProtocol : GameProtocolClient {
     override suspend fun surrenderOrReleaseGenerals(session: GameSession, config: SurrenderReleaseConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "surrender"))
     override suspend fun sendGeneralToResourcePoint(session: GameSession, config: ResourcePointSendGeneralConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "send"))
     override suspend fun runAutoLoot(session: GameSession, config: AutoLootConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "loot"))
-    override suspend fun scanAlarmAndMaybeWithdraw(session: GameSession, config: AlarmWithdrawConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "alarm"))
+    override suspend fun scanAlarms(session: GameSession, config: AlarmConfig): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "alarm"))
     override suspend fun runBulkToolAction(session: GameSession, action: BulkToolAction): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "bulk"))
     override suspend fun queryOpenServer(query: OpenServerQuery): ProtocolResult<OpenServerResult> = ProtocolResult.Ok(OpenServerResult(query.serverName, "unit"))
     override suspend fun searchDefendedCities(session: GameSession, config: CityDefenseSearchConfig): ProtocolResult<List<CitySearchResult>> = ProtocolResult.Ok(emptyList())

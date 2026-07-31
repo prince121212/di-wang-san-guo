@@ -1,85 +1,126 @@
 package com.example.dwpmclone.domain.scheduler
 
 import com.example.dwpmclone.domain.model.GameSession
+import com.example.dwpmclone.domain.protocol.AssistantBehaviorContract
 import com.example.dwpmclone.domain.protocol.AssistantTask
 import com.example.dwpmclone.domain.protocol.GameProtocolClient
 import com.example.dwpmclone.domain.protocol.TaskContext
 import com.example.dwpmclone.domain.protocol.TaskDecision
 import com.example.dwpmclone.domain.protocol.TaskType
 import com.example.dwpmclone.domain.state.AutomationRuntimeStateStore
-import com.example.dwpmclone.domain.cloud.CloudFirstMapCoordinator
+import com.example.dwpmclone.domain.localmap.LocalTargetCache
+import com.example.dwpmclone.domain.state.DailyCompletionStore
+import com.example.dwpmclone.domain.state.InMemoryDailyCompletionStore
 
-/**
- * Minimal sequential scheduler for the static-evidence rebuild skeleton.
- *
- * It models scheduling decisions locally and does not execute production game mutations:
- * - one account/session owns multiple tasks;
- * - each task has prepare -> step -> recover -> stop hooks;
- * - real anti-ban delays, same-server mutexes, reconnection and protocol calls belong
- *   behind lawful implementations of GameProtocolClient / production scheduler policies.
- */
+/** Sequential per-account scheduler; task actions remain gated by GameProtocolClient and command leases. */
 class TaskScheduler(
     private val protocol: GameProtocolClient,
     val runtime: AutomationRuntimeStateStore = AutomationRuntimeStateStore(),
-    private val cloudMap: CloudFirstMapCoordinator = CloudFirstMapCoordinator(),
-    private val promptSink: ((Long, TaskType, String) -> Unit)? = null
+    private val localMap: LocalTargetCache = LocalTargetCache(),
+    private val promptSink: ((Long, TaskType, String) -> Unit)? = null,
+    private val dailyCompletions: DailyCompletionStore = InMemoryDailyCompletionStore(),
+    private val behaviorContract: AssistantBehaviorContract = AssistantBehaviorContract.defaults(),
+    private val successSink: ((Long, String, String) -> Unit)? = null,
+    private val clockMillis: () -> Long = System::currentTimeMillis,
+    /** Foreground service ownership is checked between tasks; tests/manual callers default true. */
+    private val executionAllowed: () -> Boolean = { true }
 ) {
+    /**
+     * Desktop tasks compete for the account command center between requests. Android cannot
+     * preempt one in-flight request, so it runs at most one idle mutation per batch and then
+     * rebuilds the due set. This prevents a military deadline that expires mid-batch from
+     * waiting behind every daily/maintenance task.
+     */
+    private val idleLaneCursorByAccount = linkedMapOf<Long, Int>()
+
     suspend fun runOnce(
         session: GameSession,
         tasks: List<AssistantTask<*>>,
         nowMillis: Long = System.currentTimeMillis()
-    ): List<TaskRunReport> {
+    ): List<TaskRunReport> = runBatch(session, tasks, nowMillis).reports
+
+    private suspend fun runBatch(
+        session: GameSession,
+        tasks: List<AssistantTask<*>>,
+        nowMillis: Long
+    ): SchedulerRunBatch {
         val ctx = TaskContext(
             session = session,
             protocol = protocol,
             nowMillis = nowMillis,
             runtime = runtime,
-            cloudMap = cloudMap,
-            promptSink = promptSink
+            localMap = localMap,
+            promptSink = promptSink,
+            dailyCompletions = dailyCompletions,
+            behaviorContract = behaviorContract,
+            successSink = successSink
         )
+        val ordered = uniqueTasksForAccount(session.accountId, tasks)
+        val hasDueMilitaryWork = ordered.any {
+            SchedulerTaskOrdering.lane(it.type, behaviorContract.scheduler) ==
+                SchedulerTaskLane.MILITARY
+        }
+        val dueIdleTasks = ordered.filter {
+            SchedulerTaskOrdering.lane(it.type, behaviorContract.scheduler) ==
+                SchedulerTaskLane.IDLE
+        }
+        val selectedIdleTask = if (
+            !hasDueMilitaryWork &&
+            behaviorContract.scheduler.idleLaneMustYieldToDueMilitaryWork &&
+            dueIdleTasks.isNotEmpty()
+        ) {
+            val cursor = Math.floorMod(
+                idleLaneCursorByAccount[session.accountId] ?: 0,
+                dueIdleTasks.size
+            )
+            idleLaneCursorByAccount[session.accountId] = cursor + 1
+            dueIdleTasks[cursor]
+        } else {
+            null
+        }
         val reports = mutableListOf<TaskRunReport>()
-        var formationFailure: TaskDecision? = null
-        uniqueTasksForAccount(session.accountId, tasks).forEach { task ->
-            if (formationFailure != null && task.type in FORMATION_DEPENDENT_TASKS) {
-                reports += TaskRunReport(
-                    accountId = task.accountId,
-                    type = task.type,
-                    decisions = listOf(
-                        TaskDecision.Stop(
-                            "blocked before ${task.type.name}: formation prerequisite=$formationFailure"
-                        )
-                    )
-                )
-                return@forEach
+        var deferredIdleTaskCount = 0
+        for (task in ordered) {
+            if (!executionAllowed()) break
+            val lane = SchedulerTaskOrdering.lane(task.type, behaviorContract.scheduler)
+            if (lane == SchedulerTaskLane.IDLE &&
+                behaviorContract.scheduler.idleLaneMustYieldToDueMilitaryWork &&
+                (hasDueMilitaryWork || task !== selectedIdleTask)
+            ) {
+                deferredIdleTaskCount += 1
+                continue
             }
             val report = runTaskOnce(ctx, task)
+            // A stop that arrived during this task owns the final visible state. Do not return a
+            // stale report that the service could write back over its "后台已停止" task stack.
+            if (!executionAllowed()) break
             reports += report
-            if (task.type == TaskType.FORMATION) {
-                val decision = report.decisions.lastOrNull()
-                if (decision is TaskDecision.Stop ||
-                    decision is TaskDecision.RetryAfter ||
-                    decision is TaskDecision.NeedRelogin
-                ) {
-                    formationFailure = decision
-                }
-            }
         }
-        return reports
+        return SchedulerRunBatch(reports, deferredIdleTaskCount)
     }
 
     /**
-     * Mirrors the desktop task registry invariant: one account may not execute two
-     * instances of the same task type in one scheduler batch. Keep the first configured
-     * instance so repeated imports or duplicated UI containers cannot duplicate actions.
+     * Mirrors the desktop registry and command-center order. Resident tasks are unique by
+     * type, while every distinct saved formation must run because one account can own many
+     * formation rows.
      */
     internal fun uniqueTasksForAccount(
         accountId: Long,
         tasks: List<AssistantTask<*>>
     ): List<AssistantTask<*>> {
         val seen = linkedSetOf<com.example.dwpmclone.domain.protocol.TaskType>()
-        return tasks.filter { task ->
-            task.accountId == accountId && seen.add(task.type)
+        val seenFormationIds = linkedSetOf<Long>()
+        val unique = tasks.filter { task ->
+            if (task.accountId != accountId) return@filter false
+            if (task.type == TaskType.FORMATION) {
+                val formationId = (task.config as? com.example.dwpmclone.domain.model.FormationConfig)
+                    ?.formationId
+                formationId == null || seenFormationIds.add(formationId)
+            } else {
+                seen.add(task.type)
+            }
         }
+        return SchedulerTaskOrdering.order(unique, behaviorContract.scheduler)
     }
 
     /**
@@ -95,13 +136,26 @@ class TaskScheduler(
         nowMillis: Long = System.currentTimeMillis(),
         reasonPrefix: String = "terminal task decision"
     ): TaskLifecycleReport {
-        val runReports = runOnce(session, tasks, nowMillis)
+        val batch = runBatch(session, tasks, nowMillis)
+        val runReports = batch.reports
         val localStops = TaskLifecycleInspector.localStopDecisions(runReports)
         val localStopReports = localStops.mapNotNull { terminal ->
             val task = tasks.firstOrNull { it.accountId == terminal.accountId && it.type == terminal.type }
                 ?: return@mapNotNull null
             val reason = "task decision: ${terminal.decision}"
-            task.stop(TaskContext(session, protocol, nowMillis, runtime, cloudMap, promptSink), reason)
+            task.stop(
+                TaskContext(
+                    session,
+                    protocol,
+                    nowMillis,
+                    runtime,
+                    localMap,
+                    promptSink,
+                    dailyCompletions,
+                    behaviorContract
+                ),
+                reason
+            )
             runtime.commandGate.releaseTask(session.accountId, task.type)
             TaskLocalStopReport(session.accountId, task.type, reason)
         }
@@ -112,7 +166,13 @@ class TaskScheduler(
         } else {
             null
         }
-        return TaskLifecycleReport(runReports, terminal, stopReport, localStopReports)
+        return TaskLifecycleReport(
+            runReports,
+            terminal,
+            stopReport,
+            localStopReports,
+            deferredIdleTaskCount = batch.deferredIdleTaskCount
+        )
     }
 
     private suspend fun runTaskOnce(ctx: TaskContext, task: AssistantTask<*>): TaskRunReport {
@@ -123,11 +183,22 @@ class TaskScheduler(
             if (prepare == TaskDecision.Continue) {
                 decisions += task.step(ctx)
             }
-            TaskRunReport(task.accountId, task.type, decisions)
+            TaskRunReport(
+                task.accountId,
+                task.type,
+                decisions,
+                completedAtMillis = clockMillis()
+            )
         } catch (t: Throwable) {
             val recovered = task.recover(ctx, t)
             decisions += recovered
-            TaskRunReport(task.accountId, task.type, decisions, error = t.message)
+            TaskRunReport(
+                task.accountId,
+                task.type,
+                decisions,
+                error = t.message,
+                completedAtMillis = clockMillis()
+            )
         }
     }
 
@@ -138,7 +209,19 @@ class TaskScheduler(
     ): TaskStopReport {
         runtime.commandGate.markStopping(session.accountId)
         tasks.forEach { task ->
-            task.stop(TaskContext(session, protocol, System.currentTimeMillis(), runtime, cloudMap, promptSink), reason)
+            task.stop(
+                TaskContext(
+                    session,
+                    protocol,
+                    System.currentTimeMillis(),
+                    runtime,
+                    localMap,
+                    promptSink,
+                    dailyCompletions,
+                    behaviorContract
+                ),
+                reason
+            )
             runtime.commandGate.releaseTask(session.accountId, task.type)
         }
         val logout = protocol.logout(session)
@@ -155,23 +238,20 @@ class TaskScheduler(
         )
     }
 
-    companion object {
-        private val FORMATION_DEPENDENT_TASKS = setOf(
-            TaskType.LOSSLESS,
-            TaskType.SHUA_HUANG,
-            TaskType.AUTO_MINING,
-            TaskType.DUNGEON,
-            TaskType.AUTO_LOOT
-        )
-    }
-
 }
+
+private data class SchedulerRunBatch(
+    val reports: List<TaskRunReport>,
+    val deferredIdleTaskCount: Int
+)
 
 data class TaskRunReport(
     val accountId: Long,
     val type: TaskType,
     val decisions: List<TaskDecision>,
-    val error: String? = null
+    val error: String? = null,
+    /** Wall-clock time when this task produced its decision, not when the batch began. */
+    val completedAtMillis: Long? = null
 )
 
 data class TaskStopReport(
@@ -192,7 +272,8 @@ data class TaskLifecycleReport(
     val runReports: List<TaskRunReport>,
     val terminalDecisions: List<TerminalTaskDecision>,
     val stopReport: TaskStopReport?,
-    val localStopReports: List<TaskLocalStopReport> = emptyList()
+    val localStopReports: List<TaskLocalStopReport> = emptyList(),
+    val deferredIdleTaskCount: Int = 0
 ) {
     val logoutRequested: Boolean
         get() = stopReport?.logoutRequested == true

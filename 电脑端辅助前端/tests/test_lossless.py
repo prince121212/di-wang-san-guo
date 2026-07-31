@@ -153,6 +153,29 @@ class LosslessProtocolTests(unittest.TestCase):
             expected_prepare + "ffffffffffffffff000000",
         )
 
+    def test_missing_prepare_receipt_never_sends_dispatch(self) -> None:
+        sent_opcodes: list[int] = []
+
+        def fake_post_game(_url, commands, _dm, **_kwargs):
+            sent_opcodes.append(commands[0][0])
+            return 200, b"", []
+
+        session = {
+            "sessionId": "lossless-parity",
+            "gameHttp": "http://game.example/kingWapServer/HttpClient",
+            "dm": 202,
+            "role": {"roleId": 202},
+        }
+        generals = [{"id": 7, "idHex": "0000000000000007", "name": "赵云"}]
+
+        with patch.object(SERVER, "post_game", side_effect=fake_post_game):
+            result = SERVER.dispatch_lossless(session, generals)
+
+        self.assertFalse(result["success"])
+        self.assertIn("已禁止发送正式出征", result["failureReason"])
+        self.assertEqual(sent_opcodes, [SERVER.LOSSLESS_PREPARE_OPCODE])
+        self.assertNotIn(SERVER.LOSSLESS_DISPATCH_OPCODE, sent_opcodes)
+
     def test_only_explicitly_enabled_rows_execute(self) -> None:
         session = {
             "generals": [

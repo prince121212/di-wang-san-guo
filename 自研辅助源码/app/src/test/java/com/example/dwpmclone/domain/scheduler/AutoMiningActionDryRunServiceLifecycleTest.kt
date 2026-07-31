@@ -12,7 +12,7 @@ class AutoMiningActionDryRunServiceLifecycleTest {
     @Test
     fun savedUiAutoMiningConfigRunsOccupyWithoutImmediateWithdrawThroughRealSessionServiceLifecycle() {
         val savedPlan = SavedConfigTaskPlanFactory.plan(10001L, autoMiningSavedConfigExport())
-        val originalTask = savedPlan.tasks.single { it.type == TaskType.AUTO_MINING } as MineSearchMockTask
+        val originalTask = savedPlan.tasks.single { it.type == TaskType.AUTO_MINING } as MineTask
         val realSession = GameSession(
             accountId = 10001L,
             tokenCiphertext = "real-session-token",
@@ -21,26 +21,32 @@ class AutoMiningActionDryRunServiceLifecycleTest {
             sourceMode = 1
         )
         val aligned = RealSessionTaskPlanAdapter.attachRealSession(savedPlan, realSession)
-        val alignedTask = aligned.tasks.single { it.type == TaskType.AUTO_MINING } as MineSearchMockTask
-        val protocol = RecordingAutoMiningProtocol(SessionAwareGameProtocolClient())
+        val alignedTask = aligned.tasks.single { it.type == TaskType.AUTO_MINING } as MineTask
+        val protocol = RecordingAutoMiningProtocol(
+            SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true)
+        )
         val runner = LocalSchedulerLifecycleRunner(TaskScheduler(protocol))
 
         val batch = SuspendRunner.run {
             runner.runPlansOnceAndStopOnTerminal(tick = 41, plans = listOf(aligned), nowMillis = 1_000L)
         }
+        val report = batch.runReports.single { it.type == TaskType.AUTO_MINING }
 
         assertEquals(setOf(1L), originalTask.config.selectedFormationIds)
         assertEquals(setOf(3L), alignedTask.config.selectedFormationIds)
-        assertEquals(1, batch.runReports.size)
-        assertEquals(TaskType.AUTO_MINING, batch.runReports.single().type)
-        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(30_000)), batch.runReports.single().decisions)
+        assertEquals(2, batch.runReports.size)
+        assertEquals(1, batch.deferredIdleTaskCount)
+        assertTrue(batch.runReports.none { it.type == TaskType.MINE_PREFETCH })
+        assertEquals(TaskType.AUTO_MINING, report.type)
+        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(5_000)), report.decisions)
         assertEquals(emptyList<TerminalTaskDecision>(), batch.terminalDecisions)
         assertEquals(emptyList<TaskStopReport>(), batch.stopReports)
         assertEquals(
             listOf(
                 "validateSession",
                 "searchMines",
-                "occupyMine:3:257"
+                "occupyMine:3:257",
+                "validateSession",
             ),
             protocol.calls
         )
@@ -53,7 +59,7 @@ class AutoMiningActionDryRunServiceLifecycleTest {
     }
 
     private fun autoMiningSavedConfigExport(): JSONObject = JSONObject()
-        .put("schema_version", "0.1-static-mock")
+        .put("schema_version", "1.0-local")
         .put(
             "configs",
             JSONObject().put(
@@ -65,7 +71,7 @@ class AutoMiningActionDryRunServiceLifecycleTest {
                         .put("APKTOOL_RENAMED_0x7f070174", 11) // start x
                         .put("APKTOOL_RENAMED_0x7f070175", 22) // start y
                         .put("APKTOOL_RENAMED_0x7f070178", true) // hit empty mine
-                        .put("APKTOOL_RENAMED_0x7f070172", true) // withdraw defense after occupy
+                        .put("APKTOOL_RENAMED_0x7f070172", false) // withdraw defense disabled in dry-run fixture
                         .put("APKTOOL_RENAMED_0x7f070179", true) // gold
                         .put("APKTOOL_RENAMED_0x7f070181", false) // silver
                 )
@@ -92,7 +98,7 @@ class AutoMiningActionDryRunServiceLifecycleTest {
                 "message":"占矿出征成功",
                 "generalIdHexChunks":["0000000000000007"],
                 "resourcePointIdHex":"0000000000000101",
-                "raw":{"evidence":"p2=1/1520010+1522010"}
+                "raw":{"evidence":"p2=1/1520010+1522010","battleId":"445566"}
             }
         ]""",
         "withdrawMineResultsJson" to """[
@@ -127,8 +133,16 @@ private class RecordingAutoMiningProtocol(
         return result
     }
 
-    override suspend fun withdrawMineDefense(session: GameSession, mineId: Long): ProtocolResult<StepResult> {
-        calls += "withdrawMineDefense:$mineId"
-        return delegate.withdrawMineDefense(session, mineId)
+    override suspend fun occupyMine(
+        session: GameSession,
+        mine: MineSearchResult,
+        generalIds: List<Long>,
+        maxMarchMinutes: Int,
+        formationRules: List<FormationConfig>
+    ): ProtocolResult<StepResult> = occupyMine(session, mine, generalIds.first())
+
+    override suspend fun withdrawMineDefense(session: GameSession, battleId: Long): ProtocolResult<StepResult> {
+        calls += "withdrawMineDefense:$battleId"
+        return delegate.withdrawMineDefense(session, battleId)
     }
 }

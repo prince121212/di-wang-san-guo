@@ -13,14 +13,15 @@ data class LosslessStatus(
     val reopenCost: Int?,
     val selectedLevel: Int?,
     val stageId: Int?,
+    private val modeContract: LosslessModeBehaviorContract = LosslessModeBehaviorContract.defaults()
 ) {
     val phase: LosslessPhase
         get() = when {
             settlementPending -> LosslessPhase.SETTLEMENT
-            remainingAttempts <= 0 || mode == 4 -> LosslessPhase.DAILY_DONE
-            mode == 0 -> LosslessPhase.COOLDOWN
-            mode == 3 -> LosslessPhase.FIGHTING
-            mode == 1 || mode == 2 -> LosslessPhase.READY
+            remainingAttempts <= 0 || mode == modeContract.dailyDone -> LosslessPhase.DAILY_DONE
+            mode == modeContract.cooldown -> LosslessPhase.COOLDOWN
+            mode == modeContract.fighting -> LosslessPhase.FIGHTING
+            mode in modeContract.ready -> LosslessPhase.READY
             else -> LosslessPhase.UNKNOWN
         }
 }
@@ -89,9 +90,10 @@ data class LosslessLineupVerdict(
  * and callers must fail closed before sending a battle command.
  */
 object LosslessProtocolShapes {
-    val QUERY_PAYLOAD: ByteArray = byteArrayOf(0)
-
-    fun parseStatus(payload: ByteArray): LosslessStatus {
+    fun parseStatus(
+        payload: ByteArray,
+        contract: LosslessBehaviorContract = LosslessBehaviorContract.defaults()
+    ): LosslessStatus {
         require(payload.size >= 13) { "0x8900公共字段不足：${payload.size}/13" }
         val buffer = ByteBuffer.wrap(payload)
         val timer = buffer.long.coerceAtLeast(0)
@@ -126,11 +128,17 @@ object LosslessProtocolShapes {
             reopenCost = reopenCost,
             selectedLevel = selectedLevel,
             stageId = stageId,
+            modeContract = contract.modes
         )
     }
 
-    fun buildSelectLevelPayload(level: Int): ByteArray {
-        require(level in 1..10) { "无损等级必须为1..10" }
+    fun buildSelectLevelPayload(
+        level: Int,
+        contract: LosslessBehaviorContract = LosslessBehaviorContract.defaults()
+    ): ByteArray {
+        require(level in contract.minimumLevel..contract.maximumLevel) {
+            "无损等级必须为${contract.minimumLevel}..${contract.maximumLevel}"
+        }
         return ByteBuffer.allocate(4).putInt(level).array()
     }
 
@@ -175,26 +183,30 @@ object LosslessProtocolShapes {
         return LosslessLineup(status == 0, status, stageId, levelName, stageName, enemies)
     }
 
-    fun evaluateLevel10Guard(lineup: LosslessLineup): LosslessLineupVerdict {
-        if (lineup.stageId != 0x3011 || lineup.stageName != "卫兵") {
+    fun evaluateLevel10Guard(
+        lineup: LosslessLineup,
+        contract: LosslessBehaviorContract = LosslessBehaviorContract.defaults()
+    ): LosslessLineupVerdict {
+        val guard = contract.level10Guard
+        if (lineup.stageId != guard.stageId || lineup.stageName != guard.stageName) {
             return LosslessLineupVerdict(true, "仅10级卫兵需要筛选阵容", emptyList(), emptyList())
         }
         val chariots = lineup.enemies.filter {
-            listOf("弩车", "投石车", "冲车").any(it.soldierType::contains)
+            guard.chariotTokens.any(it.soldierType::contains)
         }.map { it.position }
-        val catapults = lineup.enemies.filter { "投石车" in it.soldierType }.map { it.position }
-        val otherChariots = chariots - catapults.toSet()
-        val qualified = lineup.enemies.size == 5 &&
-            chariots.size >= 3 &&
+        val catapults = lineup.enemies.filter { guard.catapultToken in it.soldierType }
+            .map { it.position }
+        val lastChariotIsCatapult = chariots.isNotEmpty() && chariots.last() in catapults
+        val qualified = lineup.enemies.size == guard.enemyCount &&
+            chariots.size >= guard.minimumChariots &&
             catapults.isNotEmpty() &&
-            otherChariots.isNotEmpty() &&
-            catapults.min() > otherChariots.max()
+            (!guard.lastChariotMustBeCatapult || lastChariotIsCatapult)
         val reason = when {
-            lineup.enemies.size != 5 -> "敌军数量不是5"
-            chariots.size < 3 -> "战车类少于3名"
+            lineup.enemies.size != guard.enemyCount -> "敌军数量不是${guard.enemyCount}"
+            chariots.size < guard.minimumChariots -> "战车类少于${guard.minimumChariots}名"
             catapults.isEmpty() -> "没有投石车"
-            otherChariots.isEmpty() -> "没有排在投石车之前的其他战车兵种"
-            catapults.min() <= otherChariots.max() -> "投石车没有排在所有其他战车兵种之后"
+            guard.lastChariotMustBeCatapult && !lastChariotIsCatapult ->
+                "所有战车兵种中的最后一个不是投石车"
             else -> "符合10级卫兵筛选条件"
         }
         return LosslessLineupVerdict(qualified, reason, chariots, catapults)
@@ -225,24 +237,34 @@ object LosslessProtocolShapes {
         )
     }
 
-    fun buildPreparePayload(generalIds: List<Long>, roleId: Long): ByteArray {
+    fun buildPreparePayload(
+        generalIds: List<Long>,
+        roleId: Long,
+        contract: LosslessBehaviorContract = LosslessBehaviorContract.defaults()
+    ): ByteArray {
         require(generalIds.isNotEmpty()) { "无损至少需要选择1个出征将领" }
-        require(generalIds.size <= 5) { "无损最多选择5个出征将领" }
+        require(generalIds.size <= contract.maximumGeneralsPerFormation) {
+            "无损最多选择${contract.maximumGeneralsPerFormation}个出征将领"
+        }
         require(generalIds.all { it > 0 }) { "无损将领ID必须为正数" }
         require(roleId > 0) { "无损缺少角色ID" }
         return ByteBuffer.allocate(2 + generalIds.size * 8 + 8)
-            .put(0x0b)
+            .put(contract.actionType.toByte())
             .put(generalIds.size.toByte())
             .also { out -> generalIds.forEach(out::putLong) }
             .putLong(roleId)
             .array()
     }
 
-    fun buildExpeditionPayload(generalIds: List<Long>, roleId: Long): ByteArray =
-        ByteBuffer.allocate(buildPreparePayload(generalIds, roleId).size + 11)
-            .put(buildPreparePayload(generalIds, roleId))
-            .putLong(-1L)
-            .put(byteArrayOf(0, 0, 0))
+    fun buildExpeditionPayload(
+        generalIds: List<Long>,
+        roleId: Long,
+        contract: LosslessBehaviorContract = LosslessBehaviorContract.defaults()
+    ): ByteArray =
+        ByteBuffer.allocate(buildPreparePayload(generalIds, roleId, contract).size + 11)
+            .put(buildPreparePayload(generalIds, roleId, contract))
+            .putLong(contract.immediateRelatedLong)
+            .put(contract.immediateFlags)
             .array()
 
     private fun ByteBuffer.readUtf(label: String): String {

@@ -1,8 +1,10 @@
 package com.example.dwpmclone.domain.protocol
 
 import com.example.dwpmclone.domain.model.MapCoordinate
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.File
 
 class TargetSearchResponseParserTest {
     @Test
@@ -52,22 +54,42 @@ class TargetSearchResponseParserTest {
     }
 
     @Test
-    fun parsesStructured8540TargetsWithActionRawRecordAndComposition() {
+    fun parsesCompleteStructured8540WithDesktopFieldOrderAndRealUnits() {
+        val fixture = sharedFixture()
+        val response = fixture.getString("responseHex")
+        val expected = fixture.getJSONObject("expected")
+
+        val target = TargetSearchResponseParser.parse(response).single()
+
+        assertEquals(expected.getLong("id"), target.id)
+        assertEquals(expected.getString("kind"), target.type)
+        assertEquals(MapCoordinate(expected.getInt("x"), expected.getInt("y")), target.coordinate)
+        assertEquals(expected.getInt("level").toString(), target.raw["rank"])
+        assertEquals(expected.getString("compositionCode"), target.raw["compositionCode"])
+        assertEquals(expected.getString("compositionSource"), target.raw["compositionSource"])
+        assertEquals(expected.getInt("resource1").toString(), target.raw["resource1"])
+        assertEquals(expected.getInt("resource2").toString(), target.raw["resource2"])
+        assertEquals("4,5", target.raw["lootIds"])
+        assertEquals("10,11,12,13", target.raw["unitSoldierTypeCodes"])
+        assertEquals("1200,900,800,700", target.raw["unitSoldierCounts"])
+        assertEquals("8540-structured", target.raw["source"])
+        assertEquals("0000000000464371000A31E7BAA7E5B1B1E8B4BC", target.raw["rawRecord"])
+    }
+
+    @Test
+    fun partialStructured8540DoesNotInventCompositionFromLevel() {
         val response =
-            "00bb003801" + // map width/height/count
+            "00bb003801" +
                 "0000000000464371" + utfHex("1级山贼") +
                 "033601009d002a" + utfHex("一些资源,") +
                 "0000002f00000074"
 
         val target = TargetSearchResponseParser.parse(response).single()
 
-        assertEquals(4604785L, target.id)
-        assertEquals("山贼", target.type)
-        assertEquals(MapCoordinate(47, 116), target.coordinate)
-        assertEquals("1", target.raw["rank"])
-        assertEquals("1000", target.raw["compositionCode"])
-        assertEquals("8540-structured", target.raw["source"])
-        assertEquals("0000000000464371000A31E7BAA7E5B1B1E8B4BC", target.raw["rawRecord"])
+        assertEquals(MapCoordinate(157, 42), target.coordinate)
+        assertEquals("", target.raw["compositionCode"])
+        assertEquals("unavailable", target.raw["compositionSource"])
+        assertEquals("8540-structured-partial", target.raw["source"])
     }
 
     @Test
@@ -109,5 +131,17 @@ class TargetSearchResponseParserTest {
         val bytes = text.toByteArray(Charsets.UTF_8)
         return bytes.size.toString(16).padStart(4, '0') +
             bytes.joinToString(separator = "") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+    }
+
+    private fun sharedFixture(): JSONObject {
+        val file = listOf(
+            File("../shared_core/protocol_parity_fixtures.json"),
+            File("../../shared_core/protocol_parity_fixtures.json"),
+            File("shared_core/protocol_parity_fixtures.json")
+        ).firstOrNull(File::exists)
+            ?: error("shared_core/protocol_parity_fixtures.json is missing")
+        return JSONObject(file.readText())
+            .getJSONObject("fixtures")
+            .getJSONObject("targetSearch8540Complete")
     }
 }

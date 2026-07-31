@@ -28,7 +28,11 @@ class TaskRuntimeStatusTest {
     @Test
     fun retryStopReloginAndErrorsRemainDistinguishable() {
         val retry = TaskRuntimeStatusMapper.fromReport(
-            TaskRunReport(7L, TaskType.DAILY, listOf(TaskDecision.RetryAfter(10_000))),
+            TaskRunReport(
+                7L,
+                TaskType.DUNGEON,
+                listOf(TaskDecision.RetryAfter(10_000, "副本等待前序条件"))
+            ),
             5_000
         )
         val stop = TaskRuntimeStatusMapper.fromReport(
@@ -46,6 +50,7 @@ class TaskRuntimeStatusTest {
 
         assertEquals(TaskRuntimeState.RETRYING, retry.state)
         assertEquals(15_000L, retry.nextRunAtMillis)
+        assertEquals("副本等待前序条件", retry.message)
         assertEquals(TaskRuntimeState.STOPPED, stop.state)
         assertNull(stop.nextRunAtMillis)
         assertEquals("done", stop.message)
@@ -53,5 +58,45 @@ class TaskRuntimeStatusTest {
         assertEquals("expired", relogin.message)
         assertEquals(TaskRuntimeState.ERROR, error.state)
         assertEquals("boom", error.message)
+    }
+
+    @Test
+    fun activeDungeonPollDelayRemainsRunning() {
+        val status = TaskRuntimeStatusMapper.fromReport(
+            TaskRunReport(
+                accountId = 7L,
+                type = TaskType.DUNGEON,
+                decisions = listOf(
+                    TaskDecision.Continue,
+                    TaskDecision.Sleep(
+                        millis = 10_000,
+                        keepRunning = true,
+                        reason = "副本第5章第6关战斗中"
+                    )
+                )
+            ),
+            nowMillis = 1_000
+        )
+
+        assertEquals(TaskRuntimeState.RUNNING, status.state)
+        assertEquals(11_000L, status.nextRunAtMillis)
+        assertEquals("副本第5章第6关战斗中", status.message)
+    }
+
+    @Test
+    fun recoveredExceptionKeepsRetryDeadlineAcrossProcessRecreation() {
+        val status = TaskRuntimeStatusMapper.fromReport(
+            TaskRunReport(
+                7L,
+                TaskType.DAILY,
+                listOf(TaskDecision.RetryAfter(10_000)),
+                error = "temporary network error"
+            ),
+            nowMillis = 5_000
+        )
+
+        assertEquals(TaskRuntimeState.RETRYING, status.state)
+        assertEquals(15_000L, status.nextRunAtMillis)
+        assertEquals(true, status.message.contains("temporary network error"))
     }
 }

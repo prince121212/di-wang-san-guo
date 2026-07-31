@@ -22,7 +22,7 @@ class InventoryUiConfigMappingTest {
             .put("APKTOOL_RENAMED_0x7f070046", false)
             .put("autoOpenItemNames", JSONArray(listOf("青铜宝箱")))
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put(
                 "configs",
                 JSONObject().put(
@@ -35,7 +35,7 @@ class InventoryUiConfigMappingTest {
 
         val task = SavedConfigTaskPlanFactory.plan(77L, export).tasks
             .single { it.type == com.example.dwpmclone.domain.protocol.TaskType.INVENTORY }
-            as InventoryCleanupMockTask
+            as InventoryCleanupTask
 
         assertEquals(setOf("传音符", "徭役令"), task.config.discardItems)
         assertEquals(setOf("青铜宝箱"), task.config.autoOpenItemNames)

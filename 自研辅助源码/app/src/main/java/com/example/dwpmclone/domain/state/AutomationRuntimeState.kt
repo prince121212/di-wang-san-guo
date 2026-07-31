@@ -78,7 +78,7 @@ sealed class GateResult {
 
     fun asDecision(): TaskDecision = when (this) {
         Allowed -> TaskDecision.Continue
-        is Blocked -> TaskDecision.Sleep(retryAfterMillis)
+        is Blocked -> TaskDecision.Sleep(retryAfterMillis, reason = reason)
     }
 
     companion object {
@@ -88,11 +88,13 @@ sealed class GateResult {
 
 /** In-memory state store scoped to one scheduler/service process. */
 class AutomationRuntimeStateStore(
-    private val defaultBusyLeaseMillis: Long = 5 * 60_000L,
+    private val defaultBusyLeaseMillis: Long = 20 * 60_000L,
     private val serverIdleConfirmMillis: Long = 10_000L,
+    private val timezoneId: String = "Asia/Shanghai",
     val enforceCommandGate: Boolean = true,
     private val eventSink: (String) -> Unit = {},
-    private val dailySuccessSink: (Long, TaskType, Int, Long) -> Unit = { _, _, _, _ -> }
+    private val dailySuccessSink: (Long, TaskType, Int, Long) -> Unit = { _, _, _, _ -> },
+    private val dailySuccessSource: (Long, TaskType, Long) -> Int = { _, _, _ -> 0 }
 ) {
     private val accountStates = mutableMapOf<Long, AccountRunState>()
     private val generalLeases = mutableMapOf<Pair<Long, Long>, GeneralLease>()
@@ -102,6 +104,7 @@ class AutomationRuntimeStateStore(
     private val brushLocalConsumedDay = mutableMapOf<Pair<Long, TaskType>, Int>()
     private val brushPersistedBaseline = mutableMapOf<Pair<Long, TaskType>, Int>()
     private val brushPersistedBaselineDay = mutableMapOf<Pair<Long, TaskType>, Int>()
+    private val residentRuleCursors = mutableMapOf<Pair<Long, TaskType>, Int>()
 
     val commandGate: CommandGate = CommandGate(this, defaultBusyLeaseMillis)
 
@@ -159,10 +162,25 @@ class AutomationRuntimeStateStore(
         if (brushPersistedBaselineDay[key] != dayKey) {
             val hadPreviousDay = brushPersistedBaselineDay.containsKey(key)
             brushPersistedBaselineDay[key] = dayKey
-            brushPersistedBaseline[key] = if (hadPreviousDay) 0 else persistedCount.coerceAtLeast(0)
+            val localPersisted = runCatching {
+                dailySuccessSource(accountId, owner, nowMillis)
+            }.getOrDefault(0).coerceAtLeast(0)
+            brushPersistedBaseline[key] = if (hadPreviousDay) {
+                localPersisted
+            } else {
+                maxOf(persistedCount.coerceAtLeast(0), localPersisted)
+            }
         }
         return brushPersistedBaseline[key] ?: 0
     }
+
+    fun persistedDailySuccessCount(
+        accountId: Long,
+        owner: TaskType,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Int = runCatching { dailySuccessSource(accountId, owner, nowMillis) }
+        .getOrDefault(0)
+        .coerceAtLeast(0)
 
     @Synchronized
     fun addBrushConsumed(
@@ -206,7 +224,9 @@ class AutomationRuntimeStateStore(
     }
 
     private fun localDayKey(nowMillis: Long): Int {
-        val calendar = java.util.Calendar.getInstance().apply { timeInMillis = nowMillis }
+        val calendar = java.util.Calendar.getInstance(
+            java.util.TimeZone.getTimeZone(timezoneId)
+        ).apply { timeInMillis = nowMillis }
         return calendar.get(java.util.Calendar.YEAR) * 1000 +
             calendar.get(java.util.Calendar.DAY_OF_YEAR)
     }
@@ -214,6 +234,19 @@ class AutomationRuntimeStateStore(
     @Synchronized
     fun pendingBrushRecoveryGeneralIds(accountId: Long, owner: TaskType): Set<Long> =
         brushPendingRecovery[accountId to owner]?.toSet().orEmpty()
+
+    @Synchronized
+    fun residentRuleIndex(accountId: Long, owner: TaskType, ruleCount: Int): Int {
+        if (ruleCount <= 0) return 0
+        return Math.floorMod(residentRuleCursors[accountId to owner] ?: 0, ruleCount)
+    }
+
+    @Synchronized
+    fun advanceResidentRule(accountId: Long, owner: TaskType, ruleCount: Int) {
+        if (ruleCount <= 0) return
+        val key = accountId to owner
+        residentRuleCursors[key] = Math.floorMod((residentRuleCursors[key] ?: 0) + 1, ruleCount)
+    }
 
     @Synchronized
     fun addPendingBrushRecovery(accountId: Long, owner: TaskType, generalIds: Collection<Long>) {
@@ -252,18 +285,52 @@ class AutomationRuntimeStateStore(
                     lease.generalIds.all { generalId ->
                         val serverGeneral = generalById[generalId]
                         serverGeneral != null &&
-                            (serverGeneral.status == null || serverGeneral.status == 0) &&
+                            serverGeneral.status == 0 &&
                             isFreshEnoughForRelease(serverGeneral.raw, lease.acquiredAtMillis)
                     }
             }
             .map { it.formationId }
             .toSet()
-        if (releasableFormationIds.isEmpty()) return
-        emit("account=$accountId server-idle-confirm release formations=${releasableFormationIds.joinToString()}")
-        formationLeases.entries.removeIf { (_, lease) -> lease.accountId == accountId && lease.formationId in releasableFormationIds }
-        generalLeases.entries.removeIf { (_, lease) ->
-            lease.accountId == accountId && formationLeases.values.none { remaining ->
-                remaining.accountId == accountId && lease.generalId in remaining.generalIds
+        if (releasableFormationIds.isNotEmpty()) {
+            val releasedGeneralIds = formationLeases.values
+                .filter { it.accountId == accountId && it.formationId in releasableFormationIds }
+                .flatMapTo(linkedSetOf()) { it.generalIds }
+            emit("account=$accountId server-idle-confirm release formations=${releasableFormationIds.joinToString()}")
+            formationLeases.entries.removeIf { (_, lease) ->
+                lease.accountId == accountId && lease.formationId in releasableFormationIds
+            }
+            generalLeases.entries.removeIf { (_, lease) ->
+                lease.accountId == accountId && lease.generalId in releasedGeneralIds &&
+                    formationLeases.values.none { remaining ->
+                        remaining.accountId == accountId && lease.generalId in remaining.generalIds
+                    }
+            }
+        }
+
+        val formationOwnedGeneralIds = formationLeases.values
+            .filter { it.accountId == accountId }
+            .flatMapTo(hashSetOf()) { it.generalIds }
+        val releasableGeneralIds = generalLeases.values
+            .filter { lease ->
+                lease.accountId == accountId &&
+                    lease.generalId !in formationOwnedGeneralIds &&
+                    lease.state in setOf(
+                        RuntimeGeneralState.DISPATCHING,
+                        RuntimeGeneralState.MARCHING,
+                        RuntimeGeneralState.RETURNING
+                    ) &&
+                    nowMillis - lease.acquiredAtMillis >= serverIdleConfirmMillis &&
+                    generalById[lease.generalId]?.let { general ->
+                        general.status == 0 &&
+                            isFreshEnoughForRelease(general.raw, lease.acquiredAtMillis)
+                    } == true
+            }
+            .map { it.generalId }
+            .toSet()
+        if (releasableGeneralIds.isNotEmpty()) {
+            emit("account=$accountId server-idle-confirm release generals=${releasableGeneralIds.joinToString()}")
+            generalLeases.entries.removeIf { (_, lease) ->
+                lease.accountId == accountId && lease.generalId in releasableGeneralIds
             }
         }
     }
@@ -339,6 +406,84 @@ class AutomationRuntimeStateStore(
             )
         }
         return GateResult.Allowed
+    }
+
+    /**
+     * Short command-center claim used by expedition tasks before their protocol state machine.
+     * The owning task may re-enter while its own expedition is in flight so it can poll and
+     * settle; every other task sharing one of the generals must yield.
+     */
+    @Synchronized
+    internal fun reserveGeneralsForTask(
+        accountId: Long,
+        owner: TaskType,
+        taskKey: String,
+        generalIds: Collection<Long>,
+        nowMillis: Long,
+        expiresAtMillis: Long,
+        reason: String
+    ): GateResult {
+        pruneExpiredLocked(nowMillis)
+        val ids = generalIds.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return GateResult.Blocked("$owner has no selected generals")
+        for (generalId in ids) {
+            val lease = generalLeases[accountId to generalId] ?: continue
+            if (lease.owner != owner || lease.taskKey != taskKey) {
+                val blocked = "将领${generalId}正由${lease.owner}执行（${lease.state}）"
+                emit("account=$accountId owner=$owner command-claim blocked: $blocked")
+                return GateResult.Blocked(blocked, retryAfterMillis = 2_000L)
+            }
+        }
+        ids.forEach { generalId ->
+            val key = accountId to generalId
+            if (generalLeases[key] == null) {
+                generalLeases[key] = GeneralLease(
+                    accountId = accountId,
+                    generalId = generalId,
+                    owner = owner,
+                    taskKey = taskKey,
+                    state = RuntimeGeneralState.RESERVED,
+                    acquiredAtMillis = nowMillis,
+                    expiresAtMillis = expiresAtMillis,
+                    reason = reason
+                )
+            }
+        }
+        emit("account=$accountId owner=$owner command-claim generals=${ids.joinToString()} reason=$reason")
+        return GateResult.Allowed
+    }
+
+    @Synchronized
+    internal fun markGeneralsBusyAfterDispatch(
+        accountId: Long,
+        owner: TaskType,
+        taskKey: String,
+        generalIds: Collection<Long>,
+        nowMillis: Long,
+        expiresAtMillis: Long,
+        reason: String
+    ) {
+        generalIds.filter { it > 0L }.distinct().forEach { generalId ->
+            val key = accountId to generalId
+            val current = generalLeases[key]
+            if (current != null && (current.owner != owner || current.taskKey != taskKey)) {
+                return@forEach
+            }
+            generalLeases[key] = GeneralLease(
+                accountId = accountId,
+                generalId = generalId,
+                owner = owner,
+                taskKey = taskKey,
+                state = RuntimeGeneralState.MARCHING,
+                acquiredAtMillis = nowMillis,
+                expiresAtMillis = expiresAtMillis,
+                reason = reason
+            )
+        }
+        emit(
+            "account=$accountId owner=$owner dispatch-busy generals=" +
+                generalIds.filter { it > 0L }.distinct().joinToString()
+        )
     }
 
     @Synchronized
@@ -493,6 +638,46 @@ class CommandGate internal constructor(
         return store.reserveFormation(accountId, owner, taskKey, formation, nowMillis, expiresAt, reason)
     }
 
+    fun tryClaimGenerals(
+        accountId: Long,
+        owner: TaskType,
+        taskKey: String,
+        generalIds: Collection<Long>,
+        nowMillis: Long,
+        reason: String
+    ): GateResult {
+        if (!store.enforceCommandGate) return GateResult.Allowed
+        return store.reserveGeneralsForTask(
+            accountId = accountId,
+            owner = owner,
+            taskKey = taskKey,
+            generalIds = generalIds,
+            nowMillis = nowMillis,
+            expiresAtMillis = nowMillis + COMMAND_CLAIM_MILLIS,
+            reason = reason
+        )
+    }
+
+    fun markGeneralsBusy(
+        accountId: Long,
+        owner: TaskType,
+        taskKey: String,
+        generalIds: Collection<Long>,
+        nowMillis: Long,
+        reason: String
+    ) {
+        if (!store.enforceCommandGate) return
+        store.markGeneralsBusyAfterDispatch(
+            accountId,
+            owner,
+            taskKey,
+            generalIds,
+            nowMillis,
+            nowMillis + defaultBusyLeaseMillis,
+            reason
+        )
+    }
+
     fun markDispatchSending(accountId: Long, owner: TaskType, taskKey: String, formationId: Long, nowMillis: Long) {
         if (!store.enforceCommandGate) return
         store.markFormationDispatching(accountId, owner, taskKey, formationId, nowMillis, nowMillis + defaultBusyLeaseMillis)
@@ -516,4 +701,8 @@ class CommandGate internal constructor(
     fun markStopping(accountId: Long) { if (store.enforceCommandGate) store.setAccountState(accountId, AccountRunState.STOPPING) }
     fun markLoggedOut(accountId: Long) { if (store.enforceCommandGate) store.setAccountState(accountId, AccountRunState.LOGGED_OUT) }
     fun markSessionExpired(accountId: Long) { if (store.enforceCommandGate) store.setAccountState(accountId, AccountRunState.SESSION_EXPIRED) }
+
+    private companion object {
+        const val COMMAND_CLAIM_MILLIS = 15_000L
+    }
 }

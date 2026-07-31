@@ -14,6 +14,23 @@ import org.junit.Test
 
 class SavedConfigTaskPlanFactoryTest {
     @Test
+    fun formationRulesAreNotScheduledAsAGlobalPrerequisite() {
+        val rows = org.json.JSONArray()
+            .put(JSONObject().put("enabled", true).put("generalId", 7).put("soldierType", "轻骑兵").put("soldierCount", 100))
+            .put(JSONObject().put("enabled", true).put("generalId", 8).put("soldierType", "弓兵").put("soldierCount", 200))
+        val values = JSONObject()
+            .put("clearOtherGenerals", true)
+            .put("rows", rows)
+        val export = JSONObject()
+            .put("schema_version", "1.0-local")
+            .put("configs", JSONObject().put("123::formation_troop", JSONObject().put("values", values)))
+
+        val plan = SavedConfigTaskPlanFactory.plan(123L, export)
+        assertTrue(plan.tasks.none { it.type == TaskType.FORMATION })
+        assertEquals(listOf(TaskType.STATE_REFRESH), plan.tasks.map { it.type })
+    }
+
+    @Test
     fun alarmPageFieldsMapToRuntimeAlertPolicy() {
         val values = JSONObject()
             .put("alarm_withdraw_enabled", true)
@@ -26,7 +43,7 @@ class SavedConfigTaskPlanFactoryTest {
             .put("alarm_vibrate", false)
             .put("alarm_withdraw_defense", false)
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::alarm_withdraw", JSONObject().put("values", values))
             )
@@ -34,7 +51,6 @@ class SavedConfigTaskPlanFactoryTest {
             id = 123L,
             displayName = "测试君主",
             username = "u",
-            encryptedPassword = null,
             serverName = "S1",
             serverId = "1",
             gameVersion = GameVersion.TENCENT_CLASSIC,
@@ -54,7 +70,7 @@ class SavedConfigTaskPlanFactoryTest {
         )
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export, account)
-        val task = plan.tasks.first { it.type == TaskType.ALARM_WITHDRAW } as AlarmWithdrawMockTask
+        val task = plan.tasks.first { it.type == TaskType.ALARM } as AlarmTask
 
         assertEquals("true", plan.session.channelExtra["militaryIntelLiveGate"])
         assertEquals(setOf("掠夺", "攻城"), task.config.keywords)
@@ -62,13 +78,56 @@ class SavedConfigTaskPlanFactoryTest {
         assertTrue(task.config.militaryEnabled)
         assertEquals("全部", task.config.militaryMode)
         assertEquals(false, task.config.errorEnabled)
-        assertEquals(false, task.config.withdrawDefense)
+    }
+
+    @Test
+    fun alarmSubSwitchesEnableRuntimeWithoutLegacyMasterFlag() {
+        val values = JSONObject()
+            .put("incomingEnabled", false)
+            .put("militaryEnabled", true)
+            .put("errorEnabled", false)
+        val export = JSONObject()
+            .put("schema_version", "1.0-local")
+            .put(
+                "configs",
+                JSONObject().put("123::alarm_withdraw", JSONObject().put("values", values))
+            )
+
+        val task = SavedConfigTaskPlanFactory.plan(123L, export)
+            .tasks.single { it.type == TaskType.ALARM } as AlarmTask
+
+        assertTrue(task.config.enabled)
+        assertEquals(false, task.config.incomingEnabled)
+        assertTrue(task.config.militaryEnabled)
+    }
+
+    @Test
+    fun closedIncomingModeAndInvalidMilitaryModeUseDesktopNormalization() {
+        val values = JSONObject()
+            .put("incomingEnabled", true)
+            .put("incomingMode", "关闭")
+            .put("militaryEnabled", true)
+            .put("militaryMode", "未知模式")
+            .put("errorEnabled", false)
+        val export = JSONObject()
+            .put("schema_version", "1.0-local")
+            .put(
+                "configs",
+                JSONObject().put("123::alarm_withdraw", JSONObject().put("values", values))
+            )
+
+        val task = SavedConfigTaskPlanFactory.plan(123L, export)
+            .tasks.single { it.type == TaskType.ALARM } as AlarmTask
+
+        assertEquals(false, task.config.incomingEnabled)
+        assertEquals("关闭", task.config.incomingMode)
+        assertEquals("出征/返回", task.config.militaryMode)
     }
 
     @Test
     fun accountIdsAreReadFromSavedConfigKeys() {
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::daily_basic", JSONObject().put("values", JSONObject()))
                 .put("456::mine_search", JSONObject().put("values", JSONObject()))
@@ -83,7 +142,7 @@ class SavedConfigTaskPlanFactoryTest {
             .put("APKTOOL_RENAMED_0x7f070077", true)
             .put("APKTOOL_RENAMED_0x7f070078", true)
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::vip", JSONObject().put("values", enabled))
                 .put("123::surrender_release", JSONObject().put("values", enabled))
@@ -93,17 +152,7 @@ class SavedConfigTaskPlanFactoryTest {
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
 
-        assertEquals(
-            emptySet<TaskType>(),
-            plan.tasks.mapTo(mutableSetOf()) { it.type }.intersect(
-                setOf(
-                    TaskType.VIP,
-                    TaskType.SURRENDER_RELEASE,
-                    TaskType.RESOURCE_POINT_SEND_GENERAL,
-                    TaskType.BULK_TOOLS
-                )
-            )
-        )
+        assertEquals(listOf(TaskType.STATE_REFRESH), plan.tasks.map { it.type })
     }
 
     @Test
@@ -117,7 +166,7 @@ class SavedConfigTaskPlanFactoryTest {
             .put("APKTOOL_RENAMED_0x7f0700a0", true) // DONATE_FOOD
             .put("APKTOOL_RENAMED_0x7f07009b", false) // SALARY remains pending
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::daily_basic", JSONObject().put("values", values))
             )
@@ -126,15 +175,9 @@ class SavedConfigTaskPlanFactoryTest {
 
         assertEquals(123L, plan.session.accountId)
         assertTrue(plan.sourceDescription.contains("daily_basic"))
-        assertTrue(plan.tasks.any { it.type == TaskType.DAILY })
-        val daily = plan.tasks.first { it.type == TaskType.DAILY } as DailyPipelineTask
-        assertEquals(
-            setOf(
-                DailyStep.SIGN_IN,
-                DailyStep.ARENA_REWARD
-            ),
-            daily.config.enabledSteps
-        )
+        assertTrue(plan.tasks.any { it.type == TaskType.DAILY_SIGN_IN })
+        assertTrue(plan.tasks.any { it.type == TaskType.DAILY_ARENA_COINS })
+        assertTrue(plan.tasks.none { it.type == TaskType.DAILY })
         // Country donation is an independent daily feature.  Its three
         // endpoints must not be folded back into the legacy DAILY pipeline.
         assertTrue(plan.tasks.any { it.type == TaskType.DAILY_DONATE })
@@ -143,7 +186,7 @@ class SavedConfigTaskPlanFactoryTest {
     @Test
     fun shuaHuangSavedConfigUsesRealSessionAndFirstRealGeneralAsFallbackFormation() {
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("6685254::shua_huang", JSONObject().put("values", JSONObject()
                     .put("APKTOOL_RENAMED_0x7f070073", true)
@@ -152,18 +195,28 @@ class SavedConfigTaskPlanFactoryTest {
                     .put("APKTOOL_RENAMED_0x7f070166", 36)
                     .put("APKTOOL_RENAMED_0x7f070183", true)
                     .put("replenishTroops", true)
+                    .put("levels", org.json.JSONArray().put(7).put(8))
+                    .put(
+                        "rows",
+                        org.json.JSONArray().put(
+                            JSONObject()
+                                .put("enabled", true)
+                                .put("generalIds", org.json.JSONArray().put(12886835L))
+                                .put("levels", org.json.JSONArray().put(7).put(8))
+                        )
+                    )
                     .put("compositionCode", "5203")
                     .put("maxFoot", 5)
                     .put("maxBow", 2)
                     .put("maxCavalry", 0)
                     .put("maxChariot", 3)
+                    .put("requireFoot", true)
                 ))
             )
         val account = GameAccount(
             id = 6685254L,
             displayName = "东方美",
             username = "1608601",
-            encryptedPassword = null,
             serverName = "周年服351区(新服)",
             serverId = "351",
             gameVersion = GameVersion.TENCENT_CLASSIC,
@@ -195,10 +248,14 @@ class SavedConfigTaskPlanFactoryTest {
         assertEquals(36, shua.config.start.y)
         assertTrue(shua.config.replenishTroops)
         assertTrue(shua.config.deleteMailForSpeed)
+        assertEquals(setOf(7, 8), shua.config.targetFilter.levels)
+        assertEquals(listOf(12886835L), shua.config.rules.single().generalIds)
+        assertEquals(setOf(7, 8), shua.config.rules.single().targetFilter.levels)
         assertEquals(5, shua.config.targetFilter.maxFoot)
         assertEquals(2, shua.config.targetFilter.maxBow)
         assertEquals(0, shua.config.targetFilter.maxCavalry)
         assertEquals(3, shua.config.targetFilter.maxChariot)
+        assertTrue(shua.config.targetFilter.requireFoot)
     }
 
     @Test
@@ -208,16 +265,25 @@ class SavedConfigTaskPlanFactoryTest {
             .put("APKTOOL_RENAMED_0x7f070068", "0")
             .put("APKTOOL_RENAMED_0x7f070066", "2")
             .put("APKTOOL_RENAMED_0x7f070067", "2")
+        val formationValues = JSONObject()
+            .put("enabled", true)
+            .put("rows", org.json.JSONArray().put(
+                JSONObject()
+                    .put("enabled", true)
+                    .put("generalIds", org.json.JSONArray().put(12886835L))
+                    .put("soldierType", "重步兵")
+                    .put("soldierCount", 499)
+            ))
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("6685254::dungeon", JSONObject().put("values", values))
+                .put("6685254::formation_troop", JSONObject().put("values", formationValues))
             )
         val account = GameAccount(
             id = 6685254L,
             displayName = "测试",
             username = "1608601",
-            encryptedPassword = null,
             serverName = "351区",
             serverId = "351",
             gameVersion = GameVersion.TENCENT_CLASSIC,
@@ -233,11 +299,14 @@ class SavedConfigTaskPlanFactoryTest {
         )
 
         val plan = SavedConfigTaskPlanFactory.plan(6685254L, export, account)
-        val dungeon = plan.tasks.first { it.type == TaskType.DUNGEON } as DungeonMockTask
+        val dungeon = plan.tasks.first { it.type == TaskType.DUNGEON } as DungeonTask
 
         assertEquals(listOf(12886835L), dungeon.config.formationIds)
         assertEquals(3, dungeon.config.stage)
         assertEquals(2, dungeon.config.boxPosition)
+        assertEquals(1, dungeon.config.formationRules.size)
+        assertEquals("重步兵", dungeon.config.formationRules.single().troopType)
+        assertEquals(499, dungeon.config.formationRules.single().troopCount)
     }
 
     @Test
@@ -250,7 +319,7 @@ class SavedConfigTaskPlanFactoryTest {
                 .put("resourceType", "冰玉矿")
                 .put("x", 18)
                 .put("y", 22)
-                .put("scope", "附近")
+                .put("scope", "定点")
             )
             .put(JSONObject()
                 .put("enabled", true)
@@ -262,31 +331,85 @@ class SavedConfigTaskPlanFactoryTest {
             )
         val values = JSONObject()
             .put("enabled", true)
-            .put("speed", "中级行军符")
+            .put("speed", true)
             .put("fullLoyalty", false)
-            .put("targetPlayerName", "目标玩家")
-            .put("mineRows", rows)
+            .put("replenishTroops", false)
+            .put("maxMarchMinutes", 60)
+            .put("centerX", 91)
+            .put("centerY", 26)
+            .put("targetPlayerName", "")
+            .put("rows", rows)
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::auto_mining", JSONObject().put("values", values))
             )
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
-        val task = plan.tasks.first { it.type == TaskType.AUTO_MINING } as MineSearchMockTask
+        val task = plan.tasks.first { it.type == TaskType.AUTO_MINING } as MineTask
 
         assertTrue(task.config.enabled)
-        assertEquals(18, task.config.start.x)
-        assertEquals(22, task.config.start.y)
+        assertEquals(91, task.config.start.x)
+        assertEquals(26, task.config.start.y)
         assertEquals(setOf(7001L, 7003L, 7002L), task.config.selectedFormationIds)
         assertEquals(setOf(MineType.BING_YU, MineType.SILVER), task.config.selectedMineTypes)
-        assertEquals("中级行军符", task.config.speed)
+        assertEquals("加速", task.config.speed)
         assertEquals(false, task.config.fullLoyalty)
-        assertEquals("目标玩家", task.config.targetPlayerName)
-        assertEquals("附近", task.config.searchScope)
+        assertEquals(false, task.config.replenishTroops)
+        assertEquals(60, task.config.maxMarchMinutes)
+        assertEquals("", task.config.targetPlayerName)
+        assertEquals("定点", task.config.searchScope)
         assertEquals(listOf(7001L, 7003L), task.config.rules[0].generalIds)
+        assertEquals(18, task.config.rules[0].start.x)
+        assertEquals(22, task.config.rules[0].start.y)
         assertEquals("全国", task.config.rules[1].scope)
+        assertEquals(91, task.config.rules[1].start.x)
+        assertEquals(26, task.config.rules[1].start.y)
         assertEquals(false, task.config.withdrawDefense)
+    }
+
+    @Test
+    fun legacyAndroidMineRowsAndNamedSpeedRemainReadableAfterDesktopParityUpgrade() {
+        val values = JSONObject()
+            .put("enabled", true)
+            .put("speed", "中级行军符")
+            .put("mineRows", org.json.JSONArray().put(JSONObject()
+                .put("enabled", true)
+                .put("generalId", 7001L)
+                .put("resourceType", "镔铁矿")
+                .put("x", 12)
+                .put("y", 8)
+                .put("scope", "附近")
+            ))
+        val export = JSONObject().put(
+            "configs",
+            JSONObject().put("123::auto_mining", JSONObject().put("values", values))
+        )
+
+        val plan = SavedConfigTaskPlanFactory.plan(123L, export)
+        val task = plan.tasks.first { it.type == TaskType.AUTO_MINING } as MineTask
+
+        assertEquals("加速", task.config.speed)
+        assertEquals(listOf(7001L), task.config.rules.single().generalIds)
+        assertEquals(12, task.config.start.x)
+        assertEquals(8, task.config.start.y)
+    }
+
+    @Test
+    fun historicalMineSearchWithdrawFlagReachesTheProductionTaskWhenExplicitlyEnabled() {
+        val values = JSONObject()
+            .put("enabled", true)
+            .put("withdrawDefense", true)
+            .put("APKTOOL_RENAMED_0x7f070177", true)
+        val export = JSONObject().put(
+            "configs",
+            JSONObject().put("123::mine_search", JSONObject().put("values", values))
+        )
+
+        val plan = SavedConfigTaskPlanFactory.plan(123L, export)
+        val task = plan.tasks.first { it.type == TaskType.MINE_SEARCH } as MineTask
+
+        assertEquals(true, task.config.withdrawDefense)
     }
 
     @Test
@@ -316,13 +439,13 @@ class SavedConfigTaskPlanFactoryTest {
             .put("fullLoyalty", true)
             .put("rows", rows)
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::auto_loot", JSONObject().put("values", values))
             )
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
-        val task = plan.tasks.first { it.type == TaskType.AUTO_LOOT } as AutoLootMockTask
+        val task = plan.tasks.first { it.type == TaskType.AUTO_LOOT } as AutoLootTask
 
         assertTrue(task.config.enabled)
         assertEquals(false, task.config.fullTroops)
@@ -339,7 +462,7 @@ class SavedConfigTaskPlanFactoryTest {
     }
 
     @Test
-    fun sixMinistriesScreenMapsToDedicatedBackgroundTask() {
+    fun savedSixMinistriesConfigCreatesVerifiedBackgroundTask() {
         val values = JSONObject()
             .put("cropEnabled", true)
             .put("crop", "金银花")
@@ -348,19 +471,19 @@ class SavedConfigTaskPlanFactoryTest {
             .put("courtesyEnabled", false)
             .put("salaryRefresh", true)
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", JSONObject()
                 .put("123::six_ministries", JSONObject().put("values", values))
             )
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
-        val task = plan.tasks.first { it.type == TaskType.MINISTRY } as SixMinistriesTask
 
+        assertEquals(
+            listOf(TaskType.STATE_REFRESH, TaskType.SIX_MINISTRIES),
+            plan.tasks.map { it.type }
+        )
+        val task = plan.tasks.single { it.type == TaskType.SIX_MINISTRIES } as SixMinistriesTask
         assertTrue(task.config.cropEnabled)
-        assertEquals("金银花", task.config.crop)
-        assertEquals(false, task.config.highPriority)
         assertTrue(task.config.stealEnabled)
-        assertEquals(false, task.config.courtesyEnabled)
-        assertTrue(task.config.salaryRefresh)
     }
 }

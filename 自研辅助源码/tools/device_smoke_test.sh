@@ -4,130 +4,69 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 PKG="com.example.dwpmclone"
-ACTIVITY="${PKG}/.MainActivity"
-SERVICE="${PKG}/.service.AssistantForegroundService"
+ACTIVITY="${PKG}/.AssistantWebActivity"
 OUT_DIR="$ROOT/reports/device_smoke_$(date +%Y%m%d_%H%M%S)"
 ADB_BIN="${ADB_BIN:-adb}"
 mkdir -p "$OUT_DIR"
 
-export PATH="/opt/homebrew/bin:$PATH"
-
-tap_text_or_fallback() {
-  local label="$1"
-  local fallback_x="$2"
-  local fallback_y="$3"
-  local tag="$4"
-  local xml_path="$OUT_DIR/${tag}_window.xml"
-  local tap_log="$OUT_DIR/${tag}_tap.txt"
-
-  "$ADB_BIN" shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
-  "$ADB_BIN" pull /sdcard/window.xml "$xml_path" >/dev/null 2>&1 || true
-  coords="$(python3 - "$xml_path" "$label" <<'PY' || true
-import re
-import sys
-import xml.etree.ElementTree as ET
-from pathlib import Path
-
-xml_path = Path(sys.argv[1])
-label = sys.argv[2]
-if not xml_path.exists():
-    sys.exit(1)
-try:
-    root = ET.parse(xml_path).getroot()
-except Exception:
-    sys.exit(1)
-for node in root.iter("node"):
-    text = (node.attrib.get("text") or "") + " " + (node.attrib.get("content-desc") or "")
-    if label not in text:
-        continue
-    bounds = node.attrib.get("bounds") or ""
-    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
-    if match:
-        left, top, right, bottom = map(int, match.groups())
-        print(f"{(left + right) // 2} {(top + bottom) // 2}")
-        sys.exit(0)
-sys.exit(1)
-PY
-)"
-  if [[ -n "${coords:-}" ]]; then
-    read -r tap_x tap_y <<< "$coords"
-    echo "tap label='$label' at $tap_x,$tap_y from $xml_path" | tee "$tap_log"
-    "$ADB_BIN" shell input tap "$tap_x" "$tap_y"
-  else
-    echo "fallback tap label='$label' at $fallback_x,$fallback_y; UI xml=$xml_path" | tee "$tap_log"
-    "$ADB_BIN" shell input tap "$fallback_x" "$fallback_y"
-  fi
-}
-
-echo "[1/8] Checking adb devices..."
+echo "[1/6] Checking device"
 "$ADB_BIN" devices -l | tee "$OUT_DIR/adb_devices.txt"
 if ! "$ADB_BIN" get-state >/dev/null 2>&1; then
-  echo "ERROR: no adb device detected. Unlock phone, enable USB debugging, authorize RSA prompt, and select File Transfer/MTP." >&2
+  echo "ERROR: no authorized adb device" >&2
   exit 2
 fi
-
-SERIAL="$("$ADB_BIN" get-serialno)"
-echo "device=$SERIAL" | tee "$OUT_DIR/device.txt"
-"$ADB_BIN" shell getprop ro.product.manufacturer | tee -a "$OUT_DIR/device.txt" || true
+"$ADB_BIN" get-serialno | tee "$OUT_DIR/device.txt"
 "$ADB_BIN" shell getprop ro.product.model | tee -a "$OUT_DIR/device.txt" || true
 "$ADB_BIN" shell getprop ro.build.version.release | tee -a "$OUT_DIR/device.txt" || true
 
-echo "[2/8] Installing APK: $APK"
-"$ADB_BIN" install -r -d "$APK" | tee "$OUT_DIR/install.txt"
+echo "[2/6] Installing with the required non-destructive replacement command"
+"$ADB_BIN" install -r "$APK" | tee "$OUT_DIR/install.txt"
 
-echo "[3/8] Clearing logcat and launching app"
+echo "[3/6] Launching the local WebView activity (no hosting/task action)"
 "$ADB_BIN" logcat -c || true
-"$ADB_BIN" shell am force-stop "$PKG" || true
-"$ADB_BIN" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 | tee "$OUT_DIR/launch.txt"
+"$ADB_BIN" shell am start -n "$ACTIVITY" | tee "$OUT_DIR/launch.txt"
 sleep 3
 
-echo "[4/8] Capturing current UI"
-"$ADB_BIN" shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
-"$ADB_BIN" pull /sdcard/window.xml "$OUT_DIR/window.xml" >/dev/null 2>&1 || true
+echo "[4/6] Capturing UI and package state"
+"$ADB_BIN" shell uiautomator dump /sdcard/dwpm_window.xml >/dev/null 2>&1 || true
+"$ADB_BIN" pull /sdcard/dwpm_window.xml "$OUT_DIR/window.xml" >/dev/null 2>&1 || true
 "$ADB_BIN" exec-out screencap -p > "$OUT_DIR/home.png" || true
-
-echo "[5/8] Granting notification permission where supported"
-"$ADB_BIN" shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
-
-echo "[6/8] Starting foreground local scheduling service through UI button"
-# The service is intentionally android:exported="false". Start it the same way users do:
-# prefer uiautomator text bounds for "启动后台托管", then fall back to known Xiaomi coordinates.
-tap_text_or_fallback "启动后台托管" 540 527 "start_service" | tee "$OUT_DIR/start_service.txt"
-sleep 8
-
-echo "[7/8] Collecting runtime evidence"
 "$ADB_BIN" shell dumpsys package "$PKG" > "$OUT_DIR/dumpsys_package.txt" || true
-"$ADB_BIN" shell dumpsys activity services "$PKG" > "$OUT_DIR/dumpsys_services.txt" || true
-"$ADB_BIN" logcat -d -v time > "$OUT_DIR/logcat.txt" || true
-"$ADB_BIN" exec-out screencap -p > "$OUT_DIR/after_service.png" || true
+"$ADB_BIN" shell dumpsys activity activities > "$OUT_DIR/dumpsys_activities.txt" || true
 
-echo "[8/9] Stopping service through UI button"
-tap_text_or_fallback "停止后台托管" 540 662 "stop_service" > "$OUT_DIR/stop_service.txt" 2>&1 || true
-sleep 4
-"$ADB_BIN" shell dumpsys activity services "$PKG" > "$OUT_DIR/dumpsys_services_after_stop.txt" || true
-"$ADB_BIN" logcat -d -v time > "$OUT_DIR/logcat_after_stop.txt" || true
+echo "[5/6] Checking app-process crashes"
+PID="$("$ADB_BIN" shell pidof "$PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+if [[ -n "$PID" ]]; then
+  "$ADB_BIN" logcat -d -v time --pid "$PID" > "$OUT_DIR/logcat.txt" || true
+else
+  "$ADB_BIN" logcat -d -v time > "$OUT_DIR/logcat.txt" || true
+fi
+if rg -n "FATAL EXCEPTION|AndroidRuntime.*Process: ${PKG}|ANR in ${PKG}" "$OUT_DIR/logcat.txt"; then
+  echo "ERROR: app crash/ANR detected" >&2
+  exit 3
+fi
+if ! rg -q "${PKG}/\.AssistantWebActivity|${PKG}\.AssistantWebActivity" "$OUT_DIR/dumpsys_activities.txt"; then
+  echo "ERROR: local activity is not visible in activity state" >&2
+  exit 4
+fi
 
-cat "$OUT_DIR/logcat.txt" "$OUT_DIR/logcat_after_stop.txt" > "$OUT_DIR/logcat_combined.txt" 2>/dev/null || true
-
-echo "[9/9] Verifying self-lifecycle logcat markers"
-python3 "$ROOT/tools/verify_self_lifecycle_logcat.py" "$OUT_DIR/logcat_combined.txt"   --out "$OUT_DIR/self_lifecycle_logcat_check.json"   --markdown-out "$OUT_DIR/self_lifecycle_logcat_check.md" || true
-
+echo "[6/6] Writing report"
 cat > "$OUT_DIR/summary.md" <<EOF
-# 自研服务 APK 真机烟测
+# 手机本地 V1 安全烟测
 
-- device: $SERIAL
+- device: $("$ADB_BIN" get-serialno)
 - apk: $APK
 - package: $PKG
-- install: see install.txt
-- launch: see launch.txt
+- activity: $ACTIVITY
+- install: 仅使用 adb install -r
+- hostingStarted: false
+- gameActionSent: false
+- crashOrAnr: false
+- screenshot: home.png
 - UI dump: window.xml
-- screenshots: home.png, after_service.png
-- service evidence: dumpsys_services.txt
-- logs: logcat.txt, logcat_after_stop.txt, logcat_combined.txt
-- self lifecycle marker check: self_lifecycle_logcat_check.md
-- UI tap evidence: start_service_tap.txt, stop_service_tap.txt, start_service_window.xml, stop_service_window.xml
+- logs: logcat.txt
 
-说明：本烟测验证安装、启动、页面可渲染、前台服务可拉起、停止流程与日志采集；不验证真实游戏协议等价性，也不执行真实游戏自动化动作。按钮点击优先使用 uiautomator 文本定位，失败才回退固定坐标。如果 self_lifecycle_logcat_check.md 未通过，请先确认自研账号/任务计划存在并通过 UI 完整执行启动后停止。
+本脚本不点击开始任务，不启动前台托管服务，不发送游戏动作。
 EOF
 
 echo "Smoke test artifacts: $OUT_DIR"

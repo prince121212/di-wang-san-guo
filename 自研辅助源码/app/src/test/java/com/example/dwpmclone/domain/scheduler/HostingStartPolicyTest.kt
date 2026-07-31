@@ -17,7 +17,7 @@ class HostingStartPolicyTest {
     }
 
     @Test
-    fun allowsStartWithRealReadOnlySessionAndSafeNetworkFlags() {
+    fun allowsStartWithRealSessionAndSafeNetworkFlags() {
         val decision = HostingStartPolicy.evaluate(
             listOf(
                 account(
@@ -34,7 +34,7 @@ class HostingStartPolicyTest {
         )
 
         assertTrue(decision.allowed)
-        assertTrue(decision.message.contains("真实只读 session"))
+        assertTrue(decision.message.contains("真实 session"))
     }
 
     @Test
@@ -65,7 +65,6 @@ class HostingStartPolicyTest {
         id = 10001L,
         displayName = "测试账号",
         username = "user",
-        encryptedPassword = null,
         serverName = "测试区",
         gameVersion = GameVersion.OTHER,
         channel = Channel.UNKNOWN,

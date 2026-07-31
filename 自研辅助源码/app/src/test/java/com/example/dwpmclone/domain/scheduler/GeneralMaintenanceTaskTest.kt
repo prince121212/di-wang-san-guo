@@ -16,6 +16,43 @@ import org.junit.Test
 
 class GeneralMaintenanceTaskTest {
     @Test
+    fun healingRunsOnceForEachDistinctFief() {
+        val healCalls = mutableListOf<Long>()
+        val protocol = object : GameProtocolClient by MockGameProtocolClient() {
+            override suspend fun queryGenerals(session: GameSession): ProtocolResult<List<General>> =
+                ProtocolResult.Ok(
+                    listOf(
+                        General(7L, "赵云", 90, 100, 80, status = 0, placeId = 1877),
+                        General(8L, "关羽", 92, 100, 80, status = 0, placeId = 1877),
+                        General(9L, "Ma Chao", 88, 100, 80, status = 0, placeId = 1878)
+                    )
+                )
+
+            override suspend fun healGeneral(
+                session: GameSession,
+                generalId: Long
+            ): ProtocolResult<StepResult> {
+                healCalls += generalId
+                return ProtocolResult.Ok(StepResult(true, "ok"))
+            }
+        }
+        val task = GeneralMaintenanceTask(
+            1L,
+            GeneralConfig(
+                autoHeal = true,
+                keepFullLoyalty = false,
+                autoEnergy = false,
+                autoRescue = false
+            )
+        )
+
+        val decision = SuspendRunner.run { task.step(context(protocol)) }
+
+        assertTrue(decision is TaskDecision.Sleep)
+        assertEquals(listOf(7L, 9L), healCalls)
+    }
+
+    @Test
     fun healAllRunsOncePerMaintenanceStepInsteadOfOncePerGeneral() {
         val healCalls = mutableListOf<Long>()
         val protocol = object : GameProtocolClient by MockGameProtocolClient() {
@@ -35,7 +72,7 @@ class GeneralMaintenanceTaskTest {
                 return ProtocolResult.Ok(StepResult(true, "治疗全部伤兵成功"))
             }
         }
-        val task = GeneralMaintenanceMockTask(
+        val task = GeneralMaintenanceTask(
             1L,
             GeneralConfig(
                 autoHeal = true,
@@ -89,7 +126,7 @@ class GeneralMaintenanceTaskTest {
                 return ProtocolResult.Ok(StepResult(true, "加忠成功"))
             }
         }
-        val task = GeneralMaintenanceMockTask(
+        val task = GeneralMaintenanceTask(
             1L,
             GeneralConfig(
                 autoHeal = true,
@@ -135,7 +172,7 @@ class GeneralMaintenanceTaskTest {
                 return ProtocolResult.Ok(StepResult(true, "加忠成功"))
             }
         }
-        val task = GeneralMaintenanceMockTask(
+        val task = GeneralMaintenanceTask(
             1L,
             GeneralConfig(
                 autoHeal = false,

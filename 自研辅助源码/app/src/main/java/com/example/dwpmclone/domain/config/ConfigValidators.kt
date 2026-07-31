@@ -22,11 +22,8 @@ object ConfigValidators {
     fun validateGuaji(config: GuajiConfig): List<ConfigValidationIssue> = buildList {
         if (config.reconnectDelaySeconds < 0) add(ConfigValidationIssue("reconnectDelaySeconds", "掉线重连秒数不能为负数"))
         if (config.requestDelayMillis !in 0..10_000) add(ConfigValidationIssue("requestDelayMillis", "延迟范围应为0-10000毫秒"))
-        if (config.antiIpBanEnabled && config.requestDelayMillis !in 100..800) {
-            add(ConfigValidationIssue("requestDelayMillis", "防封IP建议延迟100-800毫秒", ValidationSeverity.WARNING))
-        }
-        if (config.antiIpBanEnabled && !config.sameServerMutex) {
-            add(ConfigValidationIssue("sameServerMutex", "防封IP要求同区只同时挂机一个号", ValidationSeverity.WARNING))
+        if (!config.sameServerMutex) {
+            add(ConfigValidationIssue("sameServerMutex", "同区账号并发可能造成任务与将领状态冲突", ValidationSeverity.WARNING))
         }
     }
 
@@ -75,9 +72,8 @@ object ConfigValidators {
         if (config.enabled && config.targetFiefIndex <= 0) add(ConfigValidationIssue("targetFiefIndex", "目标封地序号必须大于0"))
     }
 
-    fun validateAlarmWithdraw(config: AlarmWithdrawConfig): List<ConfigValidationIssue> = buildList {
+    fun validateAlarm(config: AlarmConfig): List<ConfigValidationIssue> = buildList {
         if (config.enabled && config.keywords.isEmpty()) add(ConfigValidationIssue("keywords", "警报扫描至少需要一个关键词"))
-        if (config.mockOnlyProtection && config.withdrawDefense) add(ConfigValidationIssue("withdrawDefense", "当前本地调度只记录撤防计划，不执行真实撤防", ValidationSeverity.WARNING))
     }
 
     fun validateLicense(config: LicenseConfig, action: LicenseAction): List<ConfigValidationIssue> = buildList {

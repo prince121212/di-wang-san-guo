@@ -9,6 +9,11 @@ const sideMenus = {
   "六部": [],
   "常规": ["常用", "日常", "主号物品", "连体物品", "警报"],
 };
+// 当前方案三明确排除的功能：保留位置方便以后恢复，但所有共享界面入口必须禁用。
+const deferredFeatureSides = new Set(["抢城", "押镖", "寻宝", "连体物品"]);
+function isDeferredFeatureSide(side) {
+  return deferredFeatureSides.has(String(side || ""));
+}
 const soldierTypes = ["民兵","轻步兵","重步兵","近卫兵","弓兵","弩兵","强弩兵","轻骑兵","弩骑兵","重骑兵","铁骑兵","弩车","冲城车","投石车"];
 const brushLevelOptions = Array.from({length: 10}, (_, i) => i + 1);
 const brushDropOptions = ["宝物", "资源", "装备", "宝箱"];
@@ -56,9 +61,12 @@ let pickerOpen = false;
 let saveSettingsInFlight = false;
 let treasureSearchQuery = "";
 let successRecordType = "military";
+let nativeFamousGenerals = null;
+let nativeGuideArticles = null;
+let nativeOpenServerVersions = null;
 const urlParams = new URLSearchParams(window.location.search);
 const isEmbeddedContainer = urlParams.get("embedded") === "1";
-const isMobileRemote = urlParams.get("mobile") === "1";
+const isMobileLocal = urlParams.get("mobile") === "1";
 const isStarterContainer = urlParams.get("starter") === "1";
 const starterContainerAccountId = String(urlParams.get("starterAccountId") || "");
 const starterContainerUsername = String(urlParams.get("starterUsername") || "");
@@ -71,8 +79,19 @@ const CONTAINER_SELECTED_ACCOUNT_KEY = "dwsg_container_selected_accounts_v1";
 let displayContainerIds = [1];
 let nextDisplayContainerId = 2;
 let accountEventChannel = null;
-if (isEmbeddedContainer || isMobileRemote) document.body.classList.add("embedded-mode");
-if (isMobileRemote) document.body.classList.add("mobile-remote-mode");
+if (isEmbeddedContainer || isMobileLocal) document.body.classList.add("embedded-mode");
+if (isMobileLocal) {
+  document.body.classList.add("mobile-local-mode");
+  const appVersion = String(urlParams.get("version") || "").trim();
+  const appVersionElement = document.getElementById("mobileAppVersion");
+  if (appVersionElement && appVersion) {
+    appVersionElement.textContent = appVersion.startsWith("V") ? appVersion : `V${appVersion}`;
+    appVersionElement.hidden = false;
+  }
+  // 手机端只承载一个与电脑端容器同源的辅助界面，不提供电脑端总控/地图入口或 IP 管理。
+  document.getElementById("desktopToolbar")?.remove();
+  document.querySelector(".proxy-line")?.remove();
+}
 if (isStarterContainer) {
   document.body.classList.add("starter-container-mode");
   document.querySelector(".bottom-nav")?.remove();
@@ -94,6 +113,13 @@ const appState = {
   army: [],
   inventory: { items: [] },
   militaryIntel: { events: [], statusByName: {} },
+  // 军情页数据：0x1600/0x8600 拉到的“此刻进行中的军事行动”
+  militarySnapshot: { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 },
+  militarySnapshotUnsupported: false,
+  // 军情页“辅助此刻行动”：任务引擎本地状态（刷黄在途、副本战斗、打矿驻守等），
+  // 随 2 秒任务轮询实时更新，不发游戏请求。
+  assistantOperations: [],
+  assistantOperationsSignature: "",
   dailyActivity: {},
   dailyStats: { brushYellowCount: 0, dungeonCount: 0 },
   roleQueueSummary: {},
@@ -141,6 +167,10 @@ const appState = {
     speed: false, fullLoyalty: true, replenishTroops: true, maxMarchMinutes: 45, centerX: 91, centerY: 26,
     rows: [{ enabled: false, generalIds: [], generalId: "", resourceType: "镔铁矿", x: 91, y: 26, scope: "附近" }]
   },
+  ministrySettings: {
+    cropEnabled: true, crop: "金银花", highPriority: true,
+    stealEnabled: true, courtesyEnabled: true, salaryRefresh: true
+  },
   militaryFutureSettings: null,
   automation: { taskId: null, status: "idle", lastLogs: [] },
   systemLogs: [],
@@ -185,7 +215,7 @@ function updateContainerCount() {
 }
 
 function loadDisplayContainerState() {
-  if (isEmbeddedContainer) return { ids: [1], nextId: 2 };
+  if (isEmbeddedContainer || isMobileLocal) return { ids: [1], nextId: 2 };
   try {
     const raw = localStorage.getItem(CONTAINER_STORAGE_KEY);
     if (!raw) return { ids: [1], nextId: 2 };
@@ -204,7 +234,7 @@ function loadDisplayContainerState() {
 }
 
 function saveDisplayContainerState() {
-  if (isEmbeddedContainer) return;
+  if (isEmbeddedContainer || isMobileLocal) return;
   try {
     localStorage.setItem(CONTAINER_STORAGE_KEY, JSON.stringify({
       ids: displayContainerIds.filter(id => id > 1),
@@ -344,7 +374,7 @@ function buildDisplayContainerPanel(id) {
 }
 
 function restoreDisplayContainers() {
-  if (isEmbeddedContainer) return;
+  if (isEmbeddedContainer || isMobileLocal) return;
   const grid = document.getElementById("containerGrid");
   if (!grid) return;
   const state = loadDisplayContainerState();
@@ -358,7 +388,7 @@ function restoreDisplayContainers() {
 }
 
 function addDisplayContainer() {
-  if (isEmbeddedContainer) return;
+  if (isEmbeddedContainer || isMobileLocal) return;
   const grid = document.getElementById("containerGrid");
   if (!grid) return;
   const id = nextDisplayContainerId++;
@@ -370,7 +400,7 @@ function addDisplayContainer() {
 }
 
 function removeDisplayContainer(id) {
-  if (isEmbeddedContainer || Number(id) === 1) return;
+  if (isEmbeddedContainer || isMobileLocal || Number(id) === 1) return;
   const numericId = Number(id);
   const panel = document.querySelector(`.container-panel[data-container-id="${numericId}"]`);
   panel?.remove();
@@ -592,7 +622,10 @@ function updateAccountHeader() {
       });
     }
   }
-  if (open) open.textContent = appState.accounts.length ? `${appState.accounts.length}开` : "未登录";
+  if (open) {
+    const startedCount = appState.accounts.filter(account => account.started).length;
+    open.textContent = appState.accounts.length ? `${startedCount}开` : "未登录";
+  }
   if (expire) {
     expire.textContent = acc ? "到期时间2026-07-08 03:59:04" : "到期时间2026-07-08 03:59:04";
   }
@@ -714,6 +747,7 @@ function renderProxySelect() {
 }
 
 async function loadProxyNodes({ silent = true, manageButton = true, inspectIps = false } = {}) {
+  if (isMobileLocal) return false;
   const button = document.getElementById("refreshProxyBtn");
   if (manageButton && button) button.disabled = true;
   try {
@@ -911,6 +945,7 @@ function snapshotCurrentAccountUi() {
     brushSettings: JSON.parse(JSON.stringify(appState.brushSettings || {})),
     raidSettings: JSON.parse(JSON.stringify(appState.raidSettings || defaultRaidSettings())),
     mineSettings: JSON.parse(JSON.stringify(appState.mineSettings || defaultMineSettings())),
+    ministrySettings: JSON.parse(JSON.stringify(appState.ministrySettings || defaultMinistrySettings())),
     militaryFutureSettings: JSON.parse(JSON.stringify(appState.militaryFutureSettings || defaultMilitaryFutureSettings())),
     automation: JSON.parse(JSON.stringify(appState.automation || { taskId: null, status: "idle", lastLogs: [] })),
   };
@@ -942,6 +977,17 @@ function defaultMineSettings() {
       y: 26,
       scope: "附近"
     }]
+  };
+}
+
+function defaultMinistrySettings() {
+  return {
+    cropEnabled: true,
+    crop: "金银花",
+    highPriority: true,
+    stealEnabled: true,
+    courtesyEnabled: true,
+    salaryRefresh: true,
   };
 }
 
@@ -1018,6 +1064,20 @@ function defaultBrushSettings() {
       nationalCollect: false, cityLordCollect: false, generalVisit: false
     },
     generalVisitGeneralIds: [],
+    chainInventory: {
+      enabled: false,
+      keepItemName: "青铜钥匙",
+      keepCount: 3,
+      autoOpenEnabled: false,
+      autoOpenItemNames: "50两银票",
+    },
+    alarm: {
+      incomingEnabled: true,
+      incomingMode: "声音+日志",
+      militaryEnabled: true,
+      militaryMode: "出征/返回",
+      errorEnabled: true,
+    },
   };
 }
 
@@ -1060,6 +1120,14 @@ function applyServerHabits(data) {
         .map(id => String(id || "").trim())
         .filter(Boolean)
     )).slice(0, 4);
+    next.chainInventory = {
+      ...defaultBrushSettings().chainInventory,
+      ...(cfg.chainInventory && typeof cfg.chainInventory === "object" ? cfg.chainInventory : {})
+    };
+    next.alarm = {
+      ...defaultBrushSettings().alarm,
+      ...(cfg.alarm && typeof cfg.alarm === "object" ? cfg.alarm : {})
+    };
     next.copperFloorWan = normalizeCopperFloor(next.copperFloorWan);
     if (brush.compositionFilter) {
       Object.assign(next, brush.compositionFilter);
@@ -1078,6 +1146,9 @@ function applyServerHabits(data) {
       appState.mineSettings.rows = habits.mine.rows.map(row => ({ ...row }));
     }
   }
+  if (habits.ministry && typeof habits.ministry === "object") {
+    appState.ministrySettings = { ...defaultMinistrySettings(), ...habits.ministry };
+  }
   if (habits.militaryFuture && typeof habits.militaryFuture === "object") {
     appState.militaryFutureSettings = mergeMilitaryFutureSettings(habits.militaryFuture);
   }
@@ -1093,6 +1164,9 @@ function restoreAccountUi(sessionId) {
     : defaultBrushSettings();
   appState.raidSettings = saved?.raidSettings ? JSON.parse(JSON.stringify(saved.raidSettings)) : defaultRaidSettings();
   appState.mineSettings = saved?.mineSettings ? JSON.parse(JSON.stringify(saved.mineSettings)) : defaultMineSettings();
+  appState.ministrySettings = saved?.ministrySettings
+    ? JSON.parse(JSON.stringify(saved.ministrySettings))
+    : defaultMinistrySettings();
   appState.militaryFutureSettings = saved?.militaryFutureSettings ? mergeMilitaryFutureSettings(saved.militaryFutureSettings) : defaultMilitaryFutureSettings();
   appState.automation = saved?.automation ? JSON.parse(JSON.stringify(saved.automation)) : { taskId: null, status: "idle", lastLogs: [] };
 }
@@ -1109,6 +1183,7 @@ function applySessionData(data, { restoreUi = true } = {}) {
   appState.army = data.army || data.roleState?.idleArmy || [];
   appState.inventory = data.inventory || { items: [] };
   appState.militaryIntel = data.militaryIntel || { events: [], statusByName: {} };
+  appState.militarySnapshot = data.militarySnapshot || { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
   appState.dailyActivity = data.dailyActivity || {};
   appState.dailyStats = data.dailyStats || { brushYellowCount: 0, dungeonCount: 0 };
   appState.unresolvedGeneralIds = Array.isArray(data.unresolvedGeneralIds)
@@ -1146,6 +1221,7 @@ function applyAccountRecord(acc, { restoreUi = true } = {}) {
   appState.army = [];
   appState.inventory = { items: [] };
   appState.militaryIntel = { events: [], statusByName: {} };
+  appState.militarySnapshot = { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
   appState.dailyActivity = {};
   appState.dailyStats = { brushYellowCount: 0, dungeonCount: 0 };
   appState.roleQueueSummary = {};
@@ -1181,6 +1257,8 @@ function renderTabs() {
     activeSide = currentSideMenus()[0] || activeCategory;
     render();
     if (activeCategory === "角色") void refreshRoleSide(activeSide, { silent: true });
+    // 军情只在进入页面和点刷新时拉，节奏与真实客户端一致，不做常驻轮询。
+    if (activeCategory === "军情") void refreshLiveState({ silent: true, scope: "military" });
     if (isStarterContainer && ["刷黄", "副本"].includes(activeCategory)) {
       if (activeSide.endsWith("记录")) void refreshSuccessRecords({ silent: true });
     }
@@ -1201,10 +1279,16 @@ function roleSideRefreshScope(side) {
 
 function renderSide() {
   const menus = currentSideMenus();
-  document.getElementById("sideTabs").innerHTML = menus.length ? menus.map(m =>
-    `<button class="side-tab ${m === activeSide ? "active" : ""}" data-side="${m}">${m}</button>`
-  ).join("") : "";
+  if (isDeferredFeatureSide(activeSide)) {
+    activeSide = menus.find(m => !isDeferredFeatureSide(m)) || activeCategory;
+  }
+  document.getElementById("sideTabs").innerHTML = menus.length ? menus.map(m => {
+    const deferred = isDeferredFeatureSide(m);
+    return `<button class="side-tab ${m === activeSide ? "active" : ""} ${deferred ? "feature-deferred" : ""}"
+      data-side="${m}" ${deferred ? "disabled aria-disabled=\"true\" title=\"当前版本暂不实现\"" : ""}>${m}${deferred ? "<small>暂不做</small>" : ""}</button>`;
+  }).join("") : "";
   document.querySelectorAll(".side-tab[data-side]").forEach(btn => btn.onclick = () => {
+    if (btn.disabled || isDeferredFeatureSide(btn.dataset.side)) return;
     discardActivePageChanges();
     activeSide = btn.dataset.side;
     render();
@@ -1213,7 +1297,7 @@ function renderSide() {
       if (activeSide === "记录") void refreshSuccessRecords({ silent: true });
       else void refreshLiveState({
         silent: true,
-        scope: activeSide === "宝物" ? "inventory" : activeSide === "军队" ? "military" : "role",
+        scope: activeSide === "宝物" ? "inventory" : "role",
         side: activeSide,
       });
     }
@@ -1252,14 +1336,19 @@ function dungeonChapterMeta(value) {
 function dungeonClearModeSelected(value) {
   return String(value ?? "").trim() === dungeonClearModeOption;
 }
+function dungeonSelectableStageCount(chapterValue) {
+  // 每章最后一关是多人副本，单人无法挑战，禁止勾选：抓包 20260726_173635
+  // 里广宗决战（第一章末关）建队后 0x8522 只回“多人副本创建成功”。
+  return Math.max(1, dungeonChapterMeta(chapterValue).stageCount - 1);
+}
 function dungeonStageOptions(chapterValue) {
   if (dungeonClearModeSelected(chapterValue)) return [dungeonClearModeOption];
-  const count = dungeonChapterMeta(chapterValue).stageCount;
+  const count = dungeonSelectableStageCount(chapterValue);
   return Array.from({ length: count }, (_, index) => String(index + 1));
 }
 function normalizeDungeonStage(chapterValue, stageValue) {
   if (dungeonClearModeSelected(chapterValue)) return dungeonClearModeOption;
-  const count = dungeonChapterMeta(chapterValue).stageCount;
+  const count = dungeonSelectableStageCount(chapterValue);
   const stage = Number(stageValue);
   if (!Number.isFinite(stage) || stage < 1) return "1";
   return String(Math.min(Math.trunc(stage), count));
@@ -1505,7 +1594,7 @@ function renderCommon() {
   if (activeSide === "常用") return h`
     <div class="design-page common-design-page">
       <div class="design-card design-setting-card">
-        ${designRow("掉线重连：", `<span title="成功重连后连续失败次数会清零">网络 3→5→10 分钟；Token/服务器拒绝 10→20→30 分钟</span>`)}
+        ${designRow("掉线重连：", `<span class="common-reconnect-policy" title="成功重连后连续失败次数会清零">网络 3→5→10 分钟；Token/服务器拒绝 10→20→30 分钟</span>`)}
         ${designRow("刷黄上限：", `<input id="commonDailyLimit" class="design-input num-compact" type="number" min="1" max="500" value="${escAttr(b.dailyLimit ?? 500)}"><span>次</span>`)}
         ${designRow("治疗伤兵：", `<span>开启</span><input id="healWounded" class="design-check" type="checkbox" ${b.healWounded !== false ? "checked" : ""}>`)}
         ${designRow("自动内政：", `<span>开启</span><input id="autoDomestic" class="design-check" type="checkbox" ${b.domestic?.enabled ? "checked" : ""}><span>空地建筑</span><select id="emptyBuildingType" class="design-select w-wide">${[
@@ -1514,8 +1603,8 @@ function renderCommon() {
         ${designRow("升级科技：", `${technologyMultiHtml(b.domestic?.technologyIds || [b.domestic?.technologyId ?? 5])}<input id="upgradeTechnology" class="design-check" type="checkbox" ${b.domestic?.upgradeTechnology ? "checked" : ""}>`)}
         ${designRow("建筑加速：", `<span>未接入</span><select class="design-select w-mid" disabled><option>不加速</option></select>`)}
         ${designRow("自动加体：", `<span>开启</span><input id="autoEnergy" class="design-check" type="checkbox" ${b.autoEnergy !== false ? "checked" : ""}><span>体力&lt;</span><input id="energyThreshold" class="design-input num-compact" type="number" min="20" max="100" value="${escAttr(b.energyThreshold ?? 20)}">`)}
-        ${designRow("释放俘虏：", `<span>开启</span>${dCheck(false)}<span>成长&gt;</span>${dInput(80, "num-compact", "number")}`)}
-        ${designRow("劝降俘虏：", `<span>开启</span>${dCheck(false)}<span>成长&gt;</span>${dInput(80, "num-compact", "number")}<button class="table-btn design-mini-btn" type="button">铜钱劝降</button>`)}
+        ${designRow("释放俘虏：", `<span>未接入</span><input class="design-check" type="checkbox" disabled><span>成长&gt;</span><input class="design-input num-compact" type="number" value="80" disabled>`)}
+        ${designRow("劝降俘虏：", `<span>未接入</span><input class="design-check" type="checkbox" disabled><span>成长&gt;</span><input class="design-input num-compact" type="number" value="80" disabled><button class="table-btn design-mini-btn" type="button" disabled>铜钱劝降</button>`)}
         ${designRow("粮食转铜：", `<span>开启</span><input id="foodToCopper" class="design-check" type="checkbox" ${b.foodToCopper !== false ? "checked" : ""}><select id="copperFloorWan" class="design-select num-compact">${simpleOptionsHtml(copperFloorOptions, normalizeCopperFloor(b.copperFloorWan))}</select><span>万</span>`)}
       </div>
     </div>`;
@@ -1544,8 +1633,8 @@ function renderCommon() {
           }`
         )).join("")}
         ${generalVisitPanelHtml()}
-        ${designRow("开启免战：", `<span>开启</span>${dCheck(false)}`)}
-        ${designRow("连体整理：", `<span>开启</span>${dCheck(false)}`)}
+        ${designRow("开启免战：", `<span>未接入</span><input class="design-check" type="checkbox" disabled>`)}
+        ${designRow("连体整理：", `<span>暂不实现</span><input class="design-check" type="checkbox" disabled>`)}
       </div>
       ${note("各项日常任务独立设置、独立执行；普通失败会写入角色-提示，但不会阻断其他任务。")}
     </div>`;
@@ -1558,34 +1647,39 @@ function renderCommon() {
       </div>
       ${note("不丢强化、炼魂、80级以上装备<br/>青铜宝箱和精铁宝箱需要对应钥匙")}
     </div>`;
-  if (activeSide === "连体物品") return h`
+  if (activeSide === "连体物品") {
+    const chain = { ...defaultBrushSettings().chainInventory, ...(b.chainInventory || {}) };
+    return h`
     <div class="design-page common-design-page">
       <div class="design-card design-setting-card">
-        ${designRow("整理物品：", `<span>开启</span>${dCheck(false)}${dInput("青铜钥匙", "w-mid")}`)}
-        ${designRow("保留数量：", dInput(3, "num-compact", "number"))}
-        ${designRow("自动开箱：", `<span>开启</span>${dCheck(false)}${dInput("50两银票、...", "w-long")}`)}
+        ${designRow("整理物品：", `<span>开启</span><input id="chainInventoryEnabled" class="design-check" type="checkbox" ${chain.enabled ? "checked" : ""}><input id="chainKeepItemName" class="design-input w-mid" type="text" value="${escAttr(chain.keepItemName || "青铜钥匙")}">`)}
+        ${designRow("保留数量：", `<input id="chainKeepCount" class="design-input num-compact" type="number" min="0" max="9999" value="${escAttr(chain.keepCount ?? 3)}">`)}
+        ${designRow("自动开箱：", `<span>开启</span><input id="chainAutoOpenEnabled" class="design-check" type="checkbox" ${chain.autoOpenEnabled ? "checked" : ""}><input id="chainAutoOpenItemNames" class="design-input w-long" type="text" value="${escAttr(chain.autoOpenItemNames || "50两银票")}">`)}
       </div>
       ${note("连体物品整理同主号物品：按保留清单转移、丢弃、开箱。")}
     </div>`;
+  }
+  const alarm = { ...defaultBrushSettings().alarm, ...(b.alarm || {}) };
   return h`
     <div class="design-page common-design-page">
       <div class="design-card design-setting-card">
-        ${designRow("来袭警报：", `<span>开启</span>${dCheck(true)}${dSelect(["声音+日志", "仅日志", "关闭"], "声音+日志", "w-mid")}`)}
-        ${designRow("军情提醒：", `<span>开启</span>${dCheck(true)}${dSelect(["出征/返回", "仅来袭", "全部"], "出征/返回", "w-mid")}`)}
-        ${designRow("异常提醒：", `<span>开启</span>${dCheck(true)}`)}
+        ${designRow("来袭警报：", `<span>开启</span><input id="alarmIncomingEnabled" class="design-check" type="checkbox" ${alarm.incomingEnabled ? "checked" : ""}><select id="alarmIncomingMode" class="design-select w-mid">${simpleOptionsHtml(["声音+日志", "仅日志", "关闭"], alarm.incomingMode || "声音+日志")}</select>`)}
+        ${designRow("军情提醒：", `<span>开启</span><input id="alarmMilitaryEnabled" class="design-check" type="checkbox" ${alarm.militaryEnabled ? "checked" : ""}><select id="alarmMilitaryMode" class="design-select w-mid">${simpleOptionsHtml(["出征/返回", "仅来袭", "全部"], alarm.militaryMode || "出征/返回")}</select>`)}
+        ${designRow("异常提醒：", `<span>开启</span><input id="alarmErrorEnabled" class="design-check" type="checkbox" ${alarm.errorEnabled ? "checked" : ""}>`)}
       </div>
       ${note("警报页面：用于配置来袭提醒、军情提醒和任务异常提醒。")}
     </div>`;
 }
 
 function renderLiubu() {
+  const settings = { ...defaultMinistrySettings(), ...(appState.ministrySettings || {}) };
   return h`<div class="design-page liubu-design-page">
     <div class="design-card design-setting-card">
-      ${designRow("种菜收菜：", `<span>开启</span>${dCheck(true)}<span>作物</span>${dSelect(["金银花", "草药", "稻谷", "棉花"], "金银花", "w-short")}<span>高级优先</span>${dCheck(true)}`)}
-      ${designRow("偷菜：", `<span>开启</span>${dCheck(true)}`)}
-      ${designRow("礼部任务：", `<span>开启</span>${dCheck(true)}<span>使用俸禄刷新</span>${dCheck(true)}`)}
+      ${designRow("种菜收菜：", `<span>开启</span><input class="design-check ministry-crop-enabled" type="checkbox" ${settings.cropEnabled ? "checked" : ""}><span>作物</span><select class="design-select w-short ministry-crop">${simpleOptionsHtml(["金银花", "草药", "稻谷", "棉花"], settings.crop || "金银花")}</select><span>高级优先</span><input class="design-check ministry-high-priority" type="checkbox" ${settings.highPriority ? "checked" : ""}>`)}
+      ${designRow("偷菜：", `<span>开启</span><input class="design-check ministry-steal-enabled" type="checkbox" ${settings.stealEnabled ? "checked" : ""}>`)}
+      ${designRow("礼部任务：", `<span>开启</span><input class="design-check ministry-courtesy-enabled" type="checkbox" ${settings.courtesyEnabled ? "checked" : ""}><span>使用俸禄刷新</span><input class="design-check ministry-salary-refresh" type="checkbox" ${settings.salaryRefresh ? "checked" : ""}>`)}
     </div>
-    ${note("礼部任务成功率和文官等级、特长、技能有关")}
+    ${note("金银花种植按已确认协议执行；偷菜目前只扫描候选菜地，不发送偷取动作。礼部任务与俸禄刷新未确认时会明确显示为暂不执行。")}
   </div>`;
 }
 function renderMine() {
@@ -1850,6 +1944,8 @@ function commonSettingsScope(side = activeSide) {
     "常用": "common.frequent",
     "日常": "common.daily",
     "主号物品": "common.items",
+    "连体物品": "common.chain",
+    "警报": "common.alarm",
   }[side] || "";
 }
 
@@ -1915,6 +2011,29 @@ function buildCommonSettingsPatch(side = activeSide) {
       maxEquipmentLevel: Math.max(1, Math.min(100, Number(document.getElementById("maxEquipmentLevel")?.value || 20))),
       autoOpenEnabled: !!document.getElementById("autoOpenEnabled")?.checked,
       autoOpenItemNames,
+    };
+  }
+  if (side === "连体物品") {
+    return {
+      chainInventory: {
+        enabled: !!document.getElementById("chainInventoryEnabled")?.checked,
+        keepItemName: String(document.getElementById("chainKeepItemName")?.value || "").trim(),
+        keepCount: Math.max(0, Math.min(9999, Number(document.getElementById("chainKeepCount")?.value || 0))),
+        autoOpenEnabled: !!document.getElementById("chainAutoOpenEnabled")?.checked,
+        autoOpenItemNames: String(document.getElementById("chainAutoOpenItemNames")?.value || "").trim(),
+      },
+    };
+  }
+  if (side === "警报") {
+    const incomingMode = document.getElementById("alarmIncomingMode")?.value || "声音+日志";
+    return {
+      alarm: {
+        incomingEnabled: !!document.getElementById("alarmIncomingEnabled")?.checked && incomingMode !== "关闭",
+        incomingMode,
+        militaryEnabled: !!document.getElementById("alarmMilitaryEnabled")?.checked,
+        militaryMode: document.getElementById("alarmMilitaryMode")?.value || "出征/返回",
+        errorEnabled: !!document.getElementById("alarmErrorEnabled")?.checked,
+      },
     };
   }
   throw new Error(`当前子页面“${side}”没有可保存的设置`);
@@ -2089,6 +2208,18 @@ function saveMineDom() {
         idx
       };
     })
+  };
+}
+function saveMinistryDom() {
+  const root = document.querySelector(".liubu-design-page");
+  if (!root) return;
+  appState.ministrySettings = {
+    cropEnabled: !!root.querySelector(".ministry-crop-enabled")?.checked,
+    crop: root.querySelector(".ministry-crop")?.value || "金银花",
+    highPriority: !!root.querySelector(".ministry-high-priority")?.checked,
+    stealEnabled: !!root.querySelector(".ministry-steal-enabled")?.checked,
+    courtesyEnabled: !!root.querySelector(".ministry-courtesy-enabled")?.checked,
+    salaryRefresh: !!root.querySelector(".ministry-salary-refresh")?.checked,
   };
 }
 function saveFutureMilitaryDom() {
@@ -2279,6 +2410,10 @@ function discardActivePageChanges() {
     appState.mineSettings = clone(saved.mineSettings || defaultMineSettings());
     return;
   }
+  if (activeCategory === "六部") {
+    appState.ministrySettings = clone(saved.ministrySettings || defaultMinistrySettings());
+    return;
+  }
   if (activeCategory === "军事" || (activeCategory === "起号" && activeSide === "军队")) {
     if (activeSide === "配兵" || activeSide === "军队") {
       appState.formations = clone(saved.formations || []);
@@ -2314,6 +2449,10 @@ function discardActivePageChanges() {
       "cleanInventory", "discardItemNames", "discardEquipment",
       "maxEquipmentQuality", "maxEquipmentLevel", "autoOpenEnabled", "autoOpenItemNames"
     ].forEach(key => { current[key] = clone(committed[key]); });
+  } else if (activeSide === "连体物品") {
+    current.chainInventory = clone(committed.chainInventory);
+  } else if (activeSide === "警报") {
+    current.alarm = clone(committed.alarm);
   }
 }
 function applyActiveBrushRuleOrThrow() {
@@ -2553,7 +2692,7 @@ function renderMilitary() {
     return h`
     <div class="design-page military-design-page dungeon-page">
       ${designTable(["", "出征将领", "章节", "关卡", "开箱", "操作"], rows, "military-table dungeon-table")}${actionButtons()}
-      ${note(`副本编队同一时间最多启用一条；全部不勾选并保存时关闭副本任务。选择具体章节时循环刷选定关卡；在“章节”选择“${dungeonClearModeOption}”后，“关卡”会同步显示打通模式，并按服务器目录从首个未通关关卡逐关推进。${pauseNote}`)}
+      ${note(`副本编队同一时间最多启用一条；全部不勾选并保存时关闭副本任务。选择具体章节时循环刷选定关卡；在“章节”选择“${dungeonClearModeOption}”后，“关卡”会同步显示打通模式，并按服务器目录从首个未通关关卡逐关推进。每章最后一关是多人副本，单人无法挑战：关卡列表不提供该关，打通模式会自动跳到下一章第一关（打通倒数第二关会同时解锁本章末关和下一章第一关）。${pauseNote}`)}
     </div>`;
   }
   if (activeSide === "押镖") {
@@ -2605,28 +2744,217 @@ function renderMilitary() {
     </div>`;
   }
 }
-function renderJunqing() {
-  const intel = appState.militaryIntel || { events: [], statusByName: {} };
-  const events = (intel.events || []).filter(e => e.text);
-  const busy = (appState.generals || []).filter(g => statusLabel(g.displayStatus || g.statusText || intel.statusByName?.[g.name]) !== "闲");
-  const timeText = new Date(intel.updatedAt || Date.now()).toLocaleTimeString("zh-CN", { hour12: false });
-  const feedItems = events.length
-    ? events.map(e => ({
-        time: e.timeText || e.time || timeText,
-        text: e.text,
-      }))
-    : busy.map(g => ({
-        time: timeText,
-        text: `【${statusLabel(g.displayStatus || g.statusText)}】${g.name || g.id}${g.soldierType ? "，" + g.soldierType : ""}${g.soldierCount ? " " + fmtNum(g.soldierCount) : ""}`,
-      }));
-  const body = feedItems.length
-    ? feedItems.map(item => `<div class="junqing-item"><div class="junqing-time">${escHtml(item.time)}</div><div class="junqing-text">${escHtml(item.text)}</div></div>`).join("")
-    : `<div class="junqing-empty">暂无出征/返回军情</div>`;
-  return h`<div class="junqing-page">
-    <button class="table-btn live-btn blue-live junqing-hidden-refresh" id="refreshStateBtn" type="button">立即刷新</button>
-    <div class="junqing-feed">${body}</div>
+// 军情页展示的是“此刻”的军情：敌军来袭和当前军事行动（战斗 / 驻守 / 返回），
+// 数据来自 0x1600/0x8600 真实军情列表，不是历史事件流，也不再从 0xa110
+// 心跳混合包里按关键词捞文本。没有进行中的行动时，就应该是空的。
+const junqingStateClass = {
+  "来袭": "junqing-state-incoming",
+  "战斗": "junqing-state-fight",
+  "出征": "junqing-state-march",
+  "驻守": "junqing-state-hold",
+  "返回": "junqing-state-back",
+  // 已建队未开战的多人副本记录（抓包 20260726_173635 广宗决战）。
+  "备战": "junqing-state-prep",
+};
+
+// “辅助此刻行动”卡片：数据来自任务引擎本地状态（server.py
+// assistant_live_operations），涵盖 0x8600 看不到的副本战斗和正在
+// 发起中的出征；状态一律来自心跳里将领的真实忙闲（征/战/防/返）。
+const junqingLiveStateClass = {
+  "战斗": "junqing-state-fight",
+  "出征": "junqing-state-march",
+  "驻守": "junqing-state-hold",
+  "返回": "junqing-state-back",
+  "准备": "junqing-state-prep",
+};
+
+function junqingElapsedText(sinceMs) {
+  const since = Number(sinceMs || 0);
+  if (!since) return "";
+  const diff = Date.now() - since;
+  if (diff < 0) return "";
+  const total = Math.floor(diff / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}时${minutes}分`;
+  if (minutes > 0) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+function junqingLiveOpCardHtml(op) {
+  const state = String(op.state || "");
+  const stateClass = junqingLiveStateClass[state] || "junqing-state-other";
+  const metas = [];
+  const generals = (op.generalStates || [])
+    .map(g => {
+      const name = escHtml(String(g.name || ""));
+      const status = String(g.status || "");
+      return status && status !== "未知" ? `${name}(${escHtml(status)})` : name;
+    })
+    .filter(Boolean)
+    .join("、");
+  if (generals) metas.push(`<span class="junqing-meta-item">将领：${generals}</span>`);
+  if (op.cycleNo) metas.push(`<span class="junqing-meta-item">第 ${escHtml(String(op.cycleNo))} 轮</span>`);
+  if (op.battleId) metas.push(`<span class="junqing-meta-item junqing-meta-dim">战斗号 ${escHtml(String(op.battleId))}</span>`);
+  if (op.taskName) metas.push(`<span class="junqing-meta-item junqing-meta-dim">${escHtml(String(op.taskName))}任务</span>`);
+  const since = Number(op.startedAt || 0);
+  const elapsed = junqingElapsedText(since);
+  const elapsedHtml = since && elapsed
+    ? `<span class="junqing-remain">已进行 <span data-junqing-since="${since}">${escHtml(elapsed)}</span></span>`
+    : "";
+  return `<div class="junqing-card junqing-live-card">
+    <div class="junqing-card-head">
+      <span class="junqing-state ${stateClass}">${escHtml(state || "行动")}</span>
+      ${op.targetText ? `<span class="junqing-target">${escHtml(String(op.targetText))}</span>` : ""}
+      ${elapsedHtml}
+    </div>
+    <div class="junqing-card-text">${escHtml(String(op.text || ""))}</div>
+    ${metas.length ? `<div class="junqing-card-meta">${metas.join("")}</div>` : ""}
   </div>`;
 }
+
+function junqingRemainText(eventTimeMs) {
+  const target = Number(eventTimeMs || 0);
+  if (!target) return "";
+  const diff = target - Date.now();
+  // 只在时间戳确实指向未来时才显示倒计时；过期就什么都不显示，
+  // 不把一个已经过去的时间粉饰成“剩余 0 秒”。
+  if (diff <= 0) return "";
+  const total = Math.floor(diff / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}时${minutes}分`;
+  if (minutes > 0) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+function junqingDateTimeText(eventTimeMs) {
+  const target = Number(eventTimeMs || 0);
+  if (!target) return "";
+  const date = new Date(target);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).replaceAll("/", "-");
+}
+
+function junqingGeneralsText(action) {
+  const names = (action.generalNames || []).filter(Boolean);
+  if (names.length) return names.join("、");
+  const ids = action.generalIds || [];
+  return ids.length ? `${ids.length} 名将领` : "";
+}
+
+function junqingTargetText(action) {
+  const name = String(action.targetName || "");
+  if (!name) return "";
+  return action.hasCoord ? `${name}（${action.x},${action.y}）` : name;
+}
+
+function junqingCardHtml(action) {
+  const state = String(action.state || "");
+  const stateClass = junqingStateClass[state] || "junqing-state-other";
+  // 剩余时长以 marchValue（服务器给的剩余行军毫秒，抓包 20260726_173635
+  // 连续刷新验证为递减值）锚定：目标时刻 = 快照时刻 + 剩余。战斗中
+  // marchValue 恒为 0、时间戳≈服务器当前时间，因此不会出现假倒计时。
+  const snapshotUpdatedAt = Number(appState.militarySnapshot?.updatedAt || 0);
+  const remainMs = Number(action.marchValue || 0);
+  // 来袭记录同时给出绝对到达时间，优先使用它；普通行军仍以本次快照时间
+  // 加服务器剩余毫秒计算，避免把战斗态的“服务器当前时间”误当 ETA。
+  const incomingArrivalAt = action.incoming ? Number(action.eventTimeMs || 0) : 0;
+  const remainTarget = incomingArrivalAt
+    || (remainMs > 0 && snapshotUpdatedAt ? snapshotUpdatedAt + remainMs : 0);
+  const remain = remainTarget ? junqingRemainText(remainTarget) : "";
+  const remainLabel = action.incoming
+    ? "距来袭剩余"
+    : (action.marchKindText === "回程" ? "距到家剩余" : "距到达剩余");
+  const target = junqingTargetText(action);
+  const generals = junqingGeneralsText(action);
+  const metas = [];
+  if (action.attackerName) metas.push(`<span class="junqing-meta-item junqing-meta-alert">来袭玩家：${escHtml(String(action.attackerName))}</span>`);
+  if (action.actionTypeText) metas.push(`<span class="junqing-meta-item">行动：${escHtml(String(action.actionTypeText))}</span>`);
+  if (generals) metas.push(`<span class="junqing-meta-item">将领：${escHtml(generals)}</span>`);
+  if (action.targetTypeText) metas.push(`<span class="junqing-meta-item">${escHtml(action.targetTypeText)}</span>`);
+  if (action.incoming && action.targetId) metas.push(`<span class="junqing-meta-item">封地 ID ${escHtml(String(action.targetId))}</span>`);
+  const arrivalText = action.incoming ? junqingDateTimeText(action.eventTimeMs) : "";
+  if (arrivalText) metas.push(`<span class="junqing-meta-item">预计到达：${escHtml(arrivalText)}</span>`);
+  if (action.recordId) metas.push(`<span class="junqing-meta-item junqing-meta-dim">记录号 ${escHtml(String(action.recordId))}</span>`);
+  if (action.battleId) metas.push(`<span class="junqing-meta-item junqing-meta-dim">战斗号 ${escHtml(String(action.battleId))}</span>`);
+  const incomingCardClass = action.incoming ? " junqing-incoming-card" : "";
+  return `<div class="junqing-card${incomingCardClass}">
+    <div class="junqing-card-head">
+      <span class="junqing-state ${stateClass}">${escHtml(state || action.tag || "军情")}</span>
+      ${target ? `<span class="junqing-target">${escHtml(target)}</span>` : ""}
+      ${remain ? `<span class="junqing-remain">${remainLabel} <span data-junqing-until="${remainTarget}">${escHtml(remain)}</span></span>` : ""}
+    </div>
+    <div class="junqing-card-text">${escHtml(String(action.text || ""))}</div>
+    ${metas.length ? `<div class="junqing-card-meta">${metas.join("")}</div>` : ""}
+  </div>`;
+}
+
+function junqingEmptyHtml(snapshot, started) {
+  // 五种空态必须能区分开，任何一种都不能冒充“确认当前没有军情”。
+  if (appState.militarySnapshotUnsupported) {
+    return `<div class="junqing-empty junqing-empty-warn">后端没有返回军情数据（响应里没有 militarySnapshot）。<br/>正在运行的 server.py 还是旧版本，请重启后端后再试：<br/><code>python3 -u server.py</code></div>`;
+  }
+  if (!started) {
+    return `<div class="junqing-empty">账号未启动，无法读取军情。请先在右上角点击「启动」完成真实登录。</div>`;
+  }
+  if (!snapshot.updatedAt) {
+    return `<div class="junqing-empty">尚未拉取军情。点击右上角「刷新军情」获取此刻的军事行动。</div>`;
+  }
+  if (!snapshot.responded) {
+    return `<div class="junqing-empty">上次刷新没有收到军情响应（0x8600 未返回），请稍后重试或检查账号连接。</div>`;
+  }
+  return `<div class="junqing-empty">当前没有进行中的军情。</div>`;
+}
+
+function renderJunqing() {
+  const snapshot = appState.militarySnapshot || {
+    actions: [], actionCount: 0, incomingCount: 0, responded: false, updatedAt: 0,
+  };
+  const actions = Array.isArray(snapshot.actions) ? snapshot.actions : [];
+  const started = !!selectedAccount()?.session;
+  const liveOps = started && Array.isArray(appState.assistantOperations)
+    ? appState.assistantOperations
+    : [];
+  const updatedText = snapshot.updatedAt
+    ? new Date(snapshot.updatedAt).toLocaleTimeString("zh-CN", { hour12: false })
+    : "未刷新";
+  const summaryParts = [];
+  if (liveOps.length) summaryParts.push(`辅助行动 ${liveOps.length} 条`);
+  const incomingCount = actions.filter(action => action?.incoming || action?.state === "来袭").length;
+  if (incomingCount) summaryParts.push(`来袭 ${incomingCount} 条`);
+  const otherActionCount = actions.length - incomingCount;
+  if (otherActionCount) summaryParts.push(`军情 ${otherActionCount} 条`);
+  const summary = summaryParts.length
+    ? summaryParts.join(" · ")
+    : (snapshot.responded ? "暂无进行中军情" : "—");
+  const serverBody = actions.length
+    ? actions.map(junqingCardHtml).join("")
+    : junqingEmptyHtml(snapshot, started);
+  // 辅助行动（本地任务引擎，2 秒实时）在上；服务器军情（0x1600/0x8600，
+  // 手动刷新）在下。两个来源分区展示，互不冒充。
+  const liveSection = liveOps.length
+    ? `<div class="junqing-section-title">辅助此刻行动 · 实时</div>${liveOps.map(junqingLiveOpCardHtml).join("")}`
+    : (started
+      ? `<div class="junqing-section-title">辅助此刻行动 · 实时</div><div class="junqing-empty junqing-live-empty">辅助任务此刻没有在途的军事行动。</div>`
+      : "");
+  const serverSection = `<div class="junqing-section-title">服务器军情 · 0x1600/0x8600</div>${serverBody}`;
+  return h`<div class="junqing-page">
+    <div class="junqing-toolbar">
+      <span class="junqing-summary">${summary}</span>
+      <span class="junqing-updated">刷新于 ${updatedText}</span>
+      <button class="table-btn live-btn blue-live" id="refreshStateBtn" type="button">刷新军情</button>
+    </div>
+    <div class="junqing-feed">${liveSection}${serverSection}</div>
+  </div>`;
+}
+
 function roleStatusTableHtml() {
   const effects = appState.roleState?.statusEffects || appState.roleState?.effects || [];
   const byName = new Map((effects || []).map(e => [String(e.name || e.label || ""), e]));
@@ -2777,8 +3105,8 @@ function renderRole() {
       stopping: "停止中",
     };
     const residentDefaults = [
-      ["dungeon", "副本"], ["brushYellow", "刷黄"], ["mine", "打矿"], ["raid", "掠夺"],
-      ["siege", "抢城"], ["lossless", "无损"], ["escort", "押镖"], ["treasure", "寻宝"],
+      ["mine", "打矿"], ["lossless", "无损"], ["brushYellow", "刷黄"],
+      ["raid", "掠夺"], ["dungeon", "副本"], ["ministry", "六部"],
     ];
     const dailyDefaults = [
       ["autoSignIn", "自动签到"], ["arenaCoins", "领竞技币"],
@@ -3280,6 +3608,9 @@ function renderMainPageShell() {
   const otherPage = document.getElementById("otherPage");
   const homePage = document.getElementById("homePage");
   const otherHome = document.getElementById("otherHome");
+  const famousGeneralGuide = document.getElementById("famousGeneralGuide");
+  const openServerGuide = document.getElementById("openServerGuide");
+  const guideArticlesPage = document.getElementById("guideArticlesPage");
   const dungeonGuide = document.getElementById("dungeonGuide");
   const banditMapPage = document.getElementById("banditMapPage");
   const title = document.querySelector(".app-title");
@@ -3288,11 +3619,21 @@ function renderMainPageShell() {
   if (otherPage) otherPage.classList.toggle("page-hidden", activeMainPage !== "其他");
   if (homePage) homePage.classList.toggle("page-hidden", activeMainPage !== "Home");
   if (otherHome) otherHome.classList.toggle("page-hidden", activeOtherView !== "home");
+  if (famousGeneralGuide) famousGeneralGuide.classList.toggle("page-hidden", activeOtherView !== "famous-general");
+  if (openServerGuide) openServerGuide.classList.toggle("page-hidden", activeOtherView !== "open-server");
+  if (guideArticlesPage) guideArticlesPage.classList.toggle("page-hidden", activeOtherView !== "guide-articles");
   if (dungeonGuide) dungeonGuide.classList.toggle("page-hidden", activeOtherView !== "dungeon-guide");
   if (banditMapPage) banditMapPage.classList.toggle("page-hidden", activeOtherView !== "bandit-map");
   if (title) {
+    const otherTitles = {
+      "famous-general": "查名将",
+      "open-server": "查开服时间",
+      "guide-articles": "查攻略",
+      "dungeon-guide": "副本攻略",
+      "bandit-map": "山贼地图",
+    };
     title.textContent = activeMainPage === "其他"
-      ? (activeOtherView === "dungeon-guide" ? "副本攻略" : activeOtherView === "bandit-map" ? "山贼地图" : "攻略")
+      ? (otherTitles[activeOtherView] || "攻略")
       : activeMainPage;
   }
   document.querySelectorAll(".bottom-item[data-page]").forEach(item => {
@@ -3302,6 +3643,249 @@ function renderMainPageShell() {
     item.classList.toggle("active", item.dataset.page === activeMainPage);
   });
   if (activeMainPage === "Home") renderHomeAccountOptions();
+}
+
+function nativeGuideBridgeAvailable() {
+  const bridge = window.DWPMNativeGuide;
+  return !!bridge && typeof bridge.getFamousGeneralsJson === "function";
+}
+
+async function callGuideReference(method, ...args) {
+  const bridge = window.DWPMNativeGuide;
+  if (bridge && typeof bridge[method] === "function") {
+    const raw = bridge[method](...args);
+    const payload = JSON.parse(String(raw || "{}"));
+    if (!payload.ok) throw new Error(payload.error || "本地资料读取失败");
+    return payload;
+  }
+
+  const query = new URLSearchParams();
+  const resourceByMethod = {
+    getFamousGeneralsJson: "famous-generals",
+    getGuideArticlesJson: "articles",
+    getGuideArticleJson: "article",
+    getOpenServerOptionsJson: "open-server-options",
+    calculateOpenServerJson: "open-server-calculation",
+  };
+  const resource = resourceByMethod[method];
+  if (!resource) throw new Error("未知的攻略资料请求");
+  query.set("resource", resource);
+  if (method === "getGuideArticleJson") query.set("id", String(args[0] || ""));
+  if (method === "calculateOpenServerJson") {
+    query.set("versionIndex", String(Number(args[0]) || 0));
+    query.set("server", String(Number(args[1]) || 0));
+  }
+  const response = await fetch(`/api/reference/guide?${query}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || `攻略资料读取失败（HTTP ${response.status}）`);
+  }
+  return payload;
+}
+
+function configureNativeGuideEntries() {
+  document.querySelectorAll(".native-guide-entry").forEach(button => {
+    button.classList.remove("page-hidden");
+  });
+}
+
+function openNativeGuideView(viewName, initializer) {
+  activeMainPage = "其他";
+  activeOtherView = viewName;
+  renderMainPageShell();
+  const viewByName = {
+    "famous-general": document.getElementById("famousGeneralGuide"),
+    "open-server": document.getElementById("openServerGuide"),
+    "guide-articles": document.getElementById("guideArticlesPage"),
+  };
+  const view = viewByName[viewName];
+  if (view) view.scrollTop = 0;
+  if (typeof initializer === "function") initializer();
+}
+
+function closeNativeGuideView() {
+  activeOtherView = "home";
+  renderMainPageShell();
+}
+
+async function loadNativeFamousGenerals() {
+  if (!nativeFamousGenerals) {
+    const payload = await callGuideReference("getFamousGeneralsJson");
+    nativeFamousGenerals = Array.isArray(payload.items) ? payload.items : [];
+  }
+  return nativeFamousGenerals;
+}
+
+async function renderFamousGeneralResults(query = "") {
+  const results = document.getElementById("famousGeneralResults");
+  const meta = document.getElementById("famousGeneralMeta");
+  if (!results || !meta) return;
+  meta.textContent = "正在读取名将资料…";
+  try {
+    const all = await loadNativeFamousGenerals();
+    const keyword = String(query || "").trim().toLocaleLowerCase("zh-CN");
+    const matched = keyword
+      ? all.filter(item => [item.name, item.attribute, item.nation]
+          .some(value => String(value || "").toLocaleLowerCase("zh-CN").includes(keyword)))
+          .slice(0, 80)
+      : all.slice(0, 40);
+    meta.textContent = `共 ${all.length} 条；当前显示 ${matched.length} 条。`;
+    results.innerHTML = matched.length ? matched.map(item => `
+      <article class="reference-general-row">
+        <b>${escHtml(item.name || "未知名将")}</b>
+        <div class="reference-general-facts">
+          <span><small>突围</small>${escHtml(item.breakthrough ?? "-")}</span>
+          <span><small>属性</small>${escHtml(item.attribute || "-")}</span>
+          <span><small>国家</small>${escHtml(item.nation || "-")}</span>
+        </div>
+      </article>`).join("") : `<div class="reference-empty">没有找到匹配的名将</div>`;
+  } catch (error) {
+    meta.textContent = `读取失败：${error.message}`;
+    results.innerHTML = `<div class="reference-empty error">${escHtml(error.message)}</div>`;
+  }
+}
+
+async function loadNativeOpenServerVersions() {
+  if (!nativeOpenServerVersions) {
+    const payload = await callGuideReference("getOpenServerOptionsJson");
+    nativeOpenServerVersions = Array.isArray(payload.versions) ? payload.versions : [];
+  }
+  return nativeOpenServerVersions;
+}
+
+function selectedOpenServerVersion() {
+  const select = document.getElementById("openServerVersionSelect");
+  const index = Number(select?.value ?? 0);
+  return (nativeOpenServerVersions || []).find(item => Number(item.index) === index)
+    || (nativeOpenServerVersions || [])[0]
+    || null;
+}
+
+function refreshOpenServerNumbers() {
+  const option = selectedOpenServerVersion();
+  const serverSelect = document.getElementById("openServerNumberSelect");
+  const summary = document.getElementById("openServerVersionSummary");
+  const result = document.getElementById("openServerResult");
+  if (!option || !serverSelect || !summary || !result) return;
+  const upcomingServer = Math.max(1, Number(option.upcomingServer || 1));
+  const rows = [];
+  for (let server = upcomingServer; server >= 1; server -= 1) {
+    rows.push(`<option value="${server}">${server}区</option>`);
+  }
+  serverSelect.innerHTML = rows.join("");
+  summary.textContent = `${option.summary}；默认下一个区服 ${upcomingServer}区，预计 ${option.upcomingDate}`;
+  result.innerHTML = `
+    <h3>即将开服：${escHtml(option.label)} ${upcomingServer}区</h3>
+    <p>${escHtml(option.upcomingDate)}</p>`;
+}
+
+async function initializeOpenServerGuide() {
+  const versionSelect = document.getElementById("openServerVersionSelect");
+  const result = document.getElementById("openServerResult");
+  if (!versionSelect || !result) return;
+  result.innerHTML = `<h3>正在读取开服规则…</h3>`;
+  try {
+    const versions = await loadNativeOpenServerVersions();
+    versionSelect.innerHTML = versions.map(option =>
+      `<option value="${Number(option.index)}">${escHtml(option.label)}</option>`
+    ).join("");
+    refreshOpenServerNumbers();
+  } catch (error) {
+    result.innerHTML = `<div class="reference-empty error">${escHtml(error.message)}</div>`;
+  }
+}
+
+async function calculateOpenServerTime() {
+  const version = selectedOpenServerVersion();
+  const serverSelect = document.getElementById("openServerNumberSelect");
+  const result = document.getElementById("openServerResult");
+  if (!version || !serverSelect || !result) return;
+  result.innerHTML = `<h3>正在计算开服时间…</h3>`;
+  try {
+    const payload = await callGuideReference(
+      "calculateOpenServerJson",
+      Number(version.index),
+      Number(serverSelect.value)
+    );
+    const rule = payload.rule || {};
+    result.innerHTML = `
+      <h3>开服时间：${escHtml(payload.dateText)}</h3>
+      <div class="guide-fact-grid reference-open-server-facts">
+        <div><b>版本</b><span>${escHtml(payload.versionLabel)}</span></div>
+        <div><b>区服</b><span>${escHtml(payload.server)}区</span></div>
+        <div><b>基准锚点</b><span>${escHtml(rule.baseServer)}区 · ${escHtml(`${rule.year}/${rule.month}/${rule.day}`)}</span></div>
+        <div><b>开服间隔</b><span>${escHtml(rule.intervalDays)}天</span></div>
+      </div>
+      <p>相对锚点偏移 ${escHtml(payload.daysOffset)} 天</p>
+      <p class="reference-evidence">证据：${escHtml(rule.note || "原 APK 固定规则")}</p>`;
+  } catch (error) {
+    result.innerHTML = `<div class="reference-empty error">${escHtml(error.message)}</div>`;
+  }
+}
+
+async function loadNativeGuideArticles() {
+  if (!nativeGuideArticles) {
+    const payload = await callGuideReference("getGuideArticlesJson");
+    nativeGuideArticles = Array.isArray(payload.items) ? payload.items : [];
+  }
+  return nativeGuideArticles;
+}
+
+function showGuideArticleListState() {
+  const list = document.getElementById("guideArticleList");
+  const detail = document.getElementById("guideArticleDetail");
+  const title = document.getElementById("guideArticlesTitle");
+  const subtitle = document.getElementById("guideArticlesSubtitle");
+  if (list) list.classList.remove("page-hidden");
+  if (detail) detail.classList.add("page-hidden");
+  if (title) title.textContent = "查攻略";
+  if (subtitle) subtitle.textContent = "原 APK 保留的本地攻略";
+}
+
+async function renderNativeGuideArticleList() {
+  const list = document.getElementById("guideArticleList");
+  if (!list) return;
+  showGuideArticleListState();
+  list.innerHTML = `<div class="reference-empty">正在读取攻略目录…</div>`;
+  try {
+    const articles = await loadNativeGuideArticles();
+    list.innerHTML = `
+      <div class="reference-article-count">共 ${articles.length} 篇本地攻略</div>
+      ${articles.map((article, index) => `
+        <button class="reference-article-entry" type="button" data-native-guide-id="${escAttr(article.id)}">
+          <span class="reference-article-index">${index + 1}</span>
+          <b>${escHtml(article.title)}</b>
+          <span aria-hidden="true">›</span>
+        </button>`).join("")}`;
+  } catch (error) {
+    list.innerHTML = `<div class="reference-empty error">${escHtml(error.message)}</div>`;
+  }
+}
+
+async function showNativeGuideArticle(id) {
+  const list = document.getElementById("guideArticleList");
+  const detail = document.getElementById("guideArticleDetail");
+  const title = document.getElementById("guideArticlesTitle");
+  const subtitle = document.getElementById("guideArticlesSubtitle");
+  const detailTitle = document.getElementById("guideArticleDetailTitle");
+  const detailBody = document.getElementById("guideArticleDetailBody");
+  if (!list || !detail || !detailTitle || !detailBody) return;
+  list.classList.add("page-hidden");
+  detail.classList.remove("page-hidden");
+  detailTitle.textContent = "正在读取攻略…";
+  detailBody.textContent = "";
+  try {
+    const payload = await callGuideReference("getGuideArticleJson", String(id || ""));
+    const article = payload.article || {};
+    detailTitle.textContent = article.title || "攻略详情";
+    detailBody.textContent = article.body || "";
+    if (title) title.textContent = "攻略详情";
+    if (subtitle) subtitle.textContent = article.title || "原 APK 本地攻略";
+    const page = document.getElementById("guideArticlesPage");
+    if (page) page.scrollTop = 0;
+  } catch (error) {
+    detailBody.textContent = error.message;
+  }
 }
 
 function renderHomeAccountOptions() {
@@ -3359,8 +3943,19 @@ function formatSystemLogEntry(entry) {
   if (String(entry?.source || "").startsWith("game:")) {
     return `[${shortTime}] ${entry?.message || ""}`;
   }
-  const level = String(entry?.level || "info").toUpperCase().padEnd(5, " ");
-  const source = entry?.source ? ` ${entry.source}` : "";
+  const levelNames = { info: "信息", error: "错误", warning: "警告", debug: "调试" };
+  const sourceNames = {
+    "local-scheduler": "本地调度", "real-action": "游戏请求", "military-intel": "军情",
+    prompt: "提示", "local-task": "任务", "local-task-stop": "任务停止",
+    "local-task-terminal": "任务异常", "session-recovery": "会话恢复", network: "网络",
+    "state-machine": "状态机", account: "账号", frontend: "页面", "manual-operation": "手动操作",
+    "daily-manual": "每日任务", "success-record": "成功记录", "daily-stats": "每日统计",
+    keepalive: "后台保活", alarm: "警报", "self-lifecycle": "运行生命周期",
+  };
+  const rawLevel = String(entry?.level || "info").toLowerCase();
+  const level = String(levelNames[rawLevel] || rawLevel || "信息").padEnd(4, " ");
+  const rawSource = String(entry?.source || "");
+  const source = rawSource ? ` ${sourceNames[rawSource] || rawSource}` : "";
   const account = entry?.accountKey ? ` ${entry.accountKey}` : "";
   return `[${shortTime}] ${level}${source}${account} ｜ ${entry?.message || ""}`;
 }
@@ -3817,6 +4412,7 @@ async function syncAccounts({ silent = true, summary = false } = {}) {
         appState.army = cur.session.army || cur.session.roleState?.idleArmy || appState.army || [];
         appState.inventory = cur.session.inventory || appState.inventory || { items: [] };
         appState.militaryIntel = cur.session.militaryIntel || appState.militaryIntel || { events: [], statusByName: {} };
+        appState.militarySnapshot = cur.session.militarySnapshot || appState.militarySnapshot || { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
         appState.dailyActivity = cur.session.dailyActivity || appState.dailyActivity || {};
         appState.dailyStats = cur.dailyStats || cur.session.dailyStats || appState.dailyStats || { brushYellowCount: 0, dungeonCount: 0 };
         appState.roleQueueSummary = cur.session.roleQueueSummary || appState.roleQueueSummary || {};
@@ -3905,7 +4501,12 @@ async function startSelectedAccount() {
     await loadProxyNodes();
     saveCurrentContainerSelection(selectedAccount() || data.account);
     notifyAccountsChanged("start");
-    showToast(data.account?.status === "online" ? "账号启动成功" : "账号疑似掉线", data.account?.status === "online" ? "success" : "error");
+    const startStatus = data.account?.status;
+    const startAccepted = startStatus === "online" || startStatus === "checking";
+    showToast(
+      startStatus === "online" ? "账号启动成功" : (startStatus === "checking" ? "账号正在检测" : "账号疑似掉线"),
+      startAccepted ? "success" : "error",
+    );
     appendLog(`账号状态：${data.account?.statusText || accountStatusText(data.account?.status)}；${data.account?.lastHeartbeat?.message || ""}`);
     if (data.account?.session) {
       const rs = data.account.session.roleState || {};
@@ -3961,6 +4562,7 @@ async function deleteSelectedAccount() {
       appState.army = [];
       appState.inventory = { items: [] };
       appState.militaryIntel = { events: [], statusByName: {} };
+      appState.militarySnapshot = { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
       appState.dailyStats = { brushYellowCount: 0, dungeonCount: 0 };
       appState.roleQueueSummary = {};
       restoreAccountUi("");
@@ -4097,7 +4699,7 @@ function getRaidForm() {
     rows
   };
 }
-const militaryFutureFeatureMap = { "无损": "lossless", "副本": "dungeon", "押镖": "escort", "寻宝": "treasure" };
+const militaryFutureFeatureMap = { "无损": "lossless", "副本": "dungeon" };
 function getMilitaryFutureForm(feature) {
   saveFutureMilitaryDom();
   const all = mergeMilitaryFutureSettings(appState.militaryFutureSettings);
@@ -4695,6 +5297,9 @@ async function saveFormationSettings() {
       appState.automation.lastLogs = [];
       appendLog(`配兵任务已加入任务栈并开始执行：${data.task.taskId}`);
       startStatusPolling();
+    } else if (data.applyTask?.started) {
+      appendLog(`配兵规则已保存，手机本地调度器已开始串行应用`);
+      startStatusPolling();
     } else if (data.applyTask?.reason) {
       appendLog(`配兵规则已保存，但暂不执行：${data.applyTask.reason}`);
     } else {
@@ -4722,6 +5327,9 @@ async function saveRaidSettings() {
       appState.automation.status = data.task.status || "starting";
       appState.automation.lastLogs = [];
       appendLog(`掠夺任务已加入任务栈并开始执行：${data.task.taskId}`);
+      startStatusPolling();
+    } else if (data.raidTask?.started) {
+      appendLog("掠夺规则已提交，手机本地调度器已开始串行执行");
       startStatusPolling();
     } else if (data.raidTask?.reason) {
       appendLog(`掠夺规则已提交，但暂不执行：${data.raidTask.reason}`);
@@ -4766,12 +5374,53 @@ async function saveMineSettings() {
       appState.automation.lastLogs = [];
       appendLog(`打矿常驻任务已加入任务栈：${data.task.taskId}`);
       startStatusPolling();
+    } else if (data.mineTask?.started) {
+      appendLog("打矿规则已保存，手机本地调度器已开始串行执行");
+      startStatusPolling();
+    } else if (data.mineTask?.reason) {
+      appendLog(`打矿规则已保存，但暂不执行：${data.mineTask.reason}`);
     }
     showToast(data.disabled ? "打矿任务已关闭" : "打矿任务已启动", "success");
     render();
   } catch (e) {
     appendLog("保存打矿规则失败：" + e.message);
     showToast("保存打矿设置失败", "error");
+  }
+}
+async function saveLiubuSettings() {
+  try {
+    if (!appState.sessionId) throw new Error("请先添加账号");
+    if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先启动账号");
+    saveMinistryDom();
+    const settings = JSON.parse(JSON.stringify(
+      appState.ministrySettings || defaultMinistrySettings()
+    ));
+    const data = await apiPost("/api/liubu/save", {
+      sessionId: appState.sessionId,
+      settings,
+    });
+    if (data.accountHabits) applyServerHabits({ accountHabits: data.accountHabits });
+    if (data.taskOverview) appState.taskOverview = data.taskOverview;
+    if (data.savedFiles?.ministryFile) {
+      appendLog(`六部配置文件：${data.savedFiles.ministryFile}`);
+    }
+    if (data.task?.taskId) {
+      appState.automation.taskId = data.task.taskId;
+      appState.automation.status = data.task.status || "starting";
+      appState.automation.lastLogs = [];
+      appendLog(`六部常驻任务已加入任务栈：${data.task.taskId}`);
+      startStatusPolling();
+    } else if (data.ministryTask?.started) {
+      appendLog("六部设置已保存，手机本地调度器已开始执行金银花种植");
+      startStatusPolling();
+    } else {
+      appendLog(data.reason || "六部设置已保存；当前没有可执行的已确认动作");
+    }
+    showToast(data.disabled ? "六部任务已关闭" : "六部设置已保存", "success");
+    render();
+  } catch (e) {
+    appendLog("保存六部设置失败：" + e.message);
+    showToast("保存六部设置失败", "error");
   }
 }
 async function saveLosslessSettings() {
@@ -4798,6 +5447,9 @@ async function saveLosslessSettings() {
       appState.automation.status = data.task.status || "starting";
       appState.automation.lastLogs = [];
       appendLog(`无损常驻任务已交给指挥中心：${data.task.taskId}，优先级低于打矿、高于刷黄和副本`);
+      startStatusPolling();
+    } else if (data.losslessTask?.started) {
+      appendLog("无损规则已提交，手机本地调度器已开始串行执行");
       startStatusPolling();
     } else if (data.losslessTask?.reason) {
       appendLog(`无损规则已提交，但暂不执行：${data.losslessTask.reason}`);
@@ -4835,6 +5487,9 @@ async function saveDungeonSettings() {
       appState.automation.lastLogs = [];
       appendLog(`${cfg.mode === "clear" ? "打通副本任务" : "副本循环任务"}已加入任务栈并开始执行：${data.task.taskId}`);
       startStatusPolling();
+    } else if (data.dungeonTask?.started) {
+      appendLog(`${cfg.mode === "clear" ? "打通副本任务" : "副本循环任务"}已交给手机本地调度器执行`);
+      startStatusPolling();
     } else if (data.dungeonTask?.reason) {
       appendLog(`副本规则已提交，但暂不执行：${data.dungeonTask.reason}`);
     } else {
@@ -4855,6 +5510,7 @@ async function saveDungeonSettings() {
 async function saveMilitaryFutureSettings() {
   const feature = militaryFutureFeatureMap[activeSide];
   try {
+    if (isDeferredFeatureSide(activeSide)) throw new Error(`${activeSide}当前版本暂不实现`);
     if (!feature) throw new Error("当前页面不是可保存的军事预备功能");
     if (!appState.sessionId) throw new Error("请先添加账号");
     if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先点击“启动”完成真实登录并同步将领数据");
@@ -4875,6 +5531,7 @@ async function saveMilitaryFutureSettings() {
 async function saveCommonSettings() {
   const side = activeSide;
   try {
+    if (isDeferredFeatureSide(side)) throw new Error(`${side}当前版本暂不实现`);
     if (!appState.sessionId) throw new Error("请先添加账号");
     if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先点击“启动”完成真实登录");
     const scope = commonSettingsScope(side);
@@ -4924,7 +5581,7 @@ async function saveCommonSettings() {
         ? `；名将优先级=${patch.generalVisitGeneralIds.join("→")}`
         : "";
       appendLog(`常规-日常保存成功：${enabled.length ? `已开启${enabled.join("、")}` : "全部关闭"}${visitPriority}；其他子页面设置未修改。`);
-    } else {
+    } else if (side === "主号物品") {
       appendLog(
         `常规-主号物品保存成功：宝库清理=${patch.cleanInventory ? "开启" : "关闭"}，` +
         `自动开箱=${patch.autoOpenEnabled ? "开启" : "关闭"}；其他子页面设置未修改。`
@@ -4944,6 +5601,20 @@ async function saveCommonSettings() {
         appendLog(`自动开箱结果：${item.itemName || "宝箱"}${quantity > 1 ? ` ×${quantity}` : ""} → ${reward}`);
       });
       (result.skipped || []).forEach(item => appendLog(`自动开箱跳过：${item.name}；${item.reason}`));
+    } else if (side === "连体物品") {
+      const chain = patch.chainInventory || {};
+      appendLog(
+        `常规-连体物品保存成功：整理=${chain.enabled ? "开启" : "关闭"}，` +
+        `保留${chain.keepItemName || "未指定物品"}×${chain.keepCount ?? 0}，` +
+        `自动开箱=${chain.autoOpenEnabled ? "开启" : "关闭"}；连体账号协议未接入，暂不执行。`
+      );
+    } else if (side === "警报") {
+      const alarm = patch.alarm || {};
+      appendLog(
+        `常规-警报保存成功：来袭=${alarm.incomingEnabled ? alarm.incomingMode : "关闭"}，` +
+        `军情=${alarm.militaryEnabled ? alarm.militaryMode : "关闭"}，` +
+        `异常=${alarm.errorEnabled ? "开启" : "关闭"}。`
+      );
     }
     if (data.savedFile) appendLog(`设置文件：${data.savedFile}`);
     showToast(
@@ -5081,7 +5752,49 @@ let accountsTimer = null;
 let taskOverviewTimer = null;
 let taskCountdownTimer = null;
 let successRecordsTimer = null;
+let junqingOpsTimer = null;
+let junqingTickTimer = null;
+let junqingOpsRequestPending = false;
 let automationStatusRequestPending = false;
+
+// 军情页“辅助此刻行动”的实时更新：
+// - applyAssistantOperations 只在内容真实变化时重渲染军情页；
+// - refreshJunqingLiveOps 每 2 秒读本地任务状态接口（不发游戏请求）；
+// - updateJunqingTimeTexts 每秒原地更新“已进行/预计到达”文本。
+function applyAssistantOperations(ops) {
+  if (!Array.isArray(ops)) return;
+  const signature = JSON.stringify(ops);
+  if (signature === appState.assistantOperationsSignature) return;
+  appState.assistantOperationsSignature = signature;
+  appState.assistantOperations = ops;
+  if (activeMainPage === "助手" && activeCategory === "军情") render();
+}
+
+async function refreshJunqingLiveOps() {
+  if (!appState.sessionId || document.hidden || junqingOpsRequestPending) return;
+  if (!selectedAccount()?.session) return;
+  junqingOpsRequestPending = true;
+  try {
+    const res = await fetch(`/api/automation/status?sessionId=${encodeURIComponent(appState.sessionId)}`);
+    const data = await res.json();
+    if (data.ok) applyAssistantOperations(data.assistantOperations);
+  } catch {
+    // 军情页静默轮询失败不打扰；下一轮会自动重试。
+  } finally {
+    junqingOpsRequestPending = false;
+  }
+}
+
+function updateJunqingTimeTexts() {
+  document.querySelectorAll("[data-junqing-since]").forEach(el => {
+    const text = junqingElapsedText(Number(el.dataset.junqingSince || 0));
+    if (text && el.textContent !== text) el.textContent = text;
+  });
+  document.querySelectorAll("[data-junqing-until]").forEach(el => {
+    const text = junqingRemainText(Number(el.dataset.junqingUntil || 0));
+    if (text && el.textContent !== text) el.textContent = text;
+  });
+}
 
 async function refreshRoleSide(side = activeSide, { silent = true } = {}) {
   if (side === "任务" || side === "提示") return refreshTaskOverview({ silent });
@@ -5279,6 +5992,15 @@ async function refreshLiveState({ silent = false, scope = "all", side = activeSi
     appState.army = data.army || data.roleState?.idleArmy || appState.army || [];
     appState.inventory = data.inventory || appState.inventory || { items: [] };
     appState.militaryIntel = data.militaryIntel || appState.militaryIntel || { events: [], statusByName: {} };
+    // 后端整个不返回 militarySnapshot，说明跑的还是旧版 server.py。
+    // 这种情况必须显式暴露，否则页面会一直停在“尚未拉取军情”，
+    // 看起来像军情为空，实际是改动没生效。
+    appState.militarySnapshotUnsupported = !("militarySnapshot" in (data || {}));
+    appState.militarySnapshot = data.militarySnapshot || appState.militarySnapshot || { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
+    if (Array.isArray(data.assistantOperations)) {
+      appState.assistantOperations = data.assistantOperations;
+      appState.assistantOperationsSignature = JSON.stringify(data.assistantOperations);
+    }
     appState.dailyActivity = data.dailyActivity || appState.dailyActivity || {};
     appState.dailyStats = data.dailyStats || appState.dailyStats || { brushYellowCount: 0, dungeonCount: 0 };
     appState.roleQueueSummary = data.roleQueueSummary || appState.roleQueueSummary || {};
@@ -5333,6 +6055,23 @@ function updateStateRefreshPolling() {
     clearInterval(successRecordsTimer);
     successRecordsTimer = null;
   }
+  // 军情页打开时：2 秒拉一次“辅助此刻行动”（statusTimer 在跑时它已带回同
+  // 一份数据，不重复拉）；每秒原地刷新“已进行/预计到达”时间文本。
+  // 0x1600 服务器军情仍只在进入页面和手动刷新时拉，节奏不变。
+  const junqingPageOpen = activeMainPage === "助手" && activeCategory === "军情";
+  if (junqingPageOpen && !statusTimer && !junqingOpsTimer) {
+    junqingOpsTimer = setInterval(refreshJunqingLiveOps, 2000);
+    void refreshJunqingLiveOps();
+  } else if ((!junqingPageOpen || statusTimer) && junqingOpsTimer) {
+    clearInterval(junqingOpsTimer);
+    junqingOpsTimer = null;
+  }
+  if (junqingPageOpen && !junqingTickTimer) {
+    junqingTickTimer = setInterval(updateJunqingTimeTexts, 1000);
+  } else if (!junqingPageOpen && junqingTickTimer) {
+    clearInterval(junqingTickTimer);
+    junqingTickTimer = null;
+  }
 }
 
 function startStatusPolling() {
@@ -5362,6 +6101,7 @@ async function pollAutomationStatus({ silent = true } = {}) {
     const data = await res.json();
     if (!data.ok) return;
     if (data.taskOverview) appState.taskOverview = data.taskOverview;
+    applyAssistantOperations(data.assistantOperations);
     const task = appState.automation.taskId
       ? (data.tasks || []).find(t => t.taskId === appState.automation.taskId) || data.tasks?.[0]
       : data.tasks?.[0];
@@ -5432,6 +6172,11 @@ if (saveBtn) {
     const originalText = saveBtn.textContent;
     saveBtn.textContent = "保存中...";
     try {
+      if (isDeferredFeatureSide(activeSide)) {
+        appendLog(`${activeSide}当前版本暂不实现，设置入口已禁用。`);
+        showToast(`${activeSide}当前版本暂不实现`, "info");
+        return;
+      }
       if (
         (activeCategory === "军事" && activeSide === "配兵")
         || (activeCategory === "起号" && activeSide === "军队")
@@ -5473,7 +6218,12 @@ if (saveBtn) {
         await saveMineSettings();
         return;
       }
-      if (activeCategory === "常规" && ["常用", "日常", "主号物品"].includes(activeSide)) {
+      if (activeCategory === "六部") {
+        appendLog("已点击保存设置：当前为“六部”，保存规则并启停已确认的六部常驻任务。");
+        await saveLiubuSettings();
+        return;
+      }
+      if (activeCategory === "常规" && ["常用", "日常", "主号物品", "连体物品", "警报"].includes(activeSide)) {
         await saveCommonSettings();
         return;
       }
@@ -5519,6 +6269,55 @@ if (clearLogBtn) {
     renderLog();
   };
 }
+configureNativeGuideEntries();
+const openFamousGeneralBtn = document.getElementById("openFamousGeneralBtn");
+if (openFamousGeneralBtn) {
+  openFamousGeneralBtn.onclick = () => openNativeGuideView(
+    "famous-general",
+    () => renderFamousGeneralResults(document.getElementById("famousGeneralQuery")?.value || "")
+  );
+}
+const closeFamousGeneralBtn = document.getElementById("closeFamousGeneralBtn");
+if (closeFamousGeneralBtn) closeFamousGeneralBtn.onclick = closeNativeGuideView;
+const searchFamousGeneralBtn = document.getElementById("searchFamousGeneralBtn");
+if (searchFamousGeneralBtn) {
+  searchFamousGeneralBtn.onclick = () => renderFamousGeneralResults(
+    document.getElementById("famousGeneralQuery")?.value || ""
+  );
+}
+const famousGeneralQuery = document.getElementById("famousGeneralQuery");
+if (famousGeneralQuery) {
+  famousGeneralQuery.onkeydown = event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    renderFamousGeneralResults(famousGeneralQuery.value);
+  };
+}
+const openOpenServerBtn = document.getElementById("openOpenServerBtn");
+if (openOpenServerBtn) {
+  openOpenServerBtn.onclick = () => openNativeGuideView("open-server", initializeOpenServerGuide);
+}
+const closeOpenServerBtn = document.getElementById("closeOpenServerBtn");
+if (closeOpenServerBtn) closeOpenServerBtn.onclick = closeNativeGuideView;
+const openServerVersionSelect = document.getElementById("openServerVersionSelect");
+if (openServerVersionSelect) openServerVersionSelect.onchange = refreshOpenServerNumbers;
+const calculateOpenServerBtn = document.getElementById("calculateOpenServerBtn");
+if (calculateOpenServerBtn) calculateOpenServerBtn.onclick = calculateOpenServerTime;
+const openGuideArticlesBtn = document.getElementById("openGuideArticlesBtn");
+if (openGuideArticlesBtn) {
+  openGuideArticlesBtn.onclick = () => openNativeGuideView("guide-articles", renderNativeGuideArticleList);
+}
+const closeGuideArticlesBtn = document.getElementById("closeGuideArticlesBtn");
+if (closeGuideArticlesBtn) closeGuideArticlesBtn.onclick = closeNativeGuideView;
+const guideArticleList = document.getElementById("guideArticleList");
+if (guideArticleList) {
+  guideArticleList.onclick = event => {
+    const button = event.target.closest("[data-native-guide-id]");
+    if (button) showNativeGuideArticle(button.dataset.nativeGuideId || "");
+  };
+}
+const backToGuideArticleListBtn = document.getElementById("backToGuideArticleListBtn");
+if (backToGuideArticleListBtn) backToGuideArticleListBtn.onclick = showGuideArticleListState;
 const openDungeonGuideBtn = document.getElementById("openDungeonGuideBtn");
 if (openDungeonGuideBtn) {
   openDungeonGuideBtn.onclick = () => {
@@ -6396,7 +7195,7 @@ async function loadDesktopMineMap() {
     ));
     canvas.replaceChildren();
     empty.classList.toggle("page-hidden", points.length > 0);
-    meta.textContent = `${data.serverKey || "当前区服"} · 显示 ${points.length}/${allPoints.length} 个资源点 · 数据有效期3小时`;
+    meta.textContent = `${data.serverKey || "当前区服"} · 显示 ${points.length}/${allPoints.length} 个资源点 · 数据有效期${formatRemainingMineMapTime(data.ttlMs)}`;
     if (!points.length) return;
 
     const width = DESKTOP_MAP_WIDTH;
@@ -6527,7 +7326,8 @@ document.getElementById("addAccountBtn").onclick = async () => {
   else delete modal.dataset.mode;
   const title = modal.querySelector("h2");
   if (title) title.textContent = isStarterContainer ? "添加起号账号" : "添加游戏账号";
-  document.getElementById("loginPassword").value = "123459";
+  document.getElementById("loginUsername").value = "";
+  document.getElementById("loginPassword").value = "";
   await loadAreaCatalog();
   modal.classList.remove("hidden");
 };
@@ -6538,6 +7338,7 @@ document.getElementById("modifyAccountBtn").onclick = async () => {
     document.getElementById("loginPlatform").value = acc.platform || "热血三国联盟";
     document.getElementById("loginSerial").value = acc.serial ?? "0";
   }
+  document.getElementById("loginPassword").value = "";
   await loadAreaCatalog(acc?.areaName || acc?.serverQuery || appState.area?.areaName || "");
   document.getElementById("accountModal").classList.remove("hidden");
 };
@@ -6611,6 +7412,7 @@ document.getElementById("closeModal").onclick = () => {
   delete modal.dataset.mode;
   const title = modal.querySelector("h2");
   if (title) title.textContent = "添加游戏账号";
+  document.getElementById("loginPassword").value = "";
 };
 document.getElementById("accountModal").addEventListener("click", e => {
   if (e.target.id !== "accountModal") return;
@@ -6618,6 +7420,7 @@ document.getElementById("accountModal").addEventListener("click", e => {
   delete e.currentTarget.dataset.mode;
   const title = e.currentTarget.querySelector("h2");
   if (title) title.textContent = "添加游戏账号";
+  document.getElementById("loginPassword").value = "";
 });
 document.getElementById("loginPlatform")?.addEventListener("change", event => {
   loadAreaCatalog("", event.target.value);
@@ -6668,7 +7471,13 @@ document.getElementById("loginSubmit").onclick = async () => {
       || defaultLoginServerQuery(platform);
     const serial = document.getElementById("loginSerial")?.value?.trim() || "0";
     appendLog(`正在本地添加账号记录 ${username} / ${serverQuery} ...`);
-    const data = await apiPost("/api/accounts/add", { username, password, serverQuery, platform, serial });
+    const data = await apiPost("/api/accounts/add", {
+      username,
+      password,
+      serverQuery,
+      platform,
+      serial,
+    });
     await syncAccounts();
     await loadProxyNodes();
     notifyAccountsChanged("add");
@@ -6685,7 +7494,9 @@ document.getElementById("loginSubmit").onclick = async () => {
       }
     }
     updateAccountHeader();
-    appendLog(`添加账号成功：${accountLabel(acc)}；当前状态=未开启。注意：添加只保存本地记录，不会登录游戏；请在上方下拉框选中该账号后点击“启动”。`);
+    appendLog(isMobileLocal
+      ? `添加账号成功：${accountLabel(acc)}；手机已完成真实登录与状态同步，点击“启动”后由本地前台服务托管。`
+      : `添加账号成功：${accountLabel(acc)}；当前状态=未开启。注意：添加只保存本地记录，不会登录游戏；请在上方下拉框选中该账号后点击“启动”。`);
     showToast(addingStarterAccount ? "起号账号添加成功" : "添加账号成功", "success");
     accountModal?.classList.add("hidden");
     if (accountModal) delete accountModal.dataset.mode;
@@ -6694,6 +7505,8 @@ document.getElementById("loginSubmit").onclick = async () => {
   } catch (e) {
     appendLog("添加账号失败：" + e.message);
     showToast("添加账号失败", "error");
+  } finally {
+    document.getElementById("loginPassword").value = "";
   }
 };
 
@@ -6710,6 +7523,219 @@ const starterTabNames = {
   basic: "基本信息", tasks: "任务奖励", activities: "活动奖励",
   treasury: "宝库", role: "角色详情", military: "将领和军队", records: "记录",
 };
+const starterBatchAreaCatalogs = new Map();
+let starterBatchCandidates = [];
+
+function collectStarterBatchCandidates() {
+  const grouped = new Map();
+  (appState.accounts || []).forEach(account => {
+    const username = String(account.username || "").trim();
+    if (!username) return;
+    const platform = String(account.platform || "热血三国联盟");
+    const platformKey = String(account.platformKey || loginPlatformKey(platform));
+    const key = `${platformKey}:${username}`;
+    const server = String(account.serverQuery || account.areaName || "").trim();
+    const current = grouped.get(key);
+    const accountHasPassword = account.hasStoredPassword !== false;
+    const currentHasPassword = current?.account?.hasStoredPassword !== false;
+    const preferThisRecord = !current
+      || (accountHasPassword && !currentHasPassword)
+      || (accountHasPassword === currentHasPassword && !!account.started && !current.account.started);
+    if (!current) {
+      grouped.set(key, {
+        key, username, platform, platformKey,
+        account,
+        servers: new Set(server ? [server] : []),
+        accountIds: new Set([String(account.sessionId || "")]),
+      });
+      return;
+    }
+    if (server) current.servers.add(server);
+    current.accountIds.add(String(account.sessionId || ""));
+    if (preferThisRecord) current.account = account;
+  });
+  return [...grouped.values()].map(item => ({
+    ...item,
+    sourceAccountId: String(item.account.sessionId || ""),
+    serverQuery: String(item.account.serverQuery || item.account.areaName || ""),
+    hasStoredPassword: item.account.hasStoredPassword !== false,
+    servers: [...item.servers],
+    accountIds: [...item.accountIds],
+  })).sort((left, right) =>
+    left.platform.localeCompare(right.platform, "zh-CN")
+    || left.username.localeCompare(right.username, "zh-CN", { numeric: true })
+  );
+}
+
+async function loadStarterBatchAreaCatalog(platform) {
+  const key = String(platform || "热血三国联盟");
+  try {
+    const query = new URLSearchParams({ platform: key });
+    const response = await fetch(`/api/areas?${query}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "区服目录读取失败");
+    starterBatchAreaCatalogs.set(key, data.areas || []);
+  } catch (error) {
+    starterBatchAreaCatalogs.set(key, []);
+    appendLog(`批量起号读取${key}区服目录失败：${error.message}`);
+  }
+}
+
+function starterBatchServerOptions(candidate) {
+  const merged = [];
+  const seen = new Set();
+  const add = (value, label = "") => {
+    const server = String(value || "").trim();
+    if (!server || seen.has(server)) return;
+    seen.add(server);
+    merged.push({ value: server, label: String(label || server) });
+  };
+  (starterBatchAreaCatalogs.get(candidate.platform) || []).forEach(area =>
+    add(area.areaName || area.serverKey || area.areaId, area.areaName || area.serverKey || area.areaId)
+  );
+  (candidate.servers || []).forEach(server => add(server));
+  if (!merged.length) add(defaultLoginServerQuery(candidate.platform));
+  return merged;
+}
+
+function updateStarterBatchSelection() {
+  const list = document.getElementById("starterBatchAccountList");
+  const selectAll = document.getElementById("starterBatchSelectAll");
+  if (!list || !selectAll) return;
+  const checks = [...list.querySelectorAll(".starter-batch-account-check")]
+    .filter(input => !input.disabled);
+  const selected = checks.filter(input => input.checked);
+  checks.forEach(input => {
+    const row = input.closest(".starter-batch-account-row");
+    const server = row?.querySelector(".starter-batch-server");
+    if (server) server.disabled = !input.checked;
+  });
+  selectAll.checked = !!checks.length && selected.length === checks.length;
+  selectAll.indeterminate = selected.length > 0 && selected.length < checks.length;
+  document.getElementById("starterBatchSelectedCount").textContent = `已选 ${selected.length} 个账号`;
+}
+
+function renderStarterBatchCandidates() {
+  const list = document.getElementById("starterBatchAccountList");
+  if (!list) return;
+  if (!starterBatchCandidates.length) {
+    list.innerHTML = `<div class="starter-batch-empty">暂无已保存账号，请先在辅助主页添加账号。</div>`;
+    updateStarterBatchSelection();
+    return;
+  }
+  list.innerHTML = starterBatchCandidates.map(candidate => {
+    const options = starterBatchServerOptions(candidate);
+    const selectedServer = options.some(option => option.value === candidate.serverQuery)
+      ? candidate.serverQuery
+      : String(options[0]?.value || "");
+    const activeJob = (dashboardStarterJobs || []).some(job =>
+      (candidate.accountIds || []).includes(String(job.account_id || ""))
+    );
+    const disabled = !candidate.hasStoredPassword;
+    const detail = disabled
+      ? "缺少保存密码，请重新添加"
+      : `${candidate.platform}${activeJob ? " · 已有起号任务" : ""}`;
+    return `<div class="starter-batch-account-row" data-source-account="${escAttr(candidate.sourceAccountId)}">
+      <input class="starter-batch-account-check" type="checkbox" ${disabled ? "disabled" : ""} aria-label="选择账号${escAttr(candidate.username)}">
+      <div class="starter-batch-account-info"><b>${escHtml(candidate.username)}</b><span>${escHtml(detail)}</span></div>
+      <select class="starter-batch-server" disabled aria-label="${escAttr(candidate.username)}起号区服">
+        ${options.map(option => `<option value="${escAttr(option.value)}" ${option.value === selectedServer ? "selected" : ""}>${escHtml(option.label)}</option>`).join("")}
+      </select>
+    </div>`;
+  }).join("");
+  updateStarterBatchSelection();
+}
+
+function closeStarterBatchModal() {
+  document.getElementById("starterBatchModal")?.classList.add("page-hidden");
+  document.getElementById("starterBatchSelectAll").checked = false;
+}
+
+async function openStarterBatchModal() {
+  const modal = document.getElementById("starterBatchModal");
+  const list = document.getElementById("starterBatchAccountList");
+  const result = document.getElementById("starterBatchResult");
+  if (!modal || !list || !result) return;
+  modal.classList.remove("page-hidden");
+  result.classList.add("page-hidden");
+  result.innerHTML = "";
+  list.innerHTML = `<div class="starter-batch-empty">正在读取账号和区服...</div>`;
+  await syncAccounts({ silent: true, summary: false });
+  starterBatchCandidates = collectStarterBatchCandidates();
+  await Promise.all(
+    [...new Set(starterBatchCandidates.map(item => item.platform))]
+      .map(loadStarterBatchAreaCatalog)
+  );
+  renderStarterBatchCandidates();
+}
+
+async function submitStarterBatch() {
+  const list = document.getElementById("starterBatchAccountList");
+  const submit = document.getElementById("submitStarterBatchBtn");
+  const resultBox = document.getElementById("starterBatchResult");
+  if (!list || !submit || !resultBox) return;
+  const accounts = [...list.querySelectorAll(".starter-batch-account-check:checked")].map(input => {
+    const row = input.closest(".starter-batch-account-row");
+    return {
+      accountId: String(row?.dataset.sourceAccount || ""),
+      serverQuery: String(row?.querySelector(".starter-batch-server")?.value || ""),
+    };
+  });
+  if (!accounts.length) {
+    showToast("请至少勾选一个账号", "error");
+    return;
+  }
+  if (accounts.some(account => !account.serverQuery)) {
+    showToast("请为每个账号选择区服", "error");
+    return;
+  }
+  submit.disabled = true;
+  submit.textContent = "正在批量登录...";
+  resultBox.classList.add("page-hidden");
+  try {
+    const data = await apiPost(
+      "/api/starter/jobs/create-batch",
+      { accounts, targetLevel: 66 },
+      { timeoutMs: 120000, timeoutMessage: "批量起号提交超时，后台任务可能仍在继续，请刷新起号模式查看" },
+    );
+    dashboardStarterContainerCount = Math.max(
+      dashboardStarterContainerCount,
+      Number(data.containerCount || 1),
+    );
+    localStorage.setItem(STARTER_CONTAINER_COUNT_KEY, String(dashboardStarterContainerCount));
+    await syncAccounts({ silent: true, summary: false });
+    await loadDashboardStarterMode({ silent: true });
+    notifyAccountsChanged("starter-batch-add");
+    const failures = (data.results || []).filter(item => !item.success);
+    if (!failures.length) {
+      showToast(`已提交 ${data.successCount || accounts.length} 个起号账号`, "success");
+      closeStarterBatchModal();
+      return;
+    }
+    const succeededIds = new Set(
+      (data.results || []).filter(item => item.success).map(item => String(item.sourceAccountId || ""))
+    );
+    list.querySelectorAll(".starter-batch-account-row").forEach(row => {
+      if (succeededIds.has(String(row.dataset.sourceAccount || ""))) {
+        const check = row.querySelector(".starter-batch-account-check");
+        if (check) check.checked = false;
+      }
+    });
+    updateStarterBatchSelection();
+    resultBox.innerHTML = failures.map(item =>
+      `<div>${escHtml(item.serverQuery || item.sourceAccountId || "账号")}：${escHtml(item.error || "提交失败")}</div>`
+    ).join("");
+    resultBox.classList.remove("page-hidden");
+    showToast(`成功 ${data.successCount || 0} 个，失败 ${data.failedCount || failures.length} 个`, "error");
+  } catch (error) {
+    resultBox.textContent = error.message || "批量添加起号账号失败";
+    resultBox.classList.remove("page-hidden");
+    showToast("批量添加起号账号失败", "error");
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "确定并批量登录";
+  }
+}
 
 function renderDashboardStarterAccountOptions() {
   const select = document.getElementById("dashboardStarterAccountSelect");
@@ -6879,18 +7905,21 @@ async function loadDashboardStarterMode({ silent = false } = {}) {
   }
 }
 
-document.getElementById("dashboardCreateStarterBtn")?.addEventListener("click", async () => {
-  const modal = document.getElementById("accountModal");
-  if (!modal) return;
-  modal.dataset.mode = "starter";
-  const title = modal.querySelector("h2");
-  if (title) title.textContent = "添加起号账号";
-  document.getElementById("loginUsername").value = "";
-  document.getElementById("loginPassword").value = "";
-  document.getElementById("loginSerial").value = "0";
-  await loadAreaCatalog("", document.getElementById("loginPlatform")?.value || "");
-  modal.classList.remove("hidden");
+document.getElementById("dashboardCreateStarterBtn")?.addEventListener("click", openStarterBatchModal);
+document.getElementById("closeStarterBatchModalBtn")?.addEventListener("click", closeStarterBatchModal);
+document.getElementById("cancelStarterBatchBtn")?.addEventListener("click", closeStarterBatchModal);
+document.getElementById("starterBatchModal")?.addEventListener("click", event => {
+  if (event.target.id === "starterBatchModal") closeStarterBatchModal();
 });
+document.getElementById("starterBatchSelectAll")?.addEventListener("change", event => {
+  document.querySelectorAll("#starterBatchAccountList .starter-batch-account-check:not(:disabled)")
+    .forEach(input => { input.checked = !!event.target.checked; });
+  updateStarterBatchSelection();
+});
+document.getElementById("starterBatchAccountList")?.addEventListener("change", event => {
+  if (event.target.matches(".starter-batch-account-check")) updateStarterBatchSelection();
+});
+document.getElementById("submitStarterBatchBtn")?.addEventListener("click", submitStarterBatch);
 document.getElementById("dashboardRefreshStarterBtn")?.addEventListener("click", () => loadDashboardStarterMode());
 document.getElementById("dashboardAddStarterContainerBtn")?.addEventListener("click", () => {
   dashboardStarterContainerCount += 1;

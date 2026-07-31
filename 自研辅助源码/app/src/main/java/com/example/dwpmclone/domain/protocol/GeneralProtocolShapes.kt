@@ -135,6 +135,63 @@ object GeneralProtocolShapes {
         return AddEnergyReceipt(status == 0, status, message, payload.size - 1)
     }
 
+    fun buildAddLoyaltyPayload(generalId: Long, delta: Int): ByteArray {
+        require(generalId > 0L) { "generalId must be positive" }
+        require(delta in 1..0xffff) { "loyalty delta must fit unsigned short" }
+        return ByteBuffer.allocate(12)
+            .putLong(generalId)
+            .put(0)
+            .putShort(delta.toShort())
+            .put(0)
+            .array()
+    }
+
+    fun parseAddLoyaltyResponse(payload: ByteArray): AddLoyaltyReceipt {
+        require(payload.size >= 42) { "0x821f response too short: ${payload.size}/42" }
+        val buffer = ByteBuffer.wrap(payload)
+        val result = buffer.get().toInt()
+        val mode = buffer.get().toInt() and 0xff
+        val generalId = buffer.long
+        val actualCost = buffer.long
+        val copper = buffer.long
+        val gold = buffer.long
+        val resourceG = buffer.long
+        val generals = if (mode == 2) {
+            require(buffer.hasRemaining()) { "0x821f batch response lacks general count" }
+            val count = buffer.get().toInt() and 0xff
+            List(count) {
+                require(buffer.remaining() >= 12) { "0x821f batch general record incomplete" }
+                LoyaltyUpdate(
+                    generalId = buffer.long,
+                    loyalty = buffer.short.toInt() and 0xffff,
+                    loyaltyLimit = buffer.short.toInt() and 0xffff
+                )
+            }
+        } else {
+            require(buffer.remaining() >= 4) { "0x821f response lacks loyalty result" }
+            listOf(
+                LoyaltyUpdate(
+                    generalId = generalId,
+                    loyalty = buffer.short.toInt() and 0xffff,
+                    loyaltyLimit = buffer.short.toInt() and 0xffff
+                )
+            )
+        }
+        return AddLoyaltyReceipt(
+            success = result == 0,
+            result = result,
+            mode = mode,
+            generalId = generalId,
+            actualCost = actualCost,
+            copper = copper,
+            gold = gold,
+            resourceG = resourceG,
+            generals = generals,
+            trailingBytes = buffer.remaining(),
+            message = if (result == 0) "忠诚度增加成功" else "忠诚度增加失败(result=$result)"
+        )
+    }
+
     fun buildFoodToCopperPayload(foodAmount: Long): ByteArray {
         require(foodAmount > 0) { "foodAmount must be positive" }
         return ByteBuffer.allocate(9)
@@ -287,6 +344,26 @@ data class AddEnergyReceipt(
     val status: Int,
     val message: String,
     val trailingBytes: Int
+)
+
+data class LoyaltyUpdate(
+    val generalId: Long,
+    val loyalty: Int,
+    val loyaltyLimit: Int
+)
+
+data class AddLoyaltyReceipt(
+    val success: Boolean,
+    val result: Int,
+    val mode: Int,
+    val generalId: Long,
+    val actualCost: Long,
+    val copper: Long,
+    val gold: Long,
+    val resourceG: Long,
+    val generals: List<LoyaltyUpdate>,
+    val trailingBytes: Int,
+    val message: String
 )
 
 data class GeneralShape(

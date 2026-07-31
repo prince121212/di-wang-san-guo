@@ -1,7 +1,7 @@
 package com.example.dwpmclone.domain.alarm
 
 import com.example.dwpmclone.domain.model.AlarmNotificationKind
-import com.example.dwpmclone.domain.model.AlarmWithdrawConfig
+import com.example.dwpmclone.domain.model.AlarmConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -17,7 +17,7 @@ class MilitaryAlarmEventDetectorTest {
                     {"timeText":"12:01","text":"赵云返回封地","state":"返回"}
                 ]}"""
             ),
-            AlarmWithdrawConfig(enabled = true)
+            AlarmConfig(enabled = true)
         )
 
         assertEquals(2, events.size)
@@ -30,7 +30,7 @@ class MilitaryAlarmEventDetectorTest {
     fun incomingLogOnlyDoesNotRequestSystemNotification() {
         val events = MilitaryAlarmEventDetector.detect(
             mapOf("militaryIntelJson" to """{"events":[{"text":"敌军攻城"}]}"""),
-            AlarmWithdrawConfig(
+            AlarmConfig(
                 enabled = true,
                 incomingMode = "仅日志",
                 militaryEnabled = false
@@ -46,7 +46,7 @@ class MilitaryAlarmEventDetectorTest {
     fun onlyIncomingMilitaryModeIgnoresOrdinaryExpeditionEvents() {
         val events = MilitaryAlarmEventDetector.detect(
             mapOf("militaryIntelJson" to """{"events":[{"text":"关羽出征","state":"出征"}]}"""),
-            AlarmWithdrawConfig(
+            AlarmConfig(
                 enabled = true,
                 incomingEnabled = false,
                 militaryEnabled = true,

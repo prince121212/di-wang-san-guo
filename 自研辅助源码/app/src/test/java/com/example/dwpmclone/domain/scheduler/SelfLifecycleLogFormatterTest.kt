@@ -17,7 +17,7 @@ class SelfLifecycleLogFormatterTest {
             stoppedTaskTypes = listOf(TaskType.SHUA_HUANG),
             logoutRequested = true,
             logoutSucceeded = true,
-            logoutMessage = "real read-only session marked logged out locally"
+            logoutMessage = "real session marked logged out locally"
         )
 
         assertTrue(line.startsWith("[self-lifecycle-json] "))

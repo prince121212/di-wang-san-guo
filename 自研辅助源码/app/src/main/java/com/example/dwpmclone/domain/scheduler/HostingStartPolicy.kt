@@ -19,7 +19,7 @@ object HostingStartPolicy {
         }
         val realSessionAccounts = enabled.filter { it.session?.sourceMode == 1 }
         if (realSessionAccounts.isEmpty()) {
-            return HostingStartDecision(false, "没有 sourceMode=1 的真实只读 session，不能启动后台托管")
+            return HostingStartDecision(false, "没有 sourceMode=1 的真实 session，不能启动后台托管")
         }
         val unsafe = realSessionAccounts.firstOrNull { account ->
             val extra = account.session?.channelExtra.orEmpty()
@@ -31,7 +31,7 @@ object HostingStartPolicy {
         }
         val actionReady = realSessionAccounts.any { brushYellowRealActionGateReady(it.session?.channelExtra.orEmpty()) }
         val suffix = if (actionReady) "；刷黄真实动作 gate 已确认" else "；真实动作发送仍由协议 gate 禁止"
-        return HostingStartDecision(true, "允许启动本地调度：${realSessionAccounts.size} 个真实只读 session$suffix")
+        return HostingStartDecision(true, "允许启动本地调度：${realSessionAccounts.size} 个真实 session$suffix")
     }
 
     private fun brushYellowRealActionGateReady(extra: Map<String, String>): Boolean =

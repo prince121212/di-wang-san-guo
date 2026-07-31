@@ -11,9 +11,9 @@ package com.example.dwpmclone.domain.protocol
  *
  * 1. JiangLing/key-value text embedded in tail previews or decoded hex.
  * 2. Confirmed binary JiangLing records in the 0x8004 tail/full payload:
- *    `i64 id + u16 utf8 name + 114-byte body`, where the body repeats the id at
- *    offset 0x3a and ends with 0xffff.  This layout is calibrated against live
- *    passive bridge100 captures and the recovered JiangLing constructor.
+ *    `i64 id + u16 utf8 name + 114-byte body`, where the body ends with 0xffff
+ *    and its typed fields pass the recovered b6 bounds. The body field at 0x3a
+ *    is `fo`, not a guaranteed copy of id.
  * 3. Conservative binary candidates shaped as `i64 id + u16 utf8 name`, which is the
  *    same primitive encoding already used by the recovered login role parser.
  *
@@ -21,13 +21,14 @@ package com.example.dwpmclone.domain.protocol
  * not as proof that the full 0x8004 schema is known.
  */
 object State8004GeneralEvidenceParser {
+    const val PARSER_VERSION = "20260728-structured-body-v2"
+
     private data class SoldierType(val code: Int, val unitId: Int, val name: String, val category: Int, val level: Int)
     private data class BinaryJiangLingRecord(
         val id: Long,
         val idHex: String,
         val name: String,
         val bodyOffset: Int,
-        val body: ByteArray,
         val fields: LinkedHashMap<String, String>
     )
 
@@ -43,7 +44,6 @@ object State8004GeneralEvidenceParser {
     private val ID_KEY_REGEX = Regex("""(?:^|[|,;\s{}])((?:id|generalId|jiangLingId|编号|將領ID|将领ID|武将ID|武將ID|将ID|將ID)\s*[:=])""", RegexOption.IGNORE_CASE)
     private val HEX_REGEX = Regex("""^(?:0x)?[0-9a-fA-F\s|:_-]{8,}$""")
     private const val JIANGLING_BODY_LEN = 114
-    private const val JIANGLING_BODY_REPEATED_ID_OFFSET = 58
     private const val JIANGLING_BODY_PROFESSION_OFFSET = 0x03
     private const val JIANGLING_BODY_GROWTH_OFFSET = 0x06
     private const val JIANGLING_BODY_LEVEL_OFFSET = 0x08
@@ -58,9 +58,11 @@ object State8004GeneralEvidenceParser {
     private const val JIANGLING_BODY_BREAKOUT_OFFSET = 0x2b
     private const val JIANGLING_BODY_PLACE_ID_OFFSET = 0x32
     private const val JIANGLING_BODY_FO_RAW_OFFSET = 0x3a
-    private const val JIANGLING_BODY_STATUS_OFFSET = 0x58
+    private const val JIANGLING_BODY_STATUS_OFFSET = 0x56
+    private const val JIANGLING_BODY_LEGACY_STATUS_OFFSET = 0x58
     private const val JIANGLING_BODY_CULTIVATION_COUNT_OFFSET = 0x66
     private const val JIANGLING_BODY_CULTIVATION_LIMIT_OFFSET = 0x68
+    private const val GENERAL_ENERGY_WIRE_MAX = 0xffff
     private const val S5_ENTRY_LEN = 21
     // Lo/a.S5.Pm is not the scriptSoldier id. It is the zero-based row index in
     // assets/script/scriptSoldier.sc. Example confirmed by live UI: Pm=3 => id=9 轻骑兵.
@@ -101,6 +103,26 @@ object State8004GeneralEvidenceParser {
         if (binaryJiangLingRecords.isNotEmpty()) return binaryJiangLingRecords
         return recoverLengthPrefixedNameCandidates(bytes)
     }
+
+    /**
+     * Chooses the richest complete record set across all available 0x8004 evidence.
+     * A short tail can contain only the last general, while the full payload contains
+     * the entire array, so stopping at the first parseable fragment loses generals.
+     */
+    fun recoverBestAvailableRecords(vararg evidence: String?): List<Map<String, String>> =
+        evidence.asSequence()
+            .filterNotNull()
+            .filter(String::isNotBlank)
+            .map(::recoverRecords)
+            .filter(List<Map<String, String>>::isNotEmpty)
+            .maxWithOrNull(
+                compareBy<List<Map<String, String>>> { it.size }
+                    .thenBy { records ->
+                        records.count { it["source"] == "state8004-binary-jiangling" }
+                    }
+                    .thenBy { records -> records.sumOf(Map<String, String>::size) }
+            )
+            .orEmpty()
 
     private fun recoverTextRecords(raw: String): List<Map<String, String>> {
         val normalized = raw.normalizeEvidenceText()
@@ -261,7 +283,7 @@ object State8004GeneralEvidenceParser {
         val candidates = mutableListOf<BinaryJiangLingRecord>()
         for (nameLenOffset in 8 until bytes.size - 2) {
             val nameLen = bytes.u16AtOrNull(nameLenOffset) ?: continue
-            if (nameLen !in 2..24) continue
+            if (nameLen !in 1..64) continue
             val nameOffset = nameLenOffset + 2
             val bodyOffset = nameOffset + nameLen
             if (bodyOffset + JIANGLING_BODY_LEN > bytes.size) continue
@@ -273,7 +295,7 @@ object State8004GeneralEvidenceParser {
             val idBytes = bytes.copyOfRange(idOffset, nameLenOffset)
             val id = bytes.i64AtOrNull(idOffset)?.takeIf { it > 0L } ?: continue
             val body = bytes.copyOfRange(bodyOffset, bodyOffset + JIANGLING_BODY_LEN)
-            if (!body.looksLikeConfirmedJiangLingBody(idBytes)) continue
+            if (!body.looksLikeJiangLingBody()) continue
 
             val status = body.u8OrNull(JIANGLING_BODY_STATUS_OFFSET)
             val professionCode = body.u8OrNull(JIANGLING_BODY_PROFESSION_OFFSET)
@@ -294,7 +316,7 @@ object State8004GeneralEvidenceParser {
                 "idHex" to idBytes.toHex(),
                 "name" to name,
                 "source" to "state8004-binary-jiangling",
-                "layout" to "i64_id_u16_name_114_body_b6_common_v20260708b",
+                "layout" to "i64_id_u16_name_114_body_b6_common_v20260728",
                 "nameUtf8Offset" to nameLenOffset.toString(),
                 "bodyOffset" to bodyOffset.toString(),
                 "professionCode" to (professionCode?.toString() ?: ""),
@@ -330,6 +352,7 @@ object State8004GeneralEvidenceParser {
                 "cultivationLimit" to (body.u16AtOrNull(JIANGLING_BODY_CULTIVATION_LIMIT_OFFSET)?.toString() ?: ""),
                 "status" to (status?.toString() ?: ""),
                 "statusText" to statusLabel(status),
+                "rawStatus58" to (body.u8OrNull(JIANGLING_BODY_LEGACY_STATUS_OFFSET)?.toString() ?: ""),
                 "placeID" to (body.i64AtOrNull(JIANGLING_BODY_PLACE_ID_OFFSET)?.toString() ?: ""),
                 "bodyHeadHex" to body.copyOfRange(0, 46).toHex()
             )
@@ -338,7 +361,6 @@ object State8004GeneralEvidenceParser {
                 idHex = idBytes.toHex(),
                 name = name,
                 bodyOffset = bodyOffset,
-                body = body,
                 fields = linkedMapOf<String, String>().apply {
                     record.filterValues { it.isNotBlank() }.forEach { (key, value) -> this[key] = value }
                 }
@@ -382,11 +404,8 @@ object State8004GeneralEvidenceParser {
         return distinct.map { it.fields }
     }
 
-    private fun ByteArray.looksLikeConfirmedJiangLingBody(idBytes: ByteArray): Boolean {
+    private fun ByteArray.looksLikeJiangLingBody(): Boolean {
         if (size < JIANGLING_BODY_LEN) return false
-        if (!copyOfRange(JIANGLING_BODY_REPEATED_ID_OFFSET, JIANGLING_BODY_REPEATED_ID_OFFSET + 8).contentEquals(idBytes)) {
-            return false
-        }
         if (this[112].toInt() != -1 || this[113].toInt() != -1) return false
         val profession = u8OrNull(JIANGLING_BODY_PROFESSION_OFFSET) ?: return false
         val growth = u16AtOrNull(JIANGLING_BODY_GROWTH_OFFSET) ?: return false
@@ -397,15 +416,17 @@ object State8004GeneralEvidenceParser {
         val loyalty = u8OrNull(JIANGLING_BODY_LOYALTY_OFFSET) ?: return false
         val loyaltyLimit = u8OrNull(JIANGLING_BODY_LOYALTY_LIMIT_OFFSET) ?: return false
         val status = u8OrNull(JIANGLING_BODY_STATUS_OFFSET) ?: return false
+        val legacyStatus = u8OrNull(JIANGLING_BODY_LEGACY_STATUS_OFFSET) ?: return false
         return growth in 1..200 &&
             level in 1..200 &&
             profession in 0..8 &&
-            tili in 0..300 &&
-            tiliLimit in 1..300 &&
+            tili in 0..GENERAL_ENERGY_WIRE_MAX &&
+            tiliLimit in 1..GENERAL_ENERGY_WIRE_MAX &&
             troopLimit in 0L..50000L &&
             loyalty in 0..200 &&
             loyaltyLimit in 1..200 &&
-            status in 0..16
+            status in 0..16 &&
+            legacyStatus in 0..16
     }
 
     private fun recoverS5TroopAssignments(
@@ -448,9 +469,14 @@ object State8004GeneralEvidenceParser {
                     allEntriesPlausible = false
                     break
                 }
-                if (nm == om && nm in generalIds) {
+                val generalId = when {
+                    om in generalIds -> om
+                    nm in generalIds -> nm
+                    else -> null
+                }
+                if (generalId != null) {
                     assignments += S5TroopAssignment(
-                        generalId = nm,
+                        generalId = generalId,
                         soldierTypeCode = soldierTypeCode,
                         currentSoldierCount = soldierCount,
                         offset = pos,
@@ -486,7 +512,12 @@ object State8004GeneralEvidenceParser {
             1 -> "出征"
             2 -> "驻防"
             3 -> "被俘"
-            4 -> "返回"
+            4 -> "阵亡"
+            5 -> "修炼"
+            6 -> "作战中"
+            7 -> "待招募"
+            8 -> "返回"
+            9 -> "解雇"
             null -> ""
             else -> "状态$status"
         }
@@ -495,7 +526,7 @@ object State8004GeneralEvidenceParser {
         val out = mutableListOf<Map<String, String>>()
         for (pos in 8 until bytes.size - 2) {
             val len = bytes.u16At(pos)
-            if (len !in 2..24 || pos + 2 + len > bytes.size) continue
+            if (len !in 1..64 || pos + 2 + len > bytes.size) continue
             val nameBytes = bytes.copyOfRange(pos + 2, pos + 2 + len)
             val name = runCatching { String(nameBytes, Charsets.UTF_8) }.getOrNull()?.trim() ?: continue
             if (!name.looksLikeGeneralName()) continue
@@ -543,10 +574,8 @@ object State8004GeneralEvidenceParser {
         String(this, Charsets.UTF_8).normalizeEvidenceText()
 
     private fun String.looksLikeGeneralName(): Boolean {
-        if (isBlank() || length > 8) return false
-        if (contains("id", ignoreCase = true) || contains("http", ignoreCase = true)) return false
-        val chineseCount = count { it in '\u4e00'..'\u9fff' }
-        return chineseCount >= 1 && all { it in '\u4e00'..'\u9fff' || it.isLetterOrDigit() || it == '·' }
+        if (isBlank() || toByteArray(Charsets.UTF_8).size > 64 || contains('\ufffd')) return false
+        return all { it.code >= 0x20 && it.code != 0x7f }
     }
 
     private fun ByteArray.u8OrNull(index: Int): Int? =

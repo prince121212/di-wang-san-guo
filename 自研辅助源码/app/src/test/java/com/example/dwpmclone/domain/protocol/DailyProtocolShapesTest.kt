@@ -2,6 +2,8 @@ package com.example.dwpmclone.domain.protocol
 
 import com.example.dwpmclone.domain.model.DailyStep
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DailyProtocolShapesTest {
@@ -54,4 +56,26 @@ class DailyProtocolShapesTest {
         assertEquals("已转换一半粮食到铜钱！", plan.single().successLog)
         assertEquals(true, DailyStep.CONVERT_HALF_FOOD_TO_COPPER in DailyProtocolShapes.recoveredSteps)
     }
+
+    @Test
+    fun arenaDuplicateReceiptIsAnIdempotentCompletionOnlyForTheCapturedExactShape() {
+        val duplicate = DailyProtocolShapes.parseArenaCoinClaimResponse(
+            "fe00000100000000000325e40000012c".hexBytes()
+        )
+
+        assertTrue(duplicate.success)
+        assertTrue(duplicate.alreadyClaimed)
+        assertTrue(duplicate.duplicateClaim)
+        assertEquals(-2, duplicate.status)
+        assertEquals(DailyProtocolShapes.ARENA_DUPLICATE_MESSAGE, duplicate.message)
+
+        val broadStatusMinusTwo = DailyProtocolShapes.parseArenaCoinClaimResponse(
+            "fe0000".hexBytes()
+        )
+        assertFalse(broadStatusMinusTwo.success)
+        assertFalse(broadStatusMinusTwo.duplicateClaim)
+    }
+
+    private fun String.hexBytes(): ByteArray =
+        chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 }

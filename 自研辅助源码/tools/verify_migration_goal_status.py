@@ -18,6 +18,7 @@ STATUS_OFFLINE_READY = "offline_ready"
 STATUS_TOOLING_READY = "tooling_ready"
 STATUS_DRY_RUN_ONLY = "dry_run_only"
 STATUS_LIVE_SENDER_GATED = "live_sender_gated"
+STATUS_CODE_ALIGNED_DEVICE_PENDING = "code_aligned_device_pending"
 STATUS_PARTIAL = "partial"
 STATUS_MISSING = "missing"
 
@@ -50,7 +51,7 @@ REQUIREMENTS = [
             "app/src/main/java/com/example/dwpmclone/domain/scheduler/LocalSchedulerLifecycleRunner.kt",
             "app/src/main/java/com/example/dwpmclone/domain/scheduler/HostingStartPolicy.kt",
             "app/src/main/java/com/example/dwpmclone/domain/scheduler/RealSessionTaskPlanAdapter.kt",
-            "app/src/main/java/com/example/dwpmclone/domain/scheduler/MockTasks.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/scheduler/AssistantTasks.kt",
             "app/src/main/java/com/example/dwpmclone/service/AssistantForegroundService.kt",
             "app/src/test/java/com/example/dwpmclone/domain/scheduler/TaskSchedulerStopAndShuaHuangTest.kt",
             "app/src/test/java/com/example/dwpmclone/domain/scheduler/HostingStartPolicyTest.kt",
@@ -64,19 +65,18 @@ REQUIREMENTS = [
     ),
     Requirement(
         3,
-        "稳定只读登录 / session",
+        "稳定真实登录 / Session 与账号启停",
         [
             "app/src/main/java/com/example/dwpmclone/data/protocol/RealGameProtocolClient.kt",
             "app/src/main/java/com/example/dwpmclone/data/protocol/SessionAwareGameProtocolClient.kt",
             "app/src/main/java/com/example/dwpmclone/data/local/LocalAccountRepository.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/AccountLifecyclePresentation.kt",
             "app/src/test/java/com/example/dwpmclone/data/protocol/SessionAwareGameProtocolClientTest.kt",
-            "tools/refresh_device_session_from_login.py",
-            "tools/test_refresh_device_session_from_login.py",
-            "reports/no_ui_session_refresh_tool_evidence.md",
+            "app/src/test/java/com/example/dwpmclone/domain/protocol/AccountLifecyclePresentationPolicyTest.kt",
         ],
         [],
         STATUS_COMPLETE,
-        notes="sourceMode=1 真实只读 session、本地持久化链路和无 UI session 刷新工具存在。",
+        notes="真实登录、持久化、启停呈现和停止账号禁止发包已完成；保留 Session 只用于重登。",
     ),
     Requirement(
         4,
@@ -88,21 +88,15 @@ REQUIREMENTS = [
             "tools/test_replay_shuahuang_offline.py",
             "tools/check_brush_yellow_prereq.py",
             "tools/test_check_brush_yellow_prereq.py",
-            "tools/configure_device_shuahuang_service_plan.py",
-            "tools/test_configure_device_shuahuang_service_plan.py",
-            "tools/collect_service_brush_yellow_evidence.py",
-            "tools/test_collect_service_brush_yellow_evidence.py",
-            "reports/shuahuang_dispatch_evidence.md",
-            "reports/shuahuang_map_search_evidence.md",
-            "reports/shuahuang_general_formation_evidence.md",
-            "reports/kotlin_full_channel_extra_closed_loop_evidence.md",
-            "reports/live_brush_yellow_success_evidence_current.md",
-            "reports/productized_brush_yellow_service_path_current.md",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/BrushCenterRecommendationPolicy.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/scheduler/AssistantTasks.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/protocol/BrushYellowProtocolParityFixtureTest.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/protocol/BrushCenterRecommendationPolicyTest.kt",
         ],
         [],
-        STATUS_OFFLINE_READY,
+        STATUS_CODE_ALIGNED_DEVICE_PENDING,
         completion_requires_live=True,
-        notes="登录→角色/资源→将领/编队→找黄→出征响应→停止/logout 可离线回放；真实 1520030/1522030 sender 需另查 gate/真机证据。",
+        notes="登录封地中心→本地找黄→统一预检→0x1520/0x1522→回执/事务冻结→次数与恢复均已实现，仅待本轮真机回归。",
     ),
     Requirement(
         5,
@@ -120,16 +114,17 @@ REQUIREMENTS = [
         6,
         "接入一键日常协议",
         [
-            "tools/calibrate_daily_responses.py",
-            "tools/replay_daily_offline.py",
-            "tools/test_replay_daily_offline.py",
-            "app/src/test/java/com/example/dwpmclone/domain/scheduler/DailyServiceLifecycleTest.kt",
-            "reports/daily_service_lifecycle_evidence.md",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/DailyFeatureProtocolShapes.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/scheduler/DailyFeatureTasks.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/NationalCitizenDailyPolicy.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/DailyFeatureParityTest.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/DailyFeatureTerminalSemanticsTest.kt",
+            "app/src/test/java/com/example/dwpmclone/data/local/DailyCompletionCycleTest.kt",
         ],
         [],
-        STATUS_OFFLINE_READY,
+        STATUS_CODE_ALIGNED_DEVICE_PENDING,
         completion_requires_live=True,
-        notes="日常响应可校准并按恢复顺序离线回放；真实日常动作发送仍关闭。",
+        notes="七项日常真实发送、独立完成锁、竞技币22:00周期、重复回执和国民跳过均已实现，仅待本轮真机回归。",
     ),
     Requirement(
         7,
@@ -139,70 +134,61 @@ REQUIREMENTS = [
             "app/src/test/java/com/example/dwpmclone/domain/protocol/State8004RoleResourceEvidenceParserTest.kt",
             "app/src/main/java/com/example/dwpmclone/domain/protocol/State8004GeneralEvidenceParser.kt",
             "app/src/test/java/com/example/dwpmclone/domain/protocol/State8004GeneralEvidenceParserTest.kt",
-            "reports/role_resource_general_parse_evidence.md",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/State8004ArmyEvidenceParser.kt",
+            "app/src/main/java/com/example/dwpmclone/ui/web/LocalProtocolOperationService.kt",
         ],
         [],
-        STATUS_OFFLINE_READY,
+        STATUS_CODE_ALIGNED_DEVICE_PENDING,
         completion_requires_live=True,
-        notes="0x8004 头部、角色/资源证据 parser 与将领证据 parser 已有；完整真实二进制 schema 仍需真机样本校准。",
+        notes="角色、资源、完整将领列表、军队与背包刷新已接入真实状态并保留完整缓存，仅待设备回归确认账号样本。",
     ),
     Requirement(
         8,
         "做地图扫描 / 找矿只读能力",
         [
-            "app/src/main/java/com/example/dwpmclone/domain/protocol/RecoveredMapScanPlanner.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/localmap/LocalTargetCache.kt",
+            "app/src/main/java/com/example/dwpmclone/data/local/LocalMapRepository.kt",
             "app/src/main/java/com/example/dwpmclone/domain/protocol/TargetSearchResponseParser.kt",
             "app/src/main/java/com/example/dwpmclone/domain/protocol/ResourcePointSearchResponseParser.kt",
-            "tools/calibrate_readonly_responses.py",
-            "tools/replay_mine_offline.py",
-            "app/src/test/java/com/example/dwpmclone/domain/scheduler/MineSearchServiceLifecycleTest.kt",
-            "reports/mine_search_readonly_evidence.md",
-            "reports/mine_search_service_lifecycle_evidence.md",
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/LocalMapTaskLifecycleTest.kt",
+            "app/src/test/java/com/example/dwpmclone/data/local/LocalMapPersistenceTest.kt",
         ],
         [],
-        STATUS_OFFLINE_READY,
+        STATUS_CODE_ALIGNED_DEVICE_PENDING,
         completion_requires_live=True,
-        notes="041540/041542 构造、parser、离线回放已完成；live response 尚未真机校准。",
+        notes="0x1540/0x1542扫描、本地持久化、TTL、空结果抑制、失效删除和自动重扫已完成，仅待设备回归。",
     ),
     Requirement(
         9,
         "再做出征 / 占矿等动作扩展",
         [
-            "app/src/main/java/com/example/dwpmclone/domain/protocol/RemainingAutomationProtocolShapes.kt",
-            "reports/occupy_withdraw_action_boundary_evidence.md",
-            "reports/remaining_action_dryrun_payload_gate_evidence.md",
-            "app/src/test/java/com/example/dwpmclone/domain/scheduler/AutoMiningActionDryRunServiceLifecycleTest.kt",
-            "reports/auto_mining_action_dryrun_service_lifecycle_evidence.md",
-            "tools/calibrate_action_responses.py",
-            "tools/replay_mine_offline.py",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/MineProtocolShapes.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/LootProtocolShapes.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/LosslessProtocolShapes.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/DungeonProtocolShapes.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/protocol/MineRaidProtocolParityFixtureTest.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/protocol/LosslessDungeonProtocolParityFixtureTest.kt",
         ],
         [],
-        STATUS_DRY_RUN_ONLY,
+        STATUS_CODE_ALIGNED_DEVICE_PENDING,
         completion_requires_live=True,
-        notes="刷黄/占矿/撤防 payload 与离线响应匹配存在；刷黄真实动作 sender 需另查 gate/真机证据，占矿/撤防仍未放开真实发送。",
+        notes="打矿占领/加速/撤防、掠夺、无损和副本均有真实发送、严格回执、统一预检和恢复状态，仅待逐功能真机回归。",
     ),
     Requirement(
         10,
-        "处理 native / session 缺口",
+        "清除 native 缺口并建立动作安全边界",
         [
-            "app/src/main/java/com/example/dwpmclone/domain/protocol/RecoveredNativeActionWrapperPlanner.kt",
-            "tools/import_native_session_trace.py",
-            "tools/calibrate_native_wrapper_trace.py",
-            "tools/verify_action_gate_readiness.py",
+            "app/src/main/java/com/example/dwpmclone/domain/protocol/ExpeditionTransaction.kt",
+            "app/src/main/java/com/example/dwpmclone/data/local/ExpeditionTransactionRepository.kt",
+            "app/src/main/java/com/example/dwpmclone/domain/state/AccountOperationLockRegistry.kt",
             "tools/verify_action_safety_invariants.py",
             "tools/test_verify_action_safety_invariants.py",
-            "tools/generate_native_wrapper_positive_fixture.py",
-            "tools/test_generate_native_wrapper_positive_fixture.py",
-            "reports/native_wrapper_positive_fixture_readiness_evidence.md",
-            "reports/native_session_gap_dryrun_boundary.md",
-            "reports/action_safety_invariants.md",
-            "reports/daily_native_wrapper_gate_evidence.md",
-            "reports/imported_native_fields_consumption_evidence.md",
+            "app/src/test/java/com/example/dwpmclone/domain/protocol/ExpeditionTransactionCoordinatorTest.kt",
+            "app/src/test/java/com/example/dwpmclone/domain/state/AccountOperationLockRegistryTest.kt",
         ],
         [],
-        STATUS_DRY_RUN_ONLY,
-        completion_requires_live=True,
-        notes="lx/key/lb wrapper dry-run、Frida 导入、action gate 审计和 1520030/1522030 阳性 fixture 存在；direct-binary sender 需另查源码和真机证据。",
+        STATUS_COMPLETE,
+        notes="正式动作使用 direct-binary GameCommand，不依赖 lx/key/lb native wrapper；账号锁、发送前账本和未知回执冻结已完成。",
     ),
     Requirement(
         11,
@@ -294,7 +280,9 @@ def load_optional_json(path: Path) -> dict[str, Any] | None:
 
 
 def adb_warning_from_coverage(root: Path) -> bool:
-    data = load_optional_json(root / "reports/v2_coverage_report.json")
+    data = load_optional_json(root / "reports/v1_coverage_report.json")
+    if not data:
+        data = load_optional_json(root / "reports/v2_coverage_report.json")
     if not data:
         return True
     for check in data.get("checks", []):
@@ -360,9 +348,9 @@ def audit(root: Path) -> dict[str, Any]:
         "app/src/main/java/com/example/dwpmclone/data/protocol/SessionAwareGameProtocolClient.kt",
         [
             "sendBinaryMappedGameHex",
-            "direct-binary-game-command",
-            "prepare/1520030",
-            "expedition/1522030",
+            "direct-binary-action",
+            "payloads.preparePayload",
+            "payloads.expeditionPayload",
         ],
     )
     brush_yellow_scope_gate_present = file_contains(
@@ -377,14 +365,11 @@ def audit(root: Path) -> dict[str, Any]:
     if direct_binary_sender_present and brush_yellow_scope_gate_present:
         for item in items:
             if item["order"] == 4 and item["status"] != STATUS_MISSING:
-                item["status"] = STATUS_LIVE_SENDER_GATED
-                item["notes"] = "登录→角色/资源→将领/编队→找黄→出征响应→停止/logout 已接入；刷黄 1520030/1522030 direct-binary sender 已实现并受 brush-yellow scope gate 保护，仍需真机成功证据。"
+                item["status"] = STATUS_CODE_ALIGNED_DEVICE_PENDING
+                item["notes"] = "刷黄 direct-binary sender、封地推荐中心、统一预检、事务防重和调度恢复已实现；仅待本轮真机回归。"
             elif item["order"] == 9 and item["status"] != STATUS_MISSING:
-                item["status"] = STATUS_LIVE_SENDER_GATED
-                item["notes"] = "刷黄 direct-binary sender 已实现并受 gate 保护；占矿/撤防等其它动作仍保持 dry-run/离线校准，最终完成需要真机动作证据。"
-            elif item["order"] == 10 and item["status"] != STATUS_MISSING:
-                item["status"] = STATUS_LIVE_SENDER_GATED
-                item["notes"] = "已不依赖 lx/key/lb native wrapper 发送刷黄，改用 direct-binary game command，并补 scope/dm gate；真实 session 语义仍需真机回归证明。"
+                item["status"] = STATUS_CODE_ALIGNED_DEVICE_PENDING
+                item["notes"] = "占矿/加速/撤防、掠夺、无损和副本均已使用 direct-binary sender 与严格回执；仅待逐功能真机回归。"
     adb_warning = adb_warning_from_coverage(root)
     brush_gate = brush_yellow_gate_summary(root)
     brush_success = live_brush_yellow_success_summary(root)
@@ -424,7 +409,7 @@ def audit(root: Path) -> dict[str, Any]:
             "serviceBrushYellowEvidence": service_brush_success,
             "directBinaryActionSenderPresent": direct_binary_sender_present,
             "brushYellowScopeGatePresent": brush_yellow_scope_gate_present,
-            "blocker": "刷黄 service 闭环已完成；日常协议真机动作、状态 schema 深化、找矿/占矿扩展和全量真机回归仍未完成。",
+            "blocker": "代码与离线行为已对齐；剩余阻断仅为逐功能动作、锁屏、网络切换、进程重建、重启恢复和抓包等真机验收。",
         },
         "requirements": items,
         "incomplete": [{"order": item["order"], "name": item["name"], "status": item["status"], "requiresLiveEvidence": item["requiresLiveEvidence"], "missing": item["missing"]} for item in incomplete],

@@ -1,0 +1,413 @@
+{
+  "schemaVersion": 1,
+  "fixtures": {
+    "brushCenterMajorityFief": {
+      "generalIds": [11, 12, 13],
+      "generals": [
+        { "id": 11, "name": "甲", "fiefId": 101 },
+        { "id": 12, "name": "乙", "fiefId": 202 },
+        { "id": 13, "name": "丙", "fiefId": 202 }
+      ],
+      "fiefs": [
+        { "targetId": 101, "name": "一号封地", "cityName": "洛阳", "x": 30, "y": 20 },
+        { "targetId": 202, "name": "二号封地", "cityName": "成都", "x": 190, "y": 72 }
+      ],
+      "expected": {
+        "fiefId": 202,
+        "x": 186,
+        "y": 55,
+        "worldX": 186,
+        "worldY": 72,
+        "fiefCounts": { "101": 1, "202": 2 }
+      }
+    },
+    "dailyCompletionCycles": {
+      "timezone": "Asia/Shanghai",
+      "arenaCoinsBoundaryHour": 22,
+      "defaultBoundaryHour": 0,
+      "duplicateReceiptCountsAsCompleted": true,
+      "nationalCitizenSkipMessage": "国民跳过"
+    },
+    "inventory8104LiveCapture": {
+      "sourceFile": "ctf_out/passive_pcap_hotspot_20260710_215812/live_analyzed/030/resp.bin",
+      "responseOpcode": "0x8104",
+      "expected": {
+        "itemStackCount": 26,
+        "equipmentCount": 7
+      }
+    },
+    "targetSearch8540Complete": {
+      "responseHex": "00BB0038010000000000464371000A31E7BAA7E5B1B1E8B4BC033601009D002A000DE4B880E4BA9BE8B584E6BA902C0000002F00000074020000000400000005040006E6ADA5E5B0860001000203000A000004B00006E5BC93E5B0860001000203010B000003840006E9AA91E5B0860001000203020C000003200006E8BDA6E5B0860001000203040D000002BC",
+      "expected": {
+        "id": 4604785,
+        "kind": "山贼",
+        "level": 1,
+        "x": 157,
+        "y": 42,
+        "resource1": 47,
+        "resource2": 116,
+        "lootIds": [4, 5],
+        "compositionCode": "1111",
+        "compositionSource": "8540-units",
+        "source": "8540-structured",
+        "unitSoldierTypeCodes": [10, 11, 12, 13],
+        "unitSoldierCounts": [1200, 900, 800, 700]
+      }
+    },
+    "brushYellowActionType3": {
+      "generalIdHexChunks": ["0000000000000001", "0000000000000002"],
+      "targetIdHex": "0000000000000065",
+      "expected": {
+        "actionType": 3,
+        "prepareGameHex": "0000000000000000001a15200302000000000000000100000000000000020000000000000065",
+        "dispatchGameHex": "0000000000000000002515220302000000000000000100000000000000020000000000000065ffffffffffffffff000000"
+      }
+    },
+    "brushYellowCanonicalGridCenter100x30": {
+      "center": {"x": 100, "y": 30},
+      "limit": 12,
+      "expectedCoordinates": [
+        [102, 30], [96, 30], [102, 24], [102, 36],
+        [96, 24], [96, 36], [108, 30], [90, 30],
+        [108, 24], [108, 36], [90, 24], [90, 36]
+      ]
+    },
+    "brushYellowDispatchReceipts": {
+      "successResponseHex": "00000000000000006c42d1",
+      "softRejectResponseHex": "ff0000",
+      "expectedBattleId": 7094993
+    },
+    "brushYellowExactLevels": {
+      "selectedLevels": [7, 8],
+      "targets": [
+        {"id": 701, "kind": "山贼", "level": 7, "matches": true},
+        {"id": 702, "kind": "山贼", "level": 8, "matches": true},
+        {"id": 703, "kind": "山贼", "level": 6, "matches": false},
+        {"id": 704, "kind": "山贼", "level": 9, "matches": false}
+      ]
+    },
+    "mineActionType2": {
+      "generalIds": [1, 2],
+      "targetId": 101,
+      "expected": {
+        "actionType": 2,
+        "preparePayloadHex": "0202000000000000000100000000000000020000000000000065",
+        "dispatchPayloadHex": "0202000000000000000100000000000000020000000000000065ffffffffffffffff000000",
+        "prepareGameHex": "0000000000000000001a15200202000000000000000100000000000000020000000000000065",
+        "dispatchGameHex": "0000000000000000002515220202000000000000000100000000000000020000000000000065ffffffffffffffff000000"
+      }
+    },
+    "mineSearch8542Structured": {
+      "responseHex": "003c00180200000000000001010103003d0019000009e78ea9e5aeb6e794b20003e9ad8f0000c350000004b0000fe6af8fe5b08fe697b6e4baa7e587ba00000007000000080107005a02010009e5ae88e5b086e794b2000b000c0107230000005a000000000000010205020040001e010000465000000258000ce4ba8ce7baa7e789a7e59cba000000090000000a0000",
+      "expected": {
+        "centerX": 60,
+        "centerY": 24,
+        "count": 2,
+        "occupied": {
+          "id": 257,
+          "mineType": "BIN_TIE",
+          "kind": "镔铁矿",
+          "level": 3,
+          "x": 61,
+          "y": 25,
+          "reserve": 50000,
+          "productionPerHour": 1200,
+          "ownerName": "玩家甲",
+          "ownerCountry": "魏",
+          "playerOccupied": true,
+          "isEmpty": false,
+          "defenderCount": 1,
+          "firstDefenderName": "守将甲"
+        },
+        "empty": {
+          "id": 258,
+          "mineType": "PASTURE_LV2",
+          "kind": "二级牧场",
+          "level": 2,
+          "x": 64,
+          "y": 30,
+          "reserve": 18000,
+          "productionPerHour": 600,
+          "ownerName": "",
+          "ownerCountry": "",
+          "playerOccupied": false,
+          "isEmpty": true,
+          "defenderCount": 0
+        }
+      }
+    },
+    "minePreview8520": {
+      "responseHex": "0000003c000000000000000000000000000000006400120016",
+      "expected": {
+        "marchSeconds": 60,
+        "winRate": 100,
+        "x": 18,
+        "y": 22
+      }
+    },
+    "mineWithdraw8526": {
+      "battleId": 123,
+      "requestPayloadHex": "0101000000000000007b00",
+      "successResponseHex": "000000000000007b",
+      "mismatchedResponseHex": "000000000000007c"
+    },
+    "mineExactLevelAndOwnership": {
+      "selectedLevels": [5],
+      "selectedMineTypes": ["GOLD"],
+      "onlyEmpty": true,
+      "targets": [
+        {"id": 301, "mineType": "GOLD", "level": 5, "isEmpty": true, "playerOccupied": false, "matches": true},
+        {"id": 302, "mineType": "GOLD", "level": 4, "isEmpty": true, "playerOccupied": false, "matches": false},
+        {"id": 303, "mineType": "GOLD", "level": 5, "isEmpty": false, "playerOccupied": true, "matches": false},
+        {"id": 304, "mineType": "SILVER", "level": 5, "isEmpty": true, "playerOccupied": false, "matches": false}
+      ]
+    },
+    "mineSmartSpeed": {
+      "remainingSeconds": 3700,
+      "inventory": [
+        {"itemId": 76, "count": 1},
+        {"itemId": 78, "count": 1}
+      ],
+      "expectedItemIds": [78, 76]
+    },
+    "raidActionType1": {
+      "generalIds": [1, 2],
+      "targetId": 101,
+      "expected": {
+        "actionType": 1,
+        "preparePayloadHex": "0102000000000000000100000000000000020000000000000065",
+        "dispatchPayloadHex": "0102000000000000000100000000000000020000000000000065ffffffffffffffff000000",
+        "prepareGameHex": "0000000000000000001a15200102000000000000000100000000000000020000000000000065",
+        "dispatchGameHex": "0000000000000000002515220102000000000000000100000000000000020000000000000065ffffffffffffffff000000"
+      }
+    },
+    "raidFief8310": {
+      "playerName": "\u76ee\u6807\u73a9\u5bb6",
+      "requestPayloadHex": "0001000ce79baee6a087e78ea9e5aeb6",
+      "responseHex": "0001000ce79baee6a087e78ea9e5aeb60003e9ad8f020000000000000065000ce4b880e58fb7e5b081e59cb0010006e6b49be998b301005b001a0000000000000066000ce4ba8ce58fb7e5b081e59cb0020006e995bfe5ae8901005d001c",
+      "expected": {
+        "playerName": "\u76ee\u6807\u73a9\u5bb6",
+        "country": "\u9b4f",
+        "count": 2,
+        "firstTargetId": 101,
+        "firstName": "\u4e00\u53f7\u5c01\u5730",
+        "firstCityName": "\u6d1b\u9633",
+        "firstX": 91,
+        "firstY": 26
+      }
+    },
+    "raidDispatchReceipts": {
+      "successResponseHex": "00000000000000006c42d1",
+      "missingBattleIdResponseHex": "000000",
+      "softRejectResponseHex": "ff0000",
+      "expectedBattleId": 7094993
+    },
+    "losslessCooldown8900": {
+      "responseHex": "000000000005909e000203000000000000003f71b000000005",
+      "expected": {
+        "phase": "cooldown",
+        "mode": 0,
+        "remainingAttempts": 2,
+        "actionTimerMillis": 364702,
+        "cooldownMillis": 4157872,
+        "reopenCost": 5
+      }
+    },
+    "losslessSettlement8902Failed": {
+      "responseHex": "000019f4bf4a7da082300024e6b688e781ad3130e7baa7e585b3e58da12de58dabe585b5efbc8ce5a4b1e8b4a5efbc81000ae5a3b0e69c9b2b33313700650a312ee4bba4e78b90e6828c2831e7baa7e5bc93e5b086290ae7bb8fe9aa8cefbc9a2b3336300a322ee588abe8b58b2831e7baa7e58b87e5a3ab290ae7bb8fe9aa8cefbc9a2b3930300a332ee69da8e8bf8ee5b3af2831e7baa7e6ada5e5b086290ae697a0",
+      "expected": {
+        "success": true,
+        "battleFailed": true,
+        "battleId": 1870330071921754672,
+        "resultText": "消灭10级关卡-卫兵，失败！",
+        "generalText": "声望+317"
+      }
+    },
+    "losslessActionType11": {
+      "generalIds": [16249023, 14717560, 16332113, 16332111, 14628737],
+      "roleId": 928,
+      "expected": {
+        "actionType": 11,
+        "preparePayloadHex": "0b050000000000f7f0bf0000000000e092780000000000f935510000000000f9354f0000000000df378100000000000003a0",
+        "dispatchPayloadHex": "0b050000000000f7f0bf0000000000e092780000000000f935510000000000f9354f0000000000df378100000000000003a0ffffffffffffffff000000"
+      }
+    },
+    "losslessLevel10LastChariot": {
+      "stageId": 12305,
+      "stageName": "卫兵",
+      "soldierTypes": ["投石车", "弩车", "弓兵", "冲车", "投石车"],
+      "expected": {
+        "qualified": true,
+        "chariotPositions": [1, 2, 4, 5],
+        "catapultPositions": [1, 5]
+      }
+    },
+    "dungeonActionType14": {
+      "generalIds": [4660],
+      "stageCode": 2,
+      "expected": {
+        "actionType": 14,
+        "preparePayloadHex": "0e010000000000001234ffffffff00040002",
+        "dispatchPayloadHex": "0e010000000000001234ffffffff00040002ffffffffffffffff000000",
+        "chestRightPayloadHex": "02"
+      }
+    },
+    "dungeonCatalog8930": {
+      "responseHex": "000700000f130f010f12000ce5b1b1e8b4bce4b98be4b9b1010c00000103000101010002010100040101000501ff000600ff000700ff000800ff000900ff000a00ff000b00ff000c00ff00010f150efc0ef70009e7acace4ba8ce7aba00000020f180efe0efb000ce995bfe5ae89e4b98be4b9b10000030f1a0f000ef9000ce5be90e5b79ee4b98be4ba8900000410b1106010b0000ce4bcaae5b89de8a281e69caf0000051aaa1a931a8f0015e5ae98e6b8a1e4b98be68898efbc88e4b88aefbc890000061aaa1a941a910015e5ae98e6b8a1e4b98be68898efbc88e4b88befbc8900",
+      "expected": {
+        "chapterCount": 7,
+        "firstChapterName": "山贼之乱",
+        "firstChapterStageCount": 12,
+        "displayStage3Code": 2,
+        "displayStage4Code": 4,
+        "firstUncompletedChapter": 0,
+        "firstUncompletedDisplayStage": 5,
+        "firstUncompletedStageCode": 5,
+        "firstUncompletedAvailable": true,
+        "chapter7DisplayStage11Code": 85
+      }
+    },
+    "dungeonStateAndPoll": {
+      "idleResponseHex": "00",
+      "fightingResponseHex": "010000000000038f4c00",
+      "rewardResponseHex": "010000000000038f4c00000500000022",
+      "expected": {
+        "battleId": 233292,
+        "firstPollPayloadHex": "020000000000038f4c",
+        "nextPollPayloadHex": "010000000000038f4c"
+      }
+    },
+    "dailyNationalCity8404State": {
+      "requestedCategory": 1,
+      "responseHex": "000100010001010006e6b49be998b300005b001a000ae78caee5b89d2838332900af1f40000003390000270f010100000006001e8480001e8480000186a0000186a0",
+      "expected": {
+        "category": 1,
+        "name": "洛阳",
+        "kind": "state",
+        "x": 91,
+        "y": 26
+      }
+    },
+    "dailyNationalCity8404Commandery": {
+      "requestedCategory": 2,
+      "responseHex": "000200010001010009e5b9bfe68890e585b301005d001c000ae78caee5b89d28383329000013880000028e0000232801010000000b00186a0000186a000000132b000186a0",
+      "expected": {
+        "category": 2,
+        "name": "广成关",
+        "kind": "commandery",
+        "x": 93,
+        "y": 28
+      }
+    },
+    "dailyNationalCity8404County": {
+      "requestedCategory": 3,
+      "responseHex": "000300010001010006e5a4b7e999b50200850026000ae59b9ee5bf862839342900000bb800000000000003e8010300000015000927c000124f8000000001000186a0",
+      "expected": {
+        "category": 3,
+        "name": "夷陵",
+        "kind": "county",
+        "x": 133,
+        "y": 38
+      }
+    },
+    "dailyNationalCity8404Small": {
+      "requestedCategory": 4,
+      "responseHex": "000400010001010006e68890e69e9703005f0024000ae59b9ee5bf8628393429000107d000000000000000c801020000001f00061a80000c350000000001000186a0",
+      "expected": {
+        "category": 4,
+        "name": "成林",
+        "kind": "small",
+        "x": 95,
+        "y": 36
+      }
+    },
+    "dailyOwnedCity8318Nanhua": {
+      "roleId": 2,
+      "requestHex": "00000000000000020000",
+      "responseHex": "0000000000000000025b040006e58d97e58c96006800140501003d000000000000001effffffff000003e80009e5aebfe4bba3e88b9155000000030d4000061a8000000001000186a0000000010007a12000000000000000000000",
+      "expected": {
+        "id": 603,
+        "kindCode": 4,
+        "name": "南化",
+        "x": 104,
+        "y": 20,
+        "ownerName": "宿代苑",
+        "ownerLevel": 85
+      }
+    },
+    "dailySalaryA14bSuccess": {
+      "requestHex": "01",
+      "responseHex": "01000040e9a286e58f96e59bbde5aeb6e4bfb8e7a684e68890e58a9fefbc8ce88eb7e5be97e9939ce992b1363432383530efbc8ce7b2aee9a39f31313930363839e38082",
+      "expected": {
+        "status": 1,
+        "extra": 0,
+        "success": true,
+        "completed": true,
+        "copper": 642850,
+        "food": 1190689
+      }
+    },
+    "dailyGeneralVisitA273Rejected": {
+      "responseHex": "000000000030e894a1e98295e68b92e7bb9de4ba86e99881e4b88be79a84e98280e8afb7efbc8ce8afb7e5868de68ea5e5868de58e89",
+      "expected": {
+        "status": 0,
+        "message": "蔡邕拒绝了阁下的邀请，请再接再厉",
+        "success": true,
+        "completed": true,
+        "recruited": false,
+        "alreadyVisited": false,
+        "invitationResolved": true,
+        "invitationRejected": true
+      }
+    },
+    "dailyGeneralVisitA273AlreadyVisited": {
+      "responseHex": "fffffffe001ee4b88de58fafe68b9ce8aebfefbc8ce69cace697a5e5b7b2e68b9ce8aebf",
+      "expected": {
+        "status": -2,
+        "message": "不可拜访，本日已拜访",
+        "success": false,
+        "completed": true,
+        "recruited": false,
+        "alreadyVisited": true,
+        "invitationResolved": false,
+        "invitationRejected": false
+      }
+    },
+    "dailyGeneralVisitA271AlreadyVisited": {
+      "responseHex": "fe001ee4b88de58fafe68b9ce8aebfefbc8ce69cace697a5e5b7b2e68b9ce8aebf",
+      "expected": {
+        "status": -2,
+        "message": "不可拜访，本日已拜访",
+        "completed": true,
+        "alreadyVisited": true,
+        "candidateCount": 0
+      }
+    },
+    "formationAssign1226": {
+      "generalId": 7,
+      "soldierTypeCode": 3,
+      "soldierCount": 150,
+      "requestPayloadHex": "000000000000000700000300000096",
+      "successResponseHex": "0100000000000000070003006400030096",
+      "expected": {
+        "success": true,
+        "previousType": 3,
+        "previousCount": 100,
+        "assignedType": 3,
+        "assignedCount": 150
+      }
+    },
+    "formationRefill1229": {
+      "generalIds": [7032238, 7032218],
+      "requestPayloadHex": "0200000000006b4dae00000000006b4d9a",
+      "successResponseHex": "000012e689b9e9878fe8a1a5e6bba1e68890e58a9f0200000000006b4dae010000009600000000006b4d9a080000000a00000000000007550103000000c0",
+      "expected": {
+        "success": true,
+        "message": "批量补满成功",
+        "entryCount": 2,
+        "firstSoldierType": 1,
+        "firstSoldierCount": 150
+      }
+    }
+  }
+}

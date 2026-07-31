@@ -7,6 +7,24 @@ import java.io.File
 
 class State8004GeneralEvidenceParserTest {
     @Test
+    fun richestPayloadWinsOverShortParseableTail() {
+        val shortTail = "id=7|name=尾段将领|status=0"
+        val fullPayload = listOf(
+            "id=7|name=将领一|status=0",
+            "id=8|name=将领二|status=0",
+            "id=9|name=将领三|status=1"
+        ).joinToString("\n")
+
+        val records = State8004GeneralEvidenceParser.recoverBestAvailableRecords(
+            shortTail,
+            fullPayload
+        )
+
+        assertEquals(3, records.size)
+        assertEquals(listOf("7", "8", "9"), records.map { it["id"] })
+    }
+
+    @Test
     fun extractsMultipleJiangLingObjectsFromMixedText() {
         val raw = "prefix\u0000JiangLing{id=0000000000000007,name=赵云,status=0,tili=49,daiBingLimit=1999}\u0000" +
             "JiangLing{id=0000000000000008,name=马超,status=1,tili=0,isPeiBingFail=true}"
@@ -72,8 +90,8 @@ class State8004GeneralEvidenceParserTest {
         assertEquals("1", first["level"])
         assertEquals("69", first["growth"])
         assertEquals("69", first["progression"])
-        assertEquals("0", first["status"])
-        assertEquals("空闲", first["statusText"])
+        assertEquals("8", first["status"])
+        assertEquals("返回", first["statusText"])
         assertEquals("99", first["tili"])
         assertEquals("100", first["tiliLimit"])
         assertEquals("48", first["zhongChengdu"])
@@ -126,6 +144,29 @@ class State8004GeneralEvidenceParserTest {
     }
 
     @Test
+    fun extractsStandaloneGeneralWhenFoFieldDoesNotRepeatGeneralId() {
+        val hex = binaryGeneralRecord(
+            id = 5_354_585L,
+            name = "A-1 统弓",
+            foRaw = 5_354_586L,
+            energy = 305,
+            status = 1
+        )
+
+        val records = State8004GeneralEvidenceParser.recoverRecords(hex)
+
+        assertEquals(1, records.size)
+        assertEquals("5354585", records.single()["id"])
+        assertEquals("A-1 统弓", records.single()["name"])
+        assertEquals("5354586", records.single()["foRawLong"])
+        assertEquals("305", records.single()["tili"])
+        assertEquals("1", records.single()["status"])
+        assertEquals("出征", records.single()["statusText"])
+        assertEquals("0", records.single()["rawStatus58"])
+        assertEquals("i64_id_u16_name_114_body_b6_common_v20260728", records.single()["layout"])
+    }
+
+    @Test
     fun normalizesChineseGeneralAliasesAndStatusValues() {
         val raw = "将领ID=0000000000000007|姓名=赵云|状态=空闲|体力=49|带兵上限=1999|配兵失败=否|" +
             "将领ID=0000000000000008|姓名=马超|状态=出征|体力=0|配兵失败=是"
@@ -143,5 +184,50 @@ class State8004GeneralEvidenceParserTest {
         assertEquals("马超", records[1]["name"])
         assertEquals("2", records[1]["status"])
         assertEquals("true", records[1]["isPeiBingFail"])
+    }
+
+    private fun binaryGeneralRecord(
+        id: Long,
+        name: String,
+        foRaw: Long,
+        energy: Int = 100,
+        status: Int = 0
+    ): String {
+        val nameBytes = name.toByteArray(Charsets.UTF_8)
+        val body = ByteArray(114)
+        body[3] = 1
+        body.putU16(6, 65)
+        body[8] = 1
+        body.putU16(27, energy)
+        body.putU16(29, energy)
+        body.putU32(35, 207)
+        body[39] = 51
+        body[40] = 100
+        body.putI64(58, foRaw)
+        body[86] = status.toByte()
+        body[88] = 0
+        body[112] = 0xff.toByte()
+        body[113] = 0xff.toByte()
+        return id.toString(16).padStart(16, '0') +
+            nameBytes.size.toString(16).padStart(4, '0') +
+            nameBytes.toHex() +
+            body.toHex()
+    }
+
+    private fun ByteArray.putU16(offset: Int, value: Int) {
+        this[offset] = (value ushr 8).toByte()
+        this[offset + 1] = value.toByte()
+    }
+
+    private fun ByteArray.putU32(offset: Int, value: Int) {
+        repeat(4) { index -> this[offset + index] = (value ushr ((3 - index) * 8)).toByte() }
+    }
+
+    private fun ByteArray.putI64(offset: Int, value: Long) {
+        repeat(8) { index -> this[offset + index] = (value ushr ((7 - index) * 8)).toByte() }
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") {
+        (it.toInt() and 0xff).toString(16).padStart(2, '0')
     }
 }

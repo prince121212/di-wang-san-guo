@@ -1,43 +1,40 @@
 package com.example.dwpmclone.domain.scheduler
 
-import com.example.dwpmclone.domain.config.ConfigDefaults
 import com.example.dwpmclone.domain.model.GameSession
-import com.example.dwpmclone.domain.model.HuangTargetType
 import com.example.dwpmclone.domain.model.MineConfig
 import com.example.dwpmclone.domain.protocol.AssistantTask
 import org.json.JSONObject
 
 /**
- * Aligns saved UI task plans with metadata recovered from a real read-only session.
+ * Aligns saved UI task plans with metadata recovered from a real session.
  *
  * Saved screen configs still contain several placeholder defaults from the static UI rebuild
  * (notably formation id 1).  A sourceMode=1 session, however, may carry recovered Xiaohuang
  * prefs such as bianduihao0=000...0003.  This adapter makes the service/UI path consume that
- * recovered session metadata before the scheduler runs, without enabling network action send.
+ * recovered session metadata before the scheduler runs. A real task is created only from an
+ * explicit saved feature config; recovered session hints can never enable a task by themselves.
  */
 object RealSessionTaskPlanAdapter {
     fun attachRealSession(savedPlan: SavedTaskPlan, realSession: GameSession): SavedTaskPlan {
-        if (savedPlan.sourceDescription.startsWith("synthetic-defaults:no-saved-config")) {
-            val sessionDerivedTasks = sessionDerivedBrushYellowTasks(realSession)
+        val mergedSession = realSession.copy(
+            channelExtra = realSession.channelExtra + savedPlan.session.channelExtra
+        )
+        if (savedPlan.sourceDescription == "no-saved-config") {
             return savedPlan.copy(
-                session = realSession,
-                tasks = sessionDerivedTasks,
-                sourceDescription = if (sessionDerivedTasks.isEmpty()) {
-                    "real-session-from-account-repo;no-saved-config;no-background-tasks"
-                } else {
-                    "real-session-from-account-repo;no-saved-config;session-derived-brush-yellow-task"
-                }
+                session = mergedSession,
+                tasks = emptyList(),
+                sourceDescription = "real-session-from-account-repo;no-saved-config;no-background-tasks"
             )
         }
-        if (realSession.sourceMode != 1) {
+        if (mergedSession.sourceMode != 1) {
             return savedPlan.copy(
-                session = realSession,
+                session = mergedSession,
                 sourceDescription = savedPlan.sourceDescription + ";non-real-session-from-account-repo"
             )
         }
-        val alignedTasks = savedPlan.tasks.map { task -> alignTaskWithSession(task, realSession) }
+        val alignedTasks = savedPlan.tasks.map { task -> alignTaskWithSession(task, mergedSession) }
         return savedPlan.copy(
-            session = realSession,
+            session = mergedSession,
             tasks = alignedTasks,
             sourceDescription = savedPlan.sourceDescription + ";real-session-from-account-repo;session-metadata-aligned"
         )
@@ -45,40 +42,18 @@ object RealSessionTaskPlanAdapter {
 
     private fun alignTaskWithSession(task: AssistantTask<*>, session: GameSession): AssistantTask<*> = when (task) {
         is ShuaHuangTask -> ShuaHuangTask(task.accountId, task.config.alignShuaHuang(session))
-        is MineSearchMockTask -> MineSearchMockTask(task.accountId, task.config.alignMine(session))
+        is MineTask -> MineTask(task.accountId, task.config.alignMine(session))
         else -> task
-    }
-
-    private fun sessionDerivedBrushYellowTasks(session: GameSession): List<AssistantTask<*>> {
-        if (session.sourceMode != 1) return emptyList()
-        if (!brushYellowRealActionGateReady(session.channelExtra)) return emptyList()
-        val recoveredFormationIds = recoverShuaHuangFormationIds(session.channelExtra)
-        if (recoveredFormationIds.isEmpty()) return emptyList()
-        val recoveredTargetType = session.channelExtra["shuaHuangTargetType"]
-            ?.let { runCatching { HuangTargetType.valueOf(it.trim()) }.getOrNull() }
-            ?: HuangTargetType.SHAN_ZEI
-        val dailyLimit = session.channelExtra["shuaHuangDailyLimit"]?.toIntOrNull()?.coerceIn(1, 500) ?: 1
-        val startX = session.channelExtra["shuaHuangStartX"]?.toIntOrNull() ?: 0
-        val startY = session.channelExtra["shuaHuangStartY"]?.toIntOrNull() ?: 0
-        val config = ConfigDefaults.shuaHuang().copy(
-            enabled = true,
-            dailyLimit = dailyLimit,
-            start = com.example.dwpmclone.domain.model.MapCoordinate(startX, startY),
-            targetType = recoveredTargetType,
-            selectedFormationIds = recoveredFormationIds,
-            deleteMailForSpeed = false,
-            autoConvertFoodToCopper = false
-        )
-        return listOf(ShuaHuangTask(session.accountId, config))
     }
 
     private fun com.example.dwpmclone.domain.model.ShuaHuangConfig.alignShuaHuang(session: GameSession): com.example.dwpmclone.domain.model.ShuaHuangConfig {
         val recoveredFormationIds = recoverShuaHuangFormationIds(session.channelExtra)
-        val recoveredTargetType = session.channelExtra["shuaHuangTargetType"]
-            ?.let { runCatching { HuangTargetType.valueOf(it.trim()) }.getOrNull() }
         return copy(
-            selectedFormationIds = recoveredFormationIds.ifEmpty { selectedFormationIds },
-            targetType = recoveredTargetType ?: targetType
+            selectedFormationIds = if (selectedFormationIds.isEmpty() || selectedFormationIds == setOf(1L)) {
+                recoveredFormationIds.ifEmpty { selectedFormationIds }
+            } else {
+                selectedFormationIds
+            }
         )
     }
 
@@ -88,7 +63,13 @@ object RealSessionTaskPlanAdapter {
                 ?: session.channelExtra["selectedMineFormationIds"]
                 ?: session.channelExtra["selectedFormationIds"]
         )
-        return copy(selectedFormationIds = recoveredFormationIds.ifEmpty { selectedFormationIds })
+        return copy(
+            selectedFormationIds = if (selectedFormationIds.isEmpty() || selectedFormationIds == setOf(1L)) {
+                recoveredFormationIds.ifEmpty { selectedFormationIds }
+            } else {
+                selectedFormationIds
+            }
+        )
     }
 
     fun recoverShuaHuangFormationIds(extra: Map<String, String>): Set<Long> {
@@ -108,14 +89,6 @@ object RealSessionTaskPlanAdapter {
         }
         return out
     }
-
-    private fun brushYellowRealActionGateReady(extra: Map<String, String>): Boolean =
-        extra["realActionNetworkAllowed"].equals("true", ignoreCase = true) &&
-            extra["realActionSendReady"].equals("true", ignoreCase = true) &&
-            (
-                extra["realActionScope"].equals("brush-yellow", ignoreCase = true) ||
-                    extra["realActionBrushYellowOnly"].equals("true", ignoreCase = true)
-                )
 
     private fun recoveredPreferenceMap(extra: Map<String, String>): Map<String, String> {
         val out = linkedMapOf<String, String>()

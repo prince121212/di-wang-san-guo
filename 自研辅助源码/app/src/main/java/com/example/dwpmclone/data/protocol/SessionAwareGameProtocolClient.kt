@@ -8,20 +8,14 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.HttpURLConnection
-import java.net.Proxy
 import java.net.URL
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Local scheduler protocol boundary that prefers real read-only session metadata.
- *
- * Source modes:
- * - sourceMode == 1: session was created by RealGameProtocolClient login/sync. Only
- *   read-only fields that were saved from real responses are exposed. Mutating or still
- *   unrecovered calls return explicit REAL_*_NOT_IMPLEMENTED errors instead of silently
- *   falling back to mock behavior.
- * - other sourceMode values: delegate to MockGameProtocolClient for local UI/scheduler smoke tests.
+ * Local scheduler protocol boundary. `sourceMode == 1` identifies a real login/session;
+ * unsupported calls fail closed. Other source modes are rejected unless a debug test
+ * explicitly injects a fake client.
  */
 data class DirectBinaryResponse(
     val phase: String,
@@ -30,11 +24,44 @@ data class DirectBinaryResponse(
     val responseBytes: Int,
     val responseHex: String,
     val textPreview: String,
-    val responseOpcodes: List<Int> = emptyList()
+    val responseOpcodes: List<Int> = emptyList(),
+    val responsePayloads: List<DirectBinaryPayload> = emptyList()
+) {
+    /**
+     * Returns the payload owned by one response opcode.
+     *
+     * A game HTTP response commonly contains the requested receipt followed by 0x880d
+     * or another asynchronous state packet. [responseHex] intentionally keeps the full
+     * concatenation for diagnostics, but a protocol parser must never consume that
+     * concatenation as one packet. Older injected transports did not expose packet
+     * payloads, so the fallback is allowed only when the requested opcode is present.
+     */
+    fun payloadHexFor(opcode: Int): String? =
+        responsePayloads.firstOrNull { it.opcode == opcode }?.payloadHex
+            ?: responseHex.takeIf { responsePayloads.isEmpty() && opcode in responseOpcodes }
+
+    fun payloadBytesFor(opcode: Int): ByteArray? =
+        payloadHexFor(opcode)?.let { hex ->
+            val normalized = hex.filterNot(Char::isWhitespace)
+            runCatching {
+                require(normalized.length % 2 == 0)
+                normalized.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            }.getOrNull()
+        }
+
+    fun requirePayloadBytesFor(opcode: Int): ByteArray =
+        requireNotNull(payloadBytesFor(opcode)) {
+            "0x${opcode.toString(16)}负载缺失或格式无效"
+        }
+}
+
+data class DirectBinaryPayload(
+    val opcode: Int,
+    val payloadHex: String
 )
 
 class SessionAwareGameProtocolClient(
-    private val mock: GameProtocolClient = MockGameProtocolClient(),
+    private val fallback: GameProtocolClient = UnsupportedSessionProtocolClient(),
     private val recoveredReadOnlyExecutor: RecoveredReadOnlyExecutor = RealRecoveredReadOnlyExecutor(),
     private val actionAudit: ((String) -> Unit)? = null,
     private val alarmEventSink: ((AlarmNotificationEvent) -> Unit)? = null,
@@ -45,17 +72,28 @@ class SessionAwareGameProtocolClient(
         dm: Long,
         gameHex: String,
         phase: String
-    ) -> DirectBinaryResponse)? = null
+    ) -> DirectBinaryResponse)? = null,
+    expeditionTransactionStore: ExpeditionTransactionStore = InMemoryExpeditionTransactionStore(),
+    private val offlineActionFixturesAllowed: Boolean = false,
+    private val behaviorContract: AssistantBehaviorContract = AssistantBehaviorContract.defaults(),
+    /** Dynamic foreground-service ownership gate. Manual/debug clients keep the true default. */
+    private val executionAllowed: () -> Boolean = { true }
 ) : GameProtocolClient {
     private val liveStateCache = ConcurrentHashMap<String, LiveStateBundle>()
     private val liveStateErrors = ConcurrentHashMap<String, String>()
-    private val pendingDungeons = ConcurrentHashMap<Long, PendingDungeon>()
+    private val liveSessionExtraCache = ConcurrentHashMap<Long, Map<String, String>>()
+    private val pendingDungeons = ConcurrentHashMap<Long, DungeonPendingRun>()
     private val dungeonPollBattleIds = ConcurrentHashMap<Long, Long>()
     private val losslessRuleCursors = ConcurrentHashMap<Long, Int>()
+    private val losslessRerollCounts = ConcurrentHashMap<String, Int>()
     private val lootRuleCursors = ConcurrentHashMap<Long, Int>()
     private val internalTechnologyTurns = ConcurrentHashMap<Long, Boolean>()
     private val seenAlarmFingerprints = ConcurrentHashMap<Long, MutableSet<String>>()
     private val lastHeartbeat3110AttemptAt = ConcurrentHashMap<Long, Long>()
+    private val expeditionPreflight by lazy {
+        ExpeditionPreflight(this, behaviorContract.brushYellow.maximumGeneralsPerFormation)
+    }
+    private val expeditionTransactions = ExpeditionTransactionCoordinator(expeditionTransactionStore)
 
     private data class LiveStateBundle(
         val state: RealGameProtocolClient.RoleState,
@@ -65,25 +103,17 @@ class SessionAwareGameProtocolClient(
         val refreshedAtMillis: Long
     )
 
-    private data class PendingDungeon(
-        val generalIds: List<Long>,
-        val chapter: Int,
-        val stage: Int,
-        val chestPosition: Int,
-        val launchedAtMillis: Long
-    )
-
     override suspend fun login(account: GameAccount): ProtocolResult<GameSession> =
         account.session?.let { ProtocolResult.Ok(it) }
             ?: ProtocolResult.Err("NO_SESSION", "账号尚未通过真实协议登录", retryable = false)
 
     override suspend fun logout(session: GameSession): ProtocolResult<StepResult> =
-        if (session.isRealReadOnly()) ProtocolResult.Ok(StepResult(true, "real read-only session marked logged out locally"))
-        else mock.logout(session)
+        if (session.isRealSession()) ProtocolResult.Ok(StepResult(true, "real session marked logged out locally"))
+        else fallback.logout(session)
 
     override suspend fun validateSession(session: GameSession): ProtocolResult<LoginState> =
-        if (!session.isRealReadOnly()) {
-            mock.validateSession(session)
+        if (!session.isRealSession()) {
+            fallback.validateSession(session)
         } else if (session.tokenCiphertext.isBlank()) {
             ProtocolResult.Ok(LoginState(valid = false, reason = "empty real session token"))
         } else if (session.channelExtra["userId"].isNullOrBlank() || session.channelExtra["serverUrl"].isNullOrBlank()) {
@@ -99,8 +129,8 @@ class SessionAwareGameProtocolClient(
         }
 
     override suspend fun queryMonarch(session: GameSession): ProtocolResult<MonarchProfile> =
-        if (!session.isRealReadOnly()) {
-            mock.queryMonarch(session)
+        if (!session.isRealSession()) {
+            fallback.queryMonarch(session)
         } else {
             val live = session.liveStateBundleOrNull()
             if (live == null) session.liveStateErrorOrNull()?.let {
@@ -132,8 +162,8 @@ class SessionAwareGameProtocolClient(
         }
 
     override suspend fun queryResourceState(session: GameSession): ProtocolResult<ResourceState> =
-        if (!session.isRealReadOnly()) {
-            mock.queryResourceState(session)
+        if (!session.isRealSession()) {
+            fallback.queryResourceState(session)
         } else {
             val live = session.liveStateBundleOrNull()
             if (live == null) session.liveStateErrorOrNull()?.let {
@@ -163,8 +193,8 @@ class SessionAwareGameProtocolClient(
         }
 
     override suspend fun queryGenerals(session: GameSession): ProtocolResult<List<General>> =
-        if (!session.isRealReadOnly()) {
-            mock.queryGenerals(session)
+        if (!session.isRealSession()) {
+            fallback.queryGenerals(session)
         } else {
             val live = session.liveStateBundleOrNull()
             if (live == null) session.liveStateErrorOrNull()?.let {
@@ -173,7 +203,8 @@ class SessionAwareGameProtocolClient(
             if (live != null) {
                 ProtocolResult.Ok(parseGeneralsFromLiveState(live))
             } else {
-                val raw = session.firstRecoveredGeneralRaw()
+                val raw = liveSessionExtraCache[session.accountId]?.get("generalsJson")
+                    ?: session.firstRecoveredGeneralRaw()
                 if (raw.isNullOrBlank()) {
                     unrecovered("REAL_GENERALS_METADATA_MISSING", "真实 session 暂无 generalsJson/jiangLingData/state8004TailUtf8Preview；需继续恢复 0x8004 后段或将领接口")
                 } else {
@@ -184,8 +215,8 @@ class SessionAwareGameProtocolClient(
         }
 
     override suspend fun queryFormations(session: GameSession): ProtocolResult<List<FormationRuntime>> =
-        if (!session.isRealReadOnly()) {
-            mock.queryFormations(session)
+        if (!session.isRealSession()) {
+            fallback.queryFormations(session)
         } else {
             val raw = session.channelExtra["formationsJson"]
             if (!raw.isNullOrBlank()) {
@@ -223,8 +254,8 @@ class SessionAwareGameProtocolClient(
         }
 
     override suspend fun searchMap(session: GameSession, start: MapCoordinate, policy: MapSearchPolicy): ProtocolResult<List<MapTarget>> =
-        if (!session.isRealReadOnly()) {
-            mock.searchMap(session, start, policy)
+        if (!session.isRealSession()) {
+            fallback.searchMap(session, start, policy)
         } else {
             val raw = session.channelExtra["mapTargetsJson"]
             val rawHex = session.channelExtra["mapTargetsHex"]
@@ -248,22 +279,102 @@ class SessionAwareGameProtocolClient(
             }
         }
 
-    override suspend fun dispatchFormation(session: GameSession, formationId: Long, target: MapTarget): ProtocolResult<BattleResult> =
-        if (!session.isRealReadOnly()) {
-            mock.dispatchFormation(session, formationId, target)
-        } else {
-            val raw = session.channelExtra["dispatchResultsJson"]
-            if (raw.isNullOrBlank()) {
-                executeRecoveredBrushYellowLiveAction(session, formationId, target)
-                    ?: unrecovered("REAL_DISPATCH_METADATA_MISSING", "真实 session 暂无 dispatchResultsJson；已恢复 p2=0 payload 公式，但真实 request wrapper/native/session 仍未接入")
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formationId: Long,
+        target: MapTarget
+    ): ProtocolResult<BattleResult> = dispatchFormationInternal(
+        session,
+        formationId,
+        emptyList(),
+        target,
+        emptyList()
+    )
+
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formation: FormationRuntime,
+        target: MapTarget
+    ): ProtocolResult<BattleResult> = dispatchFormationInternal(
+        session,
+        formation.id,
+        formation.generalIds,
+        target,
+        emptyList()
+    )
+
+    override suspend fun dispatchFormation(
+        session: GameSession,
+        formation: FormationRuntime,
+        target: MapTarget,
+        formationRules: List<FormationConfig>
+    ): ProtocolResult<BattleResult> = dispatchFormationInternal(
+        session,
+        formation.id,
+        formation.generalIds,
+        target,
+        formationRules
+    )
+
+    private suspend fun dispatchFormationInternal(
+        session: GameSession,
+        formationId: Long,
+        requestedGeneralIds: List<Long>,
+        target: MapTarget,
+        formationRules: List<FormationConfig>
+    ): ProtocolResult<BattleResult> {
+        if (!session.isRealSession()) {
+            return if (requestedGeneralIds.isEmpty()) {
+                fallback.dispatchFormation(session, formationId, target)
             } else {
-                runCatching { parseDispatchResult(raw, formationId, target, session) }
-                    .getOrElse { ProtocolResult.Err("REAL_DISPATCH_METADATA_INVALID", "dispatchResultsJson 解析失败：${it.message}", retryable = false) }
+                fallback.dispatchFormation(
+                    session,
+                    FormationRuntime(
+                        formationId,
+                        null,
+                        requestedGeneralIds,
+                        FormationRuntimeStatus.IDLE,
+                        null
+                    ),
+                    target
+                )
             }
         }
+        executeRecoveredBrushYellowLiveAction(
+            session,
+            formationId,
+            requestedGeneralIds,
+            target,
+            formationRules
+        )?.let { return it }
+        if (!offlineActionFixturesAllowed) {
+            return unrecovered(
+                "REAL_DISPATCH_LIVE_UNAVAILABLE",
+                "真实刷黄发送条件不完整；生产路径禁止使用离线出征回执"
+            )
+        }
+        val raw = session.channelExtra["dispatchResultsJson"]
+        return if (raw.isNullOrBlank()) {
+            unrecovered("REAL_DISPATCH_METADATA_MISSING", "测试夹具缺少 dispatchResultsJson")
+        } else {
+            runCatching { parseDispatchResult(raw, formationId, target, session) }
+                .getOrElse { ProtocolResult.Err("REAL_DISPATCH_METADATA_INVALID", "dispatchResultsJson 解析失败：${it.message}", retryable = false) }
+        }
+    }
+
+    override suspend fun clearBrushPendingRecovery(
+        session: GameSession
+    ): ProtocolResult<StepResult> {
+        expeditionTransactions.resolve(session.accountId, "刷黄")
+        sessionExtraSink?.invoke(
+            session.accountId,
+            mapOf(BrushPendingRecovery.SESSION_KEY to "{}")
+        )
+        return ProtocolResult.Ok(StepResult(true, "刷黄战后治疗和配兵维护已完成"))
+    }
 
     override suspend fun convertFoodToCopper(session: GameSession, mode: ConvertMode): ProtocolResult<ResourceState> {
-        if (!session.isRealReadOnly()) return mock.convertFoodToCopper(session, mode)
+        if (!session.isRealSession()) return fallback.convertFoodToCopper(session, mode)
         val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
         val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
         if (!networkAllowed || !sendReady) return recoveredConvertFoodToCopper(session, mode)
@@ -339,7 +450,7 @@ class SessionAwareGameProtocolClient(
         if (0x8152 !in response.responseOpcodes) {
             return ProtocolResult.Err("REAL_CONVERT_RESPONSE_MISSING", "未收到 0x8152 粮食转铜响应", false)
         }
-        val bytes = runCatching { response.responseHex.hexToBytesLocal() }.getOrNull()
+        val bytes = runCatching { response.requirePayloadBytesFor(0x8152) }.getOrNull()
             ?: return ProtocolResult.Err("REAL_CONVERT_RESPONSE_INVALID", "0x8152 响应无法解析", false)
         if (bytes.isEmpty() || bytes[0].toInt() != 0) {
             return ProtocolResult.Err(
@@ -424,8 +535,8 @@ class SessionAwareGameProtocolClient(
     }
 
     override suspend fun searchMines(session: GameSession, config: MineConfig): ProtocolResult<List<MineSearchResult>> =
-        if (!session.isRealReadOnly()) {
-            mock.searchMines(session, config)
+        if (!session.isRealSession()) {
+            fallback.searchMines(session, config)
         } else {
             val raw = session.channelExtra["mineTargetsJson"]
             val rawHex = session.channelExtra["mineTargetsHex"]
@@ -443,6 +554,37 @@ class SessionAwareGameProtocolClient(
             }
         }
 
+    override suspend fun revalidateMineTarget(
+        session: GameSession,
+        mine: MineSearchResult,
+        config: MineConfig
+    ): ProtocolResult<MineSearchResult> {
+        if (!session.isRealSession()) return fallback.revalidateMineTarget(session, mine, config)
+        val exactConfig = config.copy(
+            start = mine.coordinate,
+            searchScope = "定点"
+        )
+        val result = executeRecoveredMineSearch(session, exactConfig)
+            ?: searchMines(session, exactConfig)
+        return when (result) {
+            is ProtocolResult.Err -> result
+            is ProtocolResult.Ok -> result.value.firstOrNull { candidate ->
+                candidate.id == mine.id &&
+                    candidate.coordinate == mine.coordinate &&
+                    MineTargetFilterPolicy.matches(
+                        candidate,
+                        exactConfig,
+                        behaviorContract.mine
+                    )
+            }?.let { ProtocolResult.Ok(it) }
+                ?: ProtocolResult.Err(
+                    "REAL_MINE_TARGET_STALE",
+                    "矿点(${mine.coordinate.x},${mine.coordinate.y})复核后已失效或不再符合规则",
+                    retryable = true
+                )
+        }
+    }
+
     override suspend fun occupyMine(
         session: GameSession,
         mine: MineSearchResult,
@@ -453,13 +595,46 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         mine: MineSearchResult,
         generalIds: List<Long>
+    ): ProtocolResult<StepResult> = occupyMine(session, mine, generalIds, 45)
+
+    override suspend fun occupyMine(
+        session: GameSession,
+        mine: MineSearchResult,
+        generalIds: List<Long>,
+        maxMarchMinutes: Int
+    ): ProtocolResult<StepResult> = occupyMine(
+        session,
+        mine,
+        generalIds,
+        maxMarchMinutes,
+        emptyList()
+    )
+
+    override suspend fun occupyMine(
+        session: GameSession,
+        mine: MineSearchResult,
+        generalIds: List<Long>,
+        maxMarchMinutes: Int,
+        formationRules: List<FormationConfig>
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.occupyMine(session, mine, generalIds)
+        if (!session.isRealSession()) return fallback.occupyMine(session, mine, generalIds)
         val ids = generalIds.distinct()
         if (ids.isEmpty()) {
             return ProtocolResult.Err("REAL_MINE_GENERALS_EMPTY", "真实打矿至少需要选择1名出征将领", false)
         }
-        executeRecoveredMineOccupyLiveAction(session, mine, ids)?.let { return it }
+        executeRecoveredMineOccupyLiveAction(
+            session,
+            mine,
+            ids,
+            maxMarchMinutes.coerceAtLeast(1),
+            formationRules
+        )?.let { return it }
+        if (!offlineActionFixturesAllowed) {
+            return unrecovered(
+                "REAL_OCCUPY_MINE_LIVE_UNAVAILABLE",
+                "真实打矿发送条件不完整；生产路径禁止使用离线占矿回执"
+            )
+        }
         val raw = session.channelExtra["occupyMineResultsJson"]
         return if (raw.isNullOrBlank()) {
             unrecovered("REAL_OCCUPY_MINE_METADATA_MISSING", "真实 session 暂无 occupyMineResultsJson；资源点 p2=1 payload 形状已恢复，但真实 request wrapper/native/session 仍未接入")
@@ -473,7 +648,9 @@ class SessionAwareGameProtocolClient(
     private suspend fun executeRecoveredMineOccupyLiveAction(
         session: GameSession,
         mine: MineSearchResult,
-        generalIds: List<Long>
+        generalIds: List<Long>,
+        maxMarchMinutes: Int,
+        formationRules: List<FormationConfig>
     ): ProtocolResult<StepResult>? {
         val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
         val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
@@ -499,49 +676,41 @@ class SessionAwareGameProtocolClient(
         if (generalIds.isEmpty() || generalIds.size > 255 || generalIds.any { it <= 0L } || mine.id <= 0L) {
             return ProtocolResult.Err("REAL_MINE_TARGET_INVALID", "真实打矿将领或资源点ID无效", false)
         }
-        val generals = when (val result = queryGenerals(session)) {
-            is ProtocolResult.Ok -> {
-                val byId = result.value.associateBy { it.id }
-                generalIds.map { id ->
-                    byId[id]
-                        ?: return ProtocolResult.Err("REAL_MINE_GENERAL_NOT_FOUND", "未找到打矿将领ID=$id", false)
-                }
-            }
+        val preflight = when (val result = expeditionPreflight.check(
+            session,
+            ExpeditionPreflightRequest(
+                label = "打矿",
+                generalIds = generalIds,
+                formationId = generalIds.firstOrNull(),
+                requireFullLoyalty = session.channelExtra["mineRequireFullLoyalty"].asLooseBoolean() == true,
+                refillToFull = session.channelExtra["mineReplenishTroops"].asLooseBoolean() == true,
+                formationRules = formationRules
+            )
+        )) {
+            is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
-        for (general in generals) {
-            if (general.status == null) {
-                return ProtocolResult.Err("REAL_MINE_GENERAL_STATUS_UNKNOWN", "无法确认将领${general.name}状态", false)
-            }
-            if (general.status != 0) {
-                return ProtocolResult.Ok(StepResult(false, "将领${general.name}当前非空闲，等待返回"))
-            }
-            if (general.energy == null) {
-                return ProtocolResult.Err("REAL_MINE_GENERAL_ENERGY_UNKNOWN", "无法确认将领${general.name}体力", false)
-            }
-            if (general.energy <= 0) {
-                return ProtocolResult.Ok(StepResult(false, "将领${general.name}体力不足，未发起打矿"))
-            }
-            val troops = general.currentAssignedTroops()
-                ?: return ProtocolResult.Err("REAL_MINE_TROOPS_UNKNOWN", "无法确认将领${general.name}当前兵力", false)
-            if (troops.count <= 0) {
-                return ProtocolResult.Ok(StepResult(false, "将领${general.name}没有可用兵力，未发起打矿"))
-            }
+        val mineContract = behaviorContract.mine
+        if (generalIds.size > mineContract.maximumGeneralsPerFormation) {
+            return ProtocolResult.Err(
+                "REAL_MINE_GENERALS_OVER_LIMIT",
+                "打矿一次最多选择${mineContract.maximumGeneralsPerFormation}名将领",
+                false
+            )
         }
-        val preparePayload = ByteArrayOutputStream().also { bos ->
-            DataOutputStream(bos).use { out ->
-                out.writeByte(2)
-                out.writeByte(generalIds.size)
-                generalIds.forEach(out::writeLong)
-                out.writeLong(mine.id)
-            }
-        }.toByteArray()
-        val expeditionPayload = preparePayload + ByteBuffer.allocate(11)
-            .putLong(-1L)
-            .put(0)
-            .put(0)
-            .put(0)
-            .array()
+        val effectiveMaxMarchMinutes = maxMarchMinutes.takeIf {
+            it in mineContract.allowedMaxMarchMinutes
+        } ?: mineContract.defaultMaxMarchMinutes
+        val preparePayload = MineProtocolShapes.buildPreparePayload(
+            generalIds,
+            mine.id,
+            mineContract
+        )
+        val expeditionPayload = MineProtocolShapes.buildDispatchPayload(
+            generalIds,
+            mine.id,
+            mineContract
+        )
 
         fun send(opcode: Int, payload: ByteArray, phase: String): ProtocolResult<DirectBinaryResponse> {
             val response = runCatching {
@@ -560,61 +729,383 @@ class SessionAwareGameProtocolClient(
             return ProtocolResult.Ok(response)
         }
 
-        val prepare = when (val result = send(0x1520, preparePayload, "mine/prepare")) {
+        val prepare = when (val result = send(mineContract.prepareOpcode, preparePayload, "mine/prepare")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
-        if (0x8520 !in prepare.responseOpcodes ||
-            prepare.responseHex.filter(Char::isLetterOrDigit).equals("ff0000", true)
+        val prepareResponseHex = prepare.payloadHexFor(mineContract.prepareResponseOpcode)
+        if (mineContract.prepareResponseOpcode !in prepare.responseOpcodes ||
+            prepareResponseHex?.filter(Char::isLetterOrDigit).equals("ff0000", true)
         ) {
-            return ProtocolResult.Ok(StepResult(false, "打矿预出征未获得0x8520成功确认"))
+            return ProtocolResult.Ok(StepResult(
+                false,
+                "打矿预出征未获得0x${mineContract.prepareResponseOpcode.toString(16)}成功确认"
+            ))
         }
-        val expedition = when (val result = send(0x1522, expeditionPayload, "mine/dispatch")) {
-            is ProtocolResult.Ok -> result.value
-            is ProtocolResult.Err -> return result
+        val preview = MineProtocolShapes.parsePreview(
+            prepare.requirePayloadBytesFor(mineContract.prepareResponseOpcode),
+            mineContract
+        )
+            ?: return ProtocolResult.Ok(StepResult(false, "打矿预出征0x8520格式无效，已禁止正式出征"))
+        if (mineContract.preview.requireTargetCoordinateMatch &&
+            (preview.x != mine.coordinate.x || preview.y != mine.coordinate.y)
+        ) {
+            return ProtocolResult.Ok(StepResult(
+                false,
+                "打矿预览坐标(${preview.x},${preview.y})与目标(${mine.coordinate.x},${mine.coordinate.y})不一致，已禁止正式出征"
+            ))
         }
-        if (0x8522 !in expedition.responseOpcodes) {
-            return ProtocolResult.Ok(StepResult(false, "打矿出征未收到0x8522"))
+        if (preview.marchSeconds > effectiveMaxMarchMinutes * 60) {
+            val minutes = preview.marchSeconds / 60.0
+            return ProtocolResult.Ok(StepResult(
+                false,
+                "预计到达目标需要${"%.1f".format(java.util.Locale.US, minutes)}分钟，超过设定的${effectiveMaxMarchMinutes}分钟，已禁止正式出征"
+            ))
         }
-        val parsed = BrushYellowDispatchResponseParser.parse(responseHex = expedition.responseHex)
-            ?: BrushYellowDispatchResponseParser.parse(responseText = expedition.textPreview)
-        val success = parsed?.success == true
-        return ProtocolResult.Ok(StepResult(
-            success,
-            if (success) {
-                "打矿出征已确认：${generals.joinToString("/") { it.name }} → ${mine.mineType.name}(${mine.coordinate.x},${mine.coordinate.y})"
-            } else {
-                parsed?.message ?: "0x8522未确认打矿出征成功"
-            },
-            mapOf(
-                "generalIds" to generalIds.joinToString(","),
-                "generalId" to generalIds.first().toString(),
-                "mineId" to mine.id.toString(),
-                "preparePayloadHex" to preparePayload.toHex(),
-                "expeditionPayloadHex" to expeditionPayload.toHex(),
-                "prepareResponseHex" to prepare.responseHex.take(512),
-                "expeditionResponseHex" to expedition.responseHex.take(512),
-                "parsedEvidence" to (parsed?.evidence ?: "none")
+        return expeditionTransactions.execute(
+            accountId = session.accountId,
+            action = "打矿",
+            targetKey = "${mine.id}@${mine.coordinate.x},${mine.coordinate.y}",
+            snapshot = preflight,
+            exceptionCode = "REAL_MINE_DISPATCH_EXCEPTION",
+            exceptionLabel = "打矿正式出征异常"
+        ) {
+            val expedition = sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(mineContract.dispatchOpcode, expeditionPayload),
+                "mine/dispatch"
             )
-        ))
-    }
-
-    override suspend fun withdrawMineDefense(session: GameSession, mineId: Long): ProtocolResult<StepResult> =
-        if (!session.isRealReadOnly()) {
-            mock.withdrawMineDefense(session, mineId)
-        } else {
-            val raw = session.channelExtra["withdrawMineResultsJson"]
-            if (raw.isNullOrBlank()) {
-                unrecovered("REAL_WITHDRAW_MINE_METADATA_MISSING", "真实 session 暂无 withdrawMineResultsJson；撤防 payload 形状已恢复，但真实 request wrapper/native/session 仍未接入")
-            } else {
-                runCatching { parseWithdrawMineResult(raw, mineId) }
-                    .getOrElse { ProtocolResult.Err("REAL_WITHDRAW_MINE_METADATA_INVALID", "withdrawMineResultsJson 解析失败：${it.message}", retryable = false) }
+            if (!expedition.ok) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_MINE_DISPATCH_HTTP_FAILED",
+                        "打矿正式出征 HTTP ${expedition.httpCode}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "HTTP ${expedition.httpCode}; request acceptance is unknown"
+                )
+            }
+            if (mineContract.dispatchResponseOpcode !in expedition.responseOpcodes) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_MINE_DISPATCH_RECEIPT_MISSING",
+                        "打矿出征未收到0x${mineContract.dispatchResponseOpcode.toString(16)}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "2xx response without 0x8522"
+                )
+            }
+            val expeditionResponseHex = expedition.payloadHexFor(mineContract.dispatchResponseOpcode)
+            val parsed = BrushYellowDispatchResponseParser.parse(responseHex = expeditionResponseHex)
+                ?: BrushYellowDispatchResponseParser.parse(responseText = expedition.textPreview)
+            val battleId = parsed?.battleId?.takeIf { it > 0L }
+            val success = parsed?.success == true &&
+                (!mineContract.dispatchSuccessRequiresPositiveBattleId || battleId != null)
+            val step = ProtocolResult.Ok(StepResult(
+                success,
+                if (success) {
+                    "打矿出征已确认：${preflight.generalNames.joinToString("/")} → ${mine.mineType.name}(${mine.coordinate.x},${mine.coordinate.y})"
+                } else {
+                    parsed?.message ?: "0x8522未确认打矿出征结果，已冻结将领等待状态确认"
+                },
+                buildMap {
+                    put("generalIds", generalIds.joinToString(","))
+                    put("generalId", generalIds.first().toString())
+                    put("mineId", mine.id.toString())
+                    battleId?.let { put("battleId", it.toString()) }
+                    put("preparePayloadHex", preparePayload.toHex())
+                    put("expeditionPayloadHex", expeditionPayload.toHex())
+                    put("prepareResponseHex", prepareResponseHex.orEmpty().take(512))
+                    put("expeditionResponseHex", expeditionResponseHex.orEmpty().take(512))
+                    put("marchSeconds", preview.marchSeconds.toString())
+                    put("maxMarchMinutes", effectiveMaxMarchMinutes.toString())
+                    put("parsedEvidence", parsed?.evidence ?: "none")
+                }
+            ))
+            if (success && battleId != null) {
+                sessionExtraSink?.invoke(
+                    session.accountId,
+                    mapOf(
+                        "minePendingGarrisonJson" to MinePendingGarrison(
+                            battleId = battleId,
+                            mineId = mine.id,
+                            generalIds = generalIds,
+                            x = mine.coordinate.x,
+                            y = mine.coordinate.y,
+                            targetName = mine.mineType.name,
+                            dispatchAtMillis = System.currentTimeMillis(),
+                            marchSeconds = preview.marchSeconds
+                        ).toJson().toString()
+                    )
+                )
+            }
+            when {
+                success -> ExpeditionSendResult.accepted(
+                    step,
+                    "explicit 0x${mineContract.dispatchResponseOpcode.toString(16)} success battleId=$battleId"
+                )
+                parsed?.success == false -> ExpeditionSendResult.rejected(
+                    step,
+                    "explicit 0x${mineContract.dispatchResponseOpcode.toString(16)} rejection: ${parsed.evidence}"
+                )
+                else -> ExpeditionSendResult.uncertain(
+                    step,
+                    "0x${mineContract.dispatchResponseOpcode.toString(16)} receipt lacks confirmed battleId"
+                )
             }
         }
+    }
+
+    override suspend fun withdrawMineDefense(
+        session: GameSession,
+        battleId: Long
+    ): ProtocolResult<StepResult> {
+        if (!session.isRealSession()) return fallback.withdrawMineDefense(session, battleId)
+        if (battleId <= 0L) {
+            return ProtocolResult.Err("REAL_WITHDRAW_BATTLE_ID_INVALID", "撤防缺少有效驻防战斗 battleId", false)
+        }
+        if (session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() != true ||
+            session.channelExtra["realActionSendReady"].asLooseBoolean() != true
+        ) {
+            return ProtocolResult.Err("REAL_WITHDRAW_MINE_GATE_NOT_READY", "真实撤防动作 gate 未开启", false)
+        }
+        if (!session.hasRealActionScope("mine")) {
+            return ProtocolResult.Err("REAL_WITHDRAW_MINE_SCOPE_NOT_CONFIRMED", "真实撤防需要 mine 作用域", false)
+        }
+        val gameHttp = session.gameHttpOrNull()
+            ?: return ProtocolResult.Err("REAL_WITHDRAW_MINE_GAME_HTTP_MISSING", "真实撤防缺少 gameHttp/serverUrl", false)
+        val dm = session.dmOrNull()
+            ?: return ProtocolResult.Err("REAL_WITHDRAW_MINE_DM_MISSING", "真实撤防缺少 dm", false)
+        val withdrawContract = behaviorContract.mine.withdraw
+        val payload = MineProtocolShapes.buildWithdrawPayload(battleId, withdrawContract)
+        val response = runCatching {
+            sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(withdrawContract.requestOpcode, payload),
+                "mine/withdraw:$battleId"
+            )
+        }.getOrElse {
+            return ProtocolResult.Err("REAL_WITHDRAW_MINE_SEND_EXCEPTION", "撤防请求异常：${it.message}", true)
+        }
+        actionAudit?.invoke(
+            "真实撤防请求：battleId=$battleId opcode=0x${withdrawContract.requestOpcode.toString(16)} http=${response.httpCode} " +
+                "responses=${response.responseOpcodes.joinToString { "0x${it.toString(16)}" }}"
+        )
+        if (!response.ok) {
+            return ProtocolResult.Err("REAL_WITHDRAW_MINE_HTTP_FAILED", "撤防 HTTP ${response.httpCode}", true)
+        }
+        if (withdrawContract.responseOpcode !in response.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_WITHDRAW_MINE_RESPONSE_MISSING",
+                "撤防未收到 0x${withdrawContract.responseOpcode.toString(16)} 回执",
+                true
+            )
+        }
+        val receipt = MineProtocolShapes.parseWithdrawReceipt(
+            response.requirePayloadBytesFor(withdrawContract.responseOpcode),
+            battleId,
+            withdrawContract
+        )
+        if (!receipt.success) {
+            return ProtocolResult.Ok(
+                StepResult(
+                    false,
+                    receipt.message,
+                    mapOf(
+                        "battleId" to battleId.toString(),
+                        "requestPayloadHex" to payload.toHex(),
+                        "responseHex" to response.payloadHexFor(withdrawContract.responseOpcode).orEmpty().take(1024)
+                    )
+                )
+            )
+        }
+        val pending = MinePendingGarrison.fromJson(session.channelExtra["minePendingGarrisonJson"])
+        if (pending != null && pending.battleId == battleId) {
+            sessionExtraSink?.invoke(
+                session.accountId,
+                mapOf(
+                    "minePendingGarrisonJson" to pending.copy(
+                        recallRequestedAtMillis = System.currentTimeMillis()
+                    ).toJson().toString()
+                )
+            )
+        }
+        return ProtocolResult.Ok(
+            StepResult(
+                true,
+                receipt.message,
+                mapOf(
+                    "battleId" to receipt.battleId.toString(),
+                    "recallRequestedAtMillis" to System.currentTimeMillis().toString(),
+                    "requestPayloadHex" to payload.toHex(),
+                    "responseHex" to response.payloadHexFor(withdrawContract.responseOpcode).orEmpty().take(1024),
+                    "responseOpcode" to "0x${withdrawContract.responseOpcode.toString(16)}"
+                )
+            )
+        )
+    }
+
+    override suspend fun accelerateMineMarch(
+        session: GameSession,
+        battleId: Long,
+        remainingSeconds: Int
+    ): ProtocolResult<StepResult> {
+        if (!session.isRealSession()) {
+            return fallback.accelerateMineMarch(session, battleId, remainingSeconds)
+        }
+        if (battleId <= 0L || remainingSeconds < 0) {
+            return ProtocolResult.Err("REAL_MINE_SPEED_INPUT_INVALID", "打矿加速参数无效", false)
+        }
+        val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
+        val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
+        if (!networkAllowed || !sendReady) {
+            return ProtocolResult.Err("REAL_MINE_SPEED_GATE_NOT_READY", "真实打矿加速 gate 未开启", false)
+        }
+        if (!session.hasRealActionScope("mine")) {
+            return ProtocolResult.Err("REAL_MINE_SPEED_SCOPE_NOT_CONFIRMED", "真实打矿加速需要 mine 作用域", false)
+        }
+        val gameHttp = session.gameHttpOrNull()
+            ?: return ProtocolResult.Err("REAL_MINE_SPEED_GAME_HTTP_MISSING", "真实打矿加速缺少 gameHttp/serverUrl", false)
+        val dm = session.dmOrNull()
+            ?: return ProtocolResult.Err("REAL_MINE_SPEED_DM_MISSING", "真实打矿加速缺少 dm", false)
+        val contract = behaviorContract.mine.speed
+        val inventory = when (val result = queryInventory(session)) {
+            is ProtocolResult.Ok -> result.value
+            is ProtocolResult.Err -> return ProtocolResult.Ok(
+                StepResult(
+                    false,
+                    "智能加速跳过：读取行军符库存失败；${result.message}",
+                    mapOf("skipped" to "true")
+                )
+            )
+        }
+        val counts = inventory
+            .filter { it.id.toInt() in contract.itemSeconds }
+            .groupingBy { it.id.toInt() }
+            .fold(0) { total, item -> total + item.count }
+        val choices = MineProtocolShapes.chooseSpeedItems(
+            remainingSeconds,
+            counts,
+            contract
+        )
+        if (choices.isEmpty()) {
+            return ProtocolResult.Ok(
+                StepResult(
+                    true,
+                    if (remainingSeconds <= contract.stopBelowSeconds) {
+                        "行军剩余时间已不超过${contract.stopBelowSeconds}秒，无需加速"
+                    } else {
+                        "宝库中没有可用行军符，跳过加速"
+                    },
+                    mapOf("skipped" to "true", "battleId" to battleId.toString())
+                )
+            )
+        }
+        var estimatedRemaining = remainingSeconds
+        val actionSummaries = mutableListOf<String>()
+        choices.forEach { itemId ->
+            if (estimatedRemaining <= contract.stopBelowSeconds) return@forEach
+            val payload = MineProtocolShapes.buildSpeedPayload(battleId, itemId)
+            val response = runCatching {
+                sendBinaryMappedGameHex(
+                    gameHttp,
+                    dm,
+                    buildDirectGameHex(contract.requestOpcode, payload),
+                    "mine/speed:$battleId:$itemId"
+                )
+            }.getOrElse {
+                return ProtocolResult.Err(
+                    "REAL_MINE_SPEED_SEND_EXCEPTION",
+                    "使用行军符#${itemId}异常：${it.message}",
+                    true
+                )
+            }
+            actionAudit?.invoke(
+                "真实打矿加速：battleId=$battleId item=$itemId " +
+                    "opcode=0x${contract.requestOpcode.toString(16)} http=${response.httpCode}"
+            )
+            if (!response.ok || contract.responseOpcode !in response.responseOpcodes) {
+                return ProtocolResult.Ok(
+                    StepResult(
+                        false,
+                        "使用行军符#${itemId}未收到0x${contract.responseOpcode.toString(16)}确认",
+                        mapOf("battleId" to battleId.toString(), "actions" to actionSummaries.joinToString(";"))
+                    )
+                )
+            }
+            val receipt = MineProtocolShapes.parseSpeedReceipt(
+                response.requirePayloadBytesFor(contract.responseOpcode)
+            ) ?: return ProtocolResult.Ok(
+                StepResult(false, "行军加速回执为空", mapOf("battleId" to battleId.toString()))
+            )
+            actionSummaries += "$itemId:${receipt.status}"
+            if (receipt.finished) {
+                return ProtocolResult.Ok(
+                    StepResult(
+                        true,
+                        receipt.message,
+                        mapOf("battleId" to battleId.toString(), "actions" to actionSummaries.joinToString(";"))
+                    )
+                )
+            }
+            if (!receipt.success) {
+                return ProtocolResult.Ok(
+                    StepResult(
+                        false,
+                        receipt.message,
+                        mapOf("battleId" to battleId.toString(), "actions" to actionSummaries.joinToString(";"))
+                    )
+                )
+            }
+            estimatedRemaining = (
+                estimatedRemaining - contract.itemSeconds.getValue(itemId)
+            ).coerceAtLeast(0)
+        }
+        return ProtocolResult.Ok(
+            StepResult(
+                true,
+                "智能加速完成，预计剩余${estimatedRemaining}秒",
+                mapOf(
+                    "battleId" to battleId.toString(),
+                    "estimatedRemainingSeconds" to estimatedRemaining.toString(),
+                    "actions" to actionSummaries.joinToString(";")
+                )
+            )
+        )
+    }
+
+    override suspend fun clearMinePendingGarrison(
+        session: GameSession,
+        battleId: Long
+    ): ProtocolResult<StepResult> {
+        val pending = MinePendingGarrison.fromJson(session.channelExtra["minePendingGarrisonJson"])
+        if (pending == null || pending.battleId == battleId) {
+            expeditionTransactions.resolve(session.accountId, "打矿")
+            sessionExtraSink?.invoke(session.accountId, mapOf("minePendingGarrisonJson" to "{}"))
+        }
+        return ProtocolResult.Ok(
+            StepResult(
+                true,
+                "打矿驻守状态已清理",
+                mapOf("battleId" to battleId.toString())
+            )
+        )
+    }
 
     override suspend fun runDailyStep(session: GameSession, step: DailyStep): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.runDailyStep(session, step)
+        if (!session.isRealSession()) return fallback.runDailyStep(session, step)
+        if (step == DailyStep.SALARY && NationalCitizenDailyPolicy.isNationalCitizen(session)) {
+            return ProtocolResult.Ok(NationalCitizenDailyPolicy.completedStep())
+        }
         executeRecoveredDailyLiveAction(session, step)?.let { return it }
+        if (!offlineActionFixturesAllowed) {
+            return unrecovered(
+                "REAL_DAILY_LIVE_UNAVAILABLE",
+                "${step.name} 真实执行条件不完整；生产路径禁止使用离线日常回执"
+            )
+        }
         val raw = session.channelExtra["dailyStepResultsJson"]
         return if (raw.isNullOrBlank()) {
             unrecovered("REAL_DAILY_METADATA_MISSING", "真实 session 暂无 dailyStepResultsJson；已恢复一键日常 payload 形状，但真实 request wrapper/native/session 仍未接入")
@@ -629,7 +1120,11 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         kind: NationalCityKind
     ): ProtocolResult<List<NationalCity>> {
-        if (!session.isRealReadOnly()) return mock.queryNationalCities(session, kind)
+        if (!session.isRealSession()) return fallback.queryNationalCities(session, kind)
+        if (NationalCitizenDailyPolicy.isNationalCitizen(session)) {
+            return ProtocolResult.Ok(emptyList())
+        }
+        val contract = behaviorContract.dailyActions.nationalCollect
         val category = when (kind) {
             // 0x1404 captured filters are one based: 1=州城, 2=郡城,
             // 3=县城, 4=小城.  The latter is intentionally never sent.
@@ -642,6 +1137,13 @@ class SessionAwareGameProtocolClient(
                 return ProtocolResult.Ok(emptyList())
             }
         }
+        if (category !in contract.includedListCategories) {
+            return ProtocolResult.Err(
+                "REAL_NATIONAL_CITY_CATEGORY_NOT_ALLOWED",
+                "国家征收契约禁止查询分类$category",
+                false
+            )
+        }
         val transport = when (val result = featureTransport(session, "国家城池列表")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
@@ -652,9 +1154,9 @@ class SessionAwareGameProtocolClient(
         while (page <= totalPages && page <= MAX_FEATURE_PAGES) {
             val response = when (val result = sendFeatureCommand(
                 transport,
-                DailyFeatureProtocolShapes.NATIONAL_LIST_OPCODE,
+                contract.cityListRequestOpcode,
                 DailyFeatureProtocolShapes.buildNationalCityListPayload(category, page),
-                setOf(0x8404),
+                setOf(contract.cityListResponseOpcode),
                 "national/list/category=$category/page=$page"
             )) {
                 is ProtocolResult.Ok -> result.value
@@ -662,8 +1164,9 @@ class SessionAwareGameProtocolClient(
             }
             val parsed = runCatching {
                 DailyFeatureProtocolShapes.parseNationalCityPage(
-                    response.responseHex.hexToBytesLocal(),
-                    category
+                    response.requirePayloadBytesFor(contract.cityListResponseOpcode),
+                    category,
+                    contract
                 )
             }.getOrElse {
                 return ProtocolResult.Err(
@@ -681,7 +1184,7 @@ class SessionAwareGameProtocolClient(
             }
             totalPages = parsed.totalPages.coerceAtLeast(1)
             cities += parsed.cities
-            if (parsed.cities.size < DailyFeatureProtocolShapes.NATIONAL_LIST_PAGE_SIZE && page >= totalPages) break
+            if (parsed.cities.size < contract.pageSize && page >= totalPages) break
             page += 1
         }
         return ProtocolResult.Ok(cities.distinctBy { it.name })
@@ -691,16 +1194,17 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         city: NationalCity
     ): ProtocolResult<NationalCollectStatus> {
-        if (!session.isRealReadOnly()) return mock.queryNationalCollectStatus(session, city)
+        if (!session.isRealSession()) return fallback.queryNationalCollectStatus(session, city)
+        val contract = behaviorContract.dailyActions.nationalCollect
         val transport = when (val result = featureTransport(session, "国家征收状态")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
         val response = when (val result = sendFeatureCommand(
             transport,
-            DailyFeatureProtocolShapes.NATIONAL_STATUS_OPCODE,
+            contract.statusRequestOpcode,
             DailyFeatureProtocolShapes.buildNationalCityStatusPayload(city.name),
-            setOf(0x8332),
+            setOf(contract.statusResponseOpcode),
             "national/status/${city.name}"
         )) {
             is ProtocolResult.Ok -> result.value
@@ -709,7 +1213,7 @@ class SessionAwareGameProtocolClient(
         return runCatching {
             ProtocolResult.Ok(
                 DailyFeatureProtocolShapes.parseNationalCollectStatus(
-                    response.responseHex.hexToBytesLocal()
+                    response.requirePayloadBytesFor(contract.statusResponseOpcode)
                 )
             )
         }.getOrElse {
@@ -725,16 +1229,17 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         city: NationalCity
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.collectNationalCity(session, city)
+        if (!session.isRealSession()) return fallback.collectNationalCity(session, city)
+        val contract = behaviorContract.dailyActions.nationalCollect
         val transport = when (val result = featureTransport(session, "国家征收")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
         val response = when (val result = sendFeatureCommand(
             transport,
-            DailyFeatureProtocolShapes.NATIONAL_COLLECT_OPCODE,
+            contract.collectRequestOpcode,
             DailyFeatureProtocolShapes.buildNationalCollectPayload(city.name),
-            setOf(0x8334),
+            setOf(contract.collectResponseOpcode),
             "national/collect/${city.name}"
         )) {
             is ProtocolResult.Ok -> result.value
@@ -742,7 +1247,7 @@ class SessionAwareGameProtocolClient(
         }
         return runCatching {
             val receipt = DailyFeatureProtocolShapes.parseNationalCollectReceipt(
-                response.responseHex.hexToBytesLocal()
+                response.requirePayloadBytesFor(contract.collectResponseOpcode)
             )
             ProtocolResult.Ok(
                 StepResult(
@@ -766,31 +1271,95 @@ class SessionAwareGameProtocolClient(
     }
 
     override suspend fun queryOwnedFiefs(session: GameSession): ProtocolResult<List<LootTargetFief>> {
-        if (!session.isRealReadOnly()) return mock.queryOwnedFiefs(session)
+        if (!session.isRealSession()) return fallback.queryOwnedFiefs(session)
+        val contract = behaviorContract.dailyActions.cityLordCollect
         val transport = when (val result = featureTransport(session, "城主城池列表")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
-        val roleName = session.channelExtra["roleName"]?.takeIf { it.isNotBlank() }
         val roleId = session.channelExtra["roleId"]?.parseLongFlexible() ?: session.accountId
         val response = when (val result = sendFeatureCommand(
             transport,
-            DailyFeatureProtocolShapes.CITY_LORD_LIST_OPCODE,
-            DailyFeatureProtocolShapes.buildOwnedFiefListPayload(roleName, roleId),
-            setOf(0x8310),
+            contract.ownedCityRequestOpcode,
+            DailyFeatureProtocolShapes.buildOwnedCityListPayload(
+                roleId,
+                contract.ownedCityPayloadSuffix
+            ),
+            setOf(contract.ownedCityResponseOpcode),
             "city-lord/list"
         )) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
         return runCatching {
-            ProtocolResult.Ok(LootProtocolShapes.parseFiefList(response.responseHex.hexToBytesLocal()))
+            ProtocolResult.Ok(
+                DailyFeatureProtocolShapes.parseOwnedCityList(
+                    response.requirePayloadBytesFor(contract.ownedCityResponseOpcode)
+                ).map { city ->
+                    LootTargetFief(
+                        index = city.index,
+                        targetId = city.id,
+                        name = city.name,
+                        cityName = city.name
+                    )
+                }
+            )
         }.getOrElse {
             ProtocolResult.Err(
-                "REAL_OWNED_FIEF_PARSE_FAILED",
+                "REAL_OWNED_CITY_PARSE_FAILED",
                 "自有城池列表解析失败：${it.message}",
                 false
             )
+        }
+    }
+
+    override suspend fun queryRaidFiefs(
+        session: GameSession,
+        playerName: String
+    ): ProtocolResult<List<LootTargetFief>> {
+        if (!session.isRealSession()) return fallback.queryRaidFiefs(session, playerName)
+        val normalizedName = playerName.trim()
+        if (normalizedName.isBlank()) {
+            return ProtocolResult.Err("RAID_TARGET_PLAYER_MISSING", "请填写要掠夺的玩家名称", false)
+        }
+        val gameHttp = session.gameHttpOrNull()
+            ?: return ProtocolResult.Err("REAL_RAID_GAME_HTTP_MISSING", "真实掠夺查询缺少 gameHttp/serverUrl", false)
+        val dm = session.dmOrNull()
+            ?: return ProtocolResult.Err("REAL_RAID_DM_MISSING", "真实掠夺查询缺少 dm", false)
+        val raidContract = behaviorContract.raid
+        val payload = runCatching {
+            LootProtocolShapes.buildRaidFiefListPayload(normalizedName, raidContract)
+        }.getOrElse {
+            return ProtocolResult.Err("RAID_TARGET_PLAYER_INVALID", it.message ?: "目标玩家名称无效", false)
+        }
+        val response = runCatching {
+            sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(raidContract.fiefQueryOpcode, payload),
+                "raid/fiefs:$normalizedName"
+            )
+        }.getOrElse {
+            return ProtocolResult.Err("REAL_RAID_FIEF_QUERY_EXCEPTION", "查询掠夺目标封地异常：${it.message}", true)
+        }
+        if (!response.ok) {
+            return ProtocolResult.Err("REAL_RAID_FIEF_QUERY_HTTP_FAILED", "查询掠夺目标封地 HTTP ${response.httpCode}", true)
+        }
+        if (raidContract.fiefQueryResponseOpcode !in response.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_RAID_FIEF_QUERY_RESPONSE_MISSING",
+                "查询掠夺目标封地未收到 0x${raidContract.fiefQueryResponseOpcode.toString(16)} 回执",
+                true
+            )
+        }
+        return runCatching {
+            ProtocolResult.Ok(
+                LootProtocolShapes.parseFiefList(
+                    response.requirePayloadBytesFor(raidContract.fiefQueryResponseOpcode)
+                )
+            )
+        }.getOrElse {
+            ProtocolResult.Err("REAL_RAID_FIEF_QUERY_PARSE_FAILED", "掠夺目标封地解析失败：${it.message}", false)
         }
     }
 
@@ -798,16 +1367,17 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         fief: LootTargetFief
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.collectCityLord(session, fief)
+        if (!session.isRealSession()) return fallback.collectCityLord(session, fief)
+        val contract = behaviorContract.dailyActions.cityLordCollect
         val transport = when (val result = featureTransport(session, "城主征收")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
         val response = when (val result = sendFeatureCommand(
             transport,
-            DailyFeatureProtocolShapes.CITY_LORD_COLLECT_OPCODE,
+            contract.collectRequestOpcode,
             DailyFeatureProtocolShapes.buildCityLordCollectPayload(fief.cityName),
-            setOf(0x8330),
+            setOf(contract.collectResponseOpcode),
             "city-lord/collect/${fief.cityName}"
         )) {
             is ProtocolResult.Ok -> result.value
@@ -815,7 +1385,7 @@ class SessionAwareGameProtocolClient(
         }
         return runCatching {
             val receipt = DailyFeatureProtocolShapes.parseCityLordCollectReceipt(
-                response.responseHex.hexToBytesLocal()
+                response.requirePayloadBytesFor(contract.collectResponseOpcode)
             )
             ProtocolResult.Ok(
                 StepResult(
@@ -833,33 +1403,57 @@ class SessionAwareGameProtocolClient(
         }
     }
 
-    override suspend fun queryVisitGenerals(session: GameSession): ProtocolResult<List<GeneralVisitCandidate>> {
-        if (!session.isRealReadOnly()) return mock.queryVisitGenerals(session)
+    override suspend fun queryVisitGenerals(session: GameSession): ProtocolResult<GeneralVisitQuery> {
+        if (!session.isRealSession()) return fallback.queryVisitGenerals(session)
+        if (NationalCitizenDailyPolicy.isNationalCitizen(session)) {
+            return ProtocolResult.Ok(
+                GeneralVisitQuery(
+                    candidates = emptyList(),
+                    completed = true,
+                    alreadyVisited = false,
+                    message = NationalCitizenDailyPolicy.COMPLETED_MESSAGE
+                )
+            )
+        }
+        val contract = behaviorContract.dailyActions.generalVisit
         val transport = when (val result = featureTransport(session, "名将列表")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
-        val pageSize = DailyFeatureProtocolShapes.DEFAULT_GENERAL_PAGE_SIZE
+        val pageSize = contract.pageSize
         val pages = mutableListOf<GeneralVisitCandidate>()
         var page = 1
         while (page <= MAX_FEATURE_PAGES) {
             val response = when (val result = sendFeatureCommand(
                 transport,
-                DailyFeatureProtocolShapes.GENERAL_LIST_OPCODE,
+                contract.listRequestOpcode,
                 DailyFeatureProtocolShapes.buildGeneralListPayload(page, pageSize),
-                setOf(0xA271),
+                setOf(contract.listResponseOpcode),
                 "general-visit/list/page=$page"
             )) {
                 is ProtocolResult.Ok -> result.value
                 is ProtocolResult.Err -> return result
             }
             val parsed = runCatching {
-                DailyFeatureProtocolShapes.parseGeneralVisitPage(response.responseHex.hexToBytesLocal())
+                DailyFeatureProtocolShapes.parseGeneralVisitPage(
+                    response.requirePayloadBytesFor(contract.listResponseOpcode),
+                    contract
+                )
             }.getOrElse {
                 return ProtocolResult.Err(
                     "REAL_GENERAL_VISIT_LIST_PARSE_FAILED",
                     "名将列表解析失败 page=$page：${it.message}",
                     false
+                )
+            }
+            if (parsed.alreadyVisited) {
+                return ProtocolResult.Ok(
+                    GeneralVisitQuery(
+                        candidates = emptyList(),
+                        completed = true,
+                        alreadyVisited = true,
+                        message = parsed.message.ifBlank { "本日已经完成名将拜访" }
+                    )
                 )
             }
             if (parsed.status != 0 && parsed.candidates.isEmpty()) {
@@ -875,14 +1469,15 @@ class SessionAwareGameProtocolClient(
             if (parsed.candidates.size < pageSize || parsed.pageSize <= 0 || page >= 100) break
             page += 1
         }
-        return ProtocolResult.Ok(pages.distinctBy { it.id })
+        return ProtocolResult.Ok(GeneralVisitQuery(candidates = pages.distinctBy { it.id }))
     }
 
     override suspend fun visitGeneral(
         session: GameSession,
         candidate: GeneralVisitCandidate
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.visitGeneral(session, candidate)
+        if (!session.isRealSession()) return fallback.visitGeneral(session, candidate)
+        val contract = behaviorContract.dailyActions.generalVisit
         val transport = when (val result = featureTransport(session, "名将拜访")) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
@@ -893,9 +1488,9 @@ class SessionAwareGameProtocolClient(
             ?: DailyFeatureProtocolShapes.DEFAULT_GENERAL_PAGE_SIZE
         val response = when (val result = sendFeatureCommand(
             transport,
-            DailyFeatureProtocolShapes.GENERAL_VISIT_OPCODE,
+            contract.visitRequestOpcode,
             DailyFeatureProtocolShapes.buildGeneralVisitPayload(candidate.id, page, pageSize),
-            setOf(0xA273),
+            setOf(contract.visitResponseOpcode),
             "general-visit/${candidate.id}"
         )) {
             is ProtocolResult.Ok -> result.value
@@ -903,17 +1498,22 @@ class SessionAwareGameProtocolClient(
         }
         return runCatching {
             val receipt = DailyFeatureProtocolShapes.parseGeneralVisitReceipt(
-                response.responseHex.hexToBytesLocal()
+                response.requirePayloadBytesFor(contract.visitResponseOpcode),
+                contract
             )
             ProtocolResult.Ok(
                 StepResult(
-                    receipt.success,
+                    receipt.completed,
                     receipt.message.ifBlank { "名将拜访${if (receipt.success) "成功" else "失败"}：${candidate.name}" },
                     mapOf(
                         "generalId" to candidate.id.toString(),
                         "generalName" to candidate.name,
                         "status" to receipt.status.toString(),
-                        "page" to page.toString()
+                        "page" to page.toString(),
+                        "alreadyVisited" to receipt.alreadyVisited.toString(),
+                        "invitationResolved" to receipt.invitationResolved.toString(),
+                        "invitationRejected" to receipt.invitationRejected.toString(),
+                        "recruited" to receipt.recruited.toString()
                     )
                 )
             )
@@ -1020,25 +1620,35 @@ class SessionAwareGameProtocolClient(
             val expectedOpcodes: Set<Int>,
             val requiredForStep: Boolean = true
         )
+        val signInContract = behaviorContract.signIn
+        val dailyActions = behaviorContract.dailyActions
         val commands = when (step) {
             DailyStep.SIGN_IN -> listOf(
-                DailyCommand(0x6202, ByteArray(0), setOf(0xE202)),
                 DailyCommand(
-                    0x1134,
-                    DailyProtocolShapes.buildDailyDiamondBoxPayload(),
-                    setOf(0x8134),
+                    signInContract.requestOpcode,
+                    ByteArray(0),
+                    signInContract.acceptedResponseOpcodes
+                ),
+                DailyCommand(
+                    signInContract.diamondBox.requestOpcode,
+                    signInContract.diamondBox.payload,
+                    setOf(signInContract.diamondBox.responseOpcode),
                     requiredForStep = false
                 )
             )
             DailyStep.ARENA_REWARD -> listOf(
-                DailyCommand(0x6260, ByteArray(0), emptySet()),
-                DailyCommand(0x6266, ByteArray(0), setOf(0xE266))
+                DailyCommand(dailyActions.arenaCoins.readRequestOpcode, ByteArray(0), emptySet()),
+                DailyCommand(
+                    dailyActions.arenaCoins.claimRequestOpcode,
+                    ByteArray(0),
+                    setOf(dailyActions.arenaCoins.claimResponseOpcode)
+                )
             )
             DailyStep.SALARY -> listOf(
                 DailyCommand(
-                    0x314B,
-                    DailyFeatureProtocolShapes.buildSalaryPayload(),
-                    setOf(0xA14B)
+                    dailyActions.salary.requestOpcode,
+                    dailyActions.salary.payload,
+                    setOf(dailyActions.salary.responseOpcode)
                 )
             )
             DailyStep.DONATE_COPPER,
@@ -1049,23 +1659,29 @@ class SessionAwareGameProtocolClient(
                 when (step) {
                     DailyStep.DONATE_COPPER -> listOf(
                         DailyCommand(
-                            0x140C,
-                            DailyFeatureProtocolShapes.buildDonateCopperPayload(level * 1_000L),
-                            setOf(0x840C)
+                            dailyActions.donate.resourceRequestOpcode,
+                            DailyFeatureProtocolShapes.buildDonateCopperPayload(
+                                level.toLong() * dailyActions.donate.copperPerLevel
+                            ),
+                            setOf(dailyActions.donate.resourceResponseOpcode)
                         )
                     )
                     DailyStep.DONATE_FOOD -> listOf(
                         DailyCommand(
-                            0x140C,
-                            DailyFeatureProtocolShapes.buildDonateFoodPayload(level * 3_000L),
-                            setOf(0x840C)
+                            dailyActions.donate.resourceRequestOpcode,
+                            DailyFeatureProtocolShapes.buildDonateFoodPayload(
+                                level.toLong() * dailyActions.donate.foodPerLevel
+                            ),
+                            setOf(dailyActions.donate.resourceResponseOpcode)
                         )
                     )
                     DailyStep.DONATE_TECH -> listOf(
                         DailyCommand(
-                            0x140A,
-                            DailyFeatureProtocolShapes.buildDonateTechPayload(level * 1_000),
-                            setOf(0x840A)
+                            dailyActions.donate.technologyRequestOpcode,
+                            DailyFeatureProtocolShapes.buildDonateTechPayload(
+                                level * dailyActions.donate.technologyPerLevel
+                            ),
+                            setOf(dailyActions.donate.technologyResponseOpcode)
                         )
                     )
                     else -> emptyList()
@@ -1082,6 +1698,15 @@ class SessionAwareGameProtocolClient(
         }
         val responses = mutableListOf<DirectBinaryResponse>()
         var optionalFailure: String? = null
+        var signInReceipt: SignInReceipt? = null
+        fun commandPayload(
+            command: DailyCommand,
+            response: DirectBinaryResponse
+        ): ByteArray {
+            val opcode = command.expectedOpcodes.firstOrNull { it in response.responseOpcodes }
+                ?: error("日常响应缺少目标指令负载")
+            return response.requirePayloadBytesFor(opcode)
+        }
         for (command in commands) {
             val response = try {
                 sendBinaryMappedGameHex(
@@ -1139,28 +1764,39 @@ class SessionAwareGameProtocolClient(
                     )
                 )
             }
-            if (step == DailyStep.SIGN_IN && command.opcode == 0x6202) {
-                val receipt = runCatching {
-                    DailyProtocolShapes.parseStatusMessage(response.responseHex.hexToBytesLocal())
-                }.getOrElse {
-                    return ProtocolResult.Err(
-                        "REAL_DAILY_RECEIPT_INVALID",
-                        "SIGN_IN回执解析失败：${it.message}",
-                        false
-                    )
+            if (step == DailyStep.SIGN_IN && command.opcode == signInContract.requestOpcode) {
+                val receiptOpcode = when {
+                    signInContract.activityResponseOpcode in response.responseOpcodes ->
+                        signInContract.activityResponseOpcode
+                    signInContract.legacyResponseOpcode in response.responseOpcodes ->
+                        signInContract.legacyResponseOpcode
+                    else -> null
                 }
+                val receipt = DailySignInReceiptParser.parse(
+                    responseOpcodes = response.responseOpcodes,
+                    payload = receiptOpcode?.let(response::requirePayloadBytesFor) ?: byteArrayOf(),
+                    contract = signInContract
+                )
+                signInReceipt = receipt
                 if (!receipt.success) {
                     return ProtocolResult.Ok(StepResult(
                         false,
-                        receipt.message.ifBlank { "签到失败：状态=${receipt.status}" },
-                        mapOf("status" to receipt.status.toString())
+                        receipt.message.ifBlank { "签到失败：服务器未确认成功" },
+                        mapOf(
+                            "responseOpcode" to receipt.responseOpcode?.let { "0x${it.toString(16)}" }.orEmpty(),
+                            "serverMessage" to receipt.serverMessage,
+                            "alreadyClaimed" to receipt.alreadyClaimed.toString(),
+                            "duplicateClaim" to receipt.duplicateClaim.toString()
+                        )
                     ))
                 }
             }
         }
         val finalReceipt = if (step == DailyStep.ARENA_REWARD) {
             runCatching {
-                DailyProtocolShapes.parseStatusMessage(responses.last().responseHex.hexToBytesLocal())
+                DailyProtocolShapes.parseArenaCoinClaimResponse(
+                    commandPayload(commands[responses.lastIndex], responses.last())
+                )
             }.getOrElse {
                 return ProtocolResult.Err(
                     "REAL_DAILY_RECEIPT_INVALID",
@@ -1174,7 +1810,7 @@ class SessionAwareGameProtocolClient(
         val deleteMailReceipt = if (step == DailyStep.DELETE_MAIL) {
             runCatching {
                 DailyProtocolShapes.parseDeleteAllMailReceipt(
-                    responses.last().responseHex.hexToBytesLocal()
+                    commandPayload(commands[responses.lastIndex], responses.last())
                 )
             }.getOrElse {
                 return ProtocolResult.Err(
@@ -1189,7 +1825,8 @@ class SessionAwareGameProtocolClient(
         val salaryReceipt = if (step == DailyStep.SALARY) {
             runCatching {
                 DailyFeatureProtocolShapes.parseSalaryReceipt(
-                    responses.last().responseHex.hexToBytesLocal()
+                    commandPayload(commands[responses.lastIndex], responses.last()),
+                    dailyActions.salary
                 )
             }.getOrElse {
                 return ProtocolResult.Err(
@@ -1201,16 +1838,17 @@ class SessionAwareGameProtocolClient(
         } else {
             null
         }
-        val donationStatus = if (step in setOf(
+        val donationStatusSigned = if (step in setOf(
                 DailyStep.DONATE_COPPER,
                 DailyStep.DONATE_FOOD,
                 DailyStep.DONATE_TECH
             )
         ) {
-            responses.last().responseHex.hexToBytesLocal().firstOrNull()?.toInt()?.and(0xff)
+            commandPayload(commands[responses.lastIndex], responses.last()).firstOrNull()?.toInt()
         } else {
             null
         }
+        val donationStatusUnsigned = donationStatusSigned?.and(0xff)
         if (step == DailyStep.ARENA_REWARD && finalReceipt?.success != true) {
                 return ProtocolResult.Ok(StepResult(
                     false,
@@ -1235,7 +1873,7 @@ class SessionAwareGameProtocolClient(
             return ProtocolResult.Ok(
                 StepResult(
                     false,
-                    salaryReceipt?.message?.ifBlank { "当前不能领取俸禄：状态=${salaryReceipt?.status}" }
+                    salaryReceipt?.message?.ifBlank { "当前不能领取俸禄：状态=${salaryReceipt.status}" }
                         ?: "国家俸禄回执为空",
                     mapOf(
                         "status" to (salaryReceipt?.status?.toString() ?: "unknown"),
@@ -1244,12 +1882,43 @@ class SessionAwareGameProtocolClient(
                 )
             )
         }
-        if (donationStatus != null && donationStatus != 0) {
+        val donationQuotaAlreadyUsed = when (step) {
+            // 手机真机上重复执行已捐献账号的回执：
+            // 0x840c -3 = 当日资源捐献额度限制；
+            // 0x840a -4 = 超过个人单日科技积分捐献额度。
+            DailyStep.DONATE_COPPER, DailyStep.DONATE_FOOD -> donationStatusSigned == -3
+            DailyStep.DONATE_TECH -> donationStatusSigned == -4
+            else -> false
+        }
+        if (donationQuotaAlreadyUsed) {
+            val label = when (step) {
+                DailyStep.DONATE_COPPER -> "铜钱"
+                DailyStep.DONATE_FOOD -> "粮食"
+                DailyStep.DONATE_TECH -> "科技积分"
+                else -> ""
+            }
+            return ProtocolResult.Ok(
+                StepResult(
+                    true,
+                    "${label}今日捐献额度已用完，按已完成处理",
+                    mapOf(
+                        "alreadyCompleted" to "true",
+                        "completionReason" to "daily-donation-quota-used",
+                        "statusSigned" to donationStatusSigned.toString(),
+                        "status" to donationStatusUnsigned.toString()
+                    )
+                )
+            )
+        }
+        if (donationStatusSigned != null && donationStatusSigned != 0) {
             return ProtocolResult.Ok(
                 StepResult(
                     false,
-                    "${step.name}被服务器拒绝，状态=$donationStatus",
-                    mapOf("status" to donationStatus.toString())
+                    "${step.name}被服务器拒绝，状态=$donationStatusUnsigned",
+                    mapOf(
+                        "statusSigned" to donationStatusSigned.toString(),
+                        "status" to donationStatusUnsigned.toString()
+                    )
                 )
             )
         }
@@ -1258,17 +1927,22 @@ class SessionAwareGameProtocolClient(
                 val boxResponse = responses.getOrNull(1)
                 val boxReceipt = if (boxResponse != null && optionalFailure == null) {
                     runCatching {
-                        DailyProtocolShapes.parseStatusMessage(boxResponse.responseHex.hexToBytesLocal())
+                        DailySignInReceiptParser.parseDiamondBox(
+                            commandPayload(commands[1], boxResponse),
+                            signInContract
+                        )
                     }.getOrNull()
                 } else {
                     null
                 }
+                val signMessage = signInReceipt?.message?.ifBlank { "签到请求已确认" }
+                    ?: "签到请求已确认"
                 if (boxReceipt?.success == true) {
-                    "签到请求已确认；每日金钻宝箱已领取"
+                    "$signMessage；${boxReceipt.message.ifBlank { "每日金钻宝箱已领取" }}"
                 } else {
-                    "签到请求已确认；每日金钻宝箱未领取：" +
+                    "$signMessage；每日金钻宝箱未领取：" +
                         (optionalFailure
-                            ?: boxReceipt?.message?.ifBlank { "状态=${boxReceipt.status}" }
+                            ?: boxReceipt?.message
                             ?: "回执无法确认")
                 }
             }
@@ -1289,6 +1963,10 @@ class SessionAwareGameProtocolClient(
                 "sender" to "direct-binary-game-command",
                 "realActionScope" to "daily",
                 "remainingMail" to (deleteMailReceipt?.remaining?.toString() ?: ""),
+                "signInAlreadyClaimed" to (signInReceipt?.alreadyClaimed?.toString() ?: ""),
+                "signInDuplicateClaim" to (signInReceipt?.duplicateClaim?.toString() ?: ""),
+                "arenaAlreadyClaimed" to (finalReceipt?.alreadyClaimed?.toString() ?: ""),
+                "arenaDuplicateClaim" to (finalReceipt?.duplicateClaim?.toString() ?: ""),
                 "responseOpcodes" to responses
                     .flatMap { it.responseOpcodes }
                     .joinToString { "0x${it.toString(16)}" }
@@ -1297,15 +1975,15 @@ class SessionAwareGameProtocolClient(
     }
 
     override suspend fun healGeneral(session: GameSession, generalId: Long): ProtocolResult<StepResult> =
-        if (!session.isRealReadOnly()) {
-            mock.healGeneral(session, generalId)
+        if (!session.isRealSession()) {
+            fallback.healGeneral(session, generalId)
         } else {
             executeRecoveredHealWoundedLiveAction(session, generalId)
                 ?: unrecovered("REAL_HEAL_GATE_CLOSED", "真实治疗需要 brush-yellow 专用动作 gate；当前未开启")
         }
 
     override suspend fun addEnergy(session: GameSession, generalId: Long): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.addEnergy(session, generalId)
+        if (!session.isRealSession()) return fallback.addEnergy(session, generalId)
         val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
         val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
         if (!networkAllowed || !sendReady) {
@@ -1371,7 +2049,7 @@ class SessionAwareGameProtocolClient(
             return ProtocolResult.Ok(StepResult(false, "未收到 0x8218 活血丹响应"))
         }
         val receipt = runCatching {
-            GeneralProtocolShapes.parseAddEnergyResponse(response.responseHex.hexToBytesLocal())
+            GeneralProtocolShapes.parseAddEnergyResponse(response.requirePayloadBytesFor(0x8218))
         }.getOrElse {
             return ProtocolResult.Err(
                 "REAL_ENERGY_RECEIPT_INVALID",
@@ -1390,16 +2068,99 @@ class SessionAwareGameProtocolClient(
         ))
     }
 
+    override suspend fun addLoyalty(
+        session: GameSession,
+        generalId: Long,
+        delta: Int
+    ): ProtocolResult<StepResult> {
+        if (!session.isRealSession()) return fallback.addLoyalty(session, generalId, delta)
+        if (generalId <= 0L || delta !in 1..0xffff) {
+            return ProtocolResult.Err("REAL_LOYALTY_VALUE_INVALID", "加忠将领或数值无效", false)
+        }
+        val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
+        val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
+        if (!networkAllowed || !sendReady) {
+            return ProtocolResult.Err("REAL_LOYALTY_GATE_NOT_READY", "真实加忠动作 gate 未开启", false)
+        }
+        if (!session.hasRealActionScope("general-maintenance") &&
+            !session.hasRealActionScope("mine") &&
+            !session.hasRealActionScope("raid")
+        ) {
+            return ProtocolResult.Err(
+                "REAL_LOYALTY_SCOPE_NOT_CONFIRMED",
+                "真实加忠需要 general-maintenance、mine 或 raid 作用域",
+                false
+            )
+        }
+        val gameHttp = session.gameHttpOrNull()
+            ?: return ProtocolResult.Err("REAL_LOYALTY_GAME_HTTP_MISSING", "真实加忠缺少 gameHttp/serverUrl", false)
+        val dm = session.dmOrNull()
+            ?: return ProtocolResult.Err("REAL_LOYALTY_DM_MISSING", "真实加忠缺少 dm", false)
+        val payload = GeneralProtocolShapes.buildAddLoyaltyPayload(generalId, delta)
+        val response = runCatching {
+            sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(0x121F, payload),
+                "general/add-loyalty:$generalId"
+            )
+        }.getOrElse {
+            return ProtocolResult.Err("REAL_LOYALTY_SEND_EXCEPTION", "加忠请求异常：${it.message}", true)
+        }
+        actionAudit?.invoke(
+            "真实加忠请求：general=$generalId delta=$delta opcode=0x121f " +
+                "http=${response.httpCode} responses=${response.responseOpcodes.joinToString { "0x${it.toString(16)}" }}"
+        )
+        if (!response.ok) {
+            return ProtocolResult.Err("REAL_LOYALTY_HTTP_FAILED", "加忠 HTTP ${response.httpCode}", true)
+        }
+        if (0x821F !in response.responseOpcodes) {
+            return ProtocolResult.Ok(StepResult(false, "未收到 0x821f 加忠回执"))
+        }
+        val receipt = runCatching {
+            GeneralProtocolShapes.parseAddLoyaltyResponse(response.requirePayloadBytesFor(0x821F))
+        }.getOrElse {
+            return ProtocolResult.Err(
+                "REAL_LOYALTY_RECEIPT_INVALID",
+                "0x821f 加忠回执解析失败：${it.message}",
+                false
+            )
+        }
+        val updated = receipt.generals.firstOrNull { it.generalId == generalId }
+        val full = receipt.success && updated != null && updated.loyalty >= updated.loyaltyLimit
+        return ProtocolResult.Ok(
+            StepResult(
+                success = full,
+                message = when {
+                    !receipt.success -> receipt.message
+                    updated == null -> "加忠回执未包含将领 ID=$generalId"
+                    !full -> "加忠后仍为 ${updated.loyalty}/${updated.loyaltyLimit}"
+                    else -> "将领加忠完成：${updated.loyalty}/${updated.loyaltyLimit}"
+                },
+                raw = buildMap {
+                    put("generalId", generalId.toString())
+                    put("delta", delta.toString())
+                    put("actualCost", receipt.actualCost.toString())
+                    put("copper", receipt.copper.toString())
+                    updated?.let {
+                        put("loyalty", it.loyalty.toString())
+                        put("loyaltyLimit", it.loyaltyLimit.toString())
+                    }
+                }
+            )
+        )
+    }
+
     override suspend fun updateFormation(session: GameSession, config: FormationConfig): ProtocolResult<StepResult> =
-        if (!session.isRealReadOnly()) {
-            mock.updateFormation(session, config)
+        if (!session.isRealSession()) {
+            fallback.updateFormation(session, config)
         } else {
             executeRecoveredFormationUpdateLiveAction(session, config)
                 ?: unrecovered("REAL_UPDATE_FORMATION_GATE_CLOSED", "真实配兵/补兵需要 brush-yellow 专用动作 gate；当前未开启")
         }
 
     override suspend fun runInternalAffairs(session: GameSession, config: InternalAffairsConfig): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.runInternalAffairs(session, config)
+        if (!session.isRealSession()) return fallback.runInternalAffairs(session, config)
         if (!config.enabled && !config.upgradeTechnology) {
             return ProtocolResult.Ok(StepResult(false, "自动内政与升级科技均未启用"))
         }
@@ -1447,7 +2208,9 @@ class SessionAwareGameProtocolClient(
                 )
             }
             val discovered = runCatching {
-                LootProtocolShapes.parseFiefList(ownFiefs.responseHex.hexToBytesLocal())
+                LootProtocolShapes.parseFiefList(
+                    requireNotNull(ownFiefs.payloadBytesFor(0x8310)) { "0x8310负载缺失" }
+                )
             }.getOrElse {
                 return ProtocolResult.Err(
                     "REAL_INTERNAL_OWNED_FIEFS_INVALID",
@@ -1482,7 +2245,10 @@ class SessionAwareGameProtocolClient(
                 return ProtocolResult.Err("REAL_INTERNAL_QUERY_FAILED", "读取封地${fiefId}未收到0x8246", false)
             }
             val fief = runCatching {
-                InternalAffairsProtocolShapes.parseFiefState(query.responseHex.hexToBytesLocal(), fiefId)
+                InternalAffairsProtocolShapes.parseFiefState(
+                    requireNotNull(query.payloadBytesFor(0x8246)) { "0x8246负载缺失" },
+                    fiefId
+                )
             }.getOrElse {
                 return ProtocolResult.Err("REAL_INTERNAL_BUILDINGS_INVALID", "解析封地${fiefId}建筑失败：${it.message}", false)
             }
@@ -1540,7 +2306,10 @@ class SessionAwareGameProtocolClient(
         val priorityIds = config.buildingPriority
             .map(InternalAffairsProtocolShapes::buildingTypeId)
             .filter { it >= 0 }
-        val upgradeAction = if (runBuildingsThisCycle && hallAction == null && emptyAction == null) {
+        val upgradeAction = if (
+            runBuildingsThisCycle && config.upgradeBuildings &&
+            hallAction == null && emptyAction == null
+        ) {
             fiefStates.asSequence()
                 .filter(::hasQueue)
                 .flatMap { fief ->
@@ -1605,7 +2374,7 @@ class SessionAwareGameProtocolClient(
                 }
                 val receipt = runCatching {
                     InternalAffairsProtocolShapes.parseBuildingActionResponse(
-                        response.responseHex.hexToBytesLocal()
+                        requireNotNull(response.payloadBytesFor(0x8200)) { "0x8200负载缺失" }
                     )
                 }.getOrElse {
                     return ProtocolResult.Err(
@@ -1641,7 +2410,7 @@ class SessionAwareGameProtocolClient(
                     if (recheck?.ok == true && 0x8246 in recheck.responseOpcodes) {
                         val checked = runCatching {
                             InternalAffairsProtocolShapes.parseFiefState(
-                                recheck.responseHex.hexToBytesLocal(),
+                                requireNotNull(recheck.payloadBytesFor(0x8246)) { "0x8246负载缺失" },
                                 action.fief.fiefId
                             )
                         }.getOrNull()
@@ -1710,6 +2479,8 @@ class SessionAwareGameProtocolClient(
                 true,
                 "${action.description}已确认",
                 mapOf(
+                    "actionSubmitted" to "true",
+                    "actionKind" to "building",
                     "fiefId" to action.fief.fiefId.toString(),
                     "fiefName" to action.fief.name,
                     "slot" to action.slot.toString(),
@@ -1855,7 +2626,9 @@ class SessionAwareGameProtocolClient(
                 )
             }
             val receipt = runCatching {
-                DailyProtocolShapes.parseStatusMessage(response.responseHex.hexToBytesLocal())
+                DailyProtocolShapes.parseStatusMessage(
+                    requireNotNull(response.payloadBytesFor(0x823F)) { "0x823f负载缺失" }
+                )
             }.getOrElse {
                 return ProtocolResult.Err(
                     "REAL_INTERNAL_TECH_RECEIPT_INVALID",
@@ -1881,6 +2654,8 @@ class SessionAwareGameProtocolClient(
                         "${candidate.technology.level}→${targetLevel}级已提交"
                 },
                 mapOf(
+                    "actionSubmitted" to "true",
+                    "actionKind" to "technology",
                     "technologyId" to candidate.technology.technologyId.toString(),
                     "fromLevel" to candidate.technology.level.toString(),
                     "targetLevel" to targetLevel.toString(),
@@ -1908,7 +2683,7 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         config: SixMinistriesConfig
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.runSixMinistries(session, config)
+        if (!session.isRealSession()) return fallback.runSixMinistries(session, config)
         config.preparationError()?.let {
             return ProtocolResult.Err("REAL_MINISTRY_CONFIG_UNSUPPORTED", it, false)
         }
@@ -1917,108 +2692,6 @@ class SessionAwareGameProtocolClient(
         val dm = session.dmOrNull()
             ?: return ProtocolResult.Err("REAL_MINISTRY_DM_MISSING", "六部缺少 dm", false)
 
-        fun scanStealTargets(): ProtocolResult<Pair<List<MinistryStealTarget>, Int>> {
-            if (session.channelExtra["recoveredReadOnlyLiveGate"].asLooseBoolean() != true) {
-                return ProtocolResult.Err(
-                    "REAL_MINISTRY_STEAL_SCAN_GATE_NOT_READY",
-                    "六部偷菜候选只读扫描 gate 未开启",
-                    false
-                )
-            }
-            val targetList = runCatching {
-                sendBinaryMappedGameHex(
-                    gameHttp,
-                    dm,
-                    buildDirectGameHex(0x6322, MinistryProtocolShapes.buildStealTargetListPayload()),
-                    "ministry/steal-targets"
-                )
-            }.getOrElse {
-                return ProtocolResult.Err(
-                    "REAL_MINISTRY_STEAL_TARGETS_EXCEPTION",
-                    "读取偷菜候选异常：${it.message}",
-                    false
-                )
-            }
-            if (!targetList.ok || 0xe322 !in targetList.responseOpcodes) {
-                return ProtocolResult.Err(
-                    "REAL_MINISTRY_STEAL_TARGETS_FAILED",
-                    "偷菜候选未收到0xe322",
-                    false
-                )
-            }
-            val stealTargets = runCatching {
-                MinistryProtocolShapes.parseStealTargets(targetList.responseHex.hexToBytesLocal())
-            }.getOrElse {
-                return ProtocolResult.Err(
-                    "REAL_MINISTRY_STEAL_TARGETS_INVALID",
-                    "偷菜候选解析失败：${it.message}",
-                    false
-                )
-            }
-            var scannedTargetGardens = 0
-            for (target in stealTargets) {
-                val garden = runCatching {
-                    sendBinaryMappedGameHex(
-                        gameHttp,
-                        dm,
-                        buildDirectGameHex(
-                            0x6323,
-                            MinistryProtocolShapes.buildTargetGardenPayload(target.roleId)
-                        ),
-                        "ministry/steal-garden"
-                    )
-                }.getOrElse {
-                    return ProtocolResult.Err(
-                        "REAL_MINISTRY_TARGET_GARDEN_EXCEPTION",
-                        "读取${target.name}菜地异常：${it.message}",
-                        false
-                    )
-                }
-                if (!garden.ok || 0xe323 !in garden.responseOpcodes) {
-                    return ProtocolResult.Err(
-                        "REAL_MINISTRY_TARGET_GARDEN_FAILED",
-                        "读取${target.name}菜地未收到0xe323",
-                        false
-                    )
-                }
-                runCatching {
-                    MinistryProtocolShapes.parseTargetGardenHeader(
-                        garden.responseHex.hexToBytesLocal(),
-                        target.roleId
-                    )
-                }.getOrElse {
-                    return ProtocolResult.Err(
-                        "REAL_MINISTRY_TARGET_GARDEN_INVALID",
-                        "${target.name}菜地响应解析失败：${it.message}",
-                        false
-                    )
-                }
-                scannedTargetGardens += 1
-            }
-            actionAudit?.invoke(
-                "六部偷菜只读扫描：0x6322候选=${stealTargets.size}，0x6323菜地=$scannedTargetGardens；未发送偷菜动作"
-            )
-            return ProtocolResult.Ok(stealTargets to scannedTargetGardens)
-        }
-
-        if (!config.cropEnabled) {
-            val (stealTargets, scannedTargetGardens) = when (val scan = scanStealTargets()) {
-                is ProtocolResult.Ok -> scan.value
-                is ProtocolResult.Err -> return scan
-            }
-            return ProtocolResult.Ok(
-                StepResult(
-                    true,
-                    "已只读扫描${stealTargets.size}个偷菜候选；偷菜动作协议未确认，未执行",
-                    mapOf(
-                        "phase" to "steal-scan",
-                        "targetCount" to stealTargets.size.toString(),
-                        "gardenCount" to scannedTargetGardens.toString(),
-                        "networkMutation" to "false"
-                    )
-                )
-            )
-        }
         if (session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() != true ||
             session.channelExtra["realActionSendReady"].asLooseBoolean() != true
         ) {
@@ -2052,7 +2725,7 @@ class SessionAwareGameProtocolClient(
             }
             return runCatching {
                 ProtocolResult.Ok(
-                    MinistryProtocolShapes.parseGardenStatus(response.responseHex.hexToBytesLocal())
+                    MinistryProtocolShapes.parseGardenStatus(response.requirePayloadBytesFor(0xe320))
                 )
             }.getOrElse {
                 ProtocolResult.Err("REAL_MINISTRY_STATUS_INVALID", "六部菜地状态解析失败：${it.message}", false)
@@ -2064,14 +2737,6 @@ class SessionAwareGameProtocolClient(
             is ProtocolResult.Err -> return result
         }
         if (before.emptyCount == 0) {
-            val (stealTargets, scannedTargetGardens) = if (config.stealEnabled) {
-                when (val scan = scanStealTargets()) {
-                    is ProtocolResult.Ok -> scan.value
-                    is ProtocolResult.Err -> return scan
-                }
-            } else {
-                emptyList<MinistryStealTarget>() to 0
-            }
             val unsupported = buildList {
                 if (config.stealEnabled) add("偷菜动作")
                 if (config.courtesyEnabled) add("礼部任务")
@@ -2080,17 +2745,12 @@ class SessionAwareGameProtocolClient(
             return ProtocolResult.Ok(
                 StepResult(
                     true,
-                    if (config.stealEnabled) {
-                        "六部菜地已满；已只读扫描${stealTargets.size}个偷菜候选，未发送偷菜动作"
-                    } else {
-                        "六部菜地已满；收菜协议未确认，等待下次检查"
-                    },
+                    "六部菜地已满；收菜、偷菜和礼部动作未确认，等待下次检查",
                     mapOf(
                         "phase" to "garden-full",
                         "occupied" to before.occupiedCount.toString(),
                         "plots" to before.plotCount.toString(),
-                        "stealTargetCount" to stealTargets.size.toString(),
-                        "stealGardenCount" to scannedTargetGardens.toString(),
+                        "networkMutation" to "false",
                         "unsupportedEnabled" to unsupported.joinToString(",")
                     )
                 )
@@ -2114,7 +2774,7 @@ class SessionAwareGameProtocolClient(
             return ProtocolResult.Err("REAL_MINISTRY_PLANT_FAILED", "六部种菜未收到0xe328", false)
         }
         val receipt = runCatching {
-            MinistryProtocolShapes.parsePlantResponse(plant.responseHex.hexToBytesLocal())
+            MinistryProtocolShapes.parsePlantResponse(plant.requirePayloadBytesFor(0xe328))
         }.getOrElse {
             return ProtocolResult.Err("REAL_MINISTRY_PLANT_RECEIPT_INVALID", "六部种菜回执解析失败：${it.message}", false)
         }
@@ -2149,8 +2809,6 @@ class SessionAwareGameProtocolClient(
                     "cropId" to MinistryProtocolCrop.VERIFIED_ID.toString(),
                     "occupiedBefore" to before.occupiedCount.toString(),
                     "occupiedAfter" to after.occupiedCount.toString(),
-                    "stealTargetCount" to "0",
-                    "stealScanDeferred" to config.stealEnabled.toString(),
                     "unsupportedEnabled" to unsupported.joinToString(",")
                 )
             )
@@ -2158,13 +2816,24 @@ class SessionAwareGameProtocolClient(
     }
 
     override suspend fun runDungeon(session: GameSession, config: DungeonConfig): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.runDungeon(session, config)
+        if (!session.isRealSession()) return fallback.runDungeon(session, config)
         if (!config.enabled) return ProtocolResult.Ok(StepResult(false, "副本任务未启用"))
+        val contract = behaviorContract.dungeon
         if (config.formationIds.isEmpty()) {
             return ProtocolResult.Err("REAL_DUNGEON_GENERALS_MISSING", "副本至少需要选择一个将领", false)
         }
-        if (config.boxPosition !in 0..2) {
+        if (config.formationIds.distinct().size > contract.maximumGeneralsPerFormation) {
+            return ProtocolResult.Err(
+                "REAL_DUNGEON_GENERALS_OVER_LIMIT",
+                "副本最多选择${contract.maximumGeneralsPerFormation}名将领",
+                false
+            )
+        }
+        if (config.boxPosition !in contract.chestNames.indices) {
             return ProtocolResult.Err("REAL_DUNGEON_CHEST_INVALID", "副本宝箱位置必须为左、中、右", false)
+        }
+        if (config.mode !in contract.allowedModes) {
+            return ProtocolResult.Err("REAL_DUNGEON_MODE_INVALID", "副本模式无效：${config.mode}", false)
         }
         val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
         val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
@@ -2182,28 +2851,57 @@ class SessionAwareGameProtocolClient(
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
         }
-        val selected = config.formationIds.map { id ->
+        // The computer helper persists the current stage and always settles that stage before
+        // selecting another one. Android uses the session field first, then the durable send
+        // ledger as a second source so a fresh login/process restart cannot lose an accepted run.
+        val recoveredPending = pendingDungeonFor(session)
+            ?: recoverPendingDungeonFromTransaction(session, config)
+        val activeDungeonMode = recoveredPending?.mode ?: config.mode
+        val selectedGeneralIds = recoveredPending?.generalIds ?: config.formationIds
+        val selected = selectedGeneralIds.map { id ->
             generals.firstOrNull { it.id == id }
                 ?: return ProtocolResult.Err("REAL_DUNGEON_GENERAL_NOT_FOUND", "副本未找到将领 ID=$id", false)
         }
 
+        var missingBattleStateAssumedIdle = false
+        var missingBattleStateWithPending = false
         fun queryBattleState(): ProtocolResult<DungeonBattleStatus> {
             val response = runCatching {
                 sendBinaryMappedGameHex(
                     gameHttp,
                     dm,
-                    buildDirectGameHex(0x1938, byteArrayOf()),
+                    buildDirectGameHex(contract.stateRequestOpcode, byteArrayOf()),
                     "dungeon/state"
                 )
             }.getOrElse {
                 return ProtocolResult.Err("REAL_DUNGEON_STATE_EXCEPTION", "读取副本状态异常：${it.message}", true)
             }
-            if (!response.ok || 0x8938 !in response.responseOpcodes) {
-                return ProtocolResult.Err("REAL_DUNGEON_STATE_UNCONFIRMED", "读取副本状态未收到0x8938", true)
+            if (!response.ok) {
+                return ProtocolResult.Err(
+                    "REAL_DUNGEON_STATE_HTTP_FAILED",
+                    "读取副本状态请求失败（HTTP ${response.httpCode}）",
+                    true
+                )
+            }
+            if (contract.stateResponseOpcode !in response.responseOpcodes) {
+                // Desktop parity: the desktop helper treats a missing 0x8938 packet as
+                // active=false and proceeds to the live catalog. This is safe only when
+                // there is no persisted launch awaiting settlement; otherwise another
+                // dispatch could duplicate an already accepted dungeon run.
+                if (recoveredPending == null) {
+                    missingBattleStateAssumedIdle = true
+                    return ProtocolResult.Ok(DungeonBattleStatus(DungeonBattlePhase.IDLE))
+                }
+                missingBattleStateWithPending = true
+                return ProtocolResult.Ok(DungeonBattleStatus(DungeonBattlePhase.IDLE))
             }
             return runCatching {
                 ProtocolResult.Ok(
-                    DungeonProtocolShapes.parseBattleState(response.responseHex.hexToBytesLocal())
+                    DungeonProtocolShapes.parseBattleState(
+                        requireNotNull(response.payloadBytesFor(contract.stateResponseOpcode)) {
+                            "0x${contract.stateResponseOpcode.toString(16)}负载缺失"
+                        }
+                    )
                 )
             }.getOrElse {
                 ProtocolResult.Err("REAL_DUNGEON_STATE_INVALID", "副本状态解析失败：${it.message}", false)
@@ -2211,27 +2909,213 @@ class SessionAwareGameProtocolClient(
         }
 
         fun openConfiguredChest(reason: String): ProtocolResult<StepResult> {
-            val chest = sendDungeonCommand(
-                gameHttp, dm, 0x193E,
-                DungeonProtocolShapes.buildOpenChestPayload(config.boxPosition),
-                expectedOpcode = 0x893E,
-                phase = "dungeon/open-chest"
-            )
-            if (chest is ProtocolResult.Err) return chest
-            val chestStep = (chest as ProtocolResult.Ok).value
-            if (!chestStep.success) return chest
-            pendingDungeons.remove(session.accountId)
-            dungeonPollBattleIds.remove(session.accountId)
+            val pending = pendingDungeonFor(session)
+            val chestPosition = pending?.chestPosition ?: config.boxPosition
+            val mode = pending?.mode ?: config.mode
+            if (pending?.chestOpened != true) {
+                val chest = sendDungeonCommand(
+                    gameHttp, dm, contract.chestRequestOpcode,
+                    DungeonProtocolShapes.buildOpenChestPayload(chestPosition),
+                    expectedOpcode = contract.chestResponseOpcode,
+                    phase = "dungeon/open-chest"
+                )
+                if (chest is ProtocolResult.Err) return chest
+                val chestStep = (chest as ProtocolResult.Ok).value
+                if (!chestStep.success) return chest
+                // The desktop task persists its current stage. Persist the chest phase before
+                // the follow-up catalog query as well, so a restart cannot claim it twice.
+                pending?.let { persistPendingDungeon(session, it.copy(chestOpened = true)) }
+            }
+            var completionEvidence = reason + if (pending?.chestOpened == true) {
+                "+persisted-chest-opened"
+            } else {
+                "+0x${contract.chestResponseOpcode.toString(16)}"
+            }
+            if (mode == "clear" && contract.clearModeRequiresCatalogConfirmation) {
+                if (pending == null) {
+                    return ProtocolResult.Ok(
+                        StepResult(
+                            false,
+                            "打通副本宝箱已开启，但缺少本轮关卡状态，无法确认通关；已暂停避免重复出征",
+                            mapOf("phase" to "clear-confirmation-missing")
+                        )
+                    )
+                }
+                val catalogResponse = runCatching {
+                    sendBinaryMappedGameHex(
+                        gameHttp,
+                        dm,
+                        buildDirectGameHex(contract.catalogRequestOpcode, byteArrayOf()),
+                        "dungeon/confirm-clear-stage"
+                    )
+                }.getOrElse {
+                    return ProtocolResult.Err(
+                        "REAL_DUNGEON_CLEAR_CONFIRM_EXCEPTION",
+                        "打通副本开箱后读取目录异常：${it.message}",
+                        true
+                    )
+                }
+                if (!catalogResponse.ok ||
+                    contract.catalogResponseOpcode !in catalogResponse.responseOpcodes
+                ) {
+                    return ProtocolResult.Err(
+                        "REAL_DUNGEON_CLEAR_CONFIRM_UNCONFIRMED",
+                        "打通副本开箱后未收到目录确认",
+                        true
+                    )
+                }
+                val catalog = runCatching {
+                    DungeonProtocolShapes.parseCatalog(
+                        requireNotNull(catalogResponse.payloadBytesFor(contract.catalogResponseOpcode)) {
+                            "0x${contract.catalogResponseOpcode.toString(16)}负载缺失"
+                        }
+                    )
+                }.getOrElse {
+                    return ProtocolResult.Err(
+                        "REAL_DUNGEON_CLEAR_CONFIRM_INVALID",
+                        "打通副本开箱后目录解析失败：${it.message}",
+                        false
+                    )
+                }
+                if (DungeonProtocolShapes.stageCompleted(
+                        catalog,
+                        pending.chapter,
+                        pending.stage,
+                        contract
+                    ) != true
+                ) {
+                    clearPendingDungeon(session)
+                    return ProtocolResult.Ok(
+                        StepResult(
+                            false,
+                            "第${pending.chapter + 1}章第${pending.stage}关战斗结束，但目录未确认通关；打通副本已暂停",
+                            mapOf(
+                                "phase" to "clear-unconfirmed",
+                                "chapter" to pending.chapter.toString(),
+                                "stage" to pending.stage.toString()
+                            )
+                        )
+                    )
+                }
+                completionEvidence += "+catalog-result-confirmed"
+            }
+            clearPendingDungeon(session)
             return ProtocolResult.Ok(StepResult(
                 true,
-                "副本完成并已开启${listOf("左", "中", "右")[config.boxPosition]}侧宝箱",
+                "副本完成并已开启${contract.chestNames[chestPosition]}侧宝箱",
                 mapOf(
                     "phase" to "chest-opened",
-                    "chapter" to config.chapter.toString(),
-                    "stage" to config.stage.toString(),
-                    "completionEvidence" to reason
+                    "chapter" to (pending?.chapter ?: config.chapter).toString(),
+                    "stage" to (pending?.stage ?: config.stage).toString(),
+                    "completionEvidence" to completionEvidence,
+                    "nextDelayMillis" to contract.schedule.postCompletionMillis.toString()
                 )
             ))
+        }
+
+        fun openAfterIdleGenerals(
+            expectedBattleId: Long?,
+            completionEvidence: String,
+            terminalStateStatus: Int? = null
+        ): ProtocolResult<StepResult> {
+            val pending = pendingDungeonFor(session)
+
+            // Desktop parity: once 0x8938 says the battle is no longer active and every
+            // selected general is idle, 0x193d is diagnostic only. A persisted launch older
+            // than the safety window must try its configured chest before catalog confirmation;
+            // otherwise status 0/3 can hold an accepted run forever after a restart.
+            fun recoverTerminalPending(rewardEvidence: String): ProtocolResult<StepResult>? {
+                if (pending == null || terminalStateStatus !in setOf(0, 3)) return null
+                if (pending.chestOpened) {
+                    return openConfiguredChest(
+                        "$completionEvidence+$rewardEvidence+persisted-chest-receipt"
+                    )
+                }
+                val pendingAge = (System.currentTimeMillis() - pending.launchedAtMillis)
+                    .coerceAtLeast(0L)
+                if (pendingAge < DUNGEON_STALE_RECOVERY_MILLIS) {
+                    val remaining = DUNGEON_STALE_RECOVERY_MILLIS - pendingAge
+                    return ProtocolResult.Ok(
+                        StepResult(
+                            true,
+                            "副本战斗已结束且将领已回闲，等待安全窗口后自动开箱",
+                            mapOf(
+                                "phase" to "fighting",
+                                "stateStatus" to terminalStateStatus.toString(),
+                                "pendingAgeMillis" to pendingAge.toString(),
+                                "nextDelayMillis" to remaining.coerceAtMost(
+                                    contract.schedule.battlePollMillis
+                                ).coerceAtLeast(1L).toString(),
+                                "completionEvidence" to
+                                    "$completionEvidence+$rewardEvidence+safety-window"
+                            )
+                        )
+                    )
+                }
+                return openConfiguredChest(
+                    "$completionEvidence+$rewardEvidence+desktop-nonactive-recovery"
+                )
+            }
+
+            val reward = runCatching {
+                sendBinaryMappedGameHex(
+                    gameHttp,
+                    dm,
+                    buildDirectGameHex(contract.rewardRequestOpcode, byteArrayOf()),
+                    "dungeon/reward-state"
+                )
+            }.getOrElse {
+                return recoverTerminalPending("0x893d-request-exception")
+                    ?: ProtocolResult.Err(
+                        "REAL_DUNGEON_REWARD_EXCEPTION",
+                        "读取副本奖励状态异常：${it.message}",
+                        true
+                    )
+            }
+            if (!reward.ok || contract.rewardResponseOpcode !in reward.responseOpcodes) {
+                return recoverTerminalPending("0x893d-missing")
+                    ?: ProtocolResult.Err(
+                        "REAL_DUNGEON_REWARD_UNCONFIRMED",
+                        "将领已回闲但未收到副本奖励状态，继续等待",
+                        true
+                    )
+            }
+            val parsedReward = runCatching {
+                DungeonProtocolShapes.parseRewardState(
+                    requireNotNull(reward.payloadBytesFor(contract.rewardResponseOpcode)) {
+                        "0x${contract.rewardResponseOpcode.toString(16)}负载缺失"
+                    }
+                )
+            }.getOrElse {
+                return recoverTerminalPending("0x893d-invalid")
+                    ?: ProtocolResult.Err(
+                        "REAL_DUNGEON_REWARD_INVALID",
+                        "副本奖励状态解析失败：${it.message}",
+                        false
+                    )
+            }
+            recoverTerminalPending("0x893d-status-${parsedReward.status}")?.let { return it }
+            if (parsedReward.status != 1) {
+                if (pending?.chestOpened == true) {
+                    return openConfiguredChest("$completionEvidence+persisted-chest-receipt")
+                }
+                return ProtocolResult.Err(
+                    "REAL_DUNGEON_REWARD_NOT_READY",
+                    "副本奖励尚未就绪（状态=${parsedReward.status}），继续等待",
+                    true
+                )
+            }
+            if (expectedBattleId != null &&
+                parsedReward.battleId != null &&
+                parsedReward.battleId != expectedBattleId
+            ) {
+                return ProtocolResult.Err(
+                    "REAL_DUNGEON_REWARD_BATTLE_MISMATCH",
+                    "副本奖励 battleId 与当前战斗不一致，禁止开箱",
+                    false
+                )
+            }
+            return openConfiguredChest(completionEvidence)
         }
 
         val battleState = when (val result = queryBattleState()) {
@@ -2241,56 +3125,52 @@ class SessionAwareGameProtocolClient(
         if (battleState.phase == DungeonBattlePhase.UNKNOWN) {
             return ProtocolResult.Err(
                 "REAL_DUNGEON_STATE_UNKNOWN",
-                "副本返回未知状态=${battleState.rawStatus}，已中断",
-                false
+                "副本返回暂未识别的状态=${battleState.rawStatus}，等待刷新后重试",
+                true
             )
         }
         val selectedDefinitelyIdle = selected.all { it.status == 0 }
+        if ((recoveredPending != null && battleState.phase == DungeonBattlePhase.IDLE) ||
+            battleState.phase == DungeonBattlePhase.PENDING_SETTLEMENT
+        ) {
+            val idleEvidence = if (missingBattleStateWithPending) {
+                "missing-0x${contract.stateResponseOpcode.toString(16)}"
+            } else {
+                "0x${contract.stateResponseOpcode.toString(16)}-status-${battleState.rawStatus}"
+            }
+            if (!selectedDefinitelyIdle) {
+                return ProtocolResult.Ok(
+                    StepResult(
+                        true,
+                        "副本已有待结算记录，出征将领仍在忙，继续等待",
+                        mapOf(
+                            "phase" to "fighting",
+                            "stateEvidence" to "$idleEvidence+pending-run+generals-busy",
+                            "nextDelayMillis" to contract.schedule.battlePollMillis.toString()
+                        )
+                    )
+                )
+            }
+            return openAfterIdleGenerals(
+                recoveredPending?.battleId,
+                "$idleEvidence+${if (recoveredPending != null) "pending-run+" else ""}" +
+                    "generals-idle+0x${contract.rewardResponseOpcode.toString(16)}",
+                terminalStateStatus = battleState.rawStatus.takeUnless {
+                    missingBattleStateWithPending
+                }
+            )
+        }
         if (battleState.phase == DungeonBattlePhase.SETTLEMENT) {
             return openConfiguredChest("0x8938-status-4")
         }
         if (battleState.phase == DungeonBattlePhase.FIGHTING) {
             val battleId = battleState.battleId
                 ?: return ProtocolResult.Err("REAL_DUNGEON_BATTLE_ID_MISSING", "副本战斗状态缺少 battleId", false)
+            recoveredPending?.takeIf { it.battleId == null }?.let {
+                persistPendingDungeon(session, it.copy(battleId = battleId))
+            }
             if (selectedDefinitelyIdle) {
-                val reward = runCatching {
-                    sendBinaryMappedGameHex(
-                        gameHttp,
-                        dm,
-                        buildDirectGameHex(0x193D, byteArrayOf()),
-                        "dungeon/reward-state"
-                    )
-                }.getOrElse {
-                    return ProtocolResult.Err(
-                        "REAL_DUNGEON_REWARD_EXCEPTION",
-                        "读取副本奖励状态异常：${it.message}",
-                        true
-                    )
-                }
-                if (!reward.ok || 0x893D !in reward.responseOpcodes) {
-                    return ProtocolResult.Err(
-                        "REAL_DUNGEON_REWARD_UNCONFIRMED",
-                        "将领已回闲但副本奖励状态未收到0x893d，禁止开箱",
-                        true
-                    )
-                }
-                val parsedReward = runCatching {
-                    DungeonProtocolShapes.parseRewardState(reward.responseHex.hexToBytesLocal())
-                }.getOrElse {
-                    return ProtocolResult.Err(
-                        "REAL_DUNGEON_REWARD_INVALID",
-                        "副本奖励状态解析失败：${it.message}",
-                        false
-                    )
-                }
-                if (parsedReward.battleId != null && parsedReward.battleId != battleId) {
-                    return ProtocolResult.Err(
-                        "REAL_DUNGEON_REWARD_BATTLE_MISMATCH",
-                        "副本奖励 battleId 与当前战斗不一致，禁止开箱",
-                        false
-                    )
-                }
-                return openConfiguredChest("generals-idle+0x893d")
+                return openAfterIdleGenerals(battleId, "generals-idle+0x893d")
             }
             val firstPoll = dungeonPollBattleIds.put(session.accountId, battleId) != battleId
             val poll = runCatching {
@@ -2298,7 +3178,7 @@ class SessionAwareGameProtocolClient(
                     gameHttp,
                     dm,
                     buildDirectGameHex(
-                        0x1702,
+                        contract.battlePollRequestOpcode,
                         DungeonProtocolShapes.buildBattlePollPayload(firstPoll, battleId)
                     ),
                     "dungeon/battle-poll"
@@ -2306,8 +3186,34 @@ class SessionAwareGameProtocolClient(
             }.getOrElse {
                 return ProtocolResult.Err("REAL_DUNGEON_POLL_EXCEPTION", "副本战况轮询异常：${it.message}", true)
             }
-            if (!poll.ok || 0x8702 !in poll.responseOpcodes) {
-                return ProtocolResult.Err("REAL_DUNGEON_POLL_UNCONFIRMED", "副本战况轮询未收到0x8702", true)
+            if (!poll.ok || contract.battlePollResponseOpcode !in poll.responseOpcodes) {
+                return ProtocolResult.Err(
+                    "REAL_DUNGEON_POLL_UNCONFIRMED",
+                    "副本战况轮询未收到0x${contract.battlePollResponseOpcode.toString(16)}",
+                    true
+                )
+            }
+            if (activeDungeonMode == "clear" && contract.clearModePausesOnDefeat) {
+                val battleText = poll.textPreview.ifBlank {
+                    poll.payloadBytesFor(contract.battlePollResponseOpcode)
+                        ?.toString(Charsets.UTF_8)
+                        .orEmpty()
+                }
+                val defeat = contract.defeatMarkers.firstOrNull(battleText::contains)
+                if (defeat != null) {
+                    clearPendingDungeon(session)
+                    return ProtocolResult.Ok(
+                        StepResult(
+                            false,
+                            "打通副本检测到明确战败（$defeat），已暂停；重新保存副本设置后才会继续",
+                            mapOf(
+                                "phase" to "defeat-paused",
+                                "battleId" to battleId.toString(),
+                                "defeatMarker" to defeat
+                            )
+                        )
+                    )
+                }
             }
             return ProtocolResult.Ok(StepResult(
                 true,
@@ -2315,99 +3221,271 @@ class SessionAwareGameProtocolClient(
                 mapOf(
                     "phase" to "fighting",
                     "battleId" to battleId.toString(),
-                    "pollPhase" to if (firstPoll) "2" else "1"
+                    "pollPhase" to if (firstPoll) "2" else "1",
+                    "nextDelayMillis" to contract.schedule.battlePollMillis.toString()
                 )
             ))
         }
 
-        selected.forEach { general ->
-            if (general.status == null) {
-                return ProtocolResult.Err("REAL_DUNGEON_STATUS_UNKNOWN", "无法确认将领${general.name}状态，已中断副本", false)
-            }
-            if (general.status != 0) {
-                return ProtocolResult.Ok(StepResult(
-                    true,
-                    "将领${general.name}当前非闲，等待回闲后继续副本",
-                    mapOf("phase" to "waiting-general")
-                ))
-            }
-            if (general.energy == null) {
-                return ProtocolResult.Err("REAL_DUNGEON_ENERGY_UNKNOWN", "无法确认将领${general.name}体力，已中断副本", false)
-            }
-            if (general.energy <= 0) {
-                return ProtocolResult.Ok(StepResult(false, "将领${general.name}体力不足，暂不发起副本"))
-            }
-        }
-        val formations = when (val result = queryFormations(session)) {
+        val preflight = when (val result = expeditionPreflight.check(
+            session,
+            ExpeditionPreflightRequest(
+                label = "副本",
+                generalIds = config.formationIds,
+                // Desktop dungeon preflight deliberately ignores loyalty. The live
+                // desktop account can dispatch with 0/100 loyalty, so treating zero as
+                // a mobile-only blocker leaves the same valid formation retrying forever.
+                requirePositiveLoyalty = false,
+                formationRules = config.formationRules
+            )
+        )) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
-        }
-        selected.forEach { general ->
-            val formation = formations.firstOrNull { it.id == general.id || general.id in it.generalIds }
-                ?: return ProtocolResult.Err(
-                    "REAL_DUNGEON_FORMATION_MISSING",
-                    "将领${general.name}没有可校验的配兵信息，已中断副本",
-                    false
-                )
-            if (formation.status != FormationRuntimeStatus.IDLE) {
-                return ProtocolResult.Ok(StepResult(
-                    true,
-                    "将领${general.name}编队非空闲，等待回闲后继续副本",
-                    mapOf("phase" to "waiting-formation")
-                ))
-            }
-            if ((formation.troopCount ?: 0) <= 0) {
-                return ProtocolResult.Err("REAL_DUNGEON_TROOPS_EMPTY", "将领${general.name}没有可用兵力，已中断副本", false)
-            }
         }
 
         val catalogResponse = runCatching {
             sendBinaryMappedGameHex(
                 gameHttp,
                 dm,
-                buildDirectGameHex(0x1930, byteArrayOf()),
+                buildDirectGameHex(contract.catalogRequestOpcode, byteArrayOf()),
                 "dungeon/catalog"
             )
         }.getOrElse {
             return ProtocolResult.Err("REAL_DUNGEON_CATALOG_EXCEPTION", "读取副本目录异常：${it.message}", true)
         }
-        if (!catalogResponse.ok || 0x8930 !in catalogResponse.responseOpcodes) {
-            return ProtocolResult.Err("REAL_DUNGEON_CATALOG_UNCONFIRMED", "读取副本目录未收到0x8930", true)
+        if (!catalogResponse.ok || contract.catalogResponseOpcode !in catalogResponse.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_DUNGEON_CATALOG_UNCONFIRMED",
+                "读取副本目录未收到0x${contract.catalogResponseOpcode.toString(16)}",
+                true
+            )
         }
         val catalog = runCatching {
-            DungeonProtocolShapes.parseCatalog(catalogResponse.responseHex.hexToBytesLocal())
+                DungeonProtocolShapes.parseCatalog(
+                    requireNotNull(catalogResponse.payloadBytesFor(contract.catalogResponseOpcode)) {
+                        "0x${contract.catalogResponseOpcode.toString(16)}负载缺失"
+                    }
+                )
         }.getOrElse {
             return ProtocolResult.Err("REAL_DUNGEON_CATALOG_INVALID", "副本目录解析失败：${it.message}", false)
         }
-        val stageCode = runCatching {
-            DungeonProtocolShapes.resolveStageCode(catalog, config.chapter, config.stage)
+        val clearStage = if (config.mode == "clear") {
+            DungeonProtocolShapes.firstUncompletedStage(catalog, contract)
+        } else {
+            null
+        }
+        if (config.mode == "clear" && clearStage == null) {
+            return ProtocolResult.Ok(
+                StepResult(
+                    true,
+                    "所有可单人挑战的副本关卡均已通关（各章最后一关为多人副本）",
+                    mapOf(
+                        "phase" to "all-clear",
+                        "nextDelayMillis" to contract.schedule.dailyDonePollMillis.toString()
+                    )
+                )
+            )
+        }
+        if (clearStage != null && (!clearStage.available || clearStage.stageCode == null)) {
+            return ProtocolResult.Ok(
+                StepResult(
+                    true,
+                    "当前首个未通关关卡为第${clearStage.chapter + 1}章第${clearStage.displayStage}关，尚未解锁",
+                    mapOf(
+                        "phase" to "waiting-unlock",
+                        "chapter" to clearStage.chapter.toString(),
+                        "stage" to clearStage.displayStage.toString(),
+                        "nextDelayMillis" to contract.schedule.waitingUnlockMillis.toString()
+                    )
+                )
+            )
+        }
+        val effectiveChapter = clearStage?.chapter ?: config.chapter
+        val effectiveStage = clearStage?.displayStage ?: config.stage
+        val stageCode = clearStage?.stageCode ?: runCatching {
+            DungeonProtocolShapes.resolveStageCode(
+                catalog,
+                effectiveChapter,
+                effectiveStage,
+                contract
+            )
         }.getOrElse {
-            return ProtocolResult.Err("REAL_DUNGEON_STAGE_INVALID", "副本章节/关卡无效：${it.message}", false)
+            return ProtocolResult.Err(
+                "REAL_DUNGEON_STAGE_INVALID",
+                "副本章节/关卡无效：${it.message}",
+                false
+            )
         }
 
-        val generalIds = selected.map { it.id }
+        val generalIds = preflight.generalIds
         val prepare = sendDungeonCommand(
-            gameHttp, dm, 0x1520,
-            DungeonProtocolShapes.buildPreparePayload(generalIds, stageCode),
-            expectedOpcode = 0x8520,
+            gameHttp, dm, contract.prepareOpcode,
+            DungeonProtocolShapes.buildPreparePayload(generalIds, stageCode, contract),
+            expectedOpcode = contract.prepareResponseOpcode,
             phase = "dungeon/prepare"
         )
         if (prepare is ProtocolResult.Err || (prepare as ProtocolResult.Ok).value.success.not()) return prepare
-        val expedition = sendDungeonCommand(
-            gameHttp, dm, 0x1522,
-            DungeonProtocolShapes.buildExpeditionPayload(generalIds, stageCode),
-            expectedOpcode = 0x8522,
-            phase = "dungeon/expedition"
+        // 0x1520 is only preparation. Ownership can be revoked while it is in flight, so check
+        // again before creating the durable send guard and, most importantly, before 0x1522.
+        if (!executionAllowed()) {
+            actionAudit?.invoke("后台执行权已撤销，副本准备完成后已阻止正式出征 0x${contract.dispatchOpcode.toString(16)}")
+            return ProtocolResult.Err(
+                "EXECUTION_REVOKED",
+                "后台已停止，副本准备已完成但正式出征未发送",
+                retryable = false
+            )
+        }
+        return expeditionTransactions.execute(
+            accountId = session.accountId,
+            action = "副本",
+            targetKey = "chapter=$effectiveChapter,stage=$effectiveStage,code=$stageCode," +
+                "chest=${config.boxPosition},mode=${config.mode}",
+            snapshot = preflight,
+            exceptionCode = "REAL_DUNGEON_LAUNCH_EXCEPTION",
+            exceptionLabel = "副本正式出征异常"
+        ) {
+            val response = sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(
+                    contract.dispatchOpcode,
+                    DungeonProtocolShapes.buildExpeditionPayload(generalIds, stageCode, contract)
+                ),
+                "dungeon/expedition"
+            )
+            actionAudit?.invoke(
+                "真实副本请求：dungeon/expedition opcode=0x${contract.dispatchOpcode.toString(16)} http=${response.httpCode} " +
+                    "responses=${response.responseOpcodes.joinToString { "0x${it.toString(16)}" }}"
+            )
+            if (!response.ok) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_DUNGEON_LAUNCH_HTTP_FAILED",
+                        "副本正式出征 HTTP ${response.httpCode}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "HTTP ${response.httpCode}; request acceptance is unknown"
+                )
+            }
+            if (contract.dispatchResponseOpcode !in response.responseOpcodes) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_DUNGEON_LAUNCH_RECEIPT_MISSING",
+                        "副本正式出征未收到0x${contract.dispatchResponseOpcode.toString(16)}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "2xx response without 0x8522"
+                )
+            }
+            val receipt = runCatching {
+                DungeonProtocolShapes.parseLaunchResponse(
+                    requireNotNull(response.payloadBytesFor(contract.dispatchResponseOpcode)) {
+                        "0x${contract.dispatchResponseOpcode.toString(16)}负载缺失"
+                    },
+                    contract
+                )
+            }.getOrElse {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_DUNGEON_LAUNCH_RECEIPT_INVALID",
+                        "副本0x8522回执解析失败，已冻结将领等待状态确认：${it.message}",
+                        true
+                    ),
+                    "0x8522 receipt parse failed: ${it.message.orEmpty()}"
+                )
+            }
+            if (!receipt.success) {
+                return@execute ExpeditionSendResult.rejected(
+                    ProtocolResult.Ok(StepResult(false, "副本正式出征被游戏服拒绝：${receipt.message}")),
+                    "explicit 0x8522 rejection: ${receipt.message}"
+                )
+            }
+            persistPendingDungeon(
+                session,
+                DungeonPendingRun(
+                    generalIds = generalIds,
+                    chapter = effectiveChapter,
+                    stage = effectiveStage,
+                    chestPosition = config.boxPosition,
+                    mode = config.mode,
+                    launchedAtMillis = System.currentTimeMillis()
+                )
+            )
+            ExpeditionSendResult.accepted(
+                ProtocolResult.Ok(StepResult(
+                    true,
+                    "${if (config.mode == "clear") "打通副本" else "副本"}第${effectiveChapter + 1}章第${effectiveStage}关已发起",
+                    mapOf(
+                        "phase" to "fighting",
+                        "mode" to config.mode,
+                        "chapter" to effectiveChapter.toString(),
+                        "stage" to effectiveStage.toString(),
+                        "stageCode" to stageCode.toString(),
+                        "stateEvidence" to if (missingBattleStateAssumedIdle) {
+                            "missing-0x${contract.stateResponseOpcode.toString(16)}-assumed-idle"
+                        } else {
+                            "0x${contract.stateResponseOpcode.toString(16)}-idle"
+                        },
+                        "nextDelayMillis" to contract.schedule.postLaunchPollMillis.toString()
+                    )
+                )),
+                "explicit 0x8522 success"
+            )
+        }
+    }
+
+    private fun pendingDungeonFor(session: GameSession): DungeonPendingRun? =
+        pendingDungeons[session.accountId]
+            ?: DungeonPendingRun.fromJson(session.channelExtra[DUNGEON_PENDING_RUN_KEY])
+                ?.also { pendingDungeons[session.accountId] = it }
+
+    private fun recoverPendingDungeonFromTransaction(
+        session: GameSession,
+        config: DungeonConfig
+    ): DungeonPendingRun? {
+        val record = expeditionTransactions.latestUnresolved(session.accountId, "副本")
+            ?: return null
+        val fields = record.targetKey
+            .split(',')
+            .mapNotNull { token ->
+                val key = token.substringBefore('=', "").trim()
+                val value = token.substringAfter('=', "").trim()
+                (key to value).takeIf { key.isNotBlank() && value.isNotBlank() }
+            }
+            .toMap()
+        val chapter = fields["chapter"]?.toIntOrNull()?.takeIf { it >= 0 } ?: return null
+        val stage = fields["stage"]?.toIntOrNull()?.takeIf { it > 0 } ?: return null
+        val chestPosition = fields["chest"]?.toIntOrNull()?.takeIf { it in 0..2 }
+            ?: config.boxPosition
+        val mode = fields["mode"]?.takeIf { it in behaviorContract.dungeon.allowedModes }
+            ?: config.mode
+        return DungeonPendingRun(
+            generalIds = record.generalIds,
+            chapter = chapter,
+            stage = stage,
+            chestPosition = chestPosition,
+            mode = mode,
+            launchedAtMillis = record.createdAtMillis,
+            recoveredFromTransaction = true
+        ).also { persistPendingDungeon(session, it) }
+    }
+
+    private fun persistPendingDungeon(session: GameSession, pending: DungeonPendingRun) {
+        pendingDungeons[session.accountId] = pending
+        sessionExtraSink?.invoke(
+            session.accountId,
+            mapOf(DUNGEON_PENDING_RUN_KEY to pending.toJson().toString())
         )
-        if (expedition is ProtocolResult.Err || (expedition as ProtocolResult.Ok).value.success.not()) return expedition
-        pendingDungeons[session.accountId] = PendingDungeon(
-            generalIds, config.chapter, config.stage, config.boxPosition, System.currentTimeMillis()
+    }
+
+    private fun clearPendingDungeon(session: GameSession) {
+        pendingDungeons.remove(session.accountId)
+        dungeonPollBattleIds.remove(session.accountId)
+        expeditionTransactions.resolve(session.accountId, "副本")
+        sessionExtraSink?.invoke(
+            session.accountId,
+            mapOf(DUNGEON_PENDING_RUN_KEY to "{}")
         )
-        return ProtocolResult.Ok(StepResult(
-            true,
-            "副本第${config.chapter + 1}章第${config.stage}关已发起",
-            mapOf("phase" to "fighting", "stageCode" to stageCode.toString())
-        ))
     }
 
     private fun sendDungeonCommand(
@@ -2434,22 +3512,13 @@ class SessionAwareGameProtocolClient(
         if (expectedOpcode !in response.responseOpcodes) {
             return ProtocolResult.Ok(StepResult(false, "$phase 未收到 0x${expectedOpcode.toString(16)} 确认"))
         }
-        if (expectedOpcode == 0x8522) {
+        if (expectedOpcode == behaviorContract.dungeon.chestResponseOpcode) {
             val receipt = runCatching {
-                DungeonProtocolShapes.parseLaunchResponse(response.responseHex.hexToBytesLocal())
-            }.getOrElse {
-                return ProtocolResult.Err(
-                    "REAL_DUNGEON_LAUNCH_RECEIPT_INVALID",
-                    "$phase 0x8522解析失败：${it.message}",
-                    false
+                DungeonProtocolShapes.parseChestResponse(
+                    requireNotNull(response.payloadBytesFor(expectedOpcode)) {
+                        "0x${expectedOpcode.toString(16)}负载缺失"
+                    }
                 )
-            }
-            if (!receipt.success) {
-                return ProtocolResult.Ok(StepResult(false, "$phase 被游戏服拒绝：${receipt.message}"))
-            }
-        } else if (expectedOpcode == 0x893E) {
-            val receipt = runCatching {
-                DungeonProtocolShapes.parseChestResponse(response.responseHex.hexToBytesLocal())
             }.getOrElse {
                 return ProtocolResult.Err(
                     "REAL_DUNGEON_CHEST_RECEIPT_INVALID",
@@ -2460,7 +3529,9 @@ class SessionAwareGameProtocolClient(
             if (!receipt.success) {
                 return ProtocolResult.Ok(StepResult(false, "$phase 被游戏服拒绝：${receipt.message}"))
             }
-        } else if (requireZeroStatus && response.responseHex.take(2).toIntOrNull(16) != 0) {
+        } else if (requireZeroStatus &&
+            response.payloadHexFor(expectedOpcode)?.take(2)?.toIntOrNull(16) != 0
+        ) {
             return ProtocolResult.Ok(StepResult(false, "$phase 被游戏服拒绝"))
         }
         return ProtocolResult.Ok(StepResult(true, "$phase 成功"))
@@ -2470,13 +3541,19 @@ class SessionAwareGameProtocolClient(
         session: GameSession,
         config: LosslessConfig
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.runLossless(session, config)
+        if (!session.isRealSession()) return fallback.runLossless(session, config)
         if (!config.enabled) return ProtocolResult.Ok(StepResult(false, "无损任务未启用"))
+        val contract = behaviorContract.lossless
         val rules = config.rules.filter { it.enabled }
         if (rules.isEmpty()) {
             return ProtocolResult.Err("REAL_LOSSLESS_RULE_MISSING", "无损没有启用的编队", false)
         }
-        if (rules.any { it.generalIds.isEmpty() || it.generalIds.size > 5 || it.level !in 1..10 }) {
+        if (rules.any {
+                it.generalIds.isEmpty() ||
+                    it.generalIds.size > contract.maximumGeneralsPerFormation ||
+                    it.level !in contract.minimumLevel..contract.maximumLevel
+            }
+        ) {
             return ProtocolResult.Err("REAL_LOSSLESS_RULE_INVALID", "无损编队、将领数量或等级配置无效", false)
         }
         if (session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() != true ||
@@ -2492,13 +3569,26 @@ class SessionAwareGameProtocolClient(
         val dm = session.dmOrNull()
             ?: return ProtocolResult.Err("REAL_LOSSLESS_DM_MISSING", "真实无损缺少 dm", false)
 
-        val statusResponse = sendLosslessCommand(gameHttp, dm, 0x1900, LosslessProtocolShapes.QUERY_PAYLOAD, "lossless/status")
+        val statusResponse = sendLosslessCommand(
+            gameHttp,
+            dm,
+            contract.statusRequestOpcode,
+            contract.queryPayload,
+            "lossless/status"
+        )
             ?: return ProtocolResult.Err("REAL_LOSSLESS_STATUS_EXCEPTION", "读取无损状态异常", true)
-        if (!statusResponse.ok || 0x8900 !in statusResponse.responseOpcodes) {
-            return ProtocolResult.Err("REAL_LOSSLESS_STATUS_UNCONFIRMED", "读取无损状态未收到0x8900", true)
+        if (!statusResponse.ok || contract.statusResponseOpcode !in statusResponse.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_LOSSLESS_STATUS_UNCONFIRMED",
+                "读取无损状态未收到0x${contract.statusResponseOpcode.toString(16)}",
+                true
+            )
         }
         val status = runCatching {
-            LosslessProtocolShapes.parseStatus(statusResponse.responseHex.hexToBytesLocal())
+            LosslessProtocolShapes.parseStatus(
+                statusResponse.requirePayloadBytesFor(contract.statusResponseOpcode),
+                contract
+            )
         }.getOrElse {
             return ProtocolResult.Err("REAL_LOSSLESS_STATUS_PARSE_FAILED", "无损状态解析失败：${it.message}", false)
         }
@@ -2509,13 +3599,23 @@ class SessionAwareGameProtocolClient(
 
         if (status.phase == LosslessPhase.SETTLEMENT) {
             val response = sendLosslessCommand(
-                gameHttp, dm, 0x1902, LosslessProtocolShapes.QUERY_PAYLOAD, "lossless/settlement"
+                gameHttp,
+                dm,
+                contract.settlementRequestOpcode,
+                contract.queryPayload,
+                "lossless/settlement"
             ) ?: return ProtocolResult.Err("REAL_LOSSLESS_SETTLEMENT_EXCEPTION", "无损结算请求异常", true)
-            if (!response.ok || 0x8902 !in response.responseOpcodes) {
-                return ProtocolResult.Err("REAL_LOSSLESS_SETTLEMENT_UNCONFIRMED", "无损结算未收到0x8902", true)
+            if (!response.ok || contract.settlementResponseOpcode !in response.responseOpcodes) {
+                return ProtocolResult.Err(
+                    "REAL_LOSSLESS_SETTLEMENT_UNCONFIRMED",
+                    "无损结算未收到0x${contract.settlementResponseOpcode.toString(16)}",
+                    true
+                )
             }
             val settlement = runCatching {
-                LosslessProtocolShapes.parseSettlement(response.responseHex.hexToBytesLocal())
+                LosslessProtocolShapes.parseSettlement(
+                    response.requirePayloadBytesFor(contract.settlementResponseOpcode)
+                )
             }.getOrElse {
                 return ProtocolResult.Err("REAL_LOSSLESS_SETTLEMENT_PARSE_FAILED", "无损结算解析失败：${it.message}", false)
             }
@@ -2533,26 +3633,41 @@ class SessionAwareGameProtocolClient(
                     "phase" to "settled",
                     "attemptConsumed" to "false",
                     "battleId" to settlement.battleId.toString(),
-                    "battleFailed" to settlement.battleFailed.toString()
+                    "battleFailed" to settlement.battleFailed.toString(),
+                    "nextDelayMillis" to contract.schedule.settlementRecheckMillis.toString()
                 )
             ))
         }
         when (status.phase) {
             LosslessPhase.DAILY_DONE -> return ProtocolResult.Ok(StepResult(
                 true, "今日无损次数已用完",
-                mapOf("phase" to "daily-done", "attemptConsumed" to "false", "remainingAttempts" to "0")
+                mapOf(
+                    "phase" to "daily-done",
+                    "attemptConsumed" to "false",
+                    "remainingAttempts" to "0",
+                    "nextDelayMillis" to contract.schedule.cooldownPollMaxMillis.toString()
+                )
             ))
             LosslessPhase.COOLDOWN -> return ProtocolResult.Ok(StepResult(
                 true, "无损冷却中",
                 mapOf(
                     "phase" to "cooldown",
                     "attemptConsumed" to "false",
-                    "cooldownMillis" to (status.cooldownMillis ?: 0).toString()
+                    "cooldownMillis" to (status.cooldownMillis ?: 0).toString(),
+                    "nextDelayMillis" to (status.cooldownMillis ?: contract.schedule.cooldownPollMinMillis)
+                        .coerceIn(
+                            contract.schedule.cooldownPollMinMillis,
+                            contract.schedule.cooldownPollMaxMillis
+                        ).toString()
                 )
             ))
             LosslessPhase.FIGHTING -> return ProtocolResult.Ok(StepResult(
                 true, "无损战斗进行中",
-                mapOf("phase" to "fighting", "attemptConsumed" to "false")
+                mapOf(
+                    "phase" to "fighting",
+                    "attemptConsumed" to "false",
+                    "nextDelayMillis" to contract.schedule.fightingPollMillis.toString()
+                )
             ))
             LosslessPhase.UNKNOWN -> return ProtocolResult.Err(
                 "REAL_LOSSLESS_STATUS_UNKNOWN",
@@ -2562,9 +3677,9 @@ class SessionAwareGameProtocolClient(
             else -> Unit
         }
 
-        val serverUsedAttempts = (LOSSLESS_SERVER_DAILY_LIMIT - status.remainingAttempts)
-            .coerceIn(0, LOSSLESS_SERVER_DAILY_LIMIT)
-        if (serverUsedAttempts >= config.dailyLimit.coerceAtMost(LOSSLESS_SERVER_DAILY_LIMIT)) {
+        val serverUsedAttempts = (contract.serverDailyLimit - status.remainingAttempts)
+            .coerceIn(0, contract.serverDailyLimit)
+        if (serverUsedAttempts >= config.dailyLimit.coerceAtMost(contract.serverDailyLimit)) {
             return ProtocolResult.Ok(StepResult(
                 true,
                 "已达到配置的无损每日上限：$serverUsedAttempts/${config.dailyLimit}",
@@ -2578,9 +3693,10 @@ class SessionAwareGameProtocolClient(
         }
 
         val cursor = losslessRuleCursors[session.accountId] ?: 0
-        val rule = rules[cursor.mod(rules.size)]
+        val ruleIndex = cursor.mod(rules.size)
+        val rule = rules[ruleIndex]
         if (status.selectedLevel != rule.level) {
-            val selected = selectLosslessLevel(gameHttp, dm, rule.level)
+            val selected = selectLosslessLevel(gameHttp, dm, rule.level, contract)
             if (selected is ProtocolResult.Err) return selected
             val value = (selected as ProtocolResult.Ok).value
             if (!value.success || value.selectedLevel != rule.level) {
@@ -2593,13 +3709,19 @@ class SessionAwareGameProtocolClient(
         }
 
         val lineupResponse = sendLosslessCommand(
-            gameHttp, dm, 0x1906, LosslessProtocolShapes.QUERY_PAYLOAD, "lossless/lineup"
+            gameHttp, dm, contract.lineupRequestOpcode, contract.queryPayload, "lossless/lineup"
         ) ?: return ProtocolResult.Err("REAL_LOSSLESS_LINEUP_EXCEPTION", "读取无损阵容异常", true)
-        if (!lineupResponse.ok || 0x8906 !in lineupResponse.responseOpcodes) {
-            return ProtocolResult.Err("REAL_LOSSLESS_LINEUP_UNCONFIRMED", "读取无损阵容未收到0x8906", true)
+        if (!lineupResponse.ok || contract.lineupResponseOpcode !in lineupResponse.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_LOSSLESS_LINEUP_UNCONFIRMED",
+                "读取无损阵容未收到0x${contract.lineupResponseOpcode.toString(16)}",
+                true
+            )
         }
         val lineup = runCatching {
-            LosslessProtocolShapes.parseLineup(lineupResponse.responseHex.hexToBytesLocal())
+            LosslessProtocolShapes.parseLineup(
+                lineupResponse.requirePayloadBytesFor(contract.lineupResponseOpcode)
+            )
         }.getOrElse {
             return ProtocolResult.Err("REAL_LOSSLESS_LINEUP_PARSE_FAILED", "无损阵容解析失败：${it.message}", false)
         }
@@ -2609,12 +3731,30 @@ class SessionAwareGameProtocolClient(
                 mapOf("phase" to "lineup-rejected", "attemptConsumed" to "false")
             ))
         }
-        if (rule.level == 10) {
-            val verdict = LosslessProtocolShapes.evaluateLevel10Guard(lineup)
+        val rerollKey = "${session.accountId}:$ruleIndex"
+        if (rule.level == contract.level10Guard.level) {
+            val verdict = LosslessProtocolShapes.evaluateLevel10Guard(lineup, contract)
             if (!verdict.qualified) {
+                val rerolls = losslessRerollCounts[rerollKey] ?: 0
+                val maxRerolls = rule.maxLineupRerolls.coerceIn(
+                    1,
+                    contract.level10Guard.maximumMaxRerolls
+                )
+                if (rerolls >= maxRerolls) {
+                    return ProtocolResult.Err(
+                        "REAL_LOSSLESS_REROLL_LIMIT_REACHED",
+                        "连续筛选${rerolls + 1}次仍未找到符合条件的10级卫兵阵容",
+                        false
+                    )
+                }
                 // A single alternate-level round trip rerolls the lineup. The next scheduler
                 // tick re-reads and re-evaluates it; never dispatch an unqualified lineup.
-                val alternate = selectLosslessLevel(gameHttp, dm, 7)
+                val alternate = selectLosslessLevel(
+                    gameHttp,
+                    dm,
+                    contract.level10Guard.alternateLevel,
+                    contract
+                )
                 if (alternate is ProtocolResult.Err || !(alternate as ProtocolResult.Ok).value.success) {
                     return ProtocolResult.Err(
                         "REAL_LOSSLESS_REROLL_SWITCH_FAILED",
@@ -2622,7 +3762,12 @@ class SessionAwareGameProtocolClient(
                         false
                     )
                 }
-                val restored = selectLosslessLevel(gameHttp, dm, 10)
+                val restored = selectLosslessLevel(
+                    gameHttp,
+                    dm,
+                    contract.level10Guard.level,
+                    contract
+                )
                 if (restored is ProtocolResult.Err || !(restored as ProtocolResult.Ok).value.success) {
                     return ProtocolResult.Err(
                         "REAL_LOSSLESS_REROLL_RESTORE_FAILED",
@@ -2630,17 +3775,20 @@ class SessionAwareGameProtocolClient(
                         false
                     )
                 }
+                losslessRerollCounts[rerollKey] = rerolls + 1
                 return ProtocolResult.Ok(StepResult(
                     true,
                     "10级卫兵阵容不符合无损筛选条件，已安全刷新：${verdict.reason}",
                     mapOf(
                         "phase" to "lineup-rerolled",
                         "attemptConsumed" to "false",
-                        "nextDelayMillis" to "4000"
+                        "rerolls" to (rerolls + 1).toString(),
+                        "nextDelayMillis" to contract.schedule.rerollNextCheckMillis.toString()
                     )
                 ))
             }
         }
+        losslessRerollCounts.remove(rerollKey)
 
         val monarch = when (val result = queryMonarch(session)) {
             is ProtocolResult.Ok -> result.value
@@ -2648,106 +3796,144 @@ class SessionAwareGameProtocolClient(
         }
         val roleId = monarch.roleId
             ?: return ProtocolResult.Err("REAL_LOSSLESS_ROLE_ID_MISSING", "无损出征缺少角色ID", false)
-        val generals = when (val result = queryGenerals(session)) {
+        val preflight = when (val result = expeditionPreflight.check(
+            session,
+            ExpeditionPreflightRequest(
+                label = "无损",
+                generalIds = rule.generalIds,
+                refillToFull = config.fullTroops,
+                formationRules = config.formationRules
+            )
+        )) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
-        }
-        val selectedGenerals = rule.generalIds.map { id ->
-            generals.firstOrNull { it.id == id }
-                ?: return ProtocolResult.Err("REAL_LOSSLESS_GENERAL_NOT_FOUND", "无损未找到将领ID=$id", false)
-        }
-        selectedGenerals.forEach { general ->
-            if (general.status == null) {
-                return ProtocolResult.Err("REAL_LOSSLESS_GENERAL_STATUS_UNKNOWN", "无法确认将领${general.name}状态", false)
-            }
-            if (general.status != 0) {
-                return ProtocolResult.Ok(StepResult(
-                    true, "将领${general.name}未回闲，等待后再执行无损",
-                    mapOf("phase" to "waiting-general", "attemptConsumed" to "false")
-                ))
-            }
-            if (general.energy == null || general.energy <= 0) {
-                return ProtocolResult.Ok(StepResult(
-                    false, "将领${general.name}体力不足或无法确认",
-                    mapOf("phase" to "energy-blocked", "attemptConsumed" to "false")
-                ))
-            }
-        }
-        val formations = when (val result = queryFormations(session)) {
-            is ProtocolResult.Ok -> result.value
-            is ProtocolResult.Err -> return result
-        }
-        selectedGenerals.forEach { general ->
-            val formation = formations.firstOrNull { it.id == general.id || general.id in it.generalIds }
-                ?: return ProtocolResult.Err(
-                    "REAL_LOSSLESS_FORMATION_MISSING",
-                    "将领${general.name}没有可校验的配兵信息",
-                    false
-                )
-            if (formation.status != FormationRuntimeStatus.IDLE) {
-                return ProtocolResult.Ok(StepResult(
-                    true, "将领${general.name}编队未回闲",
-                    mapOf("phase" to "waiting-formation", "attemptConsumed" to "false")
-                ))
-            }
-            if ((formation.troopCount ?: 0) <= 0) {
-                return ProtocolResult.Err("REAL_LOSSLESS_TROOPS_EMPTY", "将领${general.name}没有可用兵力", false)
-            }
         }
 
         val prepare = sendLosslessCommand(
-            gameHttp, dm, 0x1520,
-            LosslessProtocolShapes.buildPreparePayload(rule.generalIds, roleId),
+            gameHttp, dm, contract.prepareOpcode,
+            LosslessProtocolShapes.buildPreparePayload(rule.generalIds, roleId, contract),
             "lossless/prepare"
         ) ?: return ProtocolResult.Err("REAL_LOSSLESS_PREPARE_EXCEPTION", "无损预出征异常", true)
-        if (!prepare.ok || 0x8520 !in prepare.responseOpcodes) {
-            return ProtocolResult.Err("REAL_LOSSLESS_PREPARE_UNCONFIRMED", "无损预出征未收到0x8520", false)
-        }
-        val expedition = sendLosslessCommand(
-            gameHttp, dm, 0x1522,
-            LosslessProtocolShapes.buildExpeditionPayload(rule.generalIds, roleId),
-            "lossless/expedition"
-        ) ?: return ProtocolResult.Err("REAL_LOSSLESS_DISPATCH_EXCEPTION", "无损出征异常", true)
-        if (!expedition.ok || 0x8522 !in expedition.responseOpcodes) {
-            return ProtocolResult.Err("REAL_LOSSLESS_DISPATCH_UNCONFIRMED", "无损出征未收到0x8522", false)
-        }
-        val dispatch = BrushYellowDispatchResponseParser.parse(expedition.responseHex)
-            ?: return ProtocolResult.Err("REAL_LOSSLESS_DISPATCH_PARSE_FAILED", "无损出征响应无法解析", false)
-        if (dispatch.success != true) {
-            return ProtocolResult.Ok(StepResult(
-                false,
-                dispatch.message.orEmpty().ifBlank { "游戏服拒绝无损出征" },
-                mapOf("phase" to "dispatch-rejected", "attemptConsumed" to "true", "consumedTimes" to "1")
-            ))
-        }
-        losslessRuleCursors[session.accountId] = (cursor + 1).mod(rules.size)
-        return ProtocolResult.Ok(StepResult(
-            true,
-            "已派${selectedGenerals.joinToString(",") { it.name }}挑战${rule.level}级无损",
-            mapOf(
-                "phase" to "fighting",
-                "attemptConsumed" to "true",
-                "consumedTimes" to "1",
-                "stageId" to lineup.stageId.toString()
+        if (!prepare.ok || contract.prepareResponseOpcode !in prepare.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_LOSSLESS_PREPARE_UNCONFIRMED",
+                "无损预出征未收到0x${contract.prepareResponseOpcode.toString(16)}",
+                false
             )
-        ))
+        }
+        return expeditionTransactions.execute(
+            accountId = session.accountId,
+            action = "无损",
+            targetKey = "level=${rule.level},stage=${lineup.stageId}",
+            snapshot = preflight,
+            exceptionCode = "REAL_LOSSLESS_DISPATCH_EXCEPTION",
+            exceptionLabel = "无损正式出征异常"
+        ) {
+            val expedition = sendLosslessCommand(
+                gameHttp,
+                dm,
+                contract.dispatchOpcode,
+                LosslessProtocolShapes.buildExpeditionPayload(preflight.generalIds, roleId, contract),
+                "lossless/expedition"
+            ) ?: return@execute ExpeditionSendResult.uncertain(
+                ProtocolResult.Err(
+                    "REAL_LOSSLESS_DISPATCH_EXCEPTION",
+                    "无损正式出征异常，已冻结将领等待状态确认",
+                    true
+                ),
+                "transport exception without a response"
+            )
+            if (!expedition.ok) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_LOSSLESS_DISPATCH_HTTP_FAILED",
+                        "无损正式出征 HTTP ${expedition.httpCode}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "HTTP ${expedition.httpCode}; request acceptance is unknown"
+                )
+            }
+            if (contract.dispatchResponseOpcode !in expedition.responseOpcodes) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_LOSSLESS_DISPATCH_RECEIPT_MISSING",
+                        "无损正式出征未收到0x${contract.dispatchResponseOpcode.toString(16)}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "2xx response without 0x8522"
+                )
+            }
+            val dispatch = BrushYellowDispatchResponseParser.parse(
+                responseHex = expedition.payloadHexFor(contract.dispatchResponseOpcode)
+            )
+                ?: BrushYellowDispatchResponseParser.parse(responseText = expedition.textPreview)
+            if (dispatch?.success == false) {
+                return@execute ExpeditionSendResult.rejected(
+                    ProtocolResult.Ok(StepResult(
+                        false,
+                        dispatch.message.orEmpty().ifBlank { "游戏服拒绝无损出征" },
+                        mapOf(
+                            "phase" to "dispatch-rejected",
+                            "attemptConsumed" to "true",
+                            "consumedTimes" to "1"
+                        )
+                    )),
+                    "explicit 0x8522 rejection: ${dispatch.evidence}"
+                )
+            }
+            if (dispatch?.success != true) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_LOSSLESS_DISPATCH_PARSE_FAILED",
+                        "无损0x8522回执无法确认，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "0x8522 receipt could not be parsed"
+                )
+            }
+            losslessRuleCursors[session.accountId] = (cursor + 1).mod(rules.size)
+            ExpeditionSendResult.accepted(
+                ProtocolResult.Ok(StepResult(
+                    true,
+                    "已派${preflight.generalNames.joinToString(",")}挑战${rule.level}级无损",
+                    mapOf(
+                        "phase" to "fighting",
+                        "attemptConsumed" to "true",
+                        "consumedTimes" to "1",
+                        "stageId" to lineup.stageId.toString(),
+                        "battleId" to dispatch.battleId.toString(),
+                        "nextDelayMillis" to contract.schedule.postDispatchPollMillis.toString()
+                    )
+                )),
+                "explicit 0x8522 success"
+            )
+        }
     }
 
     private fun selectLosslessLevel(
         gameHttp: String,
         dm: Long,
-        level: Int
+        level: Int,
+        contract: LosslessBehaviorContract = behaviorContract.lossless
     ): ProtocolResult<LosslessSelectResult> {
         val response = sendLosslessCommand(
-            gameHttp, dm, 0x1908,
-            LosslessProtocolShapes.buildSelectLevelPayload(level),
+            gameHttp, dm, contract.selectRequestOpcode,
+            LosslessProtocolShapes.buildSelectLevelPayload(level, contract),
             "lossless/select-$level"
         ) ?: return ProtocolResult.Err("REAL_LOSSLESS_SELECT_EXCEPTION", "选择${level}级无损异常", true)
-        if (!response.ok || 0x8908 !in response.responseOpcodes) {
-            return ProtocolResult.Err("REAL_LOSSLESS_SELECT_UNCONFIRMED", "选择${level}级无损未收到0x8908", false)
+        if (!response.ok || contract.selectResponseOpcode !in response.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_LOSSLESS_SELECT_UNCONFIRMED",
+                "选择${level}级无损未收到0x${contract.selectResponseOpcode.toString(16)}",
+                false
+            )
         }
         return runCatching {
-            ProtocolResult.Ok(LosslessProtocolShapes.parseSelect(response.responseHex.hexToBytesLocal()))
+            ProtocolResult.Ok(
+                LosslessProtocolShapes.parseSelect(
+                    response.requirePayloadBytesFor(contract.selectResponseOpcode)
+                )
+            )
         }.getOrElse {
             ProtocolResult.Err("REAL_LOSSLESS_SELECT_PARSE_FAILED", "选择${level}级无损响应解析失败：${it.message}", false)
         }
@@ -2769,16 +3955,22 @@ class SessionAwareGameProtocolClient(
     }.getOrNull()
 
     override suspend fun queryInventory(session: GameSession): ProtocolResult<List<InventoryItem>> {
-        if (!session.isRealReadOnly()) return mock.queryInventory(session)
+        if (!session.isRealSession()) return fallback.queryInventory(session)
         val live = if (session.channelExtra["inventoryLiveRefreshAllowed"].asLooseBoolean() == true) {
             session.gameHttpOrNull()?.let { gameHttp ->
                 session.dmOrNull()?.let { dm ->
-                    runCatching { RealGameProtocolClient().refreshInventoryState(gameHttp, dm) }.getOrNull()
+                    runCatching {
+                        requireExecutionAllowed("inventory/live-refresh")
+                        RealGameProtocolClient().refreshInventoryState(gameHttp, dm)
+                    }.getOrNull()
                 }
             }
         } else null
         if (live != null) {
-            return ProtocolResult.Ok(live.items.map { it.toInventoryItem() })
+            return ProtocolResult.Ok(
+                live.items.map { it.toInventoryItem() } +
+                    live.equipment.map { it.toInventoryItem() }
+            )
         }
         val raw = session.channelExtra["inventoryJson"]
             ?: return ProtocolResult.Err(
@@ -2808,20 +4000,47 @@ class SessionAwareGameProtocolClient(
             count = count
         )
 
+    private fun RealGameProtocolClient.InventoryEquipment.toInventoryItem(): InventoryItem {
+        val mappedQuality = EquipmentQuality.entries.getOrNull(quality)
+        return InventoryItem(
+            id = instanceId,
+            name = name,
+            type = "equipment",
+            quality = mappedQuality,
+            level = level,
+            enhanced = strengthen > 0,
+            equipped = false,
+            count = 1,
+            templateId = templateId,
+            famous = famous,
+            extraText = extraText,
+            equipmentMetadataComplete = instanceId > 0L &&
+                typeCode >= 0 && level > 0 && mappedQuality != null
+        )
+    }
+
     private fun JSONObject.toInventoryItem(): InventoryItem? {
         val id = optLong("itemId", optLong("id", -1L))
         val count = optInt("count", 0)
         if (id < 0L || count <= 0) return null
         val name = optString("name").ifBlank { ItemDictionary.nameFor(id.toInt()) ?: "道具#$id" }
+        val type = normalizedInventoryType(name, optString("type"))
+        val rawQuality = if (has("quality")) optInt("quality", -1) else -1
+        val quality = EquipmentQuality.entries.getOrNull(rawQuality)
         return InventoryItem(
             id = id,
             name = name,
-            type = normalizedInventoryType(name, optString("type")),
-            quality = null,
-            level = null,
-            enhanced = false,
-            equipped = false,
-            count = count
+            type = type,
+            quality = quality,
+            level = optInt("level", 0).takeIf { it > 0 },
+            enhanced = optBoolean("enhanced", optInt("strengthen", 0) > 0),
+            equipped = optBoolean("equipped", false),
+            count = count,
+            templateId = optInt("templateId", -1).takeIf { it >= 0 },
+            famous = optBoolean("famous", false),
+            extraText = optString("extraText"),
+            equipmentMetadataComplete = type != "equipment" ||
+                optBoolean("equipmentMetadataComplete", false)
         )
     }
 
@@ -2838,7 +4057,7 @@ class SessionAwareGameProtocolClient(
         action: InventoryAction,
         count: Int
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.useOrDiscardItem(session, itemId, action, count)
+        if (!session.isRealSession()) return fallback.useOrDiscardItem(session, itemId, action, count)
         if (count <= 0) {
             return ProtocolResult.Err("REAL_INVENTORY_COUNT_INVALID", "背包动作数量必须大于 0", false)
         }
@@ -2875,6 +4094,20 @@ class SessionAwareGameProtocolClient(
                 0x8103,
                 InventoryProtocolShapes.buildDiscardPayload(kind = 0, objectId = itemId, count = count)
             )
+            InventoryAction.DISCARD_EQUIPMENT -> {
+                if (count != 1) {
+                    return ProtocolResult.Err(
+                        "REAL_INVENTORY_EQUIPMENT_COUNT_INVALID",
+                        "装备必须按实例逐件丢弃",
+                        false
+                    )
+                }
+                Triple(
+                    0x1103,
+                    0x8103,
+                    InventoryProtocolShapes.buildDiscardPayload(kind = 1, objectId = itemId, count = 1)
+                )
+            }
         }
         val response = runCatching {
             sendBinaryMappedGameHex(
@@ -2906,7 +4139,7 @@ class SessionAwareGameProtocolClient(
             ))
         }
         val receipt = runCatching {
-            InventoryProtocolShapes.parseActionResponse(response.responseHex.hexToBytesLocal())
+            InventoryProtocolShapes.parseActionResponse(response.requirePayloadBytesFor(expected))
         }.getOrElse {
             return ProtocolResult.Err(
                 "REAL_INVENTORY_RECEIPT_INVALID",
@@ -2932,6 +4165,7 @@ class SessionAwareGameProtocolClient(
             receipt.message.ifBlank { when (action) {
                 InventoryAction.OPEN, InventoryAction.USE -> "使用道具成功"
                 InventoryAction.DISCARD -> "丢弃道具成功"
+                InventoryAction.DISCARD_EQUIPMENT -> "丢弃装备成功"
             } },
             mapOf(
                 "opcode" to "0x${opcode.toString(16)}",
@@ -2944,17 +4178,17 @@ class SessionAwareGameProtocolClient(
     }
 
     override suspend fun setVipFeature(session: GameSession, config: VipFeatureConfig): ProtocolResult<StepResult> =
-        if (session.isRealReadOnly()) unrecovered("REAL_VIP_NOT_IMPLEMENTED", "真实 VIP 协议尚未接入") else mock.setVipFeature(session, config)
+        if (session.isRealSession()) unrecovered("REAL_VIP_NOT_IMPLEMENTED", "真实 VIP 协议尚未接入") else fallback.setVipFeature(session, config)
 
     override suspend fun surrenderOrReleaseGenerals(session: GameSession, config: SurrenderReleaseConfig): ProtocolResult<StepResult> =
-        if (session.isRealReadOnly()) unrecovered("REAL_SURRENDER_RELEASE_NOT_IMPLEMENTED", "真实劝降/释放协议尚未接入") else mock.surrenderOrReleaseGenerals(session, config)
+        if (session.isRealSession()) unrecovered("REAL_SURRENDER_RELEASE_NOT_IMPLEMENTED", "真实劝降/释放协议尚未接入") else fallback.surrenderOrReleaseGenerals(session, config)
 
     override suspend fun sendGeneralToResourcePoint(session: GameSession, config: ResourcePointSendGeneralConfig): ProtocolResult<StepResult> =
-        if (session.isRealReadOnly()) unrecovered("REAL_SEND_GENERAL_NOT_IMPLEMENTED", "真实资源点送将协议尚未接入") else mock.sendGeneralToResourcePoint(session, config)
+        if (session.isRealSession()) unrecovered("REAL_SEND_GENERAL_NOT_IMPLEMENTED", "真实资源点送将协议尚未接入") else fallback.sendGeneralToResourcePoint(session, config)
 
     override suspend fun runAutoLoot(session: GameSession, config: AutoLootConfig): ProtocolResult<StepResult> =
-        if (!session.isRealReadOnly()) {
-            mock.runAutoLoot(session, config)
+        if (!session.isRealSession()) {
+            fallback.runAutoLoot(session, config)
         } else {
             runRealAutoLoot(session, config)
         }
@@ -2990,141 +4224,55 @@ class SessionAwareGameProtocolClient(
             ?: return ProtocolResult.Err("REAL_LOOT_GAME_HTTP_MISSING", "真实掠夺缺少 gameHttp/serverUrl", false)
         val dm = session.dmOrNull()
             ?: return ProtocolResult.Err("REAL_LOOT_DM_MISSING", "真实掠夺缺少 dm", false)
-        val generals = when (val result = queryGenerals(session)) {
+        val raidContract = behaviorContract.raid
+        if (generalIds.size > raidContract.maximumGeneralsPerFormation) {
+            return ProtocolResult.Err(
+                "REAL_LOOT_GENERALS_OVER_LIMIT",
+                "掠夺一次最多选择${raidContract.maximumGeneralsPerFormation}名将领",
+                false
+            )
+        }
+        val preflight = when (val result = expeditionPreflight.check(
+            session,
+            ExpeditionPreflightRequest(
+                label = "掠夺",
+                generalIds = generalIds,
+                requireFullLoyalty = config.fullLoyalty,
+                refillToFull = config.fullTroops,
+                formationRules = config.formationRules
+            )
+        )) {
             is ProtocolResult.Ok -> result.value
             is ProtocolResult.Err -> return result
-        }
-        val selected = generalIds.map { id ->
-            generals.firstOrNull { it.id == id }
-                ?: return ProtocolResult.Err("REAL_LOOT_GENERAL_NOT_FOUND", "掠夺未找到将领 ID=$id", false)
-        }
-        selected.forEach { general ->
-            if (general.status == null) {
-                return ProtocolResult.Err("REAL_LOOT_STATUS_UNKNOWN", "无法确认将领${general.name}状态", false)
-            }
-            if (general.status != 0) {
-                return ProtocolResult.Ok(StepResult(
-                    true, "将领${general.name}当前非闲，等待回闲后继续掠夺",
-                    mapOf("phase" to "waiting-general")
-                ))
-            }
-            if (general.energy == null) {
-                return ProtocolResult.Err("REAL_LOOT_ENERGY_UNKNOWN", "无法确认将领${general.name}体力", false)
-            }
-            if (general.energy <= 0) {
-                return ProtocolResult.Ok(StepResult(false, "将领${general.name}体力不足，掠夺已中断"))
-            }
-            if (config.fullLoyalty) {
-                if (general.loyalty == null) {
-                    return ProtocolResult.Err(
-                        "REAL_LOOT_LOYALTY_UNKNOWN",
-                        "勾选满忠但无法确认将领${general.name}忠诚度",
-                        false
-                    )
-                }
-                if (general.loyalty < 100) {
-                    return ProtocolResult.Ok(StepResult(
-                        true,
-                        "将领${general.name}忠诚度${general.loyalty}/100，等待满忠后掠夺",
-                        mapOf("phase" to "waiting-loyalty")
-                    ))
-                }
-            }
-        }
-        var formations = when (val result = queryFormations(session)) {
-            is ProtocolResult.Ok -> result.value
-            is ProtocolResult.Err -> return result
-        }
-        if (config.fullTroops) {
-            selected.forEach { general ->
-                val formation = formations.firstOrNull { it.id == general.id || general.id in it.generalIds }
-                    ?: return ProtocolResult.Err(
-                        "REAL_LOOT_FORMATION_MISSING",
-                        "将领${general.name}没有可校验的配兵信息",
-                        false
-                    )
-                val targetCount = general.troopLimit
-                    ?: return ProtocolResult.Err(
-                        "REAL_LOOT_TROOP_LIMIT_UNKNOWN",
-                        "勾选满兵但无法确认将领${general.name}带兵上限",
-                        false
-                    )
-                if ((formation.troopCount ?: 0) < targetCount) {
-                    val current = general.currentAssignedTroops()
-                        ?: return ProtocolResult.Err(
-                            "REAL_LOOT_TROOP_TYPE_UNKNOWN",
-                            "勾选满兵但无法确认将领${general.name}当前兵种",
-                            false
-                        )
-                    when (val refill = updateFormation(
-                        session,
-                        FormationConfig(
-                            formationId = general.id,
-                            generalIds = listOf(general.id),
-                            autoAssignTroops = true,
-                            troopType = current.typeCode.toString(),
-                            troopCount = targetCount,
-                            fillToMaxWhenAutoAssignDisabled = true
-                        )
-                    )) {
-                        is ProtocolResult.Err -> return refill
-                        is ProtocolResult.Ok -> if (!refill.value.success) {
-                            return ProtocolResult.Ok(StepResult(
-                                false,
-                                "掠夺前补满${general.name}失败：${refill.value.message}",
-                                refill.value.raw + ("phase" to "refill-failed")
-                            ))
-                        }
-                    }
-                }
-            }
-            formations = when (val result = queryFormations(session)) {
-                is ProtocolResult.Ok -> result.value
-                is ProtocolResult.Err -> return result
-            }
-        }
-        selected.forEach { general ->
-            val formation = formations.firstOrNull { it.id == general.id || general.id in it.generalIds }
-                ?: return ProtocolResult.Err("REAL_LOOT_FORMATION_MISSING", "将领${general.name}没有可校验的配兵信息", false)
-            if (formation.status != FormationRuntimeStatus.IDLE) {
-                return ProtocolResult.Ok(StepResult(
-                    true, "将领${general.name}编队非空闲，等待回闲后继续掠夺",
-                    mapOf("phase" to "waiting-formation")
-                ))
-            }
-            if ((formation.troopCount ?: 0) <= 0) {
-                return ProtocolResult.Err("REAL_LOOT_TROOPS_EMPTY", "将领${general.name}没有可用兵力", false)
-            }
-            if (config.fullTroops) {
-                val targetCount = general.troopLimit
-                    ?: return ProtocolResult.Err(
-                        "REAL_LOOT_TROOP_LIMIT_UNKNOWN",
-                        "勾选满兵但无法确认将领${general.name}带兵上限",
-                        false
-                    )
-                if ((formation.troopCount ?: 0) < targetCount) {
-                    return ProtocolResult.Err(
-                        "REAL_LOOT_REFILL_NOT_CONFIRMED",
-                        "补兵后仍未确认将领${general.name}满兵，禁止掠夺出征",
-                        false
-                    )
-                }
-            }
         }
         val query = runCatching {
             sendBinaryMappedGameHex(
                 gameHttp, dm,
-                buildDirectGameHex(0x1310, LootProtocolShapes.buildFiefListPayload(rule.playerName)),
+                buildDirectGameHex(
+                    raidContract.fiefQueryOpcode,
+                    LootProtocolShapes.buildRaidFiefListPayload(rule.playerName, raidContract)
+                ),
                 "loot/query-fiefs"
             )
         }.getOrElse {
             return ProtocolResult.Err("REAL_LOOT_QUERY_EXCEPTION", "查询目标封地异常：${it.message}", false)
         }
-        actionAudit?.invoke("真实掠夺请求：查询${rule.playerName}封地 opcode=0x1310 http=${query.httpCode}")
-        if (!query.ok || 0x8310 !in query.responseOpcodes) {
-            return ProtocolResult.Err("REAL_LOOT_QUERY_FAILED", "查询目标封地未收到0x8310", false)
+        actionAudit?.invoke(
+            "真实掠夺请求：查询${rule.playerName}封地 " +
+                "opcode=0x${raidContract.fiefQueryOpcode.toString(16)} http=${query.httpCode}"
+        )
+        if (!query.ok || raidContract.fiefQueryResponseOpcode !in query.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_LOOT_QUERY_FAILED",
+                "查询目标封地未收到0x${raidContract.fiefQueryResponseOpcode.toString(16)}",
+                false
+            )
         }
-        val fiefs = runCatching { LootProtocolShapes.parseFiefList(query.responseHex.hexToBytesLocal()) }
+        val fiefs = runCatching {
+            LootProtocolShapes.parseFiefList(
+                query.requirePayloadBytesFor(raidContract.fiefQueryResponseOpcode)
+            )
+        }
             .getOrElse {
                 return ProtocolResult.Err("REAL_LOOT_FIEF_PARSE_FAILED", "目标封地解析失败：${it.message}", false)
             }
@@ -3135,29 +4283,102 @@ class SessionAwareGameProtocolClient(
                 false
             )
         val prepare = sendLootCommand(
-            gameHttp, dm, 0x1520,
-            LootProtocolShapes.buildPreparePayload(generalIds, target.targetId),
-            0x8520, "loot/prepare"
+            gameHttp, dm, raidContract.prepareOpcode,
+            LootProtocolShapes.buildPreparePayload(generalIds, target.targetId, raidContract),
+            raidContract.prepareResponseOpcode, "loot/prepare"
         )
         if (prepare is ProtocolResult.Err || !(prepare as ProtocolResult.Ok).value.success) return prepare
-        val expedition = sendLootCommand(
-            gameHttp, dm, 0x1522,
-            LootProtocolShapes.buildExpeditionPayload(generalIds, target.targetId),
-            0x8522, "loot/expedition"
-        )
-        if (expedition is ProtocolResult.Err || !(expedition as ProtocolResult.Ok).value.success) return expedition
-        lootRuleCursors[session.accountId] = (ruleIndex + 1).mod(rules.size)
-        return ProtocolResult.Ok(StepResult(
-            true,
-            "已派${selected.joinToString(",") { it.name }}立即掠夺${rule.playerName}的${target.name}",
-            mapOf(
-                "phase" to "launched",
-                "targetId" to target.targetId.toString(),
-                "targetName" to target.name,
-                "fiefIndex" to target.index.toString(),
-                "ruleIndex" to ruleIndex.toString()
+        return expeditionTransactions.execute(
+            accountId = session.accountId,
+            action = "掠夺",
+            targetKey = "${rule.playerName}:${target.targetId}",
+            snapshot = preflight,
+            exceptionCode = "REAL_LOOT_DISPATCH_EXCEPTION",
+            exceptionLabel = "掠夺正式出征异常"
+        ) {
+            val response = sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(
+                    raidContract.dispatchOpcode,
+                    LootProtocolShapes.buildExpeditionPayload(
+                        preflight.generalIds,
+                        target.targetId,
+                        raidContract
+                    )
+                ),
+                "loot/expedition"
             )
-        ))
+            actionAudit?.invoke(
+                "真实掠夺请求：loot/expedition " +
+                    "opcode=0x${raidContract.dispatchOpcode.toString(16)} http=${response.httpCode} " +
+                    "responses=${response.responseOpcodes.joinToString { "0x${it.toString(16)}" }}"
+            )
+            if (!response.ok) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_LOOT_DISPATCH_HTTP_FAILED",
+                        "掠夺正式出征 HTTP ${response.httpCode}，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "HTTP ${response.httpCode}; request acceptance is unknown"
+                )
+            }
+            if (raidContract.dispatchResponseOpcode !in response.responseOpcodes) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_LOOT_DISPATCH_RECEIPT_MISSING",
+                        "掠夺正式出征未收到0x${raidContract.dispatchResponseOpcode.toString(16)}" +
+                            "，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "2xx response without 0x8522"
+                )
+            }
+            val parsed = BrushYellowDispatchResponseParser.parse(
+                responseHex = response.payloadHexFor(raidContract.dispatchResponseOpcode)
+            ) ?: BrushYellowDispatchResponseParser.parse(responseText = response.textPreview)
+            val battleId = parsed?.battleId?.takeIf { it > 0L }
+            val success = parsed?.success == true &&
+                (!raidContract.dispatchSuccessRequiresPositiveBattleId || battleId != null)
+            if (parsed?.success == false) {
+                return@execute ExpeditionSendResult.rejected(
+                    ProtocolResult.Ok(StepResult(
+                        false,
+                        parsed.message ?: "掠夺正式出征被游戏服拒绝"
+                    )),
+                    "explicit 0x${raidContract.dispatchResponseOpcode.toString(16)} rejection: ${parsed.evidence}"
+                )
+            }
+            if (!success) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_LOOT_DISPATCH_BATTLE_ID_MISSING",
+                        "掠夺0x${raidContract.dispatchResponseOpcode.toString(16)}未返回正数 battleId" +
+                            "，已冻结将领等待状态确认",
+                        true
+                    ),
+                    "dispatch receipt did not confirm a positive battle id"
+                )
+            }
+            lootRuleCursors[session.accountId] = (ruleIndex + 1).mod(rules.size)
+            ExpeditionSendResult.accepted(
+                ProtocolResult.Ok(StepResult(
+                    true,
+                    "已派${preflight.generalNames.joinToString(",")}立即掠夺${rule.playerName}的${target.name}",
+                    mapOf(
+                        "phase" to "launched",
+                        "targetId" to target.targetId.toString(),
+                        "targetName" to target.name,
+                        "fiefIndex" to target.index.toString(),
+                        "ruleIndex" to ruleIndex.toString(),
+                        "battleId" to battleId.toString(),
+                        "parsedEvidence" to (parsed?.evidence ?: "positive-battle-id")
+                    )
+                )),
+                "explicit 0x${raidContract.dispatchResponseOpcode.toString(16)} success battleId=$battleId"
+            )
+        }
     }
 
     private fun sendLootCommand(
@@ -3180,17 +4401,14 @@ class SessionAwareGameProtocolClient(
         if (!response.ok || expectedOpcode !in response.responseOpcodes) {
             return ProtocolResult.Ok(StepResult(false, "$phase 未收到0x${expectedOpcode.toString(16)}确认"))
         }
-        if (opcode == 0x1522 && response.responseHex.take(2).toIntOrNull(16) != 0) {
-            return ProtocolResult.Ok(StepResult(false, "$phase 被游戏服拒绝"))
-        }
         return ProtocolResult.Ok(StepResult(true, "$phase 成功"))
     }
 
-    override suspend fun scanAlarmAndMaybeWithdraw(
+    override suspend fun scanAlarms(
         session: GameSession,
-        config: AlarmWithdrawConfig
+        config: AlarmConfig
     ): ProtocolResult<StepResult> {
-        if (!session.isRealReadOnly()) return mock.scanAlarmAndMaybeWithdraw(session, config)
+        if (!session.isRealSession()) return fallback.scanAlarms(session, config)
         var scanExtra = session.channelExtra
         var refreshSummary = "使用已持久化军情快照"
         if (session.channelExtra["militaryIntelLiveGate"].asLooseBoolean() == true) {
@@ -3204,6 +4422,7 @@ class SessionAwareGameProtocolClient(
                     refreshSummary = "0x3110 未发送：缺少 gameHttp/dm"
                 } else {
                     val refresh = runCatching {
+                        requireExecutionAllowed("military-intel/heartbeat-3110")
                         heartbeat3110Executor.execute(gameHttp, dm)
                     }
                     refresh.onSuccess { result ->
@@ -3264,49 +4483,174 @@ class SessionAwareGameProtocolClient(
             )
         }
         val newEvents = synchronized(seen) {
-            detected.filter { seen.add(it.fingerprint) }
+            val previous = seen.toSet()
+            val fresh = detected
+                .distinctBy { it.fingerprint }
+                .filter { it.fingerprint !in previous }
+            // The persisted feed is bounded; keep the dedupe set bounded to the same
+            // live window instead of leaking fingerprints for the whole service life.
+            seen.clear()
+            seen.addAll(currentFingerprints)
+            fresh
         }
-        newEvents.filter { it.shouldNotify }.forEach { event ->
+        newEvents.forEach { event ->
             alarmEventSink?.invoke(
                 AlarmNotificationEvent(
                     accountId = session.accountId,
                     kind = event.kind,
                     text = event.text,
-                    vibrate = event.vibrate
+                    vibrate = event.vibrate,
+                    showNotification = event.shouldNotify
                 )
             )
         }
         actionAudit?.invoke(
             "真实军情警报扫描：account=${session.accountId} detected=${detected.size} " +
-                "new=${newEvents.size} notified=${newEvents.count { it.shouldNotify }} withdraw=false"
+                "new=${newEvents.size} notified=${newEvents.count { it.shouldNotify }}"
         )
         return ProtocolResult.Ok(
             StepResult(
                 success = true,
-                message = "$refreshSummary；真实军情警报扫描完成：新增${newEvents.size}条，通知${newEvents.count { it.shouldNotify }}条；自动撤防保持关闭",
+                message = "$refreshSummary；真实军情警报扫描完成：新增${newEvents.size}条，通知${newEvents.count { it.shouldNotify }}条",
                 raw = mapOf(
                     "newEvents" to newEvents.size.toString(),
                     "notifiedEvents" to newEvents.count { it.shouldNotify }.toString(),
-                    "withdrawDefense" to "false"
+                    "trackedFingerprints" to currentFingerprints.size.toString()
                 )
             )
         )
     }
 
-    override suspend fun runBulkToolAction(session: GameSession, action: BulkToolAction): ProtocolResult<StepResult> =
-        if (session.isRealReadOnly()) unrecovered("REAL_BULK_TOOL_NOT_IMPLEMENTED", "真实批量工具协议尚未接入") else mock.runBulkToolAction(session, action)
+    override suspend fun queryMilitarySnapshot(session: GameSession): ProtocolResult<MilitarySnapshot> {
+        if (!session.isRealSession()) return fallback.queryMilitarySnapshot(session)
+        val gameHttp = session.gameHttpOrNull()
+            ?: return ProtocolResult.Err("REAL_MILITARY_SNAPSHOT_GAME_HTTP_MISSING", "军情快照缺少 gameHttp/serverUrl", false)
+        val dm = session.dmOrNull()
+            ?: return ProtocolResult.Err("REAL_MILITARY_SNAPSHOT_DM_MISSING", "军情快照缺少 dm", false)
+        val contract = behaviorContract.militarySnapshot
+        val response = runCatching {
+            sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(contract.requestOpcode, contract.requestPayload),
+                "military/snapshot"
+            )
+        }.getOrElse {
+            return ProtocolResult.Err("REAL_MILITARY_SNAPSHOT_EXCEPTION", "刷新军情快照异常：${it.message}", true)
+        }
+        if (!response.ok) {
+            return ProtocolResult.Err("REAL_MILITARY_SNAPSHOT_HTTP_FAILED", "刷新军情快照 HTTP ${response.httpCode}", true)
+        }
+        if (contract.responseOpcode !in response.responseOpcodes) {
+            return ProtocolResult.Err(
+                "REAL_MILITARY_SNAPSHOT_RESPONSE_MISSING",
+                "刷新军情快照未收到 0x${contract.responseOpcode.toString(16)} 回执",
+                true
+            )
+        }
+        val militaryPayloads = response.responsePayloads
+            .asSequence()
+            .filter { it.opcode == contract.responseOpcode }
+            .map { it.payloadHex.hexToBytesLocal() }
+            .toList()
+            .ifEmpty { listOf(response.requirePayloadBytesFor(contract.responseOpcode)) }
+        val generalNamesById = runCatching {
+            queryGeneralListForFormationStatus(session)
+                .filter { it.id > 0L && it.name.isNotBlank() }
+                .associate { it.id to it.name }
+        }.getOrDefault(emptyMap())
+        val snapshot = MilitarySnapshotProtocolShapes.parseAll(
+            payloads = militaryPayloads,
+            responded = true,
+            generalNamesById = generalNamesById
+        )
+        val json = snapshot.toJson()
+        val refreshedAtMillis = System.currentTimeMillis()
+        val updates = buildMap {
+            put("militarySnapshotJson", json.toString())
+            put("militarySnapshot", json.toString())
+            put("militarySnapshotUpdatedAt", refreshedAtMillis.toString())
+            if (snapshot.generalStatusRecords.isNotEmpty()) {
+                put(
+                    "militaryGeneralStatusJson",
+                    JSONArray().apply {
+                        snapshot.generalStatusRecords.forEach { put(JSONObject(it)) }
+                    }.toString()
+                )
+                put(
+                    "generalsJson",
+                    mergeMilitaryGeneralEvidence(session, snapshot.generalStatusRecords, refreshedAtMillis)
+                )
+                put("generalsParserVersion", State8004GeneralEvidenceParser.PARSER_VERSION)
+                put("lastMilitaryGeneralRefreshAt", refreshedAtMillis.toString())
+            }
+            if (snapshot.captiveGeneralRecords.isNotEmpty()) {
+                put(
+                    "captiveGeneralsJson",
+                    JSONArray().apply {
+                        snapshot.captiveGeneralRecords.forEach { put(JSONObject(it)) }
+                    }.toString()
+                )
+            }
+        }
+        liveSessionExtraCache.compute(session.accountId) { _, current ->
+            current.orEmpty() + updates
+        }
+        sessionExtraSink?.invoke(
+            session.accountId,
+            updates
+        )
+        actionAudit?.invoke(
+            "真实军情快照刷新：account=${session.accountId} actions=${snapshot.actions.size} " +
+                "generals=${snapshot.generalStatusRecords.size} " +
+                "captives=${snapshot.captiveGeneralRecords.size} " +
+                "unparsedTailBytes=${snapshot.unparsedTailByteCount} " +
+                "response=0x${contract.responseOpcode.toString(16)}"
+        )
+        return ProtocolResult.Ok(snapshot)
+    }
 
-    override suspend fun queryOpenServer(query: OpenServerQuery): ProtocolResult<OpenServerResult> = mock.queryOpenServer(query)
+    private fun mergeMilitaryGeneralEvidence(
+        session: GameSession,
+        evidence: List<Map<String, String>>,
+        refreshedAtMillis: Long
+    ): String {
+        val currentRaw = liveSessionExtraCache[session.accountId]?.get("generalsJson")
+            ?: session.channelExtra["generalsJson"]
+        val byId = linkedMapOf<Long, JSONObject>()
+        runCatching { JSONArray(currentRaw ?: "[]") }.getOrDefault(JSONArray()).let { current ->
+            for (index in 0 until current.length()) {
+                val record = current.optJSONObject(index) ?: continue
+                val id = record.optLong("id").takeIf { it > 0L } ?: continue
+                byId[id] = JSONObject(record.toString())
+            }
+        }
+        evidence.forEach { fields ->
+            val id = fields["id"]?.toLongOrNull()?.takeIf { it > 0L } ?: return@forEach
+            val merged = byId[id] ?: JSONObject()
+            fields.forEach { (key, value) -> merged.put(key, value) }
+            merged.put("liveStateMillis", refreshedAtMillis)
+            merged.put("syncedAtMillis", refreshedAtMillis)
+            merged.put("source", "0x8600-owned-general-tail")
+            byId[id] = merged
+        }
+        return JSONArray().apply { byId.values.forEach(::put) }.toString()
+    }
+
+    override suspend fun runBulkToolAction(session: GameSession, action: BulkToolAction): ProtocolResult<StepResult> =
+        if (session.isRealSession()) unrecovered("REAL_BULK_TOOL_NOT_IMPLEMENTED", "真实批量工具协议尚未接入") else fallback.runBulkToolAction(session, action)
+
+    override suspend fun queryOpenServer(query: OpenServerQuery): ProtocolResult<OpenServerResult> = fallback.queryOpenServer(query)
 
     override suspend fun searchDefendedCities(session: GameSession, config: CityDefenseSearchConfig): ProtocolResult<List<CitySearchResult>> =
-        if (session.isRealReadOnly()) unrecovered("REAL_CITY_SEARCH_NOT_IMPLEMENTED", "真实城池搜索协议尚未接入") else mock.searchDefendedCities(session, config)
+        if (session.isRealSession()) unrecovered("REAL_CITY_SEARCH_NOT_IMPLEMENTED", "真实城池搜索协议尚未接入") else fallback.searchDefendedCities(session, config)
 
     override suspend fun searchTreasures(session: GameSession, config: TreasureFilterConfig): ProtocolResult<List<TreasureSearchResult>> =
-        if (session.isRealReadOnly()) unrecovered("REAL_TREASURE_SEARCH_NOT_IMPLEMENTED", "真实宝藏搜索协议尚未接入") else mock.searchTreasures(session, config)
+        if (session.isRealSession()) unrecovered("REAL_TREASURE_SEARCH_NOT_IMPLEMENTED", "真实宝藏搜索协议尚未接入") else fallback.searchTreasures(session, config)
 
-    override suspend fun applyLicense(config: LicenseConfig, action: LicenseAction): ProtocolResult<LicenseStatus> = mock.applyLicense(config, action)
+    override suspend fun applyLicense(config: LicenseConfig, action: LicenseAction): ProtocolResult<LicenseStatus> = fallback.applyLicense(config, action)
 
-    private fun GameSession.isRealReadOnly(): Boolean = sourceMode == 1
+    private fun GameSession.isRealSession(): Boolean = sourceMode == 1
 
     private fun GameSession.hasRealActionScope(scope: String): Boolean {
         if (channelExtra["realActionScope"].equals(scope, ignoreCase = true)) return true
@@ -3346,6 +4690,7 @@ class SessionAwareGameProtocolClient(
         val rawAudit = mutableListOf<String>()
         for (request in session.recoveredReadOnlyRequests(RecoveredSearchKind.TARGET_041540, start)) {
             val result = runCatching {
+                requireExecutionAllowed("map-search/041540")
                 recoveredReadOnlyExecutor.execute(gameHttp, dm, request.gameHex, liveGate = true)
             }.getOrElse {
                 return ProtocolResult.Err("REAL_READONLY_TARGET_SEARCH_EXCEPTION", "041540 真实只读找黄异常：${it.message}", retryable = false)
@@ -3377,6 +4722,7 @@ class SessionAwareGameProtocolClient(
         val rawAudit = mutableListOf<String>()
         for (request in session.recoveredMineReadOnlyRequests(config)) {
             val result = runCatching {
+                requireExecutionAllowed("mine-search/041542")
                 recoveredReadOnlyExecutor.execute(gameHttp, dm, request.gameHex, liveGate = true)
             }.getOrElse {
                 return ProtocolResult.Err("REAL_READONLY_MINE_SEARCH_EXCEPTION", "041542 真实只读找矿异常：${it.message}", retryable = false)
@@ -3417,10 +4763,12 @@ class SessionAwareGameProtocolClient(
         val now = System.currentTimeMillis()
         liveStateCache[key]?.takeIf { now - it.refreshedAtMillis <= LIVE_STATE_CACHE_MS }?.let { return it }
         return runCatching {
+            requireExecutionAllowed("role-state/1016")
             val result = RealGameProtocolClient().refreshRoleState(gameHttp, dm, roleId)
             val bundle = result.toLiveStateBundle()
             liveStateCache[key] = bundle
             liveStateErrors.remove(key)
+            persistLiveStateBundle(this, bundle)
             actionAudit?.invoke(
                 "真实 0x1016 状态刷新成功：role=${bundle.state.roleName} Lv.${bundle.state.level} " +
                     "copper=${bundle.state.copper} food=${bundle.state.food} opcodes=${bundle.responseOpcodes.joinToString()}"
@@ -3465,6 +4813,11 @@ class SessionAwareGameProtocolClient(
             .put("generalLimit", state.generalLimit)
             .put("resourcePointCurrent", state.resourcePointCurrent)
             .put("resourcePointCap", state.resourcePointCap)
+            .put("officeFieldFlag", state.officeFieldFlag ?: JSONObject.NULL)
+            .put("officeId", state.officeIdUnsigned ?: JSONObject.NULL)
+            .put("officeIdRaw", state.officeIdRaw ?: JSONObject.NULL)
+            .put("officeIdUnsigned", state.officeIdUnsigned ?: JSONObject.NULL)
+            .put("officeName", state.officeName)
             .put("sourceOpcode", state.sourceOpcode)
             .put("state8004PayloadByteCount", state.payloadByteCount)
             .put("state8004ParsedHeadByteCount", state.parsedHeadByteCount)
@@ -3485,6 +4838,59 @@ class SessionAwareGameProtocolClient(
             .put("liveStateMillis", refreshedAtMillis)
             .put("syncedAtMillis", refreshedAtMillis)
         return LiveStateBundle(state, roleJson, resourceJson, responseOpcodes, refreshedAtMillis)
+    }
+
+    private fun persistLiveStateBundle(session: GameSession, live: LiveStateBundle) {
+        val state = live.state
+        val generalRecords = State8004GeneralEvidenceParser.recoverBestAvailableRecords(
+            state.tailHex,
+            state.payloadHex
+        )
+        val statusRecords = State8004StatusEvidenceParser.recoverRecords(state.payloadHex)
+        val armyRows = State8004ArmyEvidenceParser.recover(state.payloadHex)
+        val updates = buildMap {
+                put("roleId", state.roleId.toString())
+                put("roleName", state.roleName)
+                put("level", state.level.toString())
+                put("copper", state.copper.toString())
+                put("food", state.food.toString())
+                put("prestige", state.prestige.toString())
+                put("populationCurrent", state.populationCurrent.toString())
+                put("populationCap", state.populationCap.toString())
+                put("resourcePointCurrent", state.resourcePointCurrent.toString())
+                put("resourcePointCap", state.resourcePointCap.toString())
+                put("officeFieldFlag", state.officeFieldFlag?.toString().orEmpty())
+                put("officeId", state.officeIdUnsigned?.toString().orEmpty())
+                put("officeIdRaw", state.officeIdRaw?.toString().orEmpty())
+                put("officeIdUnsigned", state.officeIdUnsigned?.toString().orEmpty())
+                put("officeName", state.officeName)
+                put("officialTitle", state.officeName)
+                put("roleStateJson", live.roleJson.toString())
+                put("resourceStateJson", live.resourceJson.toString())
+                put("state8004PayloadHex", state.payloadHex)
+                put("state8004TailHex", state.tailHex)
+                put("lastValidatedAt", live.refreshedAtMillis.toString())
+                if (generalRecords.isNotEmpty()) {
+                    put("generalsJson", JSONArray().apply {
+                        generalRecords.forEach { put(JSONObject(it)) }
+                    }.toString())
+                    put("state8004GeneralRecordCount", generalRecords.size.toString())
+                    put("generalsParserVersion", State8004GeneralEvidenceParser.PARSER_VERSION)
+                }
+                if (statusRecords.isNotEmpty()) {
+                    put("statusJson", JSONArray().apply {
+                        statusRecords.forEach { put(JSONObject(it)) }
+                    }.toString())
+                    put("state8004StatusRecordCount", statusRecords.size.toString())
+                }
+                if (armyRows.isNotEmpty()) {
+                    put("armyJson", State8004ArmyEvidenceParser.toJson(armyRows))
+                    put("armySource", "live/0x8004-compact-army")
+                    put("armyRecordCount", armyRows.size.toString())
+                }
+            }
+        liveSessionExtraCache.compute(session.accountId) { _, current -> current.orEmpty() + updates }
+        sessionExtraSink?.invoke(session.accountId, updates)
     }
 
     private fun parseGeneralsFromLiveState(live: LiveStateBundle): List<General> =
@@ -3514,19 +4920,20 @@ class SessionAwareGameProtocolClient(
                 ?.trimEnd('/')
                 ?.plus("/kingWapServer/HttpClient")
             ?: return null
-        channelExtra["dm"]?.parseLongFlexible()?.let { dm ->
-            GameNetworkRouteRegistry.register(this, gameHttp, dm)
-        }
         return gameHttp
     }
 
     private fun GameSession.dmOrNull(): Long? = channelExtra["dm"]?.parseLongFlexible()
 
-    private fun executeRecoveredBrushYellowLiveAction(
+    private suspend fun executeRecoveredBrushYellowLiveAction(
         session: GameSession,
         formationId: Long,
-        target: MapTarget
+        requestedGeneralIds: List<Long>,
+        target: MapTarget,
+        formationRules: List<FormationConfig>
     ): ProtocolResult<BattleResult>? {
+        val brushContract = behaviorContract.brushYellow
+        val expeditionContract = behaviorContract.expedition
         val networkAllowed = session.channelExtra["realActionNetworkAllowed"].asLooseBoolean() == true
         val sendReady = session.channelExtra["realActionSendReady"].asLooseBoolean() == true
         if (!networkAllowed && !sendReady) return null
@@ -3552,139 +4959,259 @@ class SessionAwareGameProtocolClient(
             ?: return ProtocolResult.Err("REAL_ACTION_GAME_HTTP_MISSING", "真实动作 gate 已开启，但 session 缺少 gameHttp/serverUrl", retryable = false)
         val dm = session.dmOrNull()
             ?: return ProtocolResult.Err("REAL_ACTION_DM_MISSING", "真实动作 gate 已开启，但 session 缺少 dm", retryable = false)
-        val generalChunks = session.generalChunksForFormation(formationId)
-        if (generalChunks.isEmpty()) {
+        val monarch = when (val result = queryMonarch(session)) {
+            is ProtocolResult.Ok -> result.value
+            is ProtocolResult.Err -> return result
+        }
+        if (monarch.level < brushContract.minimumRoleLevel) {
             return ProtocolResult.Err(
-                "REAL_ACTION_FORMATION_GENERAL_MISSING",
-                "真实动作 gate 已开启，但 formationId=$formationId 未恢复可用将领 ID",
+                "REAL_ACTION_ROLE_LEVEL_LOW",
+                "请${brushContract.minimumRoleLevel}级之后再开启刷黄！",
                 retryable = false
             )
         }
+        val preflight = when (val result = expeditionPreflight.check(
+            session,
+            ExpeditionPreflightRequest(
+                label = "刷黄",
+                generalIds = requestedGeneralIds,
+                formationId = formationId,
+                refillToFull = session.channelExtra["brushReplenishTroops"].asLooseBoolean() == true,
+                formationRules = formationRules
+            )
+        )) {
+            is ProtocolResult.Ok -> result.value
+            is ProtocolResult.Err -> return result
+        }
+        if (preflight.generalIds.size > brushContract.maximumGeneralsPerFormation) {
+            return ProtocolResult.Err(
+                "REAL_ACTION_TOO_MANY_GENERALS",
+                "刷黄编队最多选择${brushContract.maximumGeneralsPerFormation}名出征将领",
+                retryable = false
+            )
+        }
+        val generalChunks = preflight.generalIds.map { it.toString(16).padStart(16, '0') }
         val targetHex = target.actionTargetHex()
-        val payloadVariants = runCatching {
-            BrushYellowDispatchPayloadBuilder.buildAllBrushYellowPayloadVariants(
+        val payloads = runCatching {
+            BrushYellowDispatchPayloadBuilder.buildBrushYellowPayloads(
                 generalIdHexChunks = generalChunks,
-                targetIdHex = targetHex
+                targetIdHex = targetHex,
+                actionType = brushContract.actionType
             )
         }.getOrElse {
             return ProtocolResult.Err("REAL_ACTION_PAYLOAD_BUILD_FAILED", "真实刷黄 payload 构造失败：${it.message}", retryable = false)
         }
 
         actionAudit?.invoke(
-            "真实刷黄二进制 sender 准备发送：formation=$formationId target=${target.id} targetHex=$targetHex generals=${generalChunks.size} scope=brush-yellow gates=true variants=${payloadVariants.joinToString { it.variant.toString() }}"
+            "真实刷黄二进制 sender 准备发送：formation=$formationId target=${target.id} " +
+                "targetHex=$targetHex generals=${generalChunks.size} scope=brush-yellow gates=true variant=${payloads.variant}"
         )
 
-        var selectedPayloads: BrushYellowDispatchPayloads? = null
-        var selectedPrepare: DirectBinaryResponse? = null
-        var selectedExpedition: DirectBinaryResponse? = null
-        var selectedParsed: BrushYellowDispatchResponse? = null
-        val variantAttempts = mutableMapOf<String, String>()
-        for (payloads in payloadVariants) {
-            val variantPrefix = "variant${payloads.variant}"
-            val prepare = runCatching {
-                sendBinaryMappedGameHex(gameHttp, dm, payloads.preparePayload, phase = "prepare/${payloads.prepareOpcode}/p2=${payloads.variant}")
-            }.getOrElse {
-                actionAudit?.invoke("真实刷黄 prepare 异常：p2=${payloads.variant} ${it.message}")
-                return ProtocolResult.Err("REAL_ACTION_PREPARE_EXCEPTION", "${payloads.prepareOpcode} 发送异常：${it.message}", retryable = false)
-            }
-            variantAttempts["${variantPrefix}PrepareHttpCode"] = prepare.httpCode.toString()
-            variantAttempts["${variantPrefix}PrepareResponseHex"] = prepare.responseHex.take(512)
-            actionAudit?.invoke(
-                "真实刷黄 prepare 返回：p2=${payloads.variant} opcode=${payloads.prepareOpcode} http=${prepare.httpCode} bytes=${prepare.responseBytes} text=${prepare.textPreview.take(80)} hex=${prepare.responseHex.take(64)}"
+        val prepare = runCatching {
+            sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                payloads.preparePayload,
+                phase = "brush-yellow/prepare/p2=${payloads.variant}"
             )
-            if (!prepare.ok) {
-                return ProtocolResult.Err(
-                    "REAL_ACTION_PREPARE_HTTP_FAILED",
-                    "${payloads.prepareOpcode} HTTP ${prepare.httpCode}: ${prepare.textPreview.take(160)}",
-                    retryable = false
+        }.getOrElse {
+            actionAudit?.invoke("真实刷黄 prepare 异常：p2=${payloads.variant} ${it.message}")
+            return ProtocolResult.Err(
+                "REAL_ACTION_PREPARE_EXCEPTION",
+                "${payloads.prepareOpcode} 发送异常：${it.message}",
+                retryable = true
+            )
+        }
+        actionAudit?.invoke(
+            "真实刷黄 prepare 返回：p2=${payloads.variant} opcode=${payloads.prepareOpcode} " +
+                "http=${prepare.httpCode} bytes=${prepare.responseBytes} " +
+                "text=${prepare.textPreview.take(80)} hex=${prepare.responseHex.take(64)}"
+        )
+        if (!prepare.ok) {
+            return ProtocolResult.Err(
+                "REAL_ACTION_PREPARE_HTTP_FAILED",
+                "${payloads.prepareOpcode} HTTP ${prepare.httpCode}: ${prepare.textPreview.take(160)}",
+                retryable = true
+            )
+        }
+        val prepareResponseHex = prepare.payloadHexFor(expeditionContract.prepareResponseOpcode)
+        if (expeditionContract.prepareResponseOpcode !in prepare.responseOpcodes ||
+            prepareResponseHex?.filter(Char::isLetterOrDigit).equals(
+                expeditionContract.softRejectPayload.toHex(),
+                ignoreCase = true
+            )
+        ) {
+            return ProtocolResult.Ok(
+                BattleResult(
+                    success = false,
+                    consumedTimes = 0,
+                    raw = mapOf(
+                        "message" to "刷黄预出征未获得0x${expeditionContract.prepareResponseOpcode.toString(16)}" +
+                            "成功确认，已禁止正式出征",
+                        "payloadVariant" to payloads.variant.toString(),
+                        "prepareResponseHex" to prepareResponseHex.orEmpty().take(2048)
+                    )
                 )
-            }
+            )
+        }
 
-            val expedition = runCatching {
-                sendBinaryMappedGameHex(gameHttp, dm, payloads.expeditionPayload, phase = "expedition/${payloads.expeditionOpcode}/p2=${payloads.variant}")
-            }.getOrElse {
-                actionAudit?.invoke("真实刷黄 expedition 异常：p2=${payloads.variant} ${it.message}")
-                return ProtocolResult.Err("REAL_ACTION_EXPEDITION_EXCEPTION", "${payloads.expeditionOpcode} 发送异常：${it.message}", retryable = false)
-            }
-            // Native game responses can contain a compact 0x8522 status payload while the
-            // decoded text preview also carries historical battle-report text.  If we parse
-            // text first, a stale "消灭..." line can be misclassified as a success for a
-            // different target and the saved-settings flow stops with "未匹配本次目标".
-            // For direct binary brush-yellow actions the authoritative signal is the 0x8522
-            // hex payload, especially status=0; only fall back to text if hex parsing is empty.
-            val parsed = BrushYellowDispatchResponseParser.parse(responseHex = expedition.responseHex)
-                ?: BrushYellowDispatchResponseParser.parse(responseText = expedition.textPreview)
-            variantAttempts["${variantPrefix}ExpeditionHttpCode"] = expedition.httpCode.toString()
-            variantAttempts["${variantPrefix}ExpeditionResponseHex"] = expedition.responseHex.take(512)
-            variantAttempts["${variantPrefix}ParsedSuccess"] = parsed?.success?.toString() ?: "unknown"
-            parsed?.message?.let { variantAttempts["${variantPrefix}ParsedMessage"] = it.take(160) }
+        return expeditionTransactions.execute(
+            accountId = session.accountId,
+            action = "刷黄",
+            targetKey = "${target.id}@${target.coordinate.x},${target.coordinate.y}",
+            snapshot = preflight,
+            exceptionCode = "REAL_ACTION_EXPEDITION_EXCEPTION",
+            exceptionLabel = "${payloads.expeditionOpcode} 发送异常"
+        ) {
+            val pendingRecovery = BrushPendingRecovery(
+                generalIds = preflight.generalIds,
+                formationId = formationId,
+                targetId = target.id,
+                targetX = target.coordinate.x,
+                targetY = target.coordinate.y,
+                createdAtMillis = System.currentTimeMillis(),
+                // Persist before network I/O. A process death in the send boundary must
+                // recover conservatively and perform maintenance before another brush run.
+                sendState = "sending"
+            )
+            persistBrushPendingRecovery(session, pendingRecovery)
+            val expedition = sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                payloads.expeditionPayload,
+                phase = "brush-yellow/expedition/p2=${payloads.variant}"
+            )
+            val expeditionResponseHex = expedition.payloadHexFor(
+                expeditionContract.dispatchResponseOpcode
+            )
+            val parsed = BrushYellowDispatchResponseParser.parse(
+                responseHex = expeditionResponseHex,
+                contract = expeditionContract
+            ) ?: BrushYellowDispatchResponseParser.parse(
+                responseText = expedition.textPreview,
+                contract = expeditionContract
+            )
             actionAudit?.invoke(
-                "真实刷黄 expedition 返回：p2=${payloads.variant} opcode=${payloads.expeditionOpcode} http=${expedition.httpCode} bytes=${expedition.responseBytes} success=${parsed?.success ?: "unknown"} msg=${parsed?.message?.take(60) ?: ""} hex=${expedition.responseHex.take(64)}"
+                "真实刷黄 expedition 返回：p2=${payloads.variant} opcode=${payloads.expeditionOpcode} " +
+                    "http=${expedition.httpCode} bytes=${expedition.responseBytes} " +
+                    "success=${parsed?.success ?: "unknown"} msg=${parsed?.message?.take(60) ?: ""} " +
+                    "hex=${expedition.responseHex.take(64)}"
             )
             if (!expedition.ok) {
-                return ProtocolResult.Err(
-                    "REAL_ACTION_EXPEDITION_HTTP_FAILED",
-                    "${payloads.expeditionOpcode} HTTP ${expedition.httpCode}: ${expedition.textPreview.take(160)}",
-                    retryable = false
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_ACTION_EXPEDITION_HTTP_FAILED",
+                        "${payloads.expeditionOpcode} HTTP ${expedition.httpCode}: ${expedition.textPreview.take(160)}",
+                        retryable = true
+                    ),
+                    "HTTP ${expedition.httpCode}; request acceptance is unknown"
                 )
             }
-            selectedPayloads = payloads
-            selectedPrepare = prepare
-            selectedExpedition = expedition
-            selectedParsed = parsed
-            if (parsed?.success == true) break
-            if (expedition.responseHex.lowercase() != "ff0000") break
-        }
+            if (expeditionContract.dispatchResponseOpcode !in expedition.responseOpcodes) {
+                return@execute ExpeditionSendResult.uncertain(
+                    ProtocolResult.Err(
+                        "REAL_ACTION_EXPEDITION_RECEIPT_MISSING",
+                        "刷黄出征未收到0x${expeditionContract.dispatchResponseOpcode.toString(16)}" +
+                            "，已冻结编队等待真实状态确认",
+                        retryable = true
+                    ),
+                    "2xx response without 0x${expeditionContract.dispatchResponseOpcode.toString(16)}"
+                )
+            }
 
-        val payloads = selectedPayloads ?: payloadVariants.first()
-        val prepare = selectedPrepare ?: return ProtocolResult.Err("REAL_ACTION_PREPARE_EMPTY", "真实刷黄 prepare 未产生响应", retryable = false)
-        val expedition = selectedExpedition ?: return ProtocolResult.Err("REAL_ACTION_EXPEDITION_EMPTY", "真实刷黄 expedition 未产生响应", retryable = false)
-        val parsed = selectedParsed
-
-        val success = parsed?.isSuccessForCurrentTarget(target) == true
-        val contextualMessage = when {
-            parsed?.success == true && !success ->
-                "响应中出现战报成功文本，但未匹配本次目标坐标/ID，已按非本次成功处理"
-            else -> parsed?.message
-        }
-        return ProtocolResult.Ok(
-            BattleResult(
-                success = success,
-                consumedTimes = parsed?.consumedTimes ?: if (success) 1 else 0,
-                raw = buildMap {
-                    put("realActionNetworkAllowed", "true")
-                    put("realActionSendReady", "true")
-                    put("realActionScope", "brush-yellow")
-                    put("sender", "native-wrapper-string")
-                    put("sender", "direct-binary-game-command")
-                    put("endpoint", gameHttp)
-                    put("formationId", formationId.toString())
-                    put("targetId", target.id.toString())
-                    put("targetHex", targetHex)
-                    put("payloadVariant", payloads.variant.toString())
-                    put("attemptedPayloadVariants", payloadVariants.joinToString { it.variant.toString() })
-                    put("preparePayload", payloads.preparePayload)
-                    put("expeditionPayload", payloads.expeditionPayload)
-                    put("prepareOpcode", payloads.prepareOpcode)
-                    put("expeditionOpcode", payloads.expeditionOpcode)
-                    put("prepareHttpCode", prepare.httpCode.toString())
-                    put("expeditionHttpCode", expedition.httpCode.toString())
-                    put("prepareResponseHex", prepare.responseHex.take(2048))
-                    put("expeditionResponseHex", expedition.responseHex.take(2048))
-                    put("prepareResponseText", prepare.textPreview.take(512))
-                    put("expeditionResponseText", expedition.textPreview.take(512))
-                    contextualMessage?.let { put("message", it) }
-                    put("responseHex", expedition.responseHex.take(2048))
-                    putAll(parsed?.toRawMap("expeditionParsed").orEmpty())
-                    putAll(variantAttempts)
-                    put("binaryMapping", "gameHex prefix/len stripped; opcode=0x1520/0x1522; payload starts with p2 + count; p2=0/1/2/3/4 variants attempted until success/non-ff0000")
-                }
+            val success = parsed?.isSuccessForCurrentTarget(
+                target,
+                requirePositiveBattleId = expeditionContract.dispatchSuccessRequiresPositiveBattleId
+            ) == true
+            val contextualMessage = when {
+                parsed?.success == true && !success ->
+                    "响应中出现战报成功文本，但未匹配本次目标坐标/ID，已冻结编队等待确认"
+                else -> parsed?.message
+            }
+            val battle = ProtocolResult.Ok(
+                BattleResult(
+                    success = success,
+                    consumedTimes = parsed?.consumedTimes ?: if (success) 1 else 0,
+                    raw = buildMap {
+                        put("realActionNetworkAllowed", "true")
+                        put("realActionSendReady", "true")
+                        put("realActionScope", "brush-yellow")
+                        put("sender", "direct-binary-game-command")
+                        put("formationId", formationId.toString())
+                        put("targetId", target.id.toString())
+                        put("targetHex", targetHex)
+                        put("payloadVariant", payloads.variant.toString())
+                        put("actionType", brushContract.actionType.toString())
+                        put("attemptedPayloadVariants", payloads.variant.toString())
+                        put("preparePayload", payloads.preparePayload)
+                        put("expeditionPayload", payloads.expeditionPayload)
+                        put("prepareOpcode", payloads.prepareOpcode)
+                        put("expeditionOpcode", payloads.expeditionOpcode)
+                        put("prepareHttpCode", prepare.httpCode.toString())
+                        put("expeditionHttpCode", expedition.httpCode.toString())
+                        put("prepareResponseHex", prepareResponseHex.orEmpty().take(2048))
+                        put("expeditionResponseHex", expeditionResponseHex.orEmpty().take(2048))
+                        put("prepareResponseText", prepare.textPreview.take(512))
+                        put("expeditionResponseText", expedition.textPreview.take(512))
+                        contextualMessage?.let { put("message", it) }
+                        put("responseHex", expeditionResponseHex.orEmpty().take(2048))
+                        putAll(parsed?.toRawMap("expeditionParsed").orEmpty())
+                        put(
+                            "binaryMapping",
+                            "shared-contract actionType=${brushContract.actionType}; exactly one " +
+                                "0x${expeditionContract.dispatchOpcode.toString(16)} mutation request"
+                        )
+                    }
+                )
             )
+            when {
+                success -> {
+                    persistBrushPendingRecovery(
+                        session,
+                        pendingRecovery.copy(sendState = "accepted")
+                    )
+                    ExpeditionSendResult.accepted(battle, "explicit 0x8522 success")
+                }
+                parsed?.success == false -> {
+                    sessionExtraSink?.invoke(
+                        session.accountId,
+                        mapOf(BrushPendingRecovery.SESSION_KEY to "{}")
+                    )
+                    ExpeditionSendResult.rejected(
+                        battle,
+                        "explicit 0x8522 rejection: ${parsed.evidence}"
+                    )
+                }
+                else -> {
+                    persistBrushPendingRecovery(
+                        session,
+                        pendingRecovery.copy(sendState = "uncertain")
+                    )
+                    ExpeditionSendResult.uncertain(
+                        battle,
+                        "0x8522 receipt could not be tied to the current target"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun persistBrushPendingRecovery(
+        session: GameSession,
+        pending: BrushPendingRecovery
+    ) {
+        sessionExtraSink?.invoke(
+            session.accountId,
+            mapOf(BrushPendingRecovery.SESSION_KEY to pending.toJson().toString())
         )
     }
 
-    private fun BrushYellowDispatchResponse.isSuccessForCurrentTarget(target: MapTarget): Boolean {
+    private fun BrushYellowDispatchResponse.isSuccessForCurrentTarget(
+        target: MapTarget,
+        requirePositiveBattleId: Boolean
+    ): Boolean {
         if (success != true) return false
+        if (requirePositiveBattleId && (battleId ?: 0L) <= 0L) return false
         if (evidence.startsWith("hex-8522-status-0")) return true
         if (rawText.contains("刷黄出征成功") || rawText.contains("出征成功") || rawText.contains("success", ignoreCase = true)) {
             return true
@@ -3712,6 +5239,7 @@ class SessionAwareGameProtocolClient(
     ): ProtocolResult<StepResult>? {
         val gate = session.brushYellowActionGateOrError() ?: return null
         if (gate is ProtocolResult.Err) return gate
+        val contract = behaviorContract.formation
         val gameHttp = session.gameHttpOrNull()
             ?: return ProtocolResult.Err("REAL_FORMATION_GAME_HTTP_MISSING", "真实配兵 gate 已开启，但 session 缺少 gameHttp/serverUrl", retryable = false)
         val dm = session.dmOrNull()
@@ -3722,7 +5250,11 @@ class SessionAwareGameProtocolClient(
         if (generalIds.isEmpty()) {
             return ProtocolResult.Err("REAL_FORMATION_GENERAL_MISSING", "真实配兵缺少将领 ID", retryable = false)
         }
-        if (!config.autoAssignTroops && !config.fillToMaxWhenAutoAssignDisabled) {
+        if (!config.autoAssignTroops &&
+            !config.fillToMaxWhenAutoAssignDisabled &&
+            config.clearOtherGeneralIds.isEmpty() &&
+            !config.clearAllIdleTroops
+        ) {
             return ProtocolResult.Ok(StepResult(true, "配兵未启用，跳过真实 0x1226/0x1229", raw = mapOf("skipped" to "true")))
         }
 
@@ -3732,93 +5264,209 @@ class SessionAwareGameProtocolClient(
             "troopType" to config.troopType,
             "troopCount" to config.troopCount.toString(),
             "generalIds" to generalIds.joinToString(","),
-            "batchRefillOnly" to (!config.autoAssignTroops && config.fillToMaxWhenAutoAssignDisabled).toString()
+            "batchRefillOnly" to (!config.autoAssignTroops && config.fillToMaxWhenAutoAssignDisabled).toString(),
+            "clearOtherGeneralIds" to config.clearOtherGeneralIds.joinToString(","),
+            "clearAllIdleTroops" to config.clearAllIdleTroops.toString()
         )
-        var allAssignOk = true
-        var assignedEnough = true
+        val currentGenerals = queryGeneralListForFormationStatus(session).associateBy(General::id)
+        val idleSoldiers = session.idleSoldierCounts()?.toMutableMap()
+
+        if (config.clearOtherGeneralIds.isNotEmpty() || config.clearAllIdleTroops) {
+            var cleared = 0
+            var skipped = 0
+            currentGenerals.values
+                .filter { config.clearAllIdleTroops || it.id !in config.clearOtherGeneralIds }
+                .forEach { general ->
+                    val current = general.currentAssignedTroops() ?: return@forEach
+                    if (current.count <= 0) return@forEach
+                    if (general.status != contract.idleGeneralStatus) {
+                        skipped += 1
+                        raw["clear.${general.id}.skipped"] = "status=${general.status ?: "unknown"}"
+                        return@forEach
+                    }
+                    val outcome = runCatching {
+                        sendFormationAssignment(
+                            gameHttp = gameHttp,
+                            dm = dm,
+                            generalId = general.id,
+                            soldierType = current.typeCode,
+                            soldierCount = 0,
+                            phase = "formation/clear-other",
+                            contract = contract
+                        )
+                    }.getOrElse { error ->
+                        raw["clear.${general.id}.error"] = error.message.orEmpty()
+                        actionAudit?.invoke("解除其他将领配兵异常：general=${general.id} ${error.message}")
+                        return@forEach
+                    }
+                    raw.recordFormationAssignment("clear.${general.id}", outcome)
+                    if (outcome.confirmed && outcome.receipt.assignedCount == 0) {
+                        cleared += 1
+                        idleSoldiers?.merge(current.typeCode, current.count, Int::plus)
+                    } else {
+                        raw["clear.${general.id}.skipped"] = outcome.message
+                    }
+                }
+            raw["clear.clearedCount"] = cleared.toString()
+            raw["clear.skippedCount"] = skipped.toString()
+            invalidateLiveState(session)
+        }
+
         if (config.autoAssignTroops) {
             val targetCode = soldierTypeCode(config.troopType)
-            val currentGenerals = queryGeneralListForFormationStatus(session).associateBy { it.id }
             generalIds.forEach { generalId ->
-                val current = currentGenerals[generalId]?.currentAssignedTroops()
-                if (current != null && current.typeCode == targetCode && current.count >= config.troopCount) {
+                val general = currentGenerals[generalId]
+                    ?: return ProtocolResult.Err(
+                        "REAL_FORMATION_GENERAL_NOT_FOUND",
+                        "真实配兵未找到将领 ID=$generalId",
+                        false
+                    )
+                if (general.status != contract.idleGeneralStatus) {
+                    return ProtocolResult.Ok(
+                        StepResult(false, "将领${general.name}当前不是空闲状态，未执行配兵", raw)
+                    )
+                }
+                val effectiveCount = if (contract.clampCountToTroopLimit) {
+                    general.troopLimit?.takeIf { it > 0 }?.let { minOf(config.troopCount, it) }
+                        ?: config.troopCount
+                } else {
+                    config.troopCount
+                }
+                raw["assign.${generalId}.requestedCount"] = config.troopCount.toString()
+                raw["assign.${generalId}.effectiveCount"] = effectiveCount.toString()
+                val current = general.currentAssignedTroops()
+                if (current != null && current.typeCode == targetCode && current.count == effectiveCount) {
                     raw["assign.${generalId}.skipped"] = "already-satisfied"
                     raw["assign.${generalId}.assignedType"] = current.typeCode.toString()
                     raw["assign.${generalId}.assignedCount"] = current.count.toString()
-                    raw["assign.${generalId}.message"] = "当前将领已满足 ${config.troopCount}${config.troopType}，跳过 0x1226"
+                    raw["assign.${generalId}.message"] = "当前将领已精确满足 ${effectiveCount}${config.troopType}，跳过 0x1226"
                     actionAudit?.invoke(
-                        "真实配兵 0x1226 跳过：general=$generalId 当前=${current.count}${config.troopType}(code=${current.typeCode}) 已满足目标 ${config.troopCount}${config.troopType}"
+                        "真实配兵跳过：general=$generalId 当前=${current.count}${config.troopType}(code=${current.typeCode}) 已精确满足目标"
                     )
                     return@forEach
                 }
-                val payload = buildAssignTroopsPayload(generalId, targetCode, config.troopCount, group = 0)
-                val gameHex = buildDirectGameHex(0x1226, payload)
-                val response = runCatching {
-                    sendBinaryMappedGameHex(gameHttp, dm, gameHex, phase = "formation/1226")
-                }.getOrElse {
-                    actionAudit?.invoke("真实配兵 0x1226 异常：general=$generalId ${it.message}")
-                    return ProtocolResult.Err("REAL_FORMATION_ASSIGN_EXCEPTION", "0x1226 发送异常：${it.message}", retryable = false)
+
+                val alreadyCarryingTarget = current
+                    ?.takeIf { it.typeCode == targetCode }
+                    ?.count
+                    ?: 0
+                if (contract.precheckIdleSoldierInventory && alreadyCarryingTarget < effectiveCount) {
+                    val inventory = idleSoldiers
+                        ?: return ProtocolResult.Ok(
+                            StepResult(false, "无法确认当前闲兵数量，已保持${general.name}原配兵不变", raw)
+                        )
+                    val available = alreadyCarryingTarget + (inventory[targetCode] ?: 0)
+                    if (available < effectiveCount) {
+                        return ProtocolResult.Ok(
+                            StepResult(
+                                false,
+                                "${general.name}缺少${effectiveCount - available}${config.troopType}；" +
+                                    "目标$effectiveCount，可用$available，已保持原配兵不变",
+                                raw
+                            )
+                        )
+                    }
                 }
-                val opcodeConfirmed = 0x8226 in response.responseOpcodes
-                val parsed = Formation122xResponseParser.parse8226(response.responseHex)
-                val responseMatchesGeneral = parsed.generalId == generalId
-                val assignmentConfirmed = response.ok && opcodeConfirmed && parsed.success &&
-                    responseMatchesGeneral
-                raw["assign.${generalId}.payloadHex"] = payload.toHex()
-                raw["assign.${generalId}.http"] = response.httpCode.toString()
-                raw["assign.${generalId}.responseOpcodes"] =
-                    response.responseOpcodes.joinToString { "0x${it.toString(16)}" }
-                raw["assign.${generalId}.responseHex"] = response.responseHex.take(512)
-                raw["assign.${generalId}.status"] = parsed.status?.toString().orEmpty()
-                raw["assign.${generalId}.previousType"] = parsed.previousType?.toString().orEmpty()
-                raw["assign.${generalId}.previousCount"] = parsed.previousCount?.toString().orEmpty()
-                raw["assign.${generalId}.assignedType"] = parsed.assignedType?.toString().orEmpty()
-                raw["assign.${generalId}.assignedCount"] = parsed.assignedCount?.toString().orEmpty()
-                raw["assign.${generalId}.message"] = when {
-                    !response.ok -> "0x1226 HTTP ${response.httpCode}"
-                    !opcodeConfirmed -> "0x1226 未收到 0x8226"
-                    !responseMatchesGeneral -> "0x8226 将领ID不匹配：${parsed.generalId}"
-                    else -> parsed.message
+
+                val outcome = runCatching {
+                    sendFormationAssignment(
+                        gameHttp = gameHttp,
+                        dm = dm,
+                        generalId = generalId,
+                        soldierType = targetCode,
+                        soldierCount = effectiveCount,
+                        phase = "formation/assign",
+                        contract = contract
+                    )
+                }.getOrElse { error ->
+                    actionAudit?.invoke("真实配兵异常：general=$generalId ${error.message}")
+                    return ProtocolResult.Err(
+                        "REAL_FORMATION_ASSIGN_EXCEPTION",
+                        "配兵发送异常：${error.message}",
+                        retryable = false
+                    )
                 }
-                actionAudit?.invoke(
-                    "真实配兵 0x1226 返回：general=$generalId target=${config.troopCount}${config.troopType} " +
-                        "confirmed=$assignmentConfirmed previous=${parsed.previousCount} actual=${parsed.assignedCount} " +
-                        "opcodes=${response.responseOpcodes.joinToString { "0x${it.toString(16)}" }} http=${response.httpCode}"
-                )
-                allAssignOk = allAssignOk && assignmentConfirmed
-                if (parsed.assignedType != null && parsed.assignedCount != null) {
-                    assignedEnough = assignedEnough && parsed.assignedType == targetCode && parsed.assignedCount >= config.troopCount
-                } else {
-                    assignedEnough = false
+                raw.recordFormationAssignment("assign.$generalId", outcome)
+                val exact = outcome.confirmed &&
+                    outcome.receipt.assignedType == targetCode &&
+                    outcome.receipt.assignedCount == effectiveCount
+                if (!exact) {
+                    return ProtocolResult.Ok(
+                        StepResult(
+                            false,
+                            "真实配兵未达到配置：需要 $effectiveCount${config.troopType}；${outcome.message}",
+                            raw
+                        )
+                    )
+                }
+                current?.takeIf { it.count > 0 }?.let {
+                    idleSoldiers?.merge(it.typeCode, it.count, Int::plus)
+                }
+                idleSoldiers?.computeIfPresent(targetCode) { _, count ->
+                    (count - effectiveCount).coerceAtLeast(0)
                 }
             }
 
-            if (!allAssignOk || !assignedEnough) {
-                val message = if (!assignedEnough) {
-                    "真实配兵未达到配置：需要 ${config.troopCount}${config.troopType}；未发送 0x1229"
-                } else {
-                    "真实配兵 0x1226 未取得完整 0x8226 确认；未发送 0x1229"
+            invalidateLiveState(session)
+            if (session.liveStateRefreshEnabled()) {
+                val refreshed = session.liveStateBundleOrNull()
+                    ?: return ProtocolResult.Err(
+                        "REAL_FORMATION_VERIFY_REFRESH_FAILED",
+                        "配兵成功回执后无法刷新0x8004复核",
+                        retryable = true
+                    )
+                val byId = parseGeneralsFromLiveState(refreshed).associateBy(General::id)
+                generalIds.forEach { generalId ->
+                    val general = byId[generalId]
+                        ?: return ProtocolResult.Err(
+                            "REAL_FORMATION_VERIFY_GENERAL_MISSING",
+                            "配兵后刷新未找到将领 ID=$generalId",
+                            false
+                        )
+                    val expected = general.troopLimit?.takeIf { it > 0 }?.let { minOf(config.troopCount, it) }
+                        ?: config.troopCount
+                    val actual = general.currentAssignedTroops()
+                    if (actual?.typeCode != targetCode || actual.count != expected) {
+                        return ProtocolResult.Ok(
+                            StepResult(false, "配兵后复核不一致：${general.name}需要$expected${config.troopType}", raw)
+                        )
+                    }
                 }
-                return ProtocolResult.Ok(StepResult(false, message, raw))
             }
+            return ProtocolResult.Ok(
+                StepResult(
+                    true,
+                    "真实配兵完成：${generalIds.joinToString(",")} → ${config.troopCount}${config.troopType}",
+                    raw
+                )
+            )
         }
 
+        if (!config.fillToMaxWhenAutoAssignDisabled) {
+            return ProtocolResult.Ok(StepResult(true, "其他将领配兵清理完成", raw))
+        }
         val refillPayload = buildRefillPayload(generalIds)
         val refillResponse = runCatching {
-            sendBinaryMappedGameHex(gameHttp, dm, buildDirectGameHex(0x1229, refillPayload), phase = "formation/1229")
+            sendBinaryMappedGameHex(
+                gameHttp,
+                dm,
+                buildDirectGameHex(contract.refillRequestOpcode, refillPayload),
+                phase = "formation/refill"
+            )
         }.getOrElse {
-            actionAudit?.invoke("真实补兵 0x1229 异常：${it.message}")
-            return ProtocolResult.Err("REAL_FORMATION_REFILL_EXCEPTION", "0x1229 发送异常：${it.message}", retryable = false)
+            actionAudit?.invoke("真实补兵异常：${it.message}")
+            return ProtocolResult.Err("REAL_FORMATION_REFILL_EXCEPTION", "补兵发送异常：${it.message}", retryable = false)
         }
-        val refillOpcodeConfirmed = 0x8229 in refillResponse.responseOpcodes
-        val refillParsed = Formation122xResponseParser.parse8229(refillResponse.responseHex)
+        val refillOpcodeConfirmed = contract.refillResponseOpcode in refillResponse.responseOpcodes
+        val refillPayloadHex = refillResponse.payloadHexFor(contract.refillResponseOpcode).orEmpty()
+        val refillParsed = Formation122xResponseParser.parse8229(refillPayloadHex)
         val refillIds = refillParsed.entries.map { it.generalId }.toSet()
         val refillEntriesComplete = generalIds.all { it in refillIds }
         raw["refill.payloadHex"] = refillPayload.toHex()
         raw["refill.http"] = refillResponse.httpCode.toString()
         raw["refill.responseOpcodes"] =
             refillResponse.responseOpcodes.joinToString { "0x${it.toString(16)}" }
-        raw["refill.responseHex"] = refillResponse.responseHex.take(512)
+        raw["refill.responseHex"] = refillPayloadHex.take(512)
         raw["refill.status"] = refillParsed.status?.toString().orEmpty()
         raw["refill.message"] = refillParsed.message
         raw["refill.entries"] = refillParsed.entries.joinToString(";") {
@@ -3844,6 +5492,87 @@ class SessionAwareGameProtocolClient(
             else -> "真实配兵/补兵未确认成功"
         }
         return ProtocolResult.Ok(StepResult(success, message, raw))
+    }
+
+    private data class FormationAssignmentOutcome(
+        val payload: ByteArray,
+        val response: DirectBinaryResponse,
+        val receipt: FormationAssign8226Result,
+        val opcodeConfirmed: Boolean,
+        val confirmed: Boolean,
+        val message: String
+    )
+
+    private fun sendFormationAssignment(
+        gameHttp: String,
+        dm: Long,
+        generalId: Long,
+        soldierType: Int,
+        soldierCount: Int,
+        phase: String,
+        contract: FormationBehaviorContract
+    ): FormationAssignmentOutcome {
+        val payload = buildAssignTroopsPayload(generalId, soldierType, soldierCount, group = 0)
+        val response = sendBinaryMappedGameHex(
+            gameHttp,
+            dm,
+            buildDirectGameHex(contract.assignRequestOpcode, payload),
+            phase = phase
+        )
+        val opcodeConfirmed = contract.assignResponseOpcode in response.responseOpcodes
+        val receipt = Formation122xResponseParser.parse8226(
+            response.payloadHexFor(contract.assignResponseOpcode).orEmpty()
+        )
+        val generalMatches = receipt.generalId == generalId
+        val confirmed = response.ok && opcodeConfirmed && receipt.success && generalMatches
+        val message = when {
+            !response.ok -> "配兵 HTTP ${response.httpCode}"
+            !opcodeConfirmed -> "配兵未收到 0x${contract.assignResponseOpcode.toString(16)}"
+            !generalMatches -> "配兵回执将领ID不匹配：${receipt.generalId}"
+            else -> receipt.message
+        }
+        actionAudit?.invoke(
+            "真实配兵返回：phase=$phase general=$generalId target=$soldierCount/type=$soldierType " +
+                "confirmed=$confirmed actual=${receipt.assignedCount}/type=${receipt.assignedType} " +
+                "http=${response.httpCode}"
+        )
+        return FormationAssignmentOutcome(payload, response, receipt, opcodeConfirmed, confirmed, message)
+    }
+
+    private fun MutableMap<String, String>.recordFormationAssignment(
+        prefix: String,
+        outcome: FormationAssignmentOutcome
+    ) {
+        this["$prefix.payloadHex"] = outcome.payload.toHex()
+        this["$prefix.http"] = outcome.response.httpCode.toString()
+        this["$prefix.responseOpcodes"] = outcome.response.responseOpcodes.joinToString { "0x${it.toString(16)}" }
+        this["$prefix.responseHex"] = outcome.response.responseHex.take(512)
+        this["$prefix.status"] = outcome.receipt.status?.toString().orEmpty()
+        this["$prefix.previousType"] = outcome.receipt.previousType?.toString().orEmpty()
+        this["$prefix.previousCount"] = outcome.receipt.previousCount?.toString().orEmpty()
+        this["$prefix.assignedType"] = outcome.receipt.assignedType?.toString().orEmpty()
+        this["$prefix.assignedCount"] = outcome.receipt.assignedCount?.toString().orEmpty()
+        this["$prefix.confirmed"] = outcome.confirmed.toString()
+        this["$prefix.message"] = outcome.message
+    }
+
+    private fun GameSession.idleSoldierCounts(): Map<Int, Int>? {
+        val raw = liveSessionExtraCache[accountId]?.get("armyJson")
+            ?: channelExtra["armyJson"]
+            ?: return null
+        val rows = runCatching { JSONArray(raw) }.getOrNull() ?: return null
+        val counts = linkedMapOf<Int, Int>()
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val type = row.optInt("soldierTypeCode", -1)
+            val count = row.optInt("idleCount", row.optInt("count", row.optInt("amount", 0)))
+            if (type >= 0 && count > 0) counts.merge(type, count, Int::plus)
+        }
+        return counts
+    }
+
+    private fun invalidateLiveState(session: GameSession) {
+        session.liveStateKeyOrNull()?.let(liveStateCache::remove)
     }
 
     private data class CurrentAssignedTroops(val typeCode: Int, val count: Int)
@@ -3906,6 +5635,18 @@ class SessionAwareGameProtocolClient(
             ?: return ProtocolResult.Err("REAL_HEAL_GAME_HTTP_MISSING", "真实治疗 gate 已开启，但 session 缺少 gameHttp/serverUrl", retryable = false)
         val dm = session.dmOrNull()
             ?: return ProtocolResult.Err("REAL_HEAL_DM_MISSING", "真实治疗 gate 已开启，但 session 缺少 dm", retryable = false)
+        val armyRows = session.liveStateBundleOrNull()?.state?.payloadHex
+            ?.let(State8004ArmyEvidenceParser::recover)
+            .orEmpty()
+        if (armyRows.isNotEmpty() && armyRows.sumOf { it.woundedCount } <= 0) {
+            return ProtocolResult.Ok(
+                StepResult(
+                    true,
+                    "当前没有伤兵，跳过治疗请求",
+                    mapOf("skipped" to "no-wounded-soldiers")
+                )
+            )
+        }
         val general = queryGeneralListForFormationStatus(session).firstOrNull { it.id == generalId }
             ?: return ProtocolResult.Err(
                 "REAL_HEAL_GENERAL_NOT_FOUND",
@@ -3944,7 +5685,7 @@ class SessionAwareGameProtocolClient(
         }
         val preReceipt = runCatching {
             GeneralProtocolShapes.parseHealPreInfoResponse(
-                pre.responseHex.hexToBytesLocal(),
+                pre.requirePayloadBytesFor(0x8231),
                 expectedFiefId = fiefId,
                 expectedSoldierType = -1
             )
@@ -3972,7 +5713,7 @@ class SessionAwareGameProtocolClient(
             )
         }
         val parsed = runCatching {
-            GeneralProtocolShapes.parseHealResponse(heal.responseHex.hexToBytesLocal())
+            GeneralProtocolShapes.parseHealResponse(heal.requirePayloadBytesFor(0x8230))
         }.getOrElse {
             return ProtocolResult.Err(
                 "REAL_HEAL_RECEIPT_INVALID",
@@ -3981,6 +5722,7 @@ class SessionAwareGameProtocolClient(
             )
         }
         actionAudit?.invoke("真实治疗 0x1230 返回：general=$generalId fief=$fiefId success=${parsed.success} msg=${parsed.message} http=${heal.httpCode}")
+        if (parsed.success) invalidateLiveState(session)
         return ProtocolResult.Ok(
             StepResult(
                 success = parsed.success,
@@ -4113,16 +5855,10 @@ class SessionAwareGameProtocolClient(
 
     private fun MapTarget.actionTargetHex(): String {
         val rawRecord = raw["rawRecord"]?.filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }?.lowercase()
-        if (raw["source"] == "8540-structured" && !rawRecord.isNullOrBlank() && rawRecord.length >= 20) {
-            // 2026-07-08 live matrix: 山贼 dispatch with actionType=10 was accepted when
-            // using the first 10 bytes of the 0x8540 record and taking its trailing 8 bytes
-            // as the target long (id low bytes + UTF name length). Desktop keeps both this
-            // and first-8-id candidates; mobile uses the accepted candidate first.
-            return rawRecord.take(20).takeLast(16)
-        }
         if (raw["source"] == "8540-structured" && !rawRecord.isNullOrBlank() && rawRecord.length >= 16) {
-            // Conservative fallback: structured 0x8540 records start with the 8-byte
-            // target id followed by the UTF name length.
+            // Desktop canonical rule: a structured 0x8540 record begins with the exact
+            // 8-byte target id. Including the following UTF-name length creates a different
+            // long and can make 0x8522 return ff0000.
             return rawRecord.take(16)
         }
         if (!rawRecord.isNullOrBlank() && rawRecord.length >= 18) {
@@ -4176,6 +5912,7 @@ class SessionAwareGameProtocolClient(
         gameHex: String,
         phase: String
     ): DirectBinaryResponse {
+        requireExecutionAllowed(phase)
         directBinaryTransport?.let { return it(gameHttp, dm, gameHex, phase) }
         val normalized = gameHex.filterNot { it.isWhitespace() }.lowercase()
         require(normalized.startsWith("000000000000000000")) { "unsupported gameHex prefix for $phase" }
@@ -4184,7 +5921,8 @@ class SessionAwareGameProtocolClient(
         val opcode = body.substring(2, 6).toInt(16)
         val payload = body.drop(6).hexToBytesLocal()
         val requestBody = makeBinaryGamePacket(dm, opcode, payload)
-        val conn = (GameNetworkRouteRegistry.route(gameHttp, dm).open(URL(gameHttp)) as HttpURLConnection).apply {
+        val purpose = GameOpcodePurpose.of(opcode)
+        val conn = (URL(gameHttp).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 25_000
             requestMethod = "POST"
@@ -4193,22 +5931,41 @@ class SessionAwareGameProtocolClient(
             setRequestProperty("User-Agent", "DWPMClone/1.0 direct-binary-action")
             setFixedLengthStreamingMode(requestBody.size)
         }
-        conn.outputStream.use { it.write(requestBody) }
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
-        val packets = runCatching { parseBinaryGameResponse(bytes) }.getOrDefault(emptyList())
-        val responsePayload = packets.joinToString(separator = "") { it.payload.toHex() }
-        val responseText = packets.joinToString(separator = " ") { it.payload.toPrintableTextPreview() }
-        return DirectBinaryResponse(
-            phase = phase,
-            httpCode = code,
-            ok = code in 200..299,
-            responseBytes = bytes.size,
-            responseHex = responsePayload.ifBlank { bytes.toHex() },
-            textPreview = responseText.ifBlank { bytes.toPrintableTextPreview() },
-            responseOpcodes = packets.map { it.opcode }
-        )
+        return try {
+            conn.outputStream.use { it.write(requestBody) }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+            val packets = runCatching { parseBinaryGameResponse(bytes) }.getOrDefault(emptyList())
+            val responsePayload = packets.joinToString(separator = "") { it.payload.toHex() }
+            val responseText = packets.joinToString(separator = " ") { it.payload.toPrintableTextPreview() }
+            DirectBinaryResponse(
+                phase = phase,
+                httpCode = code,
+                ok = code in 200..299,
+                responseBytes = bytes.size,
+                responseHex = responsePayload.ifBlank { bytes.toHex() },
+                textPreview = responseText.ifBlank { bytes.toPrintableTextPreview() },
+                responseOpcodes = packets.map { it.opcode },
+                responsePayloads = packets.map { DirectBinaryPayload(it.opcode, it.payload.toHex()) }
+            ).also { GameRequestHealthSink.record(it.ok, purpose) }
+        } catch (error: Throwable) {
+            GameRequestHealthSink.record(false, purpose)
+            throw error
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * A foreground stop cannot interrupt bytes already handed to the socket, but it must prevent
+     * every later request in the same scheduler batch. The check intentionally sits immediately
+     * before each network implementation or injected transport.
+     */
+    private fun requireExecutionAllowed(phase: String) {
+        if (executionAllowed()) return
+        actionAudit?.invoke("后台执行权已撤销，已阻止请求：$phase")
+        throw ExecutionRevokedBeforeNetworkException(phase)
     }
 
     private fun makeBinaryGamePacket(dm: Long, opcode: Int, payload: ByteArray): ByteArray {
@@ -4281,9 +6038,10 @@ class SessionAwareGameProtocolClient(
         gameHex: String,
         phase: String
     ): DirectBinaryResponse {
+        requireExecutionAllowed(phase)
         val body = fields.lx!! + fields.key!! + gameHex + fields.lb!!
         val bodyBytes = body.toByteArray(Charsets.UTF_8)
-        val conn = (URL(gameHttp).openConnection(Proxy.NO_PROXY) as HttpURLConnection).apply {
+        val conn = (URL(gameHttp).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 25_000
             requestMethod = "POST"
@@ -4311,12 +6069,21 @@ class SessionAwareGameProtocolClient(
         kind: RecoveredSearchKind,
         start: MapCoordinate
     ): List<RecoveredSearchRequest> {
+        val contract = behaviorContract.mapSearch
         val mode = channelExtra["recoveredReadOnlyScanMode"]?.uppercase().orEmpty()
         val threadCount = channelExtra["recoveredReadOnlyThreadCount"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
         val limit = channelExtra["recoveredReadOnlyScanLimit"]?.toIntOrNull()?.coerceAtLeast(1)
         val requests = when (mode) {
-            "FULL", "FULL_SCAN" -> RecoveredMapScanPlanner.fullScanRequestsDeduped(kind, threadCount)
-            else -> listOf(RecoveredMapScanPlanner.singleRequest(kind, start))
+            "SINGLE", "EXACT" -> listOf(RecoveredMapScanPlanner.singleRequest(kind, start, contract))
+            "FULL", "FULL_SCAN" -> RecoveredMapScanPlanner
+                .fullScanRequestsDeduped(kind, threadCount, contract)
+                .take(contract.fullRequestLimit)
+            else -> RecoveredMapScanPlanner.nearbyRequests(
+                kind,
+                start,
+                contract.nearbyRequestLimit,
+                contract
+            )
         }
         return limit?.let { requests.take(it) } ?: requests
     }
@@ -4327,7 +6094,8 @@ class SessionAwareGameProtocolClient(
         val requests = RecoveredMapScanPlanner.mineScopeRequests(
             RecoveredSearchKind.RESOURCE_POINT_041542,
             config.start,
-            config.searchScope
+            config.searchScope,
+            behaviorContract.mapSearch
         )
         val explicitLimit = channelExtra["recoveredReadOnlyScanLimit"]
             ?.toIntOrNull()
@@ -4419,6 +6187,12 @@ class SessionAwareGameProtocolClient(
     }
 
     private suspend fun recoveredConvertFoodToCopper(session: GameSession, mode: ConvertMode): ProtocolResult<ResourceState> {
+        if (!offlineActionFixturesAllowed) {
+            return unrecovered(
+                "REAL_CONVERT_LIVE_UNAVAILABLE",
+                "真实资源转换条件不完整；生产路径禁止使用离线转换回执"
+            )
+        }
         val raw = session.channelExtra["dailyStepResultsJson"]
             ?: return unrecovered("REAL_CONVERT_NOT_IMPLEMENTED", "真实资源转换协议尚未接入")
         val donationFactorFz = session.channelExtra["dailyDonationFactorFz"]?.toIntOrNull() ?: 1
@@ -4568,7 +6342,10 @@ class SessionAwareGameProtocolClient(
                     responseHex = obj.stringAlias("responseHex", "rawResponseHex", "bodyHex", "responseBodyHex", "rawHex")
                         ?: rawObject?.stringAlias("responseHex", "rawResponseHex", "bodyHex", "responseBodyHex", "rawHex")
                 )
-                val responseSuccess = response?.isSuccessForCurrentTarget(target)
+                val responseSuccess = response?.isSuccessForCurrentTarget(
+                    target,
+                    behaviorContract.expedition.dispatchSuccessRequiresPositiveBattleId
+                )
                 val success = responseSuccess
                     ?: obj.successAlias("success", "ok", "dispatchSuccess", "result", "status", "state")
                     ?: rawObject?.successAlias("success", "ok", "dispatchSuccess", "result", "status", "state")
@@ -4746,7 +6523,9 @@ class SessionAwareGameProtocolClient(
     }
 
     private fun GameSession.recoveredGeneralFallbackFormations(generals: List<General>): List<FormationRuntime> {
-        if (channelExtra["allowRecoveredGeneralFallbackFormation"].asLooseBoolean() != true) return emptyList()
+        if (channelExtra["allowRecoveredGeneralFallbackFormation"].asLooseBoolean() != true &&
+            channelExtra["unifiedExpeditionPreflight"].asLooseBoolean() != true
+        ) return emptyList()
         val selectedGeneralIds = selectedRecoveredGeneralFallbackIds()
         return generals
             .asSequence()
@@ -4765,7 +6544,7 @@ class SessionAwareGameProtocolClient(
                     name = "候选刷黄编队-${general.name.ifBlank { general.id.toString() }}",
                     generalIds = listOf(general.id),
                     status = FormationRuntimeStatus.IDLE,
-                    troopCount = general.troopLimit,
+                    troopCount = general.currentAssignedTroops()?.count,
                     raw = mapOf(
                         "source" to "recovered-state8004-general-fallback",
                         "generalId" to general.id.toString(),
@@ -4799,6 +6578,11 @@ class SessionAwareGameProtocolClient(
             val obj = arr.getJSONObject(index)
             val mineType = parseMineType(obj.stringAlias("mineType", "type", "kind", "fA")) ?: return@mapNotNull null
             val defenseCount = obj.intAlias("defenseCount", "defenders", "guardCount", "kC", "kD")
+            val playerOccupied = obj.boolAlias(
+                "playerOccupied",
+                "occupied",
+                "isPlayerOccupied"
+            ) ?: false
             MineSearchResult(
                 id = obj.longAlias("id", "mineId", "resourceId") ?: 0L,
                 coordinate = MapCoordinate(
@@ -4810,17 +6594,15 @@ class SessionAwareGameProtocolClient(
                 reserve = obj.longAlias("reserve", "amount", "kz"),
                 isEmpty = obj.boolAlias("isEmpty", "empty") ?: (defenseCount == 0),
                 defenseCount = defenseCount,
-                raw = obj.toStringMap()
+                raw = obj.toStringMap(),
+                playerOccupied = playerOccupied,
+                ownerName = obj.stringAlias("ownerName", "playerName", "owner")
             )
         }
     }
 
     private fun List<MineSearchResult>.filterByMineConfig(config: MineConfig): List<MineSearchResult> =
-        asSequence()
-            .filter { config.selectedMineTypes.isEmpty() || it.mineType in config.selectedMineTypes }
-            .filter { !config.onlyEmptyMine || it.isEmpty }
-            .filter { !config.onlyDefendedMine || (!it.isEmpty || (it.defenseCount ?: 0) > 0) }
-            .toList()
+        filter { MineTargetFilterPolicy.matches(it, config, behaviorContract.mine) }
 
     private fun parseMineType(raw: String?): MineType? {
         val value = raw?.trim().orEmpty()
@@ -4936,11 +6718,16 @@ class SessionAwareGameProtocolClient(
 
         val chunks = (0 until generalChunks.length()).map { generalChunks.optString(it) }.filter { it.isNotBlank() }
         if (chunks.isEmpty()) return emptyMap()
-        val payloads = BrushYellowDispatchPayloadBuilder.buildBrushYellowPayloads(chunks, normalizedTargetHex)
+        val payloads = BrushYellowDispatchPayloadBuilder.buildBrushYellowPayloads(
+            chunks,
+            normalizedTargetHex,
+            behaviorContract.brushYellow.actionType
+        )
         val passiveWirePlan = BrushYellowPassiveWireDryRunPlanner.plan(
             generalIds = chunks,
             targetWireId = normalizedTargetHex,
-            includeBatchRefill = true
+            includeBatchRefill = true,
+            actionType = behaviorContract.brushYellow.actionType
         )
         val wrapperFields = RecoveredNativeWrapperFieldExtractor.from((session?.channelExtra ?: emptyMap()) + toStringMap() + (rawObject?.toStringMap() ?: emptyMap()))
         val prepareWrapperPlan = RecoveredNativeActionWrapperPlanner.plan(payloads.preparePayload, wrapperFields)
@@ -4948,7 +6735,10 @@ class SessionAwareGameProtocolClient(
         return mapOf(
             "preparePayload" to payloads.preparePayload,
             "expeditionPayload" to payloads.expeditionPayload,
-            "payloadEvidence" to "shuahuang actionType=10: 15200a0 + 15220a0",
+            "payloadEvidence" to (
+                "shared-contract shuahuang actionType=${behaviorContract.brushYellow.actionType}: " +
+                    "${payloads.prepareOpcode} + ${payloads.expeditionOpcode}"
+                ),
             "passiveWireEvidence" to passiveWirePlan.evidence,
             "passiveWireNetworkAllowed" to passiveWirePlan.networkSendAllowed.toString(),
             "passiveWireBlocker" to passiveWirePlan.blocker,
@@ -5301,7 +7091,8 @@ class SessionAwareGameProtocolClient(
         private const val MAX_FEATURE_PAGES: Int = 100
         private const val LIVE_STATE_CACHE_MS: Long = 2_000L
         private const val HEARTBEAT_3110_MIN_INTERVAL_MS: Long = 20_000L
-        private const val LOSSLESS_SERVER_DAILY_LIMIT: Int = 5
+        private const val DUNGEON_PENDING_RUN_KEY: String = "dungeonPendingRunJson"
+        private const val DUNGEON_STALE_RECOVERY_MILLIS: Long = 60_000L
         private val ROLE_RESOURCE_KEYS = setOf(
             "roleId", "roleName", "level", "nation", "title", "copper", "food", "prestige",
             "copperPerHour", "foodPerHour", "populationCurrent", "populationCap",

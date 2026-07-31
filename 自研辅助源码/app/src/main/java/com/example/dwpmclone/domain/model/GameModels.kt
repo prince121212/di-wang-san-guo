@@ -1,5 +1,3 @@
-// Static-evidence Kotlin model skeleton for a DWPM-like assistant.
-// Generated for planning only; protocol-backed behavior requires runtime DEX/protocol recovery.
 package com.example.dwpmclone.domain.model
 
 data class MapCoordinate(val x: Int, val y: Int)
@@ -18,6 +16,7 @@ enum class BulkToolAction { GENERAL_TOKEN_ADD_COMMAND, USE_SMALL_DRUM_BAGUA, USE
 enum class TreasureKind { FOOD_STORAGE, MONEY_HOUSE, ARMORY, GOLD_SILVER_MOUNTAIN, TREASURE_HOUSE, JADE_MINE }
 
 data class ShuaHuangTargetFilter(
+    val levels: Set<Int> = emptySet(),
     val minLevel: Int? = null,
     val maxLevel: Int? = null,
     val maxDistance: Int? = null,
@@ -25,16 +24,22 @@ data class ShuaHuangTargetFilter(
     val maxBow: Int? = null,
     val maxCavalry: Int? = null,
     val maxChariot: Int? = null,
+    val requireFoot: Boolean = false,
     val dropKeywords: Set<String> = emptySet(),
     val requiredKeywords: Set<String> = emptySet(),
     val blockedKeywords: Set<String> = emptySet()
+)
+
+data class ShuaHuangRule(
+    val enabled: Boolean = true,
+    val generalIds: List<Long>,
+    val targetFilter: ShuaHuangTargetFilter = ShuaHuangTargetFilter()
 )
 
 data class GameAccount(
     val id: Long,
     val displayName: String?,
     val username: String,
-    val encryptedPassword: String?,
     val serverName: String,
     val gameVersion: GameVersion,
     val channel: Channel,
@@ -43,9 +48,8 @@ data class GameAccount(
     val serverId: String? = null,
     val monarchName: String? = null,
     val nation: String? = null,
-    val loginState: String = "MOCK_NOT_LOGGED_IN",
-    val gameAuthSignPlaceholder: String? = null,
-    val antiBanIpEnabled: Boolean = false
+    val loginState: String = "LOCAL_NOT_LOGGED_IN",
+    val gameAuthSignEvidence: String? = null
 )
 
 data class GameSession(
@@ -72,7 +76,6 @@ data class GuajiConfig(
     val accountId: Long,
     val autoStart: Boolean,
     val reconnectDelaySeconds: Int = 10,
-    val antiIpBanEnabled: Boolean,
     val requestDelayMillis: Int = 100,
     val sameServerMutex: Boolean = true,
     val protectBackgroundHintAcknowledged: Boolean
@@ -91,7 +94,10 @@ data class ShuaHuangConfig(
     val deleteMailForSpeed: Boolean,
     val autoConvertFoodToCopper: Boolean,
     val targetFilter: ShuaHuangTargetFilter = ShuaHuangTargetFilter(),
-    val perFormationTargetFilters: Map<Long, ShuaHuangTargetFilter> = emptyMap()
+    val perFormationTargetFilters: Map<Long, ShuaHuangTargetFilter> = emptyMap(),
+    val rules: List<ShuaHuangRule> = emptyList(),
+    /** Saved troop rules restored for the selected generals before every dispatch. */
+    val formationRules: List<FormationConfig> = emptyList()
 )
 
 data class MineConfig(
@@ -113,9 +119,14 @@ data class MineConfig(
     val onlyDefendedMine: Boolean,
     val speed: String = "不加速",
     val fullLoyalty: Boolean = true,
+    val replenishTroops: Boolean = true,
+    val maxMarchMinutes: Int = 45,
     val targetPlayerName: String = "",
     val searchScope: String = "附近",
-    val rules: List<MineRule> = emptyList()
+    val rules: List<MineRule> = emptyList(),
+    val selectedLevels: Set<Int> = emptySet(),
+    /** Saved troop rules restored for the active mining row before every dispatch. */
+    val formationRules: List<FormationConfig> = emptyList()
 )
 
 data class MineRule(
@@ -125,7 +136,8 @@ data class MineRule(
     val start: MapCoordinate,
     val scope: String = "附近",
     val onlyEmpty: Boolean = false,
-    val onlyDefended: Boolean = false
+    val onlyDefended: Boolean = false,
+    val level: Int? = null
 )
 
 data class DailyConfig(
@@ -143,13 +155,30 @@ data class GeneralConfig(
     val requireChineseNamePrefix: Boolean = true
 )
 
+data class FoodToCopperConfig(
+    val enabled: Boolean,
+    val copperFloorWan: Int = 1,
+    val pollMillis: Long = 10L * 60L * 1_000L
+) {
+    init {
+        require(copperFloorWan in setOf(1, 10, 20, 50)) {
+            "铜钱保底只支持1、10、20、50万"
+        }
+        require(pollMillis >= 60_000L) { "粮食转铜检查间隔不能少于1分钟" }
+    }
+}
+
 data class FormationConfig(
     val formationId: Long,
     val generalIds: List<Long>,
     val autoAssignTroops: Boolean,
     val troopType: String,
     val troopCount: Int = 1999,
-    val fillToMaxWhenAutoAssignDisabled: Boolean
+    val fillToMaxWhenAutoAssignDisabled: Boolean,
+    /** Non-empty only on the first saved rule when “清空其他将领” is enabled. */
+    val clearOtherGeneralIds: Set<Long> = emptySet(),
+    /** Explicit manual action used by the shared UI's “一键卸兵” button. */
+    val clearAllIdleTroops: Boolean = false
 )
 
 data class InternalAffairsConfig(
@@ -157,6 +186,7 @@ data class InternalAffairsConfig(
     val upgradeLowestFirst: Boolean,
     val buildingPriority: List<BuildingType>,
     val buildWhenEmpty: BuildingType?,
+    val upgradeBuildings: Boolean = true,
     val upgradeTechnology: Boolean = false,
     val technologyIds: Set<Int> = setOf(5)
 )
@@ -170,12 +200,11 @@ data class SixMinistriesConfig(
     val salaryRefresh: Boolean
 ) {
     fun preparationError(): String? {
-        if (!cropEnabled && !stealEnabled && !courtesyEnabled) return "six ministries disabled"
+        if (!cropEnabled) {
+            return "verified ministry planting disabled; steal and courtesy actions are not confirmed"
+        }
         if (cropEnabled && crop != MinistryProtocolCrop.VERIFIED_NAME) {
             return "unverified ministry crop selected: $crop"
-        }
-        if (!cropEnabled && !stealEnabled) {
-            return "only verified planting and read-only steal scan are currently enabled"
         }
         return null
     }
@@ -193,20 +222,25 @@ data class DungeonConfig(
     val chapter: Int,
     val stage: Int,
     val formationIds: List<Long>,
-    val autoUnlockUntilTarget: Boolean
+    val mode: String = "loop",
+    /** Saved troop rules used to restore the selected generals before every dungeon launch. */
+    val formationRules: List<FormationConfig> = emptyList()
 )
 
 data class LosslessConfig(
     val enabled: Boolean,
     val fullTroops: Boolean,
     val dailyLimit: Int = 5,
-    val rules: List<LosslessRule>
+    val rules: List<LosslessRule>,
+    /** Saved troop rules restored for the active lossless row before every dispatch. */
+    val formationRules: List<FormationConfig> = emptyList()
 )
 
 data class LosslessRule(
     val enabled: Boolean,
     val generalIds: List<Long>,
-    val level: Int
+    val level: Int,
+    val maxLineupRerolls: Int = 80
 )
 
 data class InventoryConfig(
@@ -230,7 +264,7 @@ data class InventoryConfig(
 object InventoryAutoOpenPolicy {
     val DESKTOP_ITEM_NAMES: List<String> = listOf(
         "50两银票", "100两银票", "300两银票", "1000两银票",
-        "惊喜宝箱", "实木宝箱", "青铜宝箱", "精铁宝箱", "粮食辎重"
+        "惊喜宝箱", "实木宝箱", "青铜宝箱", "精铁宝箱", "铜钱辎重", "粮食辎重"
     )
 
     fun shouldOpen(
@@ -287,7 +321,9 @@ data class AutoLootConfig(
     val targetFiefIndex: Int = 1,
     val fullTroops: Boolean = true,
     val fullLoyalty: Boolean = false,
-    val rules: List<AutoLootRule> = emptyList()
+    val rules: List<AutoLootRule> = emptyList(),
+    /** Saved troop rules restored for the active raid row before every dispatch. */
+    val formationRules: List<FormationConfig> = emptyList()
 ) {
     fun enabledRules(): List<AutoLootRule> {
         if (rules.isNotEmpty()) return rules.filter { it.enabled }
@@ -331,12 +367,10 @@ data class AutoLootRule(
     val fiefIndex: Int
 )
 
-data class AlarmWithdrawConfig(
+data class AlarmConfig(
     val enabled: Boolean,
     val keywords: Set<String> = setOf("掠夺", "夺取", "攻城", "敌军"),
     val vibrateOnAlarm: Boolean = true,
-    val withdrawDefense: Boolean = false,
-    val mockOnlyProtection: Boolean = true,
     val incomingEnabled: Boolean = true,
     val incomingMode: String = "声音+日志",
     val militaryEnabled: Boolean = true,
@@ -350,7 +384,9 @@ data class AlarmNotificationEvent(
     val accountId: Long,
     val kind: AlarmNotificationKind,
     val text: String,
-    val vibrate: Boolean
+    val vibrate: Boolean,
+    /** The sink always receives new events so “仅日志” remains observable. */
+    val showNotification: Boolean = true
 )
 
 /**
@@ -399,13 +435,6 @@ data class OwnedResourcePointCountSnapshot(
     val maxObservedByParser: Int = 5,
     val errorResponse: Boolean = false,
     val evidenceMethod: String = "Landroid/o/ۦ۠ۢ\$ۦۖۨ;->ۦۙ()I"
-)
-
-data class AlarmScanSnapshot(
-    val hasAlarm: Boolean,
-    val matchedKeyword: String?,
-    val withdrawDefenseEnabled: Boolean,
-    val evidenceMethod: String = "Landroid/o/ۦ۠ۢ\$ۦۖۨ;->ۦۤۖۨ()V"
 )
 
 data class GuideReferenceConfig(

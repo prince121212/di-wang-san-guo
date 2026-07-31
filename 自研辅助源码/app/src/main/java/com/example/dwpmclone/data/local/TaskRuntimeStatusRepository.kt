@@ -33,7 +33,11 @@ class TaskRuntimeStatusRepository(context: Context) {
     ) {
         val configured = configuredTypes.toSet()
         val merged = readAll().associateByTo(linkedMapOf()) { it.accountId to it.type }
-        merged.keys.filter { it.first == accountId && it.second !in configured }.forEach(merged::remove)
+        var changed = false
+        merged.keys.filter { it.first == accountId && it.second !in configured }.forEach {
+            merged.remove(it)
+            changed = true
+        }
         configured.forEach { type ->
             val key = accountId to type
             if (key !in merged) {
@@ -44,16 +48,33 @@ class TaskRuntimeStatusRepository(context: Context) {
                     "任务已配置，等待后台首次调度",
                     nowMillis
                 )
+                changed = true
             }
         }
-        write(merged.values)
+        if (changed) write(merged.values)
     }
 
     @Synchronized
-    fun markServiceStopped(nowMillis: Long, message: String) {
+    fun markServiceStopped(
+        nowMillis: Long,
+        message: String,
+        preserveNextRunAt: Boolean = false
+    ) {
         write(readAll().map {
             it.copy(
                 state = TaskRuntimeState.SERVICE_STOPPED,
+                message = message,
+                updatedAtMillis = nowMillis,
+                nextRunAtMillis = it.nextRunAtMillis.takeIf { preserveNextRunAt }
+            )
+        })
+    }
+
+    @Synchronized
+    fun markAccountStopped(accountId: Long, nowMillis: Long, message: String) {
+        write(readAll().map { status ->
+            if (status.accountId != accountId) status else status.copy(
+                state = TaskRuntimeState.STOPPED,
                 message = message,
                 updatedAtMillis = nowMillis,
                 nextRunAtMillis = null
@@ -62,8 +83,25 @@ class TaskRuntimeStatusRepository(context: Context) {
     }
 
     @Synchronized
+    fun deleteAccount(accountId: Long) {
+        write(readAll().filterNot { it.accountId == accountId })
+    }
+
+    @Synchronized
     fun list(accountId: Long): List<TaskRuntimeStatus> =
         readAll().filter { it.accountId == accountId }.sortedBy { it.type.ordinal }
+
+    @Synchronized
+    fun listAll(): List<TaskRuntimeStatus> = readAll()
+
+    fun configurationSignature(): String? = prefs.getString(KEY_CONFIG_SIGNATURE, null)
+
+    fun setConfigurationSignature(signature: String) {
+        require(signature.isNotBlank()) { "任务配置签名不能为空" }
+        check(prefs.edit().putString(KEY_CONFIG_SIGNATURE, signature).commit()) {
+            "无法持久化任务配置签名"
+        }
+    }
 
     private fun readAll(): List<TaskRuntimeStatus> {
         val array = runCatching {
@@ -104,11 +142,14 @@ class TaskRuntimeStatusRepository(context: Context) {
                         .put("tick", status.tick ?: JSONObject.NULL)
                 )
             }
-        prefs.edit().putString(KEY, array.toString()).apply()
+        check(prefs.edit().putString(KEY, array.toString()).commit()) {
+            "无法持久化任务运行状态"
+        }
     }
 
     companion object {
         private const val PREFS = "dwpm_clone_task_runtime"
         private const val KEY = "statuses"
+        private const val KEY_CONFIG_SIGNATURE = "configuration_signature"
     }
 }

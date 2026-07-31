@@ -1642,6 +1642,87 @@ class BrushProtocolTests(unittest.TestCase):
         self.assertFalse(merged["dailyTasks"]["autoSignIn"])
         self.assertEqual(merged["brush"], {"startX": 88, "startY": 22})
 
+    def test_chain_scope_persists_only_normalized_chain_inventory_fields(self) -> None:
+        sess = {"sessionId": "chain-settings", "generals": []}
+        old_config = SERVER.normalize_auto_config(sess, {
+            "autoStart": False,
+            "healWounded": True,
+            "alarm": {
+                "incomingEnabled": True,
+                "incomingMode": "仅日志",
+                "militaryEnabled": False,
+                "militaryMode": "全部",
+                "errorEnabled": True,
+            },
+        })
+
+        config = SERVER.normalize_settings_scope_patch(
+            sess,
+            old_config,
+            "common.chain",
+            {
+                "chainInventory": {
+                    "enabled": True,
+                    "keepItemName": "  青铜钥匙  ",
+                    "keepCount": 20_000,
+                    "autoOpenEnabled": True,
+                    "autoOpenItemNames": "50两银票、100两银票",
+                    "notAllowed": "drop-me",
+                },
+                "healWounded": False,
+                "alarm": {"incomingMode": "关闭"},
+            },
+        )
+
+        self.assertEqual(config["chainInventory"], {
+            "enabled": True,
+            "keepItemName": "青铜钥匙",
+            "keepCount": 9999,
+            "autoOpenEnabled": True,
+            "autoOpenItemNames": "50两银票、100两银票",
+        })
+        self.assertTrue(config["healWounded"])
+        self.assertEqual(config["alarm"], old_config["alarm"])
+
+    def test_alarm_scope_normalizes_modes_and_preserves_chain_inventory(self) -> None:
+        sess = {"sessionId": "alarm-settings", "generals": []}
+        old_config = SERVER.normalize_auto_config(sess, {
+            "autoStart": False,
+            "chainInventory": {
+                "enabled": True,
+                "keepItemName": "精铁钥匙",
+                "keepCount": 7,
+                "autoOpenEnabled": False,
+                "autoOpenItemNames": "惊喜宝箱",
+            },
+        })
+
+        config = SERVER.normalize_settings_scope_patch(
+            sess,
+            old_config,
+            "common.alarm",
+            {
+                "alarm": {
+                    "incomingEnabled": True,
+                    "incomingMode": "关闭",
+                    "militaryEnabled": True,
+                    "militaryMode": "不支持的模式",
+                    "errorEnabled": False,
+                    "notAllowed": True,
+                },
+                "chainInventory": {"keepCount": 0},
+            },
+        )
+
+        self.assertEqual(config["alarm"], {
+            "incomingEnabled": False,
+            "incomingMode": "关闭",
+            "militaryEnabled": True,
+            "militaryMode": "出征/返回",
+            "errorEnabled": False,
+        })
+        self.assertEqual(config["chainInventory"], old_config["chainInventory"])
+
     def test_items_scope_save_ignores_stale_brush_generals(self) -> None:
         sess = {
             "sessionId": "items-with-stale-brush",

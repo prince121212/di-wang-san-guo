@@ -17,6 +17,70 @@ import org.junit.Test
 
 class InventoryCleanupTaskTest {
     @Test
+    fun equipmentDiscardRequiresCompleteMetadataAndPreservesProtectedInstances() {
+        val calls = mutableListOf<Pair<Long, InventoryAction>>()
+        val equipment = listOf(
+            InventoryItem(
+                0xC95F8L, "短剑", "equipment", EquipmentQuality.GOOD, 1,
+                enhanced = false, equipped = false, templateId = 0,
+                equipmentMetadataComplete = true
+            ),
+            InventoryItem(
+                2L, "名品", "equipment", EquipmentQuality.NORMAL, 1,
+                enhanced = false, equipped = false, famous = true,
+                equipmentMetadataComplete = true
+            ),
+            InventoryItem(
+                3L, "强化装备", "equipment", EquipmentQuality.NORMAL, 1,
+                enhanced = true, equipped = false, equipmentMetadataComplete = true
+            ),
+            InventoryItem(
+                4L, "炼魂装备", "equipment", EquipmentQuality.NORMAL, 1,
+                enhanced = false, equipped = false, extraText = "炼魂+1",
+                equipmentMetadataComplete = true
+            ),
+            InventoryItem(
+                5L, "高等级装备", "equipment", EquipmentQuality.NORMAL, 80,
+                enhanced = false, equipped = false, equipmentMetadataComplete = true
+            ),
+            InventoryItem(
+                6L, "未知装备", "equipment", EquipmentQuality.NORMAL, 1,
+                enhanced = false, equipped = false, equipmentMetadataComplete = false
+            )
+        )
+        val protocol = object : GameProtocolClient by MockGameProtocolClient() {
+            override suspend fun queryInventory(session: GameSession) = ProtocolResult.Ok(equipment)
+
+            override suspend fun useOrDiscardItem(
+                session: GameSession,
+                itemId: Long,
+                action: InventoryAction,
+                count: Int
+            ): ProtocolResult<StepResult> {
+                calls += itemId to action
+                return ProtocolResult.Ok(StepResult(true, "ok"))
+            }
+        }
+        val task = InventoryCleanupTask(
+            77L,
+            InventoryConfig(
+                enabled = true,
+                openBoxes = false,
+                openSilverTickets = false,
+                discardEquipmentQualities = setOf(EquipmentQuality.NORMAL, EquipmentQuality.GOOD),
+                discardBelowLevel = 100,
+                discardItems = emptySet()
+            )
+        )
+
+        SuspendRunner.run {
+            task.step(TaskContext(GameSession(77L, "token", null, emptyMap(), 1), protocol, 1_000L))
+        }
+
+        assertEquals(listOf(0xC95F8L to InventoryAction.DISCARD_EQUIPMENT), calls)
+    }
+
+    @Test
     fun rejectedUseReceiptStopsImmediatelyAndDoesNotTouchNextSelectedItem() {
         val calls = mutableListOf<Long>()
         val protocol = object : GameProtocolClient by MockGameProtocolClient() {
@@ -37,7 +101,7 @@ class InventoryCleanupTaskTest {
                 return ProtocolResult.Ok(StepResult(false, "服务器拒绝使用"))
             }
         }
-        val task = InventoryCleanupMockTask(
+        val task = InventoryCleanupTask(
             77L,
             InventoryConfig(
                 enabled = true,
@@ -80,7 +144,7 @@ class InventoryCleanupTaskTest {
                 return ProtocolResult.Err("NETWORK", "临时网络失败", retryable = true)
             }
         }
-        val task = InventoryCleanupMockTask(
+        val task = InventoryCleanupTask(
             77L,
             InventoryConfig(
                 enabled = true,
@@ -97,7 +161,7 @@ class InventoryCleanupTaskTest {
             task.step(TaskContext(GameSession(77L, "token", null, emptyMap(), 1), protocol, nowMillis = 1_000L))
         }
 
-        assertEquals(TaskDecision.RetryAfter(BaseMockTask.DEFAULT_RETRY_MS), decision)
+        assertEquals(TaskDecision.RetryAfter(BaseAssistantTask.DEFAULT_RETRY_MS), decision)
         assertEquals(listOf(58L), calls)
     }
 }

@@ -47,37 +47,40 @@ object TaskRuntimeStatusMapper {
         nowMillis: Long,
         tick: Int? = null
     ): TaskRuntimeStatus {
-        if (!report.error.isNullOrBlank()) {
-            return TaskRuntimeStatus(
-                report.accountId,
-                report.type,
-                TaskRuntimeState.ERROR,
-                report.error,
-                nowMillis,
-                tick = tick
-            )
-        }
         val decision = report.decisions.lastOrNull()
-        val state = when (decision) {
-            TaskDecision.Continue -> TaskRuntimeState.RUNNING
-            is TaskDecision.Sleep -> TaskRuntimeState.SLEEPING
-            is TaskDecision.RetryAfter -> TaskRuntimeState.RETRYING
-            is TaskDecision.Stop -> TaskRuntimeState.STOPPED
-            is TaskDecision.NeedRelogin -> TaskRuntimeState.NEED_RELOGIN
-            null -> TaskRuntimeState.WAITING
+        val recoveredError = !report.error.isNullOrBlank()
+        val state = when {
+            recoveredError && decision !is TaskDecision.Sleep &&
+                decision !is TaskDecision.RetryAfter &&
+                decision !is TaskDecision.NeedRelogin -> TaskRuntimeState.ERROR
+            decision == TaskDecision.Continue -> TaskRuntimeState.RUNNING
+            decision is TaskDecision.Sleep && decision.keepRunning -> TaskRuntimeState.RUNNING
+            decision is TaskDecision.Sleep -> TaskRuntimeState.SLEEPING
+            decision is TaskDecision.RetryAfter -> TaskRuntimeState.RETRYING
+            decision is TaskDecision.Stop -> TaskRuntimeState.STOPPED
+            decision is TaskDecision.NeedRelogin -> TaskRuntimeState.NEED_RELOGIN
+            else -> TaskRuntimeState.WAITING
         }
         val nextRun = when (decision) {
             is TaskDecision.Sleep -> safeAdd(nowMillis, decision.millis)
             is TaskDecision.RetryAfter -> safeAdd(nowMillis, decision.millis)
             else -> null
         }
-        val message = when (decision) {
+        val decisionMessage = when (decision) {
             TaskDecision.Continue -> "任务本轮继续"
-            is TaskDecision.Sleep -> "本轮完成，等待${decision.millis}毫秒"
-            is TaskDecision.RetryAfter -> "本轮需要重试：${decision.millis}毫秒后"
+            is TaskDecision.Sleep -> decision.reason?.takeIf(String::isNotBlank)
+                ?: if (decision.keepRunning) "任务执行中，${decision.millis}毫秒后刷新" else "本轮完成，等待${decision.millis}毫秒"
+            is TaskDecision.RetryAfter -> decision.reason?.takeIf(String::isNotBlank)
+                ?: "本轮需要重试：${decision.millis}毫秒后"
             is TaskDecision.Stop -> decision.reason
             is TaskDecision.NeedRelogin -> decision.reason
             null -> "尚未产生调度决策"
+        }
+        val message = if (recoveredError) {
+            if (state == TaskRuntimeState.ERROR) report.error!!
+            else "任务异常：${report.error}；已安排恢复：$decisionMessage"
+        } else {
+            decisionMessage
         }
         return TaskRuntimeStatus(
             report.accountId,

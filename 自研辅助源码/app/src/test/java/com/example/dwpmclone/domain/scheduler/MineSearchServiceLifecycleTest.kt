@@ -26,13 +26,14 @@ class MineSearchServiceLifecycleTest {
         val batch = SuspendRunner.run {
             runner.runPlansOnceAndStopOnTerminal(tick = 31, plans = listOf(aligned), nowMillis = 1_000L)
         }
+        val report = batch.runReports.single { it.type == TaskType.MINE_SEARCH }
 
-        assertEquals(1, batch.runReports.size)
-        assertEquals(TaskType.MINE_SEARCH, batch.runReports.single().type)
-        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(12 * 60_000L)), batch.runReports.single().decisions)
+        assertEquals(2, batch.runReports.size)
+        assertEquals(TaskType.MINE_SEARCH, report.type)
+        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(12 * 60_000L)), report.decisions)
         assertEquals(emptyList<TerminalTaskDecision>(), batch.terminalDecisions)
         assertEquals(emptyList<TaskStopReport>(), batch.stopReports)
-        assertEquals(listOf("validateSession", "searchMines"), protocol.calls)
+        assertEquals(listOf("validateSession", "validateSession", "searchMines"), protocol.calls)
         assertEquals(1, protocol.lastMineCount)
         assertEquals(MineType.GOLD, protocol.lastMineTypes.single())
         assertEquals(MapCoordinate(11, 22), protocol.lastMineCoordinates.single())
@@ -43,8 +44,11 @@ class MineSearchServiceLifecycleTest {
     fun mineSearchOnlySavedConfigBuildsBackgroundSearchTaskWithoutAutoMineConfig() {
         val plan = SavedConfigTaskPlanFactory.plan(10001L, mineSearchSavedConfigExport())
 
-        assertEquals(listOf(TaskType.MINE_SEARCH), plan.tasks.map { it.type })
-        val task = plan.tasks.single() as MineSearchMockTask
+        assertEquals(
+            listOf(TaskType.STATE_REFRESH, TaskType.MINE_SEARCH),
+            plan.tasks.map { it.type }
+        )
+        val task = plan.tasks.single { it.type == TaskType.MINE_SEARCH } as MineTask
         assertEquals(true, task.config.backgroundSearch)
         assertEquals(false, task.config.enabled)
         assertEquals(setOf(MineType.GOLD), task.config.selectedMineTypes)
@@ -53,7 +57,7 @@ class MineSearchServiceLifecycleTest {
     }
 
     private fun mineSearchSavedConfigExport(): JSONObject = JSONObject()
-        .put("schema_version", "0.1-static-mock")
+        .put("schema_version", "1.0-local")
         .put(
             "configs",
             JSONObject().put(

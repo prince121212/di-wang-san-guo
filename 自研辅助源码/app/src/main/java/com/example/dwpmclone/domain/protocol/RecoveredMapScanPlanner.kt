@@ -18,63 +18,85 @@ object RecoveredMapScanPlanner {
     const val WORLD_Y_MAX = 0x42
     const val STEP = 6
 
-    fun shard(threadIndex: Int, threadCount: Int): RecoveredScanShard {
+    fun shard(
+        threadIndex: Int,
+        threadCount: Int,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): RecoveredScanShard {
         require(threadCount > 0) { "threadCount must be positive" }
         require(threadIndex in 0 until threadCount) { "threadIndex must be in 0 until threadCount" }
-        val slice = WORLD_X_MAX.toDouble() / threadCount.toDouble()
-        val xStart = (((threadIndex * slice) / STEP).toInt()) * STEP
-        val xEnd = ((((threadIndex + 1) * slice) / STEP).toInt()) * STEP
+        val world = contract.world
+        val slice = (world.xMax - world.xMin).toDouble() / threadCount.toDouble()
+        val xStart = world.xMin + (((threadIndex * slice) / world.step).toInt()) * world.step
+        val xEnd = world.xMin + ((((threadIndex + 1) * slice) / world.step).toInt()) * world.step
         return RecoveredScanShard(
             threadIndex = threadIndex,
             threadCount = threadCount,
             xStart = xStart,
             xEnd = xEnd,
-            yStart = 0,
-            yEnd = WORLD_Y_MAX,
-            step = STEP
+            yStart = world.yMin,
+            yEnd = world.yMax,
+            step = world.step
         )
     }
 
-    fun shards(threadCount: Int): List<RecoveredScanShard> =
-        (0 until threadCount).map { shard(it, threadCount) }
+    fun shards(
+        threadCount: Int,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): List<RecoveredScanShard> =
+        (0 until threadCount).map { shard(it, threadCount, contract) }
 
-    fun requests(kind: RecoveredSearchKind, shard: RecoveredScanShard): List<RecoveredSearchRequest> =
+    fun requests(
+        kind: RecoveredSearchKind,
+        shard: RecoveredScanShard,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): List<RecoveredSearchRequest> =
         shard.coordinates().map { coordinate ->
             RecoveredSearchRequest(
                 kind = kind,
                 coordinate = coordinate,
-                gameHex = buildGameHex(kind, coordinate.x, coordinate.y)
+                gameHex = buildGameHex(kind, coordinate.x, coordinate.y, contract)
             )
         }
 
-    fun fullScanRequests(kind: RecoveredSearchKind, threadCount: Int = 1): List<RecoveredSearchRequest> =
-        shards(threadCount).flatMap { requests(kind, it) }
+    fun fullScanRequests(
+        kind: RecoveredSearchKind,
+        threadCount: Int = 1,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): List<RecoveredSearchRequest> =
+        shards(threadCount, contract).flatMap { requests(kind, it, contract) }
 
-    fun fullScanRequestsDeduped(kind: RecoveredSearchKind, threadCount: Int): List<RecoveredSearchRequest> =
-        fullScanRequests(kind, threadCount).distinctBy { it.coordinate }
+    fun fullScanRequestsDeduped(
+        kind: RecoveredSearchKind,
+        threadCount: Int,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): List<RecoveredSearchRequest> =
+        fullScanRequests(kind, threadCount, contract).distinctBy { it.coordinate }
 
-    fun singleRequest(kind: RecoveredSearchKind, coordinate: MapCoordinate): RecoveredSearchRequest =
-        RecoveredSearchRequest(kind, coordinate, buildGameHex(kind, coordinate.x, coordinate.y))
+    fun singleRequest(
+        kind: RecoveredSearchKind,
+        coordinate: MapCoordinate,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): RecoveredSearchRequest =
+        RecoveredSearchRequest(kind, coordinate, buildGameHex(kind, coordinate.x, coordinate.y, contract))
 
     /**
-     * Mirrors the desktop helper's center-first scan order. Coordinates remain on the
-     * six-tile lattice relative to the configured center, then sort by distance.
+     * Mirrors the desktop helper's center-first scan order. Every account uses the same
+     * world-origin six-tile lattice; the configured center affects ordering only.
      */
     fun nearbyRequests(
         kind: RecoveredSearchKind,
         center: MapCoordinate,
-        limit: Int = 80
+        limit: Int = MapSearchBehaviorContract.defaults().nearbyRequestLimit,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
     ): List<RecoveredSearchRequest> {
-        val cx = center.x.coerceIn(0, WORLD_X_MAX)
-        val cy = center.y.coerceIn(0, WORLD_Y_MAX)
+        val world = contract.world
+        val cx = center.x.coerceIn(world.xMin, world.xMax)
+        val cy = center.y.coerceIn(world.yMin, world.yMax)
         return buildList {
-            for (dx in -WORLD_X_MAX..WORLD_X_MAX step STEP) {
-                for (dy in -WORLD_Y_MAX..WORLD_Y_MAX step STEP) {
-                    val x = cx + dx
-                    val y = cy + dy
-                    if (x in 0..WORLD_X_MAX && y in 0..WORLD_Y_MAX) {
-                        add(MapCoordinate(x, y))
-                    }
+            for (x in world.xMin..world.xMax step world.step) {
+                for (y in world.yMin..world.yMax step world.step) {
+                    add(MapCoordinate(x, y))
                 }
             }
         }
@@ -84,22 +106,30 @@ object RecoveredMapScanPlanner {
                 { it.x },
                 { it.y }
             ))
-            .take(limit.coerceIn(1, 384))
-            .map { singleRequest(kind, it) }
+            .take(limit.coerceIn(1, contract.fullRequestLimit))
+            .map { singleRequest(kind, it, contract) }
     }
 
     fun mineScopeRequests(
         kind: RecoveredSearchKind,
         center: MapCoordinate,
-        scope: String
+        scope: String,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
     ): List<RecoveredSearchRequest> = when (scope) {
-        "定点" -> listOf(singleRequest(kind, center))
-        "全国" -> nearbyRequests(kind, center, 384)
-        else -> nearbyRequests(kind, center, 80)
+        "定点" -> listOf(singleRequest(kind, center, contract))
+        "全国" -> nearbyRequests(kind, center, contract.fullRequestLimit, contract)
+        else -> nearbyRequests(kind, center, contract.nearbyRequestLimit, contract)
     }
 
-    fun buildGameHex(kind: RecoveredSearchKind, x: Int, y: Int): String = when (kind) {
-        RecoveredSearchKind.TARGET_041540 -> GameCoordinateCodec.buildTargetSearch(x, y)
+    fun buildGameHex(
+        kind: RecoveredSearchKind,
+        x: Int,
+        y: Int,
+        contract: MapSearchBehaviorContract = MapSearchBehaviorContract.defaults()
+    ): String = when (kind) {
+        RecoveredSearchKind.TARGET_041540 ->
+            "00000000000000000004" + contract.banditRequestOpcode.toString(16).padStart(4, '0') +
+                GameCoordinateCodec.encodeXY(x, y)
         RecoveredSearchKind.RESOURCE_POINT_041542 -> GameCoordinateCodec.buildResourcePointSearch(x, y)
     }
 }

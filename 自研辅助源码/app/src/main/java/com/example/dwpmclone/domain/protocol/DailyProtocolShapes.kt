@@ -47,6 +47,7 @@ object DailyProtocolShapes {
     const val ARENA_REWARD: String = "000000000000000000006266"
     const val SALARY_REWARD: String = "00000000000000000001314b01"
     const val DELETE_MAIL: String = "0000000000000000000a11160001ffffffffffffffff"
+    const val ARENA_DUPLICATE_MESSAGE: String = "领竞技币重复，22点后再领取！"
 
     fun buildDailyDiamondBoxPayload(): ByteArray =
         ByteBuffer.allocate(9)
@@ -95,6 +96,30 @@ object DailyProtocolShapes {
             status = status,
             message = message,
             trailingBytes = payload.size - consumed
+        )
+    }
+
+    /**
+     * Normalizes the captured idempotent 0xe266 reply used after arena coins were
+     * already claimed in the current 22:00 cycle. Opcode presence alone is not
+     * enough: the duplicate shape is status -2, empty UTF, marker 1 and exactly
+     * thirteen trailing reward-state bytes (16 bytes total).
+     */
+    fun parseArenaCoinClaimResponse(payload: ByteArray): ArenaCoinClaimReceipt {
+        val parsed = parseStatusMessage(payload)
+        val duplicate = parsed.status == -2 &&
+            parsed.message.isBlank() &&
+            payload.size == 16 &&
+            payload[1] == 0.toByte() &&
+            payload[2] == 0.toByte() &&
+            payload[3] == 1.toByte()
+        return ArenaCoinClaimReceipt(
+            success = parsed.success || duplicate,
+            status = parsed.status,
+            message = if (duplicate) ARENA_DUPLICATE_MESSAGE else parsed.message,
+            trailingBytes = parsed.trailingBytes,
+            alreadyClaimed = duplicate,
+            duplicateClaim = duplicate
         )
     }
 
@@ -196,6 +221,15 @@ data class DailyStatusReceipt(
     val status: Int,
     val message: String,
     val trailingBytes: Int
+)
+
+data class ArenaCoinClaimReceipt(
+    val success: Boolean,
+    val status: Int,
+    val message: String,
+    val trailingBytes: Int,
+    val alreadyClaimed: Boolean,
+    val duplicateClaim: Boolean
 )
 
 data class DeleteAllMailReceipt(

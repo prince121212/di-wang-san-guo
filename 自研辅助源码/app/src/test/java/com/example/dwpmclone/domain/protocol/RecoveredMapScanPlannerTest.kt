@@ -93,4 +93,23 @@ class RecoveredMapScanPlannerTest {
         assertEquals(center, national.first().coordinate)
         assertEquals(national.map { it.coordinate }.distinct().size, national.size)
     }
+
+    @Test
+    fun offGridCentersOnlyChangePriorityAndNeverShiftCanonicalLattice() {
+        val first = RecoveredMapScanPlanner.nearbyRequests(
+            RecoveredSearchKind.TARGET_041540,
+            MapCoordinate(100, 30),
+            384
+        ).map { it.coordinate }
+        val second = RecoveredMapScanPlanner.nearbyRequests(
+            RecoveredSearchKind.TARGET_041540,
+            MapCoordinate(91, 26),
+            384
+        ).map { it.coordinate }
+
+        assertEquals(MapCoordinate(102, 30), first.first())
+        assertEquals(384, first.size)
+        assertEquals(first.toSet(), second.toSet())
+        assertEquals(true, first.all { it.x % 6 == 0 && it.y % 6 == 0 })
+    }
 }

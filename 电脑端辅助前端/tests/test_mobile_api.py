@@ -123,6 +123,37 @@ class MobileApiContractTests(unittest.TestCase):
                 SERVER.ACCOUNTS.clear()
                 SERVER.ACCOUNTS.update(old_accounts)
 
+    def test_ministry_settings_are_normalized_and_supported_by_mobile_settings_scope(self) -> None:
+        normalized = SERVER.normalize_ministry_settings({
+            "cropEnabled": True,
+            "crop": "不存在的作物",
+            "highPriority": False,
+            "stealEnabled": True,
+            "courtesyEnabled": False,
+            "salaryRefresh": True,
+        })
+        self.assertEqual("金银花", normalized["crop"])
+        self.assertFalse(normalized["highPriority"])
+        self.assertIn("/api/liubu/save", SERVER.MOBILE_LEGACY_POST_PATHS)
+
+        sess = {"sessionId": "sid", "username": "u", "area": {}}
+        with patch.object(SERVER, "mobile_resolve_session", return_value=("sid", {}, sess)), \
+             patch.object(SERVER, "mobile_settings_revision", return_value="revision"), \
+             patch.object(SERVER, "load_account_habits", return_value={}), \
+             patch.object(SERVER, "save_account_habits") as save, \
+             patch.object(SERVER, "persist_runtime_state"), \
+             patch.object(SERVER, "account_log"), \
+             patch.object(SERVER, "mobile_settings_payload", return_value={"ok": True}):
+            result = SERVER.mobile_patch_settings(
+                "sid",
+                scope="ministry",
+                patch=normalized,
+                expected_revision="revision",
+            )
+
+        self.assertTrue(result["ok"])
+        save.assert_called_once_with(sess, ministry=normalized)
+
     def test_authenticated_health_and_idempotent_legacy_replay(self) -> None:
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -246,6 +277,164 @@ class MobileApiContractTests(unittest.TestCase):
                 SERVER.ACCOUNTS.update(old_accounts)
                 SERVER.SESSIONS.clear()
                 SERVER.SESSIONS.update(old_sessions)
+
+    def test_paired_webview_target_pages_use_the_same_desktop_save_handlers(self) -> None:
+        """常规、六部、打矿从 mobile=1 页面仍走电脑端原保存/任务入口。"""
+        sid = "target-page-save-session"
+        account = {
+            "sessionId": sid,
+            "username": "1608600",
+            "area": {"areaName": "352区"},
+            "status": "running",
+            "started": True,
+            "createdAt": 1,
+        }
+        session = {
+            "sessionId": sid,
+            "username": "1608600",
+            "role": {"roleName": "测试君主", "level": 85},
+            "roleState": {},
+            "area": {"areaName": "352区"},
+            "generals": [{"id": 1, "idHex": "1", "name": "测试将领"}],
+            "createdAt": 1,
+        }
+        with SERVER.ACCOUNT_LOCK:
+            old_accounts = dict(SERVER.ACCOUNTS)
+            old_sessions = dict(SERVER.SESSIONS)
+            old_saved_configs = dict(SERVER.SAVED_CONFIGS)
+            SERVER.ACCOUNTS.clear()
+            SERVER.SESSIONS.clear()
+            SERVER.SAVED_CONFIGS.clear()
+            SERVER.ACCOUNTS[sid] = account
+            SERVER.SESSIONS[sid] = session
+            SERVER.SAVED_CONFIGS[sid] = {"autoStart": False, "healWounded": True}
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        cookie = f"{SERVER.MOBILE_API_COOKIE}=test-mobile-token"
+        opaque = SERVER.mobile_account_ref(sid)
+
+        def post_json(path: str, payload: dict) -> dict:
+            request = urllib.request.Request(
+                base + path,
+                data=json.dumps(payload, ensure_ascii=False).encode(),
+                headers={"Cookie": cookie, "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read())
+
+        try:
+            with patch.object(
+                SERVER,
+                "save_account_habits",
+                return_value={
+                    "configFile": "memory://config",
+                    "ministryFile": "memory://ministry",
+                    "militaryFile": "memory://military",
+                },
+            ) as save, patch.object(
+                SERVER, "load_account_habits", return_value={}
+            ), patch.object(
+                SERVER, "persist_runtime_state"
+            ), patch.object(
+                SERVER, "account_log"
+            ), patch.object(
+                SERVER, "require_account_online"
+            ) as require_online, patch.object(
+                SERVER,
+                "start_auto_ministry",
+                return_value={
+                    "started": True,
+                    "task": {"taskId": "ministry-task", "status": "running"},
+                },
+            ) as start_ministry, patch.object(
+                SERVER,
+                "start_auto_mine",
+                return_value={
+                    "started": True,
+                    "task": {"taskId": "mine-task", "status": "running"},
+                },
+            ) as start_mine, patch.object(
+                SERVER, "current_task_overview", return_value={}
+            ):
+                common = post_json("/api/settings/save", {
+                    "sessionId": opaque,
+                    "scope": "common.chain",
+                    "patch": {
+                        "chainInventory": {
+                            "enabled": True,
+                            "keepItemName": " 青铜钥匙 ",
+                            "keepCount": 5,
+                            "autoOpenEnabled": True,
+                            "autoOpenItemNames": "50两银票",
+                        }
+                    },
+                })
+                ministry = post_json("/api/liubu/save", {
+                    "sessionId": opaque,
+                    "settings": {
+                        "cropEnabled": True,
+                        "crop": "金银花",
+                        "highPriority": False,
+                        "stealEnabled": False,
+                        "courtesyEnabled": False,
+                        "salaryRefresh": True,
+                    },
+                })
+                mine = post_json("/api/mine/save", {
+                    "sessionId": opaque,
+                    "settings": {
+                        "speed": True,
+                        "fullLoyalty": True,
+                        "replenishTroops": True,
+                        "maxMarchMinutes": 60,
+                        "centerX": 91,
+                        "centerY": 26,
+                        "rows": [{
+                            "enabled": True,
+                            "generalIds": ["1"],
+                            "resourceType": "银矿",
+                            "x": 90,
+                            "y": 25,
+                            "scope": "全国",
+                        }],
+                    },
+                })
+
+            self.assertTrue(common["ok"])
+            self.assertEqual("common.chain", common["scope"])
+            self.assertEqual(5, common["config"]["chainInventory"]["keepCount"])
+
+            self.assertTrue(ministry["ok"])
+            self.assertEqual("金银花", ministry["settings"]["crop"])
+            self.assertEqual("ministry-task", ministry["task"]["taskId"])
+
+            self.assertTrue(mine["ok"])
+            self.assertEqual(60, mine["settings"]["maxMarchMinutes"])
+            self.assertEqual(["1"], mine["executionRows"][0]["generalIds"])
+            self.assertEqual("mine-task", mine["task"]["taskId"])
+
+            saved_kwargs = [entry.kwargs for entry in save.call_args_list]
+            self.assertTrue(any("config" in kwargs for kwargs in saved_kwargs))
+            self.assertTrue(any("ministry" in kwargs for kwargs in saved_kwargs))
+            self.assertTrue(any("mine" in kwargs for kwargs in saved_kwargs))
+            self.assertEqual(2, require_online.call_count)
+            start_ministry.assert_called_once()
+            start_mine.assert_called_once()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+            with SERVER.ACCOUNT_LOCK:
+                SERVER.ACCOUNTS.clear()
+                SERVER.ACCOUNTS.update(old_accounts)
+                SERVER.SESSIONS.clear()
+                SERVER.SESSIONS.update(old_sessions)
+                SERVER.SAVED_CONFIGS.clear()
+                SERVER.SAVED_CONFIGS.update(old_saved_configs)
 
     def test_remote_paired_webview_can_only_read_console_static_assets(self) -> None:
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)

@@ -286,7 +286,6 @@ class AssistantRealtimeAccountDisplayMapperTest {
         id = id,
         displayName = displayName,
         username = username,
-        encryptedPassword = null,
         serverName = serverName,
         serverId = "srv",
         gameVersion = GameVersion.TENCENT_CLASSIC,

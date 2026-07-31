@@ -56,6 +56,27 @@ class BrushYellowDispatchResponseParserTest {
     }
 
     @Test
+    fun binary8522SuccessRequiresAndExposesPositiveBattleId() {
+        val parsed = BrushYellowDispatchResponseParser.parseHex(
+            "000000000000000000007b"
+        )
+
+        assertEquals(true, parsed.success)
+        assertEquals(123L, parsed.battleId)
+        assertEquals("123", parsed.toRawMap()["dispatchResponseBattleId"])
+    }
+
+    @Test
+    fun statusZeroWithoutBattleIdIsNotAcceptedAsDispatchSuccess() {
+        val parsed = BrushYellowDispatchResponseParser.parseHex("000000")
+
+        assertEquals(false, parsed.success)
+        assertNull(parsed.battleId)
+        assertEquals("出征响应缺少有效 battleId", parsed.message)
+        assertEquals("hex-8522-status-0-battle-id-missing", parsed.evidence)
+    }
+
+    @Test
     fun returnsUnknownForUnrecognizedText() {
         val parsed = BrushYellowDispatchResponseParser.parseText("opaque-binary-preview")
 

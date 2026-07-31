@@ -45,12 +45,91 @@ import urllib.request
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, asdict
+from datetime import date, timedelta
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent
+SHARED_BEHAVIOR_CONTRACT_PATH = (
+    ROOT.parent / "shared_core" / "assistant_behavior_contract.json"
+)
+
+
+def _load_shared_behavior_contract() -> tuple[dict[str, Any], str]:
+    """Load the only cross-platform behavior source; fail closed if it is absent."""
+    contract = json.loads(
+        SHARED_BEHAVIOR_CONTRACT_PATH.read_text(encoding="utf-8")
+    )
+    if int(contract.get("schemaVersion") or 0) != 1:
+        raise ValueError("unsupported assistant behavior contract schemaVersion")
+    scheduler = contract.get("scheduler")
+    if not isinstance(scheduler, dict):
+        raise ValueError("assistant behavior contract scheduler is missing")
+    priorities = scheduler.get("residentPriority")
+    required_residents = {
+        "mine", "lossless", "brushYellow", "raid", "dungeon", "ministry",
+    }
+    if not isinstance(priorities, dict) or set(priorities) != required_residents:
+        raise ValueError("assistant scheduler residentPriority is incomplete")
+    normalized_priorities = [int(value) for value in priorities.values()]
+    if any(value <= 0 for value in normalized_priorities) or len(set(normalized_priorities)) != len(normalized_priorities):
+        raise ValueError("assistant scheduler priorities must be positive and unique")
+    for flag in (
+        "sameGeneralMutualExclusionRequired",
+        "onlyRunnableResidentBlocksLowerPriority",
+        "militaryLaneRunsBeforeIdleLane",
+        "expeditionPreparationIsTaskScoped",
+        "idleLaneMustYieldToDueMilitaryWork",
+        "observationRefreshMayRunBetweenLanes",
+        "waitStatePersistsAcrossProcess",
+        "dayBoundaryUsesContractTimezone",
+    ):
+        if scheduler.get(flag) is not True:
+            raise ValueError(f"assistant scheduler invariant disabled: {flag}")
+    for retired_flag in (
+        "formationPrerequisiteRunsFirst",
+        "dailyFeaturesRunBeforeResidents",
+    ):
+        if scheduler.get(retired_flag) is not False:
+            raise ValueError(
+                f"assistant scheduler retired global ordering must stay disabled: {retired_flag}"
+            )
+    lifecycle = contract.get("accountLifecycle")
+    if not isinstance(lifecycle, dict) or int(lifecycle.get("heartbeatIntervalMillis") or 0) <= 0:
+        raise ValueError("assistant account lifecycle heartbeat interval is invalid")
+    formation = contract.get("formation")
+    if not isinstance(formation, dict):
+        raise ValueError("assistant formation contract is missing")
+    for flag in (
+        "clampCountToTroopLimit",
+        "precheckIdleSoldierInventory",
+        "exactAssignedTypeAndCountRequired",
+        "clearOtherGeneralsSkipsBusy",
+        "assignmentDoesNotImplicitlyRefill",
+    ):
+        if formation.get(flag) is not True:
+            raise ValueError(f"assistant formation invariant disabled: {flag}")
+    if int(formation.get("completedSleepMillis") or 0) <= 0:
+        raise ValueError("assistant formation completed sleep is invalid")
+    return contract, str(SHARED_BEHAVIOR_CONTRACT_PATH)
+
+
+SHARED_BEHAVIOR_CONTRACT, SHARED_BEHAVIOR_CONTRACT_SOURCE = (
+    _load_shared_behavior_contract()
+)
+_STARTUP_MAP_SEARCH_CONTRACT = SHARED_BEHAVIOR_CONTRACT["mapSearch"]
+_STARTUP_SCHEDULER_CONTRACT = SHARED_BEHAVIOR_CONTRACT["scheduler"]
+_STARTUP_ACCOUNT_LIFECYCLE_CONTRACT = SHARED_BEHAVIOR_CONTRACT["accountLifecycle"]
+_STARTUP_FORMATION_CONTRACT = SHARED_BEHAVIOR_CONTRACT["formation"]
+_STARTUP_BRUSH_CONTRACT = SHARED_BEHAVIOR_CONTRACT["brushYellow"]
+_STARTUP_BRUSH_SCHEDULE_CONTRACT = _STARTUP_BRUSH_CONTRACT["schedule"]
+_STARTUP_MINE_CONTRACT = SHARED_BEHAVIOR_CONTRACT["mine"]
+_STARTUP_MINE_SPEED_CONTRACT = _STARTUP_MINE_CONTRACT["speed"]
+_STARTUP_LOSSLESS_CONTRACT = SHARED_BEHAVIOR_CONTRACT["lossless"]
+_STARTUP_LOSSLESS_GUARD_CONTRACT = _STARTUP_LOSSLESS_CONTRACT["level10Guard"]
+_STARTUP_DUNGEON_CONTRACT = SHARED_BEHAVIOR_CONTRACT["dungeon"]
 VERSION_FILE = ROOT / "VERSION"
 try:
     APP_VERSION = VERSION_FILE.read_text(encoding="ascii").strip() or "development"
@@ -59,6 +138,21 @@ except OSError:
 REPORT_DIR = Path(os.environ.get("DWPM_DATA_DIR", str(ROOT / "reports"))).expanduser().resolve()
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 ASSET_DIR = Path(os.environ.get("DWPM_ASSET_DIR", str(ROOT / "assets"))).expanduser().resolve()
+GUIDE_REFERENCE_DIR = ASSET_DIR / "guide_reference"
+GUIDE_FAMOUS_GENERALS_FILE = GUIDE_REFERENCE_DIR / "dwsgmjb.TXT"
+GUIDE_ARTICLE_DIR = GUIDE_REFERENCE_DIR / "guidetxts"
+GUIDE_ARTICLE_SPECS = (
+    ("V6fzgl", "V6以上玩家前期发展攻略"),
+    ("dwsgjingyan", "帝王三国升级经验"),
+    ("pm80jigl", "15小时冲击80级攻略"),
+    ("pmkssjgl", "快速升级攻略"),
+    ("qzp", "强装/开箱经验"),
+    ("rmb80jigl", "开区快速80级心得"),
+    ("sfbgl", "副本刷将魂道具装备攻略"),
+    ("shuashihuang", "刷黄攻略"),
+    ("szsjgl", "神州升级攻略"),
+    ("wuditcp", "无敌推城篇"),
+)
 LOG_DIR = REPORT_DIR / "logs"
 ACCOUNT_LOG_DIR = LOG_DIR / "accounts"
 ACCOUNT_CONFIG_DIR = REPORT_DIR / "account_configs"
@@ -177,30 +271,56 @@ RESPONSE_OBFUSCATION_KEY = bytes.fromhex(
     "f331e74bd85a8e2ab96791bb02bd32d2"
     "40494b00351014efe75f2b0e62b2abba"
 )
-CLIENT_HEARTBEAT_INTERVAL_SEC = 20
+CLIENT_HEARTBEAT_INTERVAL_SEC = (
+    int(_STARTUP_ACCOUNT_LIFECYCLE_CONTRACT["heartbeatIntervalMillis"]) / 1000.0
+)
+FORMATION_ASSIGN_REQUEST_OPCODE = int(
+    str(_STARTUP_FORMATION_CONTRACT["assignRequestOpcode"]), 0
+)
+FORMATION_ASSIGN_RESPONSE_OPCODE = int(
+    str(_STARTUP_FORMATION_CONTRACT["assignResponseOpcode"]), 0
+)
+FORMATION_REFILL_REQUEST_OPCODE = int(
+    str(_STARTUP_FORMATION_CONTRACT["refillRequestOpcode"]), 0
+)
+FORMATION_REFILL_RESPONSE_OPCODE = int(
+    str(_STARTUP_FORMATION_CONTRACT["refillResponseOpcode"]), 0
+)
 HEARTBEAT_NETWORK_FAILURE_LIMIT = 3
 HEARTBEAT_NETWORK_MAX_PROXY_SWITCHES = 2
 HEARTBEAT_UNCONFIRMED_FAILURE_LIMIT = 6
 PROXY_MAX_LIVE_ACCOUNTS_PER_IP = 2
 BRUSH_ENERGY_ITEM_GAIN = 50
-BRUSH_MIN_ROLE_LEVEL = 30
+BRUSH_MIN_ROLE_LEVEL = int(_STARTUP_BRUSH_CONTRACT["minimumRoleLevel"])
 DEFAULT_RECONNECT_DELAY_MINUTES = 5
 NETWORK_RECONNECT_BACKOFF_MINUTES = (3, 5, 10)
 SERVER_RECONNECT_BACKOFF_MINUTES = (10, 20, 30)
 UNKNOWN_RECONNECT_BACKOFF_MINUTES = (3, 5, 10)
 GAME_REQUEST_MIN_INTERVAL_SEC = 1.0
 ROUTINE_GAME_REQUEST_LOG_INTERVAL_SEC = 60.0
-LOSSLESS_SCREEN_DELAY_MIN_SEC = 1.0
-LOSSLESS_SCREEN_DELAY_MAX_SEC = 2.5
-BRUSH_SCAN_BATCH_SIZE = 80
-MAP_PREPARATION_BATCH_SIZE = 10
-MAP_PREPARATION_IDLE_PAUSE_SEC = 2
+LOSSLESS_SCREEN_DELAY_MIN_SEC = (
+    int(_STARTUP_LOSSLESS_GUARD_CONTRACT["rerollDelayMinMillis"]) / 1000.0
+)
+LOSSLESS_SCREEN_DELAY_MAX_SEC = (
+    int(_STARTUP_LOSSLESS_GUARD_CONTRACT["rerollDelayMaxMillis"]) / 1000.0
+)
+BRUSH_SCAN_BATCH_SIZE = int(_STARTUP_MAP_SEARCH_CONTRACT["nearbyRequestLimit"])
+MAP_PREPARATION_BATCH_SIZE = int(
+    _STARTUP_MAP_SEARCH_CONTRACT["preparationBatchSize"]
+)
+MAP_PREPARATION_IDLE_PAUSE_SEC = int(
+    _STARTUP_BRUSH_SCHEDULE_CONTRACT["mapPreparationIdlePauseMillis"]
+) // 1000
 MINE_COORDINATOR_TICK_SEC = 0.5
 MINE_COORDINATOR_NORMAL_INTERVAL_SEC = 8.0
 MINE_COORDINATOR_WAITING_INTERVAL_SEC = 3.0
 DEFAULT_MINE_CANDIDATE_TARGET_COUNT = 3
-FORMATION_SHORTAGE_RETRY_SEC = 60
-IDLE_BANDIT_SCAN_BATCH_SIZE = 1
+FORMATION_SHORTAGE_RETRY_SEC = int(
+    _STARTUP_BRUSH_SCHEDULE_CONTRACT["formationShortageRetryMillis"]
+) // 1000
+IDLE_BANDIT_SCAN_BATCH_SIZE = int(
+    _STARTUP_MAP_SEARCH_CONTRACT["idleScanBatchSize"]
+)
 IDLE_BANDIT_SCAN_PAUSE_SEC = 1.0
 IDLE_BANDIT_SCAN_FRESH_PAUSE_SEC = 5.0
 IDLE_BANDIT_BUSINESS_QUIET_SEC = 2.0
@@ -211,17 +331,27 @@ BANDIT_COORDINATOR_ROUTE_GUARD_SEC = 1.0
 BANDIT_COORDINATOR_MAX_INFLIGHT = 12
 BRUSH_SCAN_DELAY_MIN_SEC = 0.0
 BRUSH_SCAN_DELAY_MAX_SEC = 0.0
-BRUSH_SETTLEMENT_FULL_REFRESH_INTERVAL_SEC = 30
-BRUSH_SETTLEMENT_RECHECK_GRACE_SEC = 5 * 60
+BRUSH_SETTLEMENT_FULL_REFRESH_INTERVAL_SEC = int(
+    _STARTUP_BRUSH_SCHEDULE_CONTRACT["settlementFullRefreshMillis"]
+) // 1000
+BRUSH_SETTLEMENT_RECHECK_GRACE_SEC = int(
+    _STARTUP_BRUSH_SCHEDULE_CONTRACT["settlementRecheckGraceMillis"]
+) // 1000
 BRUSH_IDLE_FULL_REFRESH_INTERVAL_SEC = 30
 BRUSH_WAITING_NOTICE_SEC = 5 * 60
 # 同一坐标10分钟内不重复扫描；已经发现的山贼最多保留30分钟。
 # 两个时间分开，允许坐标在目标到期前被重新扫描，并用新结果提前覆盖旧结果。
-BRUSH_SCAN_CACHE_TTL_MS = 2 * 60 * 1000
-SHARED_MAP_TARGET_TTL_MS = 30 * 60 * 1000
+BRUSH_SCAN_CACHE_TTL_MS = int(
+    _STARTUP_MAP_SEARCH_CONTRACT["scanCoordinateCacheTtlMillis"]
+)
+SHARED_MAP_TARGET_TTL_MS = int(
+    _STARTUP_MAP_SEARCH_CONTRACT["targetCacheTtlMillis"]
+)
 # 资源点比山贼稳定得多，资源地图独立保留 3 小时。
-MINE_MAP_TARGET_TTL_MS = 3 * 60 * 60 * 1000
-BRUSH_SCAN_MISS_PAUSE_SEC = 10
+MINE_MAP_TARGET_TTL_MS = int(_STARTUP_MINE_CONTRACT["targetCacheTtlMillis"])
+BRUSH_SCAN_MISS_PAUSE_SEC = int(
+    _STARTUP_BRUSH_SCHEDULE_CONTRACT["targetUnavailableRetryMillis"]
+) // 1000
 SHARED_MAP_SCAN_LEASE_MS = 45 * 1000
 SHARED_MAP_TARGET_LEASE_MS = 10 * 60 * 1000
 SHARED_MAP_REJECT_COOLDOWN_MS = 2 * 60 * 1000
@@ -298,6 +428,8 @@ AREA_CATALOG_LOCK = threading.RLock()
 DAILY_LOCK = threading.RLock()
 DAILY_FEATURE_LOCKS: dict[tuple[str, str], threading.RLock] = {}
 DAILY_FEATURE_LOCKS_LOCK = threading.RLock()
+GENERAL_ENERGY_ACTION_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+GENERAL_ENERGY_ACTION_LOCKS_LOCK = threading.RLock()
 PROXY_LOCK = threading.RLock()
 OUTBOUND_IP_LOCK = threading.RLock()
 BRUSH_SCAN_RATE_LOCK = threading.Lock()
@@ -696,6 +828,160 @@ BARRACK_BUILDING_TYPES = {4, 5, 6, 8}
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+GUIDE_OPEN_SERVER_VERSIONS = (
+    {"index": 0, "label": "九游版", "summary": "30区=2012/11/29，每区间隔5天"},
+    {"index": 1, "label": "腾讯版", "summary": "218区=2016/11/17；290区=2018/8/31；297区=2018/11/9"},
+    {"index": 2, "label": "百度版", "summary": "30区=2012/11/29，每区间隔5天"},
+    {"index": 3, "label": "热血帝王", "summary": "30区=2013/9/20，每区间隔7天"},
+    {"index": 4, "label": "三国联盟", "summary": "102区=2016/10/12；112区=2017/4/26；113区=2017/5/17"},
+    {"index": 5, "label": "新三国争霸", "summary": "30区=2012/7/13，每区间隔7天"},
+    {"index": 6, "label": "繁体版", "summary": "30区=2015/3/20，每区间隔14天"},
+)
+
+
+def guide_famous_generals_payload() -> dict[str, Any]:
+    """Read the recovered APK table used by both desktop and Android guides."""
+    items: list[dict[str, Any]] = []
+    with GUIDE_FAMOUS_GENERALS_FILE.open("r", encoding="utf-8-sig", newline="") as source:
+        rows = csv.reader(source)
+        next(rows, None)
+        for row in rows:
+            if len(row) < 4:
+                continue
+            name = str(row[0]).strip()
+            if not name:
+                continue
+            breakthrough_text = str(row[1]).strip()
+            items.append({
+                "name": name,
+                "breakthrough": int(breakthrough_text) if breakthrough_text.isdigit() else None,
+                "attribute": str(row[2]).strip() or None,
+                "nation": str(row[3]).strip() or None,
+            })
+    return {"ok": True, "total": len(items), "items": items}
+
+
+def guide_articles_payload() -> dict[str, Any]:
+    items = [{"id": article_id, "title": title} for article_id, title in GUIDE_ARTICLE_SPECS]
+    return {"ok": True, "total": len(items), "items": items}
+
+
+def guide_article_payload(article_id: str) -> dict[str, Any]:
+    normalized = str(article_id or "").strip()
+    title = next((title for item_id, title in GUIDE_ARTICLE_SPECS if item_id == normalized), None)
+    if title is None:
+        return {"ok": False, "error": "未找到攻略内容"}
+    body = (GUIDE_ARTICLE_DIR / f"{normalized}.txt").read_text(encoding="utf-8-sig")
+    return {
+        "ok": True,
+        "article": {"id": normalized, "title": title, "body": body},
+    }
+
+
+def _guide_open_server_rule(version_index: int, server: int) -> dict[str, Any]:
+    if version_index == 1:
+        if server < 260:
+            values = (218, 10, 2016, 11, 17, "原 APK pswitch_7：server < 260")
+        elif server <= 290:
+            values = (290, 7, 2018, 8, 31, "原 APK pswitch_7：260..290 分段")
+        else:
+            values = (297, 10, 2018, 11, 9, "原 APK pswitch_7：server > 290")
+    elif version_index == 3:
+        values = (30, 7, 2013, 9, 20, "原 APK pswitch_6")
+    elif version_index == 4:
+        if server < 111:
+            values = (102, 21, 2016, 10, 12, "原 APK pswitch_2：server < 111")
+        elif server <= 113:
+            values = (112, 21, 2017, 4, 26, "原 APK pswitch_2：111..113 分段")
+        else:
+            values = (113, 14, 2017, 5, 17, "原 APK pswitch_2：server > 113")
+    elif version_index == 5:
+        values = (30, 7, 2012, 7, 13, "原 APK pswitch_1")
+    elif version_index == 6:
+        values = (30, 14, 2015, 3, 20, "原 APK pswitch_0")
+    else:
+        values = (30, 5, 2012, 11, 29, "原 APK pswitch_8 / 默认初始规则")
+    base_server, interval_days, year, month, day, note = values
+    return {
+        "baseServer": base_server,
+        "intervalDays": interval_days,
+        "year": year,
+        "month": month,
+        "day": day,
+        "note": note,
+    }
+
+
+def _guide_latest_open_server_rule(version_index: int) -> dict[str, Any]:
+    if version_index == 1:
+        return _guide_open_server_rule(version_index, 291)
+    if version_index == 4:
+        return _guide_open_server_rule(version_index, 114)
+    return _guide_open_server_rule(version_index, 2_147_483_647)
+
+
+def _guide_date_text(value: date) -> str:
+    return f"{value.year:04d}/{value.month}/{value.day}"
+
+
+def guide_open_server_calculation_payload(version_index: int, server: int) -> dict[str, Any]:
+    if server <= 0:
+        raise ValueError("区服编号必须大于 0")
+    version = next(
+        (item for item in GUIDE_OPEN_SERVER_VERSIONS if int(item["index"]) == version_index),
+        GUIDE_OPEN_SERVER_VERSIONS[0],
+    )
+    rule = _guide_open_server_rule(int(version["index"]), server)
+    days_offset = (server - int(rule["baseServer"])) * int(rule["intervalDays"])
+    opened = date(int(rule["year"]), int(rule["month"]), int(rule["day"])) + timedelta(days=days_offset)
+    return {
+        "ok": True,
+        "server": server,
+        "versionIndex": int(version["index"]),
+        "versionLabel": str(version["label"]),
+        "dateText": _guide_date_text(opened),
+        "daysOffset": days_offset,
+        "rule": rule,
+    }
+
+
+def guide_open_server_options_payload(today: date | None = None) -> dict[str, Any]:
+    current = today or date.today()
+    versions: list[dict[str, Any]] = []
+    for option in GUIDE_OPEN_SERVER_VERSIONS:
+        version_index = int(option["index"])
+        rule = _guide_latest_open_server_rule(version_index)
+        base_date = date(int(rule["year"]), int(rule["month"]), int(rule["day"]))
+        diff_days = (current - base_date).days
+        next_step = 0 if diff_days < 0 else diff_days // int(rule["intervalDays"]) + 1
+        upcoming_server = max(1, int(rule["baseServer"]) + next_step)
+        upcoming_date = base_date + timedelta(days=next_step * int(rule["intervalDays"]))
+        versions.append({
+            **option,
+            "upcomingServer": upcoming_server,
+            "upcomingDate": _guide_date_text(upcoming_date),
+        })
+    return {"ok": True, "versions": versions}
+
+
+def guide_reference_payload(query: dict[str, list[str]]) -> dict[str, Any]:
+    resource = str((query.get("resource") or [""])[0] or "")
+    if resource == "famous-generals":
+        return guide_famous_generals_payload()
+    if resource == "articles":
+        return guide_articles_payload()
+    if resource == "article":
+        return guide_article_payload(str((query.get("id") or [""])[0] or ""))
+    if resource == "open-server-options":
+        return guide_open_server_options_payload()
+    if resource == "open-server-calculation":
+        return guide_open_server_calculation_payload(
+            int((query.get("versionIndex") or ["0"])[0]),
+            int((query.get("server") or ["0"])[0]),
+        )
+    return {"ok": False, "error": "未知的攻略资料类型"}
 
 
 def json_safe(value: Any) -> Any:
@@ -4473,6 +4759,7 @@ def load_account_settings_payload(
             "config": config_payload.get("config") if isinstance(config_payload, dict) else None,
             "raid": military_payload.get("raid") if isinstance(military_payload, dict) else None,
             "mine": military_payload.get("mine") if isinstance(military_payload, dict) else None,
+            "ministry": None,
             "militaryFuture": military_payload.get("militaryFuture") if isinstance(military_payload, dict) else {},
         }
         database_save_account_habits(account_key, payload)
@@ -4488,6 +4775,7 @@ def load_account_habits(sess: dict[str, Any]) -> dict[str, Any]:
     config = payload.get("config")
     raid = payload.get("raid")
     mine = payload.get("mine")
+    ministry = payload.get("ministry")
     military_future = payload.get("militaryFuture")
     if isinstance(config, dict):
         config = dict(config)
@@ -4502,6 +4790,7 @@ def load_account_habits(sess: dict[str, Any]) -> dict[str, Any]:
         "config": config if isinstance(config, dict) else None,
         "raid": raid if isinstance(raid, dict) else None,
         "mine": mine if isinstance(mine, dict) else None,
+        "ministry": ministry if isinstance(ministry, dict) else None,
         "militaryFuture": military_future if isinstance(military_future, dict) else {},
     }
 
@@ -4536,6 +4825,7 @@ def save_account_habits(
     config: dict[str, Any] | None = None,
     raid: dict[str, Any] | None = None,
     mine: dict[str, Any] | None = None,
+    ministry: dict[str, Any] | None = None,
     military_future: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     saved: dict[str, str] = {}
@@ -4553,6 +4843,8 @@ def save_account_habits(
             payload["raid"] = raid
         if mine is not None:
             payload["mine"] = mine
+        if ministry is not None:
+            payload["ministry"] = ministry
         if military_future is not None:
             old_future = payload.get("militaryFuture") if isinstance(payload.get("militaryFuture"), dict) else {}
             next_future = dict(old_future or {})
@@ -4574,6 +4866,8 @@ def save_account_habits(
         saved["configFile"] = sqlite_uri
     if raid is not None or mine is not None or military_future is not None:
         saved["militaryFile"] = sqlite_uri
+    if ministry is not None:
+        saved["ministryFile"] = sqlite_uri
     saved["settingsFile"] = sqlite_uri
     return saved
 
@@ -5119,6 +5413,9 @@ RUNTIME_TRANSIENT_SESSION_FIELDS = {
     "lastTargets",
     "lastMineTargets",
     "state8004PayloadHex",
+    # 军情是“此刻”的状态，重启后必须重新向服务器确认。
+    # 持久化会让旧军情在重启后冒充实时数据。
+    "militarySnapshot",
 }
 
 
@@ -6313,9 +6610,13 @@ def live_account_count_for_proxy_ip(
             1
             for sid, acc in ACCOUNTS.items()
             if str(sid) != str(exclude_account_id or "")
-            and sid in live_session_ids
-            and bool(acc.get("started"))
             and str(acc.get("proxyIp") or "").strip() == target_ip
+            and (
+                sid in live_session_ids
+                or bool(acc.get("started"))
+                or str(acc.get("status") or "")
+                in {"checking", "online", "reconnecting"}
+            )
         )
 
 
@@ -6329,6 +6630,143 @@ def ensure_proxy_ip_capacity(outbound_ip: str, *, account_id: str = "") -> None:
             f"公网IP {outbound_ip} 已同时登录 {count} 个账号，"
             f"每个IP最多登录 {PROXY_MAX_LIVE_ACCOUNTS_PER_IP} 个账号"
         )
+
+
+def assign_balanced_proxy_nodes(
+    account_ids: list[str],
+) -> dict[str, Any]:
+    """Pre-assign starter accounts across distinct egress IPs when possible.
+
+    Known egress IPs are the balancing key, not node names: multiple nodes can
+    share one public IP.  Existing live/connecting accounts count toward the
+    two-account ceiling, while accounts in this batch are reserved in memory
+    before any worker starts.
+    """
+    unique_ids = list(dict.fromkeys(
+        str(value or "") for value in account_ids if str(value or "")
+    ))
+    if not unique_ids:
+        return {"group": "", "assignments": {}, "errors": {}}
+    with ACCOUNT_LOCK:
+        missing = [sid for sid in unique_ids if sid not in ACCOUNTS]
+    if missing:
+        raise RuntimeError("起号账号记录不存在：" + "、".join(missing[:5]))
+
+    group, nodes = clash_proxy_groups()
+    routes = [{
+        "node": node,
+        "ip": known_outbound_ip(node),
+        "index": index,
+    } for index, node in enumerate(nodes)]
+    if not routes:
+        raise RuntimeError("没有可用于起号登录的代理节点")
+
+    selected = set(unique_ids)
+    base_loads: Counter[str] = Counter()
+    with ACCOUNT_LOCK:
+        live_session_ids = set(SESSIONS)
+        for sid, account in ACCOUNTS.items():
+            if sid in selected:
+                continue
+            ip = str(account.get("proxyIp") or "").strip()
+            if not ip:
+                continue
+            if (
+                sid in live_session_ids
+                or bool(account.get("started"))
+                or str(account.get("status") or "")
+                in {"checking", "online", "reconnecting"}
+            ):
+                base_loads[ip] += 1
+
+    planned_loads: Counter[str] = Counter()
+    node_loads: Counter[str] = Counter()
+    assignments: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for sid in unique_ids:
+        available: list[dict[str, Any]] = []
+        for route in routes:
+            ip = str(route.get("ip") or "")
+            key = ip or f"node:{route['node']}"
+            if (
+                ip
+                and base_loads[ip] + planned_loads[key]
+                >= PROXY_MAX_LIVE_ACCOUNTS_PER_IP
+            ):
+                continue
+            available.append({**route, "key": key})
+        if not available:
+            errors[sid] = (
+                "没有未满载的公网IP；每个IP最多同时登录"
+                f"{PROXY_MAX_LIVE_ACCOUNTS_PER_IP}个账号"
+            )
+            continue
+        route = min(
+            available,
+            key=lambda item: (
+                1 if planned_loads[item["key"]] else 0,
+                base_loads[str(item.get("ip") or "")]
+                + planned_loads[item["key"]],
+                node_loads[str(item["node"])],
+                int(item["index"]),
+            ),
+        )
+        planned_loads[route["key"]] += 1
+        node_loads[str(route["node"])] += 1
+        assignments[sid] = {
+            "group": group,
+            "node": str(route["node"]),
+            "ip": str(route.get("ip") or ""),
+        }
+
+    checked_at = now_ms()
+    with ACCOUNT_LOCK:
+        for sid, route in assignments.items():
+            account = ACCOUNTS.get(sid)
+            if not account:
+                continue
+            account["proxyMode"] = "auto"
+            account["proxyGroup"] = route["group"]
+            account["proxyNode"] = route["node"]
+            account["proxyIp"] = route["ip"]
+            account["proxyStatus"] = "starter-balanced"
+            account["proxyError"] = ""
+            account["proxyCheckedAt"] = checked_at if route["ip"] else None
+    persist_runtime_state()
+    return {
+        "group": group,
+        "assignments": assignments,
+        "errors": errors,
+    }
+
+
+def ordered_proxy_nodes_for_account(
+    account_id: str,
+    nodes: list[str],
+    preferred: str = "",
+) -> list[str]:
+    """Put the preferred node first, then least-used different IPs."""
+    current_ip = stored_account_outbound_ip(account_id)
+    ranked: list[tuple[tuple[int, int, int, int], str]] = []
+    for index, node in enumerate(nodes):
+        ip = known_outbound_ip(node)
+        load = (
+            live_account_count_for_proxy_ip(
+                ip,
+                exclude_account_id=account_id,
+            )
+            if ip else 0
+        )
+        if ip and load >= PROXY_MAX_LIVE_ACCOUNTS_PER_IP:
+            continue
+        ranked.append(((
+            0 if node == preferred else 1,
+            1 if current_ip and ip == current_ip and node != preferred else 0,
+            load,
+            index,
+        ), node))
+    ranked.sort(key=lambda item: item[0])
+    return [node for _rank, node in ranked]
 
 
 def rotate_heartbeat_proxy(session_id: str) -> dict[str, Any]:
@@ -7808,6 +8246,10 @@ def _post_game_impl(
         started_at = time.monotonic()
         try:
             if account_id and outbound_ip:
+                ensure_proxy_ip_capacity(
+                    outbound_ip,
+                    account_id=str(account_id),
+                )
                 with ACCOUNT_LOCK:
                     acc = ACCOUNTS.get(account_id)
                     if acc is not None:
@@ -7879,14 +8321,16 @@ def _post_game_impl(
 
     group, nodes = clash_proxy_groups()
     preferred = assigned_proxy_node(account_id)
-    ordered = []
-    if preferred and preferred in nodes:
-        ordered.append(preferred)
     if proxy_mode == "manual":
+        ordered = [preferred] if preferred in nodes else []
         if not ordered:
             raise RuntimeError("手动代理节点已失效，请重新选择当前IP")
     else:
-        ordered.extend([x for x in nodes if x not in ordered])
+        ordered = ordered_proxy_nodes_for_account(
+            str(account_id),
+            nodes,
+            preferred,
+        )
     last_error = direct_error
     max_attempts = 1 if proxy_mode == "manual" else PROXY_MAX_ATTEMPTS
     for node in ordered[:max_attempts]:
@@ -7897,6 +8341,15 @@ def _post_game_impl(
             cached_outbound_ip(node)
             or stored_account_outbound_ip(account_id, node=node)
         )
+        if outbound_ip:
+            try:
+                ensure_proxy_ip_capacity(
+                    outbound_ip,
+                    account_id=str(account_id),
+                )
+            except Exception as exc:
+                last_error = f"{node}: {exc}"
+                continue
         # Per-route pacing does not depend on the mutable Mihomo selector.
         # Wait before taking PROXY_LOCK so another account can use its route.
         wait_for_game_request_slot(f"proxy:{outbound_ip or node}")
@@ -7922,6 +8375,21 @@ def _post_game_impl(
                     or resolve_outbound_ip(node, via_proxy=True)
                     or stored_account_outbound_ip(account_id, node=node)
                 )
+                if not outbound_ip:
+                    raise RuntimeError("该代理节点无法确认公网IP")
+                ensure_proxy_ip_capacity(
+                    outbound_ip,
+                    account_id=str(account_id),
+                )
+                with ACCOUNT_LOCK:
+                    account = ACCOUNTS.get(str(account_id))
+                    if account is not None:
+                        account["proxyGroup"] = group
+                        account["proxyNode"] = node
+                        account["proxyIp"] = outbound_ip
+                        account["proxyStatus"] = "connecting"
+                        account["proxyError"] = ""
+                        account["proxyCheckedAt"] = now_ms()
                 started_at = time.monotonic()
                 attempted = True
                 code, data, packets = _post_game_via_socks(url, body, node)
@@ -8197,7 +8665,7 @@ def summarize_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item["dispatch8522"] = parse_8522_dispatch_response(payload)
         elif p.get("opcode") == 0x8520:
             item["preview8520"] = parse_8520_mine_preview(payload)
-        elif p.get("opcode") == 0x8526:
+        elif p.get("opcode") == MINE_WITHDRAW_RESPONSE_OPCODE:
             item["recall8526"] = parse_8526_recall_response(payload)
         elif p.get("opcode") == 0x8524:
             item["mineSpeed8524"] = parse_8524_mine_speed_response(payload)
@@ -8210,11 +8678,17 @@ def summarize_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def parse_8520_mine_preview(payload: bytes) -> dict[str, Any]:
     """0x8520 固定 25 字节：行军秒数、两个时间、胜率、目标坐标。"""
     out: dict[str, Any] = {"rawHex": payload.hex(), "valid": False}
-    if len(payload) < 25:
-        return {**out, "error": f"出征预览长度不足：{len(payload)}/25"}
+    if len(payload) < MINE_PREVIEW_MINIMUM_BYTES:
+        return {
+            **out,
+            "error": (
+                f"出征预览长度不足：{len(payload)}/"
+                f"{MINE_PREVIEW_MINIMUM_BYTES}"
+            ),
+        }
     try:
         march_seconds, arrival_at, second_time, win_rate, x, y = struct.unpack(
-            ">iqqBHH", payload[:25]
+            ">iqqBHH", payload[:MINE_PREVIEW_MINIMUM_BYTES]
         )
         out.update({
             "valid": march_seconds >= 0,
@@ -8224,7 +8698,7 @@ def parse_8520_mine_preview(payload: bytes) -> dict[str, Any]:
             "winRate": win_rate,
             "x": x,
             "y": y,
-            "trailingHex": payload[25:].hex(),
+            "trailingHex": payload[MINE_PREVIEW_MINIMUM_BYTES:].hex(),
         })
     except Exception as exc:
         out["error"] = str(exc)
@@ -8306,10 +8780,8 @@ def parse_8522_dispatch_response(payload: bytes) -> dict[str, Any]:
 
 
 MARCH_SPEED_SECONDS = {
-    76: 15 * 60,
-    77: 30 * 60,
-    78: 60 * 60,
-    79: 180 * 60,
+    int(item_id): int(seconds)
+    for item_id, seconds in _STARTUP_MINE_SPEED_CONTRACT["itemSeconds"].items()
 }
 
 MARCH_SPEED_STATUS_MESSAGES = {
@@ -8448,7 +8920,10 @@ def choose_march_speed_items(
     inventory_items: list[dict[str, Any]],
 ) -> list[int]:
     """Choose the least wasteful available combination, preferring fewer/high items."""
-    required_seconds = max(0, int(remaining_seconds) - 60)
+    required_seconds = max(
+        0,
+        int(remaining_seconds) - MINE_SPEED_STOP_BELOW_SECONDS,
+    )
     if required_seconds <= 0:
         return []
     counts = _inventory_march_speed_counts({"items": inventory_items})
@@ -8502,10 +8977,11 @@ def choose_march_speed_items(
     ]
 
 
-def ensure_mine_generals_full_loyalty(
+def ensure_military_generals_full_loyalty(
     sess: dict[str, Any],
     selected: list[dict[str, Any]],
     *,
+    action_name: str,
     task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
@@ -8515,7 +8991,10 @@ def ensure_mine_generals_full_loyalty(
         loyalty = general.get("loyalty")
         loyalty_limit = general.get("loyaltyLimit")
         if loyalty is None or loyalty_limit is None:
-            raise RuntimeError(f"打矿满忠失败：{name} 的忠诚度状态不可用，本轮暂不出征")
+            raise RuntimeError(
+                f"{action_name}满忠失败：{name} 的忠诚度状态不可用，"
+                "本轮暂不出征"
+            )
         loyalty = int(loyalty)
         loyalty_limit = int(loyalty_limit)
         if loyalty >= loyalty_limit:
@@ -8529,7 +9008,11 @@ def ensure_mine_generals_full_loyalty(
             continue
         delta = loyalty_limit - loyalty
         if task:
-            task_log(task, f"打矿满忠检查：{name} {loyalty}/{loyalty_limit}，需要补{delta}点")
+            task_log(
+                task,
+                f"{action_name}满忠检查：{name} {loyalty}/{loyalty_limit}，"
+                f"需要补{delta}点",
+            )
         payload = build_add_loyalty_payload(general_id, delta)
         code, data, packets = post_game(
             sess["gameHttp"],
@@ -8551,7 +9034,9 @@ def ensure_mine_generals_full_loyalty(
                 str((parsed or {}).get("message") or "")
                 or "未收到 0x821f 加忠成功响应"
             )
-            raise RuntimeError(f"打矿满忠失败：{name}；{message}，本轮暂不出征")
+            raise RuntimeError(
+                f"{action_name}满忠失败：{name}；{message}，本轮暂不出征"
+            )
         updated = next(
             (
                 row for row in parsed.get("generals") or []
@@ -8560,12 +9045,16 @@ def ensure_mine_generals_full_loyalty(
             None,
         )
         if not updated:
-            raise RuntimeError(f"打矿满忠失败：{name}；响应未包含该将领，本轮暂不出征")
+            raise RuntimeError(
+                f"{action_name}满忠失败：{name}；响应未包含该将领，"
+                "本轮暂不出征"
+            )
         new_loyalty = int(updated.get("loyalty") or 0)
         new_limit = int(updated.get("loyaltyLimit") or loyalty_limit)
         if new_loyalty < new_limit:
             raise RuntimeError(
-                f"打矿满忠失败：{name} 加忠后仍为 {new_loyalty}/{new_limit}，本轮暂不出征"
+                f"{action_name}满忠失败：{name} 加忠后仍为 "
+                f"{new_loyalty}/{new_limit}，本轮暂不出征"
             )
         general["loyalty"] = new_loyalty
         general["loyaltyLimit"] = new_limit
@@ -8587,7 +9076,7 @@ def ensure_mine_generals_full_loyalty(
         if task:
             task_log(
                 task,
-                f"打矿满忠成功：{name} {new_loyalty}/{new_limit}，"
+                f"{action_name}满忠成功：{name} {new_loyalty}/{new_limit}，"
                 f"消耗{int(parsed.get('actualCost') or 0)}铜钱",
             )
     if task:
@@ -8596,8 +9085,23 @@ def ensure_mine_generals_full_loyalty(
             f"{item.get('loyaltyLimit') or (item.get('generals') or [{}])[0].get('loyaltyLimit')}"
             for item in results
         )
-        task_log(task, f"打矿满忠完成：{summary}")
+        task_log(task, f"{action_name}满忠完成：{summary}")
     return {"success": True, "generals": results}
+
+
+def ensure_mine_generals_full_loyalty(
+    sess: dict[str, Any],
+    selected: list[dict[str, Any]],
+    *,
+    task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper for existing callers and tests."""
+    return ensure_military_generals_full_loyalty(
+        sess,
+        selected,
+        action_name="打矿",
+        task=task,
+    )
 
 
 def accelerate_mine_march(
@@ -8617,15 +9121,16 @@ def accelerate_mine_march(
             task_log(task, message)
         return {"success": False, "skipped": True, "message": message, "actions": actions}
 
-    while estimated_remaining > 60:
+    while estimated_remaining > MINE_SPEED_STOP_BELOW_SECONDS:
         choices = choose_march_speed_items(
             estimated_remaining,
             list(inventory.get("items") or []),
         )
         if not choices:
             message = (
-                "智能加速跳过：剩余行军时间不足60秒"
-                if estimated_remaining <= 60
+                f"智能加速跳过：剩余行军时间不足"
+                f"{MINE_SPEED_STOP_BELOW_SECONDS}秒"
+                if estimated_remaining <= MINE_SPEED_STOP_BELOW_SECONDS
                 else "智能加速跳过：宝库中没有可用行军符"
             )
             if task:
@@ -8642,21 +9147,25 @@ def accelerate_mine_march(
         payload = build_mine_speed_payload(battle_id, item_id)
         code, data, packets = post_game(
             sess["gameHttp"],
-            [(0x1524, payload)],
+            [(MINE_SPEED_REQUEST_OPCODE, payload)],
             int(sess["dm"]),
             account_id=str(sess.get("sessionId") or ""),
         )
         candidates = [
             parse_8524_mine_speed_response(packet["payload"])
             for packet in packets
-            if packet.get("opcode") == 0x8524 and "payload" in packet
+            if packet.get("opcode") == MINE_SPEED_RESPONSE_OPCODE
+            and "payload" in packet
         ]
         parsed = next(
             (item for item in candidates if item.get("success")),
             candidates[0] if candidates else {
                 "success": False,
                 "status": None,
-                "message": "未收到 0x8524 行军加速响应",
+                "message": (
+                    f"未收到 0x{MINE_SPEED_RESPONSE_OPCODE:04x} "
+                    "行军加速响应"
+                ),
             },
         )
         action = {
@@ -8706,7 +9215,7 @@ def build_raid_fief_list_payload(player_name: str) -> bytes:
     name = str(player_name or "").strip()
     if not name:
         raise RuntimeError("请填写要掠夺的玩家名称")
-    return b"\x00\x01" + utf(name)
+    return RAID_TARGET_PAYLOAD_PREFIX + utf(name)
 
 
 def parse_raid_fief_list(payload: bytes) -> dict[str, Any]:
@@ -8774,19 +9283,22 @@ def query_raid_fiefs(sess: dict[str, Any], player_name: str) -> dict[str, Any]:
     payload = build_raid_fief_list_payload(player_name)
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1310, payload)],
+        [(RAID_FIEF_QUERY_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    pkt = next((p for p in packets if p.get("opcode") == 0x8310 and "payload" in p), None)
+    pkt = next((p for p in packets if p.get("opcode") == RAID_FIEF_QUERY_RESPONSE_OPCODE and "payload" in p), None)
     if not pkt:
-        raise RuntimeError("查询玩家封地列表未返回 0x8310：" + json.dumps(summarize_packets(packets), ensure_ascii=False)[:500])
+        raise RuntimeError(
+            f"查询玩家封地列表未返回 0x{RAID_FIEF_QUERY_RESPONSE_OPCODE:04x}："
+            + json.dumps(summarize_packets(packets), ensure_ascii=False)[:500]
+        )
     parsed = parse_raid_fief_list(pkt["payload"])
     if parsed.get("parseError"):
         raise RuntimeError("玩家封地列表解析失败：" + str(parsed.get("parseError")))
     parsed.update({
         "http": code,
-        "opcode": "0x1310/0x8310",
+        "opcode": f"0x{RAID_FIEF_QUERY_OPCODE:04x}/0x{RAID_FIEF_QUERY_RESPONSE_OPCODE:04x}",
         "requestPayloadHex": payload.hex(),
         "packets": summarize_packets(packets),
         "queriedPlayerName": str(player_name or "").strip(),
@@ -8956,9 +9468,11 @@ def refresh_owned_fief_locations(sess: dict[str, Any]) -> dict[str, dict[str, An
 def build_raid_prepare_payload(general_id_hexes: list[str], target_id: int) -> bytes:
     if not general_id_hexes:
         raise RuntimeError("掠夺至少需要选择 1 个出征将领")
-    if len(general_id_hexes) > 5:
-        raise RuntimeError("掠夺编队最多选择5名出征将领")
-    out = bytearray([0x01, len(general_id_hexes)])
+    if len(general_id_hexes) > RAID_MAX_GENERALS_PER_FORMATION:
+        raise RuntimeError(
+            f"掠夺编队最多选择{RAID_MAX_GENERALS_PER_FORMATION}名出征将领"
+        )
+    out = bytearray([RAID_ACTION_TYPE, len(general_id_hexes)])
     for gid in general_id_hexes:
         out += bytes.fromhex(normalize_hex_id(gid))
     out += struct.pack(">q", int(target_id))
@@ -8968,7 +9482,11 @@ def build_raid_prepare_payload(general_id_hexes: list[str], target_id: int) -> b
 def build_raid_expedition_payload(general_id_hexes: list[str], target_id: int) -> bytes:
     # 普通立即出征：正式出征比 0x1520 多 relatedLong=-1 和 3 个 0 字节。
     # 之前抓包里的 relatedLong=1 + 03 19 10 是“精确到达 03:25:16”，不能用于默认掠夺。
-    return build_raid_prepare_payload(general_id_hexes, target_id) + struct.pack(">q", -1) + bytes.fromhex("000000")
+    return (
+        build_raid_prepare_payload(general_id_hexes, target_id)
+        + struct.pack(">q", RAID_IMMEDIATE_RELATED_LONG)
+        + RAID_IMMEDIATE_FLAGS
+    )
 
 
 def build_mine_payloads(
@@ -8977,9 +9495,11 @@ def build_mine_payloads(
 ) -> tuple[bytes, bytes]:
     if not general_id_hexes:
         raise RuntimeError("打矿至少需要选择 1 个出征将领")
-    if len(general_id_hexes) > 5:
-        raise RuntimeError("打矿编队最多选择5名出征将领")
-    prepare = bytearray([0x02, len(general_id_hexes)])
+    if len(general_id_hexes) > MINE_MAX_GENERALS_PER_FORMATION:
+        raise RuntimeError(
+            f"打矿编队最多选择{MINE_MAX_GENERALS_PER_FORMATION}名出征将领"
+        )
+    prepare = bytearray([MINE_ACTION_TYPE, len(general_id_hexes)])
     for general_id_hex in general_id_hexes:
         prepare += bytes.fromhex(normalize_hex_id(general_id_hex))
     prepare += struct.pack(">q", int(resource_id))
@@ -9077,11 +9597,11 @@ def execute_mine(
         })
         return packets
 
-    prepare_packets = send_action("prepare", 0x1520, prepare_payload)
+    prepare_packets = send_action("prepare", MINE_PREPARE_OPCODE, prepare_payload)
     preview_candidates = [
         parse_8520_mine_preview(packet["payload"])
         for packet in prepare_packets
-        if packet.get("opcode") == 0x8520 and "payload" in packet
+        if packet.get("opcode") == MINE_PREPARE_RESPONSE_OPCODE and "payload" in packet
     ]
     preview = next(
         (item for item in preview_candidates if item.get("valid")),
@@ -9124,14 +9644,14 @@ def execute_mine(
     if not preview_failure:
         time.sleep(0.35)
         expedition_packets_raw = send_action(
-            "expedition", 0x1522, expedition_payload
+            "expedition", MINE_DISPATCH_OPCODE, expedition_payload
         )
     expedition_packets = [
         packet
         for action in action_results
         if action.get("phase") == "expedition"
         for packet in action.get("packets") or []
-        if packet.get("opcode") == "0x8522"
+        if packet.get("opcode") == f"0x{MINE_DISPATCH_RESPONSE_OPCODE:04x}"
     ]
     parsed = [packet.get("dispatch8522") or {} for packet in expedition_packets]
     accepted = next((item for item in parsed if item.get("success")), None)
@@ -9474,6 +9994,755 @@ def parse_8600_military_events(payload: bytes) -> list[dict[str, Any]]:
     return events
 
 
+# --- 军情快照（0x1600 / 0x8600）---------------------------------------------
+#
+# 军情页展示的是“此刻正在进行的军事行动”，不是历史事件流。抓包
+# （ctf_out/passive_pcap_hotspot_20260714_033644 / _044023 / _125113，
+# 三份都带 operator_timeline 口述真值）确认同一次出征在 0x8600 里
+# 表现为同一个 battleId 的一条记录，随时间在下列状态之间流转：
+#
+#   【攻占】…战斗进行中  →  【驻守】…驻守在X  →  【返回】…返回某某的封地
+#
+# 2026-07-29 的真实来袭样本进一步确认：0x8600 不是“搜到一个【…】文本，
+# 紧跟一条行动记录”的平铺结构，而是原版客户端 scriptPages/data/a.B/C
+# 读取的三个分区：
+#
+#   type=1  我方出征/战斗/返回：文本表 + 编队记录表
+#   type=2  敌军来袭：来袭玩家、行动类型、目标封地、剩余时间、到达时间
+#   type=3  我方驻守：文本表 + 驻守编队记录表
+#
+# 文本表和记录表按索引关联。旧的 UTF 锚点启发式在同时存在两支编队时会把
+# 第一条文本和第二条结构错配，也会完全漏掉 type=2（其完整“【掠夺】…”文案
+# 是客户端用分离字段拼出来的，响应里没有带【】的完整文本）。这里严格按原版
+# 的读取顺序前向解析；任一边界校验失败就放弃整包，宁可少报也不伪造军情。
+#
+# 说明：上面的 parse_8600_military_events 是打矿召回链路已验证的专用解析，
+# 只认【驻守】。那条链路会据此决定要不要召回真实部队，因此这里另起一个
+# 通用解析，不去改动它。
+
+# 真实客户端点击军情刷新时发出的 0x1600 请求体（抓包逐字节一致）。
+# The shared-contract assignment near the contract loader replaces this compatibility
+# value after module definitions have loaded; keeping the early value avoids a
+# forward-reference during import.
+MILITARY_INTEL_REQUEST_PAYLOAD = bytes.fromhex("07000000000000000000000014")
+
+MILITARY_ACTION_TARGET_TYPES: dict[int, str] = {
+    0x01: "封地",
+    0x02: "野外目标",
+    # 抓包 20260726_173635：【消灭】7级山贼(103,29) 的 targetType=0x03。
+    0x03: "山贼",
+    # 抓包 20260726_173635：【副本】…参与副本关卡宦官乱政 的 targetType=0x0e，
+    # targetName 是关卡名（宦官乱政/刺灭董卓/广宗决战）。
+    0x0E: "副本关卡",
+}
+
+# 事件文本的【标签】→ 军情页基础状态。未知标签保留原标签，不猜测语义。
+# 战斗类标签的最终状态还要看行军尾部（见 military_action_state）：
+# 剩余行军时间 > 0 说明部队仍在去程路上，是“出征”而不是“战斗”。
+MILITARY_ACTION_STATE_BY_TAG: dict[str, str] = {
+    "攻占": "战斗",
+    "夺取": "战斗",
+    "掠夺": "战斗",
+    "消灭": "战斗",
+    "驻守": "驻守",
+    "返回": "返回",
+}
+
+# type=2 来袭记录的 actionType。0x01 同时由真实来袭样本和 0x1520/0x1522
+# 出征请求确认表示“掠夺”；客户端展示动词使用本地文案“夺取”。未知值仍作为
+# “来袭”展示并显式标出类型号，不猜测成某种已知军事行动。
+MILITARY_INCOMING_ACTION_TYPES: dict[int, tuple[str, str]] = {
+    0x01: ("掠夺", "夺取"),
+}
+
+MILITARY_8600_MAX_SECTION_ITEMS = 512
+MILITARY_8600_JIANGLING_BODY_LEN = 114
+MILITARY_8600_S5_ENTRY_LEN = 21
+MILITARY_8600_ENERGY_OFFSET = 0x1B
+MILITARY_8600_ENERGY_LIMIT_OFFSET = 0x1D
+MILITARY_8600_TROOP_LIMIT_OFFSET = 0x23
+MILITARY_8600_LOYALTY_OFFSET = 0x27
+MILITARY_8600_PLACE_ID_OFFSET = 0x32
+MILITARY_8600_STATUS_OFFSET = 0x56
+
+# 行军类尾部的第一个字节。四种取值都在真实抓包里逐字节确认过
+# （ctf_out/passive_pcap_hotspot_20260714_* 与 20260726_173635）：
+#   0x09 野外目标去程（攻占矿点等）    0x0b 山贼去程（消灭山贼）
+#   0x0d 回程                        0x17 副本关卡（无行军，恒为 0 剩余）
+MILITARY_MARCH_KINDS: dict[int, str] = {
+    0x09: "去程",
+    0x0B: "去程",
+    0x0D: "回程",
+    0x17: "副本",
+}
+
+# 仍在赶路（而非战斗中）只可能出现在这两种去程尾部上。
+MILITARY_OUTBOUND_MARCH_KINDS = {0x09, 0x0B}
+
+# 0x8600 事件文本用这个后缀标注“部队已抵达、战斗已经打响”。
+MILITARY_BATTLE_IN_PROGRESS_MARKER = "战斗进行中"
+
+# 合法的毫秒时间戳窗口，用于判定尾部 u64 是不是时间戳。
+MILITARY_TIMESTAMP_MIN_MS = 1_600_000_000_000
+MILITARY_TIMESTAMP_MAX_MS = 2_000_000_000_000
+
+
+def military_action_tag(text: str) -> str:
+    """Return the 【tag】 prefix of a 0x8600 event text, or an empty string."""
+    if not text.startswith("【"):
+        return ""
+    end = text.find("】")
+    if end <= 1:
+        return ""
+    return text[1:end]
+
+
+def military_march_fields(
+    march_kind: int,
+    march_value: int,
+    event_time_ms: int,
+) -> dict[str, Any]:
+    """Validate and expose the confirmed march tuple."""
+    if march_kind not in MILITARY_MARCH_KINDS:
+        return {}
+    if not (MILITARY_TIMESTAMP_MIN_MS < event_time_ms < MILITARY_TIMESTAMP_MAX_MS):
+        return {}
+    return {
+        "marchKind": march_kind,
+        "marchKindText": MILITARY_MARCH_KINDS[march_kind],
+        "marchValue": march_value,
+        "eventTimeMs": event_time_ms,
+    }
+
+
+def parse_8600_military_march_tail(payload: bytes, p: int) -> dict[str, Any]:
+    """Decode the confirmed march tail (kind + u32 + u64 timestamp) if present.
+
+    Only known kind bytes (0x09/0x0b/0x0d/0x17) followed by a plausible
+    millisecond timestamp are accepted. 驻守 records use a different tail
+    shape (首字节 0x00) and simply return {}.
+
+    字段语义（抓包 20260726_173635 同一 battleId 连续刷新确认）：
+
+    - marchValue = 剩余行军毫秒。行军中逐次递减（矿点去程
+      93949→57857→41442→22448；回程 38322→24407→13988），战斗中恒为 0。
+      旧注释说它是“总时长”是错的——旧抓包只在出发/召回后立刻刷新过一次，
+      剩余≈总时长，两种解释当时都吻合；连续采样才区分得开。
+    - eventTimeMs：去程/回程时 = 预计到达/到家的时刻（连续刷新恒定不变，
+      且 eventTimeMs - marchValue = 本次刷新的时刻）；战斗中 ≈ 服务器当前
+      时间（逐次漂移），不能当倒计时；0x17 副本尾部同样 ≈ 服务器当前时间。
+    """
+    if p + 13 > len(payload):
+        return {}
+    march_kind = payload[p]
+    march_value = int.from_bytes(payload[p + 1:p + 5], "big")
+    event_time_ms = int.from_bytes(payload[p + 5:p + 13], "big")
+    return military_march_fields(march_kind, march_value, event_time_ms)
+
+
+def military_action_state(tag: str, text: str, march: dict[str, Any]) -> str:
+    """Derive the display state from the event tag, text and march tail.
+
+    真值对照（ctf_out/passive_pcap_hotspot_20260726_173635 + 口述时间线）：
+
+    - 【攻占】牧场 无“战斗进行中”后缀 + 去程剩余>0 → 行军中（操作者原话
+      “还在行军中”）；带“战斗进行中”后缀时剩余恒为 0 → 战斗。
+    - 【消灭】7级山贼 同上（山贼去程尾部是 0x0b）。
+    - 【副本】带“战斗进行中” → 战斗；不带后缀的是已建队未开战的多人副本
+      （广宗决战组队记录）→ 备战。
+    """
+    if tag == "副本":
+        if MILITARY_BATTLE_IN_PROGRESS_MARKER in text:
+            return "战斗"
+        return "备战"
+    base = MILITARY_ACTION_STATE_BY_TAG.get(tag, tag)
+    if base == "战斗":
+        march_kind = march.get("marchKind")
+        if (
+            march_kind in MILITARY_OUTBOUND_MARCH_KINDS
+            and int(march.get("marchValue") or 0) > 0
+        ):
+            return "出征"
+    return base
+
+
+class _Military8600Cursor:
+    """Bounds-checked cursor for the original client's 0x8600 read order."""
+
+    def __init__(self, payload: bytes):
+        self.payload = payload
+        self.offset = 0
+
+    def take(self, size: int, field: str) -> bytes:
+        if size < 0 or self.offset + size > len(self.payload):
+            raise ValueError(
+                f"0x8600 字段 {field} 越界：offset={self.offset}, "
+                f"size={size}, payload={len(self.payload)}"
+            )
+        start = self.offset
+        self.offset += size
+        return self.payload[start:self.offset]
+
+    def u8(self, field: str) -> int:
+        return self.take(1, field)[0]
+
+    def u16(self, field: str) -> int:
+        return int.from_bytes(self.take(2, field), "big")
+
+    def u32(self, field: str) -> int:
+        return int.from_bytes(self.take(4, field), "big")
+
+    def u64(self, field: str) -> int:
+        return int.from_bytes(self.take(8, field), "big")
+
+    def utf(self, field: str) -> dict[str, Any]:
+        start = self.offset
+        length = self.u16(f"{field}.length")
+        raw = self.take(length, field)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"0x8600 字段 {field} 不是合法 UTF-8") from exc
+        return {"text": text, "offset": start, "length": length}
+
+
+def _military_8600_count(value: int, field: str) -> int:
+    if not (0 <= value <= MILITARY_8600_MAX_SECTION_ITEMS):
+        raise ValueError(f"0x8600 字段 {field} 数量异常：{value}")
+    return value
+
+
+def _parse_8600_descriptors(
+    cursor: _Military8600Cursor,
+    section_type: int,
+) -> list[dict[str, Any]]:
+    """Read the text/shape table that precedes each section's record table."""
+    count = _military_8600_count(
+        cursor.u16(f"section{section_type}.descriptorCount"),
+        f"section{section_type}.descriptorCount",
+    )
+    descriptors: list[dict[str, Any]] = []
+    for index in range(count):
+        descriptor = cursor.utf(f"section{section_type}.descriptors[{index}].text")
+        value_count = _military_8600_count(
+            cursor.u16(f"section{section_type}.descriptors[{index}].valueCount"),
+            f"section{section_type}.descriptors[{index}].valueCount",
+        )
+        if section_type in {1, 3}:
+            descriptor["recordIndexes"] = [
+                cursor.u16(f"section{section_type}.descriptors[{index}].values[{value_index}]")
+                for value_index in range(value_count)
+            ]
+        elif section_type == 2:
+            # The client allocates valueCount cells here, initially filled with -1;
+            # only the sparse update values below are present on the wire.
+            descriptor["valueCount"] = value_count
+            descriptor["objectId"] = cursor.u64(
+                f"section2.descriptors[{index}].objectId"
+            )
+            descriptor["width"] = cursor.u16(
+                f"section2.descriptors[{index}].width"
+            )
+            descriptor["height"] = cursor.u16(
+                f"section2.descriptors[{index}].height"
+            )
+            update_count = _military_8600_count(
+                cursor.u16(f"section2.descriptors[{index}].updateCount"),
+                f"section2.descriptors[{index}].updateCount",
+            )
+            descriptor["updates"] = [
+                cursor.u16(f"section2.descriptors[{index}].updates[{update_index}]")
+                for update_index in range(update_count)
+            ]
+        else:
+            raise ValueError(f"0x8600 未知分区类型：{section_type}")
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def _military_descriptor_for_record(
+    descriptors: list[dict[str, Any]],
+    record_index: int,
+) -> dict[str, Any]:
+    # Real packets explicitly carry the record index in the descriptor table.
+    # Fall back to positional pairing for captures where that list is empty.
+    for descriptor in descriptors:
+        if record_index in (descriptor.get("recordIndexes") or []):
+            return descriptor
+    if record_index < len(descriptors):
+        return descriptors[record_index]
+    return {"text": "", "offset": 0, "length": 0}
+
+
+def _parse_8600_formation_records(
+    cursor: _Military8600Cursor,
+    section_type: int,
+    descriptors: list[dict[str, Any]],
+    name_by_id: dict[int, str],
+) -> list[dict[str, Any]]:
+    """Parse type=1 mobile records and type=3 garrison records."""
+    count = _military_8600_count(
+        cursor.u16(f"section{section_type}.recordCount"),
+        f"section{section_type}.recordCount",
+    )
+    actions: list[dict[str, Any]] = []
+    for index in range(count):
+        record_offset = cursor.offset
+        battle_id = cursor.u64(f"section{section_type}.records[{index}].battleId")
+        general_count = cursor.u8(
+            f"section{section_type}.records[{index}].generalCount"
+        )
+        if not (1 <= general_count <= 32):
+            raise ValueError(
+                f"0x8600 section{section_type} 将领数异常：{general_count}"
+            )
+        general_ids: list[int] = []
+        general_flags: list[int] = []
+        for general_index in range(general_count):
+            general_ids.append(cursor.u64(
+                f"section{section_type}.records[{index}].generals[{general_index}].id"
+            ))
+            general_flags.append(cursor.u8(
+                f"section{section_type}.records[{index}].generals[{general_index}].flag"
+            ))
+        target_id = cursor.u64(f"section{section_type}.records[{index}].targetId")
+        target_type = cursor.u8(
+            f"section{section_type}.records[{index}].targetType"
+        )
+        target = cursor.utf(f"section{section_type}.records[{index}].targetName")
+        x = cursor.u16(f"section{section_type}.records[{index}].x")
+        y = cursor.u16(f"section{section_type}.records[{index}].y")
+        march: dict[str, Any] = {}
+        record_kind: int | None = None
+        if section_type == 1:
+            record_kind = cursor.u8(
+                f"section1.records[{index}].recordKind"
+            )
+            march_value = cursor.u32(
+                f"section1.records[{index}].marchValue"
+            )
+            event_time_ms = cursor.u64(
+                f"section1.records[{index}].eventTimeMs"
+            )
+            march = military_march_fields(
+                record_kind, march_value, event_time_ms,
+            )
+        else:
+            # The original client consumes this value as a server-time reference;
+            # garrison records do not expose it as a march countdown.
+            cursor.u64(f"section3.records[{index}].serverTimeReference")
+
+        descriptor = _military_descriptor_for_record(descriptors, index)
+        text = str(descriptor.get("text") or "")
+        tag = military_action_tag(text)
+        if (
+            not tag
+            or battle_id <= 0
+            or target_id <= 0
+            or not str(target.get("text") or "")
+            or any(general_id <= 0 for general_id in general_ids)
+        ):
+            continue
+        action: dict[str, Any] = {
+            "text": text,
+            "tag": tag,
+            "state": military_action_state(tag, text, march),
+            "incoming": False,
+            "direction": "outgoing",
+            "sourceSection": section_type,
+            "offset": int(descriptor.get("offset") or 0),
+            "recordOffset": record_offset,
+            "battleId": battle_id,
+            "generalIds": general_ids,
+            "generalIdHexes": [f"{general_id:016x}" for general_id in general_ids],
+            "generalFlags": general_flags,
+            "generalNames": [name_by_id.get(general_id, "") for general_id in general_ids],
+            "targetId": target_id,
+            "targetIdHex": f"{target_id:016x}",
+            "targetType": target_type,
+            "targetTypeText": MILITARY_ACTION_TARGET_TYPES.get(target_type, ""),
+            "targetName": str(target.get("text") or ""),
+            "x": x,
+            "y": y,
+            "hasCoord": bool(x or y),
+        }
+        if record_kind is not None:
+            action["recordKind"] = record_kind
+        action.update(march)
+        actions.append(action)
+    return actions
+
+
+def _parse_8600_incoming_records(
+    cursor: _Military8600Cursor,
+) -> list[dict[str, Any]]:
+    """Parse type=2 enemy movements, whose display sentence is client-built."""
+    count = _military_8600_count(
+        cursor.u16("section2.incomingCount"),
+        "section2.incomingCount",
+    )
+    actions: list[dict[str, Any]] = []
+    for index in range(count):
+        record_offset = cursor.offset
+        record_id = cursor.u64(f"section2.incoming[{index}].recordId")
+        attacker = cursor.utf(f"section2.incoming[{index}].attackerName")
+        action_type = cursor.u8(f"section2.incoming[{index}].actionType")
+        target = cursor.utf(f"section2.incoming[{index}].targetName")
+        target_id = cursor.u64(f"section2.incoming[{index}].targetId")
+        remaining_ms = cursor.u32(f"section2.incoming[{index}].remainingMs")
+        event_time_ms = cursor.u64(f"section2.incoming[{index}].eventTimeMs")
+        attacker_name = str(attacker.get("text") or "")
+        target_name = str(target.get("text") or "")
+        if record_id <= 0 or target_id <= 0 or not attacker_name or not target_name:
+            continue
+        known_action = MILITARY_INCOMING_ACTION_TYPES.get(action_type)
+        if known_action:
+            tag, verb = known_action
+            action_type_text = tag
+            text = f"【{tag}】{attacker_name}{verb}{target_name}"
+        else:
+            tag = "来袭"
+            action_type_text = f"未知类型 {action_type}"
+            text = f"【来袭】{attacker_name}对{target_name}发起军事行动（类型 {action_type}）"
+        action: dict[str, Any] = {
+            "text": text,
+            "tag": tag,
+            "state": "来袭",
+            "incoming": True,
+            "direction": "incoming",
+            "sourceSection": 2,
+            "offset": int(attacker.get("offset") or 0),
+            "recordOffset": record_offset,
+            "recordId": record_id,
+            "recordIdHex": f"{record_id:016x}",
+            "attackerName": attacker_name,
+            "actionType": action_type,
+            "actionTypeText": action_type_text,
+            "generalIds": [],
+            "generalIdHexes": [],
+            "generalFlags": [],
+            "generalNames": [],
+            "targetId": target_id,
+            "targetIdHex": f"{target_id:016x}",
+            "targetTypeText": "我方封地",
+            "targetName": target_name,
+            "x": 0,
+            "y": 0,
+            "hasCoord": False,
+            "marchKindText": "来袭",
+            "marchValue": remaining_ms,
+            "eventTimeMs": event_time_ms,
+        }
+        actions.append(action)
+    return actions
+
+
+def _parse_8600_trailing_evidence(
+    cursor: _Military8600Cursor,
+) -> dict[str, Any]:
+    """Parse the general/status block appended after the three military sections."""
+    payload = cursor.payload
+    reference_count = _military_8600_count(
+        cursor.u16("tail.activeBattleReferenceCount"),
+        "tail.activeBattleReferenceCount",
+    )
+    active_references = [
+        {
+            "battleId": cursor.u64(
+                f"tail.activeBattleReferences[{index}].battleId"
+            ),
+            "flag": cursor.u8(
+                f"tail.activeBattleReferences[{index}].flag"
+            ),
+        }
+        for index in range(reference_count)
+    ]
+    cursor.u8("tail.generalBlockFlag")
+
+    owned_chunks: list[bytes] = []
+    owned_count = _military_8600_count(
+        cursor.u16("tail.ownedGeneralCount"),
+        "tail.ownedGeneralCount",
+    )
+    for index in range(owned_count):
+        start = cursor.offset
+        cursor.u64(f"tail.ownedGenerals[{index}].id")
+        cursor.utf(f"tail.ownedGenerals[{index}].name")
+        cursor.take(
+            MILITARY_8600_JIANGLING_BODY_LEN,
+            f"tail.ownedGenerals[{index}].body",
+        )
+        owned_chunks.append(payload[start:cursor.offset])
+
+    captive_records: list[dict[str, Any]] = []
+    captive_count = _military_8600_count(
+        cursor.u8("tail.captiveGeneralCount"),
+        "tail.captiveGeneralCount",
+    )
+    for index in range(captive_count):
+        general_id = cursor.u64(f"tail.captiveGenerals[{index}].id")
+        name = str(cursor.utf(f"tail.captiveGenerals[{index}].name").get("text") or "")
+        body = cursor.take(
+            MILITARY_8600_JIANGLING_BODY_LEN,
+            f"tail.captiveGenerals[{index}].body",
+        )
+        cursor.u64(f"tail.captiveGenerals[{index}].ownerId")
+        fief_id = cursor.u16(f"tail.captiveGenerals[{index}].fiefId")
+        fief_name = str(
+            cursor.utf(f"tail.captiveGenerals[{index}].fiefName").get("text")
+            or ""
+        )
+        cursor.u64(f"tail.captiveGenerals[{index}].reservedId")
+        cursor.u16(f"tail.captiveGenerals[{index}].reservedFlag")
+        status = body[MILITARY_8600_STATUS_OFFSET]
+        captive_records.append({
+            "id": general_id,
+            "idHex": f"{general_id:016x}",
+            "name": name,
+            "source": "0x8600-captive-general-tail",
+            "militarySnapshotFresh": True,
+            "status": status,
+            "statusText": general_status_text_from_code(status),
+            "tili": int.from_bytes(
+                body[MILITARY_8600_ENERGY_OFFSET:MILITARY_8600_ENERGY_OFFSET + 2],
+                "big",
+            ),
+            "tiliLimit": int.from_bytes(
+                body[MILITARY_8600_ENERGY_LIMIT_OFFSET:MILITARY_8600_ENERGY_LIMIT_OFFSET + 2],
+                "big",
+            ),
+            "loyalty": body[MILITARY_8600_LOYALTY_OFFSET],
+            "troopLimit": int.from_bytes(
+                body[MILITARY_8600_TROOP_LIMIT_OFFSET:MILITARY_8600_TROOP_LIMIT_OFFSET + 4],
+                "big",
+            ),
+            "placeID": int.from_bytes(
+                body[MILITARY_8600_PLACE_ID_OFFSET:MILITARY_8600_PLACE_ID_OFFSET + 8],
+                "big",
+                signed=True,
+            ),
+            "captureFiefId": fief_id,
+            "captureFiefName": fief_name,
+        })
+
+    troop_start = cursor.offset
+    troop_assignment_count = _military_8600_count(
+        cursor.u8("tail.troopAssignmentCount"),
+        "tail.troopAssignmentCount",
+    )
+    for index in range(troop_assignment_count):
+        cursor.take(
+            MILITARY_8600_S5_ENTRY_LEN,
+            f"tail.troopAssignments[{index}]",
+        )
+    troop_blob = payload[troop_start:cursor.offset]
+    owned_records = recover_generals_from_8004(
+        (b"".join(owned_chunks) + troop_blob).hex()
+    )
+    for record in owned_records:
+        record["source"] = "0x8600-owned-general-tail"
+        record["militarySnapshotFresh"] = True
+    return {
+        "activeBattleReferences": active_references,
+        "generalStatusRecords": owned_records,
+        "captiveGeneralRecords": captive_records,
+        "troopAssignmentCount": troop_assignment_count,
+        "trailingEvidenceParsed": True,
+        "unparsedTailByteCount": len(payload) - cursor.offset,
+    }
+
+
+def parse_8600_military_payload(
+    payload: bytes,
+    generals: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Parse both the visible military sections and the appended live general state."""
+    name_by_id: dict[int, str] = {}
+    for general in generals or []:
+        try:
+            general_id = int(general.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        name = str(general.get("name") or "")
+        if general_id > 0 and name:
+            name_by_id[general_id] = name
+
+    cursor = _Military8600Cursor(payload)
+    actions: list[dict[str, Any]] = []
+    try:
+        header_count = _military_8600_count(
+            cursor.u16("headerPairCount"), "headerPairCount",
+        )
+        for index in range(header_count):
+            cursor.u8(f"headerPairs[{index}].kind")
+            cursor.u16(f"headerPairs[{index}].value")
+        section_count = _military_8600_count(
+            cursor.u8("sectionCount"), "sectionCount",
+        )
+        for section_index in range(section_count):
+            section_type = cursor.u8(f"sections[{section_index}].type")
+            if section_type not in {1, 2, 3}:
+                raise ValueError(f"0x8600 未知分区类型：{section_type}")
+            descriptors = _parse_8600_descriptors(cursor, section_type)
+            if section_type in {1, 3}:
+                actions.extend(_parse_8600_formation_records(
+                    cursor, section_type, descriptors, name_by_id,
+                ))
+            else:
+                actions.extend(_parse_8600_incoming_records(cursor))
+    except ValueError as exc:
+        return {
+            "actions": [],
+            "trailingEvidenceParsed": False,
+            "unparsedTailByteCount": len(payload),
+            "trailingParseError": str(exc),
+        }
+
+    details: dict[str, Any] = {
+        "actions": actions,
+        "activeBattleReferences": [],
+        "generalStatusRecords": [],
+        "captiveGeneralRecords": [],
+        "troopAssignmentCount": 0,
+        "trailingEvidenceParsed": False,
+        "unparsedTailByteCount": 0,
+    }
+    if cursor.offset < len(payload):
+        try:
+            details.update(_parse_8600_trailing_evidence(cursor))
+        except ValueError as exc:
+            details.update({
+                "trailingEvidenceParsed": False,
+                "unparsedTailByteCount": len(payload) - cursor.offset,
+                "trailingParseError": str(exc),
+            })
+    return details
+
+
+def parse_8600_military_actions(
+    payload: bytes,
+    generals: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Compatibility wrapper returning only visible military actions."""
+    return list(parse_8600_military_payload(payload, generals).get("actions") or [])
+
+
+def parse_military_snapshot_from_packets(
+    sess: dict[str, Any],
+    packets: list[dict[str, Any]],
+    http_code: int = 200,
+) -> dict[str, Any]:
+    """Build the 军情 snapshot shown on the 军情 page from 0x8600 packets."""
+    generals = sess.get("generals") or []
+    payloads = [
+        packet["payload"]
+        for packet in packets
+        if packet.get("opcode") == MILITARY_SNAPSHOT_RESPONSE_OPCODE and "payload" in packet
+    ]
+    actions: list[dict[str, Any]] = []
+    active_references: dict[int, dict[str, Any]] = {}
+    general_records: dict[int, dict[str, Any]] = {}
+    captive_records: dict[int, dict[str, Any]] = {}
+    troop_assignment_count = 0
+    trailing_evidence_parsed = False
+    unparsed_tail_byte_count = 0
+    trailing_errors: list[str] = []
+    seen: set[tuple[str, int]] = set()
+    for payload in payloads:
+        parsed = parse_8600_military_payload(payload, generals)
+        for reference in parsed.get("activeBattleReferences") or []:
+            battle_id = int(reference.get("battleId") or 0)
+            if battle_id > 0:
+                active_references[battle_id] = dict(reference)
+        for record in parsed.get("generalStatusRecords") or []:
+            general_id = int(record.get("id") or 0)
+            if general_id > 0:
+                general_records[general_id] = dict(record)
+        for record in parsed.get("captiveGeneralRecords") or []:
+            general_id = int(record.get("id") or 0)
+            if general_id > 0:
+                captive_records[general_id] = dict(record)
+        troop_assignment_count += int(parsed.get("troopAssignmentCount") or 0)
+        trailing_evidence_parsed = (
+            trailing_evidence_parsed
+            or bool(parsed.get("trailingEvidenceParsed"))
+        )
+        unparsed_tail_byte_count += int(parsed.get("unparsedTailByteCount") or 0)
+        if parsed.get("trailingParseError"):
+            trailing_errors.append(str(parsed["trailingParseError"]))
+        for action in parsed.get("actions") or []:
+            if action.get("incoming"):
+                identity = ("incoming", int(action.get("recordId") or 0))
+            else:
+                identity = ("battle", int(action.get("battleId") or 0))
+            if identity[1] <= 0 or identity in seen:
+                continue
+            seen.add(identity)
+            actions.append(action)
+    # 敌军来袭必须置顶；其余按战斗 → 出征 → 驻守 → 返回 → 备战。
+    # 同状态以记录号/战斗号稳定排序。
+    state_order = {
+        "来袭": 0, "战斗": 1, "出征": 2,
+        "驻守": 3, "返回": 4, "备战": 5,
+    }
+    actions.sort(key=lambda item: (
+        state_order.get(str(item.get("state") or ""), 3),
+        int(item.get("recordId") or item.get("battleId") or 0),
+    ))
+    incoming_count = sum(1 for item in actions if item.get("incoming"))
+    if general_records:
+        existing_by_id = {
+            int(record.get("id") or 0): dict(record)
+            for record in (sess.get("generals") or [])
+            if int(record.get("id") or 0) > 0
+        }
+        for general_id, record in general_records.items():
+            existing_by_id[general_id] = {
+                **existing_by_id.get(general_id, {}),
+                **record,
+            }
+        sess["generals"] = list(existing_by_id.values())
+        sess["militaryGeneralStatus"] = list(general_records.values())
+    if captive_records:
+        sess["capturedGenerals"] = list(captive_records.values())
+    snapshot = {
+        "sourceOpcode": "0x1600/0x8600",
+        "actions": actions,
+        "actionCount": len(actions),
+        "incomingCount": incoming_count,
+        "activeBattleReferences": list(active_references.values()),
+        "generalStatusRecords": list(general_records.values()),
+        "generalStatusCount": len(general_records),
+        "captiveGeneralRecords": list(captive_records.values()),
+        "captiveGeneralCount": len(captive_records),
+        "troopAssignmentCount": troop_assignment_count,
+        "trailingEvidenceParsed": trailing_evidence_parsed,
+        "unparsedTailByteCount": unparsed_tail_byte_count,
+        "http": http_code,
+        # responded=True 表示这次真的拿到了 0x8600；用来把“当前无军情”
+        # 和“还没刷新过”在前端区分开，不让空列表冒充已确认的空。
+        "responded": bool(payloads),
+        "updatedAt": now_ms(),
+    }
+    if trailing_errors:
+        snapshot["trailingParseError"] = "；".join(trailing_errors)
+    sess["militarySnapshot"] = snapshot
+    return snapshot
+
+
+def refresh_military_snapshot(sess: dict[str, Any]) -> dict[str, Any]:
+    """Pull the live 军情 list with the same 0x1600 request the client sends."""
+    code, _data, packets = post_game(
+        sess["gameHttp"],
+        [(MILITARY_SNAPSHOT_REQUEST_OPCODE, MILITARY_INTEL_REQUEST_PAYLOAD)],
+        int(sess["dm"]),
+        account_id=str(sess.get("sessionId") or ""),
+    )
+    snapshot = parse_military_snapshot_from_packets(sess, packets, code)
+    persist_runtime_state()
+    return snapshot
+
+
 def wait_for_mine_garrison(
     sess: dict[str, Any],
     general_ids: list[str],
@@ -9589,22 +10858,22 @@ def query_mine_garrison_intel(
     battle_id: int | None = None,
 ) -> dict[str, Any]:
     """以抓包确认的 0x1600 军情列表再次确认目标处于“驻守”。"""
-    payload = bytes.fromhex("07000000000000000000000014")
+    payload = MILITARY_INTEL_REQUEST_PAYLOAD
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1600, payload)],
+        [(MILITARY_SNAPSHOT_REQUEST_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
     texts = [
         printable(packet["payload"], 12000)
         for packet in packets
-        if packet.get("opcode") == 0x8600 and "payload" in packet
+        if packet.get("opcode") == MILITARY_SNAPSHOT_RESPONSE_OPCODE and "payload" in packet
     ]
     events = [
         event
         for packet in packets
-        if packet.get("opcode") == 0x8600 and "payload" in packet
+        if packet.get("opcode") == MILITARY_SNAPSHOT_RESPONSE_OPCODE and "payload" in packet
         for event in parse_8600_military_events(packet["payload"])
     ]
     text = " | ".join(texts)
@@ -9677,7 +10946,11 @@ def query_mine_garrison_intel(
 
 
 def build_mine_recall_payload(battle_id: int) -> bytes:
-    return b"\x01\x01" + struct.pack(">q", int(battle_id)) + b"\x00"
+    return (
+        MINE_WITHDRAW_PAYLOAD_PREFIX
+        + struct.pack(">q", int(battle_id))
+        + MINE_WITHDRAW_PAYLOAD_SUFFIX
+    )
 
 
 def recall_mine_garrison(
@@ -9702,14 +10975,14 @@ def recall_mine_garrison(
     payload = build_mine_recall_payload(battle_id)
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1526, payload)],
+        [(MINE_WITHDRAW_REQUEST_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
     candidates = [
         parse_8526_recall_response(packet["payload"], battle_id)
         for packet in packets
-        if packet.get("opcode") == 0x8526 and "payload" in packet
+        if packet.get("opcode") == MINE_WITHDRAW_RESPONSE_OPCODE and "payload" in packet
     ]
     result = next(
         (candidate for candidate in candidates if candidate.get("success")),
@@ -9999,8 +11272,11 @@ def normalize_raid_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[dict
         general_ids = list(dict.fromkeys(general_ids))
         if not general_ids:
             raise RuntimeError(f"第 {idx + 1} 条掠夺规则未选择出征将领")
-        if len(general_ids) > 5:
-            raise RuntimeError(f"第 {idx + 1} 条掠夺规则最多选择5名出征将领")
+        if len(general_ids) > RAID_MAX_GENERALS_PER_FORMATION:
+            raise RuntimeError(
+                f"第 {idx + 1} 条掠夺规则最多选择"
+                f"{RAID_MAX_GENERALS_PER_FORMATION}名出征将领"
+            )
         missing = [gid for gid in general_ids if known_ids and gid not in known_ids]
         if missing:
             raise RuntimeError(f"第 {idx + 1} 条掠夺规则存在不属于当前账号的将领：{','.join(missing)}")
@@ -10017,8 +11293,14 @@ def normalize_raid_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[dict
             "generalId": general_ids[0],
             "playerName": player_name,
             "fiefIndex": fief_index,
-            "fullTroops": bool(row.get("fullTroops", True)),
-            "fullLoyalty": bool(row.get("fullLoyalty", False)),
+            "fullTroops": bool(row.get(
+                "fullTroops",
+                RAID_BEHAVIOR_CONTRACT["fullTroopsDefault"],
+            )),
+            "fullLoyalty": bool(row.get(
+                "fullLoyalty",
+                RAID_BEHAVIOR_CONTRACT["fullLoyaltyDefault"],
+            )),
             "duration": str(row.get("duration") or "立即出征"),
         })
     if not rows:
@@ -10051,15 +11333,26 @@ def execute_raid(
             msg = refill_report.get("message") or "无提示"
             raise RuntimeError(f"掠夺前补满兵失败：{msg}")
         selected = raid_preflight_generals(sess, general_ids, task=task)
+    loyalty_report = None
+    if bool(opts.get("fullLoyalty", False)):
+        loyalty_report = ensure_military_generals_full_loyalty(
+            sess,
+            selected,
+            action_name="掠夺",
+            task=task,
+        )
     general_hexes = [g.get("idHex") or f"{int(g['id']):016x}" for g in selected]
     prepare_payload = build_raid_prepare_payload(general_hexes, int(target["targetId"]))
     expedition_payload = build_raid_expedition_payload(general_hexes, int(target["targetId"]))
     action_results: list[dict[str, Any]] = []
-    for phase, opcode, payload in [
-        ("prepare", 0x1520, prepare_payload),
-        ("expedition", 0x1522, expedition_payload),
-    ]:
-        code, data, packets = post_game(sess["gameHttp"], [(opcode, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+
+    def send_phase(phase: str, opcode: int, payload: bytes) -> tuple[int, bytes, list[dict[str, Any]]]:
+        code, data, packets = post_game(
+            sess["gameHttp"],
+            [(opcode, payload)],
+            int(sess["dm"]),
+            account_id=str(sess.get("sessionId") or ""),
+        )
         summarized = summarize_packets(packets)
         action_results.append({
             "phase": phase,
@@ -10070,12 +11363,28 @@ def execute_raid(
             "responseBytes": len(data),
             "packets": summarized,
         })
-        time.sleep(0.35)
+        return code, data, packets
+
+    prepare_code, _prepare_data, prepare_packets = send_phase(
+        "prepare", RAID_PREPARE_OPCODE, prepare_payload
+    )
+    prepare_confirmed = 200 <= int(prepare_code) < 300 and any(
+        packet_opcode(packet) == RAID_PREPARE_RESPONSE_OPCODE
+        for packet in prepare_packets
+    )
+    if not prepare_confirmed:
+        raise RuntimeError(
+            "掠夺预出征未收到游戏服"
+            f"0x{RAID_PREPARE_RESPONSE_OPCODE:04x}确认，已禁止发送正式出征"
+        )
+    time.sleep(0.35)
+    send_phase("expedition", RAID_DISPATCH_OPCODE, expedition_payload)
+    time.sleep(0.35)
     expedition_packets = [
         pkt
         for r in action_results if r.get("phase") == "expedition"
         for pkt in r.get("packets") or []
-        if pkt.get("opcode") == "0x8522"
+        if pkt.get("opcode") == f"0x{RAID_DISPATCH_RESPONSE_OPCODE:04x}"
     ]
     parsed_8522 = [pkt.get("dispatch8522") or {} for pkt in expedition_packets]
     ok_8522 = next((x for x in parsed_8522 if x.get("success")), None)
@@ -10127,13 +11436,14 @@ def execute_raid(
             "message": refill_report.get("message"),
             "reportFile": refill_report.get("reportFile"),
         } if refill_report else None,
+        "loyaltyReport": loyalty_report,
         "payloads": {
-            "prepareOpcode": "0x1520",
+            "prepareOpcode": f"0x{RAID_PREPARE_OPCODE:04x}",
             "preparePayloadHex": prepare_payload.hex(),
-            "expeditionOpcode": "0x1522",
+            "expeditionOpcode": f"0x{RAID_DISPATCH_OPCODE:04x}",
             "expeditionPayloadHex": expedition_payload.hex(),
-            "expeditionRelatedLong": -1,
-            "expeditionFlags": "000000",
+            "expeditionRelatedLong": RAID_IMMEDIATE_RELATED_LONG,
+            "expeditionFlags": RAID_IMMEDIATE_FLAGS.hex(),
         },
         "success": success,
         "successBattleId": ok_8522.get("battleId") if ok_8522 else None,
@@ -10146,15 +11456,17 @@ def execute_raid(
     return report
 
 
-LOSSLESS_DAILY_LIMIT = 5
+LOSSLESS_DAILY_LIMIT = int(_STARTUP_LOSSLESS_CONTRACT["serverDailyLimit"])
 LOSSLESS_MODE_NAMES = {
-    0: "冷却中",
-    1: "可出征",
-    2: "可出征",
-    3: "战斗中",
-    4: "今日次数已用完",
+    int(_STARTUP_LOSSLESS_CONTRACT["modes"]["cooldown"]): "冷却中",
+    **{
+        int(value): "可出征"
+        for value in _STARTUP_LOSSLESS_CONTRACT["modes"]["ready"]
+    },
+    int(_STARTUP_LOSSLESS_CONTRACT["modes"]["fighting"]): "战斗中",
+    int(_STARTUP_LOSSLESS_CONTRACT["modes"]["dailyDone"]): "今日次数已用完",
 }
-LOSSLESS_STAGE_NAMES = ["卫兵", "小队长", "大队长", "头目", "首领"]
+LOSSLESS_STAGE_NAMES = list(_STARTUP_LOSSLESS_CONTRACT["stageNames"])
 
 
 def lossless_level_number(value: Any) -> int:
@@ -10165,7 +11477,7 @@ def lossless_level_number(value: Any) -> int:
         if not match:
             raise RuntimeError(f"无损等级无效：{value}")
         level = int(match.group(1))
-    if not 1 <= level <= 10:
+    if not LOSSLESS_MIN_LEVEL <= level <= LOSSLESS_MAX_LEVEL:
         raise RuntimeError(f"无损等级超出范围：{value}")
     return level
 
@@ -10177,13 +11489,13 @@ def lossless_status_phase(status: dict[str, Any]) -> str:
         return "settlement"
     mode = status.get("mode")
     remaining = int(status.get("remainingAttempts") or 0)
-    if remaining <= 0 or mode == 4:
+    if remaining <= 0 or mode == int(LOSSLESS_MODE_CONTRACT["dailyDone"]):
         return "daily_done"
-    if mode == 0:
+    if mode == int(LOSSLESS_MODE_CONTRACT["cooldown"]):
         return "cooldown"
-    if mode == 3:
+    if mode == int(LOSSLESS_MODE_CONTRACT["fighting"]):
         return "fighting"
-    if mode in {1, 2}:
+    if mode in {int(value) for value in LOSSLESS_MODE_CONTRACT["ready"]}:
         return "ready"
     return "unknown"
 
@@ -10411,15 +11723,17 @@ def parse_lossless_lineup(payload: bytes) -> dict[str, Any]:
 
 def evaluate_level10_guard_lineup(lineup: dict[str, Any]) -> dict[str, Any]:
     enemies = list(lineup.get("enemies") or [])
+    chariot_tokens = tuple(str(value) for value in LOSSLESS_GUARD_CONTRACT["chariotTokens"])
+    catapult_token = str(LOSSLESS_GUARD_CONTRACT["catapultToken"])
     chariot_indices = [
         index
         for index, enemy in enumerate(enemies)
-        if any(token in str(enemy.get("soldierType") or "") for token in ("弩车", "投石车", "冲车"))
+        if any(token in str(enemy.get("soldierType") or "") for token in chariot_tokens)
     ]
     catapult_indices = [
         index
         for index, enemy in enumerate(enemies)
-        if "投石车" in str(enemy.get("soldierType") or "")
+        if catapult_token in str(enemy.get("soldierType") or "")
     ]
     other_chariot_indices = [index for index in chariot_indices if index not in catapult_indices]
     last_chariot_is_catapult = (
@@ -10427,15 +11741,18 @@ def evaluate_level10_guard_lineup(lineup: dict[str, Any]) -> dict[str, Any]:
         and chariot_indices[-1] in catapult_indices
     )
     qualified = (
-        len(enemies) == 5
-        and len(chariot_indices) >= 3
+        len(enemies) == int(LOSSLESS_GUARD_CONTRACT["enemyCount"])
+        and len(chariot_indices) >= int(LOSSLESS_GUARD_CONTRACT["minimumChariots"])
         and bool(catapult_indices)
         and last_chariot_is_catapult
     )
-    if len(enemies) != 5:
-        reason = f"敌军数量不是5，而是{len(enemies)}"
-    elif len(chariot_indices) < 3:
-        reason = f"战车类只有{len(chariot_indices)}名，少于3名"
+    if len(enemies) != int(LOSSLESS_GUARD_CONTRACT["enemyCount"]):
+        reason = f"敌军数量不是{LOSSLESS_GUARD_CONTRACT['enemyCount']}，而是{len(enemies)}"
+    elif len(chariot_indices) < int(LOSSLESS_GUARD_CONTRACT["minimumChariots"]):
+        reason = (
+            f"战车类只有{len(chariot_indices)}名，少于"
+            f"{LOSSLESS_GUARD_CONTRACT['minimumChariots']}名"
+        )
     elif not catapult_indices:
         reason = "没有投石车"
     elif not last_chariot_is_catapult:
@@ -10542,15 +11859,15 @@ def parse_lossless_settlement(payload: bytes) -> dict[str, Any]:
 def query_lossless_status(sess: dict[str, Any]) -> dict[str, Any]:
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1900, b"\x00")],
+        [(LOSSLESS_STATUS_REQUEST_OPCODE, LOSSLESS_QUERY_PAYLOAD)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    pkt = next((item for item in packets if item.get("opcode") == 0x8900 and "payload" in item), None)
+    pkt = next((item for item in packets if item.get("opcode") == LOSSLESS_STATUS_RESPONSE_OPCODE and "payload" in item), None)
     parsed = parse_lossless_status(pkt["payload"]) if pkt else {"parseError": "未返回 0x8900"}
     parsed.update({
         "http": code,
-        "opcode": "0x1900/0x8900",
+        "opcode": f"0x{LOSSLESS_STATUS_REQUEST_OPCODE:04x}/0x{LOSSLESS_STATUS_RESPONSE_OPCODE:04x}",
         "packets": summarize_packets(packets),
         "updatedAt": now_ms(),
     })
@@ -10561,15 +11878,15 @@ def query_lossless_status(sess: dict[str, Any]) -> dict[str, Any]:
 def query_lossless_catalog(sess: dict[str, Any]) -> dict[str, Any]:
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1904, b"\x00")],
+        [(LOSSLESS_CATALOG_REQUEST_OPCODE, LOSSLESS_QUERY_PAYLOAD)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    pkt = next((item for item in packets if item.get("opcode") == 0x8904 and "payload" in item), None)
+    pkt = next((item for item in packets if item.get("opcode") == LOSSLESS_CATALOG_RESPONSE_OPCODE and "payload" in item), None)
     parsed = parse_lossless_catalog(pkt["payload"]) if pkt else {"parseError": "未返回 0x8904"}
     parsed.update({
         "http": code,
-        "opcode": "0x1904/0x8904",
+        "opcode": f"0x{LOSSLESS_CATALOG_REQUEST_OPCODE:04x}/0x{LOSSLESS_CATALOG_RESPONSE_OPCODE:04x}",
         "packets": summarize_packets(packets),
         "updatedAt": now_ms(),
     })
@@ -10582,15 +11899,15 @@ def select_lossless_level(sess: dict[str, Any], level: int | str) -> dict[str, A
     payload = struct.pack(">i", level_number)
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1908, payload)],
+        [(LOSSLESS_SELECT_REQUEST_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    pkt = next((item for item in packets if item.get("opcode") == 0x8908 and "payload" in item), None)
+    pkt = next((item for item in packets if item.get("opcode") == LOSSLESS_SELECT_RESPONSE_OPCODE and "payload" in item), None)
     parsed = parse_lossless_select_response(pkt["payload"]) if pkt else {"parseError": "未返回 0x8908", "success": False}
     parsed.update({
         "http": code,
-        "opcode": "0x1908/0x8908",
+        "opcode": f"0x{LOSSLESS_SELECT_REQUEST_OPCODE:04x}/0x{LOSSLESS_SELECT_RESPONSE_OPCODE:04x}",
         "requestedLevel": level_number,
         "requestPayloadHex": payload.hex(),
         "packets": summarize_packets(packets),
@@ -10602,15 +11919,15 @@ def select_lossless_level(sess: dict[str, Any], level: int | str) -> dict[str, A
 def query_lossless_lineup(sess: dict[str, Any]) -> dict[str, Any]:
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1906, b"\x00")],
+        [(LOSSLESS_LINEUP_REQUEST_OPCODE, LOSSLESS_QUERY_PAYLOAD)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    pkt = next((item for item in packets if item.get("opcode") == 0x8906 and "payload" in item), None)
+    pkt = next((item for item in packets if item.get("opcode") == LOSSLESS_LINEUP_RESPONSE_OPCODE and "payload" in item), None)
     parsed = parse_lossless_lineup(pkt["payload"]) if pkt else {"parseError": "未返回 0x8906", "success": False}
     parsed.update({
         "http": code,
-        "opcode": "0x1906/0x8906",
+        "opcode": f"0x{LOSSLESS_LINEUP_REQUEST_OPCODE:04x}/0x{LOSSLESS_LINEUP_RESPONSE_OPCODE:04x}",
         "packets": summarize_packets(packets),
         "updatedAt": now_ms(),
     })
@@ -10621,18 +11938,24 @@ def query_lossless_lineup(sess: dict[str, Any]) -> dict[str, Any]:
 def settle_lossless_result(sess: dict[str, Any]) -> dict[str, Any]:
     code, data, packets = post_game(
         sess["gameHttp"],
-        [(0x1902, b"\x00"), (0x1904, b"\x00")],
+        [
+            (LOSSLESS_SETTLEMENT_REQUEST_OPCODE, LOSSLESS_QUERY_PAYLOAD),
+            (LOSSLESS_CATALOG_REQUEST_OPCODE, LOSSLESS_QUERY_PAYLOAD),
+        ],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    result_pkt = next((item for item in packets if item.get("opcode") == 0x8902 and "payload" in item), None)
-    catalog_pkt = next((item for item in packets if item.get("opcode") == 0x8904 and "payload" in item), None)
+    result_pkt = next((item for item in packets if item.get("opcode") == LOSSLESS_SETTLEMENT_RESPONSE_OPCODE and "payload" in item), None)
+    catalog_pkt = next((item for item in packets if item.get("opcode") == LOSSLESS_CATALOG_RESPONSE_OPCODE and "payload" in item), None)
     result = parse_lossless_settlement(result_pkt["payload"]) if result_pkt else {"parseError": "未返回 0x8902", "success": False}
     catalog = parse_lossless_catalog(catalog_pkt["payload"]) if catalog_pkt else {"parseError": "未返回 0x8904"}
     out = {
         **result,
         "http": code,
-        "opcode": "0x1902/0x8902 + 0x1904/0x8904",
+        "opcode": (
+            f"0x{LOSSLESS_SETTLEMENT_REQUEST_OPCODE:04x}/0x{LOSSLESS_SETTLEMENT_RESPONSE_OPCODE:04x} + "
+            f"0x{LOSSLESS_CATALOG_REQUEST_OPCODE:04x}/0x{LOSSLESS_CATALOG_RESPONSE_OPCODE:04x}"
+        ),
         "catalog": catalog,
         "packets": summarize_packets(packets),
         "updatedAt": now_ms(),
@@ -10646,9 +11969,11 @@ def settle_lossless_result(sess: dict[str, Any]) -> dict[str, Any]:
 def build_lossless_prepare_payload(general_id_hexes: list[str], role_id: int) -> bytes:
     if not general_id_hexes:
         raise RuntimeError("无损至少需要选择1个出征将领")
-    if len(general_id_hexes) > 5:
-        raise RuntimeError("无损编队最多选择5名出征将领")
-    out = bytearray([0x0B, len(general_id_hexes)])
+    if len(general_id_hexes) > LOSSLESS_MAX_GENERALS_PER_FORMATION:
+        raise RuntimeError(
+            f"无损编队最多选择{LOSSLESS_MAX_GENERALS_PER_FORMATION}名出征将领"
+        )
+    out = bytearray([LOSSLESS_ACTION_TYPE, len(general_id_hexes)])
     for general_id in general_id_hexes:
         out += bytes.fromhex(normalize_hex_id(general_id))
     out += struct.pack(">q", int(role_id))
@@ -10656,7 +11981,11 @@ def build_lossless_prepare_payload(general_id_hexes: list[str], role_id: int) ->
 
 
 def build_lossless_expedition_payload(general_id_hexes: list[str], role_id: int) -> bytes:
-    return build_lossless_prepare_payload(general_id_hexes, role_id) + struct.pack(">q", -1) + bytes.fromhex("000000")
+    return (
+        build_lossless_prepare_payload(general_id_hexes, role_id)
+        + struct.pack(">q", LOSSLESS_IMMEDIATE_RELATED_LONG)
+        + LOSSLESS_IMMEDIATE_FLAGS
+    )
 
 
 def dispatch_lossless(
@@ -10675,10 +12004,8 @@ def dispatch_lossless(
     prepare_payload = build_lossless_prepare_payload(general_hexes, role_id)
     expedition_payload = build_lossless_expedition_payload(general_hexes, role_id)
     action_results: list[dict[str, Any]] = []
-    for phase, opcode, payload in [
-        ("prepare", 0x1520, prepare_payload),
-        ("expedition", 0x1522, expedition_payload),
-    ]:
+
+    def send_phase(phase: str, opcode: int, payload: bytes) -> tuple[int, bytes, list[dict[str, Any]]]:
         code, data, packets = post_game(
             sess["gameHttp"],
             [(opcode, payload)],
@@ -10694,13 +12021,38 @@ def dispatch_lossless(
             "responseBytes": len(data),
             "packets": summarized,
         })
-        if phase == "prepare":
-            time.sleep(0.35)
+        return code, data, packets
+
+    prepare_code, _prepare_data, prepare_packets = send_phase(
+        "prepare", LOSSLESS_PREPARE_OPCODE, prepare_payload
+    )
+    prepare_confirmed = 200 <= int(prepare_code) < 300 and any(
+        packet_opcode(packet) == LOSSLESS_PREPARE_RESPONSE_OPCODE
+        for packet in prepare_packets
+    )
+    if not prepare_confirmed:
+        return {
+            "time": now_ms(),
+            "role": sess.get("role"),
+            "area": sess.get("area"),
+            "generals": generals,
+            "success": False,
+            "battleId": None,
+            "battleText": "",
+            "failureReason": (
+                "无损预出征未收到游戏服"
+                f"0x{LOSSLESS_PREPARE_RESPONSE_OPCODE:04x}确认，已禁止发送正式出征"
+            ),
+            "actionResults": action_results,
+            "reportFile": "",
+        }
+    time.sleep(0.35)
+    send_phase("expedition", LOSSLESS_DISPATCH_OPCODE, expedition_payload)
     expedition_packets = [
         packet
         for action in action_results if action.get("phase") == "expedition"
         for packet in action.get("packets") or []
-        if packet.get("opcode") == "0x8522"
+        if packet.get("opcode") == f"0x{LOSSLESS_DISPATCH_RESPONSE_OPCODE:04x}"
     ]
     parsed_responses = [packet.get("dispatch8522") or {} for packet in expedition_packets]
     success_response = next((item for item in parsed_responses if item.get("success")), None)
@@ -10767,14 +12119,21 @@ def normalize_lossless_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[
         general_ids = list(dict.fromkeys(general_ids))
         if not general_ids:
             raise RuntimeError(f"第 {row_index + 1} 条无损规则未选择出征将领")
-        if len(general_ids) > 5:
-            raise RuntimeError(f"第 {row_index + 1} 条无损规则最多选择5名出征将领")
+        if len(general_ids) > LOSSLESS_MAX_GENERALS_PER_FORMATION:
+            raise RuntimeError(
+                f"第 {row_index + 1} 条无损规则最多选择"
+                f"{LOSSLESS_MAX_GENERALS_PER_FORMATION}名出征将领"
+            )
         missing = [general_id for general_id in general_ids if known_ids and general_id not in known_ids]
         if missing:
             raise RuntimeError(
                 f"第 {row_index + 1} 条无损规则存在不属于当前账号的将领：{','.join(missing)}"
             )
-        level = lossless_level_number(row.get("level") if row.get("level") is not None else 10)
+        level = lossless_level_number(
+            row.get("level")
+            if row.get("level") is not None
+            else LOSSLESS_MAX_LEVEL
+        )
         rows.append({
             "enabled": True,
             "sourceRowIndex": row_index,
@@ -10782,8 +12141,23 @@ def normalize_lossless_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[
             "generalId": general_ids[0],
             "level": level,
             "levelName": f"{level}级",
-            "fullTroops": bool(row.get("fullTroops", body.get("fullTroops", False))),
-            "maxLineupRerolls": max(1, min(int(row.get("maxLineupRerolls") or 80), 300)),
+            "fullTroops": bool(row.get(
+                "fullTroops",
+                body.get(
+                    "fullTroops",
+                    LOSSLESS_BEHAVIOR_CONTRACT["fullTroopsDefault"],
+                ),
+            )),
+            "maxLineupRerolls": max(
+                1,
+                min(
+                    int(
+                        row.get("maxLineupRerolls")
+                        or LOSSLESS_GUARD_CONTRACT["defaultMaxRerolls"]
+                    ),
+                    int(LOSSLESS_GUARD_CONTRACT["maximumMaxRerolls"]),
+                ),
+            ),
         })
     return rows
 
@@ -10803,23 +12177,27 @@ DUNGEON_CHAPTER_MAP = {
     "官渡之战（上）": 5,
     "官渡之战（下）": 6,
 }
-DUNGEON_CHEST_MAP = {"左": 0, "中": 1, "右": 2, "left": 0, "middle": 1, "right": 2}
+DUNGEON_CHEST_MAP = {
+    **{
+        str(name): index
+        for index, name in enumerate(_STARTUP_DUNGEON_CONTRACT["chestNames"])
+    },
+    "left": 0,
+    "middle": 1,
+    "right": 2,
+}
 DUNGEON_STATIC_STAGE_CODES = {
-    0: [0, 1, 2, *range(4, 13)],
-    1: [3, *range(13, 24)],
-    2: list(range(24, 38)),
-    3: list(range(38, 52)),
-    4: list(range(52, 63)),
-    5: list(range(63, 75)),
-    6: list(range(75, 86)),
+    int(chapter): [int(value) for value in values]
+    for chapter, values in _STARTUP_DUNGEON_CONTRACT["staticStageCodes"].items()
 }
 DUNGEON_CHAPTER_STAGE_COUNTS = {
     chapter_id: len(stage_codes)
     for chapter_id, stage_codes in DUNGEON_STATIC_STAGE_CODES.items()
 }
 
-DUNGEON_MODE_LOOP = "loop"
-DUNGEON_MODE_CLEAR = "clear"
+DUNGEON_MODE_LOOP, DUNGEON_MODE_CLEAR = tuple(
+    _STARTUP_DUNGEON_CONTRACT["allowedModes"]
+)
 
 
 def normalize_dungeon_mode(value: Any) -> str:
@@ -10833,7 +12211,7 @@ def normalize_dungeon_mode(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text in {"clear", "progressive", "progress", "通关", "打通", "打通副本"}:
         return DUNGEON_MODE_CLEAR
-    return DUNGEON_MODE_LOOP
+    return str(DUNGEON_BEHAVIOR_CONTRACT["defaultMode"])
 
 
 def dungeon_chapter_number(value: Any) -> int:
@@ -10870,14 +12248,42 @@ def dungeon_stage_number(value: Any, chapter_id: int | None = None) -> int:
     return n
 
 
-def first_uncompleted_dungeon_stage(catalog: dict[str, Any]) -> dict[str, Any] | None:
+def dungeon_chapter_final_stage(chapter_id: int, stages: list[dict[str, Any]]) -> int:
+    """Return the chapter's final display stage (多人副本关)。
+
+    每个章节的最后一关是多人副本，单人无法挑战（抓包 20260726_173635：
+    广宗决战建队后 0x8522 只回“多人副本创建成功”，正是线上日志里
+    “副本未确认启动成功：多人副本创建成功”的失败来源）。客户端静态表
+    DUNGEON_STATIC_STAGE_CODES 给出每章关卡数；目录行齐全时两者一致。
+    """
+    static_codes = DUNGEON_STATIC_STAGE_CODES.get(int(chapter_id)) or []
+    max_display = max(
+        (int(stage.get("displayStage") or 0) for stage in stages),
+        default=0,
+    )
+    return max(len(static_codes), max_display)
+
+
+def first_uncompleted_dungeon_stage(
+    catalog: dict[str, Any],
+    *,
+    skip_multiplayer_finals: bool | None = None,
+) -> dict[str, Any] | None:
     """Return the first sequential stage whose result code is still 0xff.
 
     The catalog reports ``resultCode=255`` for a stage that has not been
     passed.  A locked chapter is reported with ``detailFlag=0`` and no stage
     rows at all, so it must also be treated as the next uncompleted boundary.
     We stop there instead of skipping ahead or declaring every dungeon clear.
+
+    ``skip_multiplayer_finals`` 跳过每章最后一关（多人副本，单人打不了）。
+    打通倒数第二关会同时解锁本章末关和下一章第一关（口述时间线
+    2026-07-26 17:39:45 确认），所以跳过末关不会卡住推进。
     """
+    if skip_multiplayer_finals is None:
+        skip_multiplayer_finals = bool(
+            DUNGEON_BEHAVIOR_CONTRACT["clearModeSkipsMultiplayerFinals"]
+        )
     chapters = [
         chapter for chapter in (catalog.get("chapters") or [])
         if isinstance(chapter, dict)
@@ -10905,15 +12311,26 @@ def first_uncompleted_dungeon_stage(catalog: dict[str, Any]) -> dict[str, Any] |
                 # display metadata only; the live code is read after unlock.
                 "stageCode": int(static_codes[0]) if static_codes else None,
                 "available": False,
-                "resultCode": 255,
+                "resultCode": int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"]),
                 "lockedChapter": True,
                 "catalog": catalog,
             }
+        final_stage = dungeon_chapter_final_stage(chapter_id, stages)
         for stage in stages:
-            if int(stage.get("resultCode", 255)) != 255:
+            if int(stage.get(
+                "resultCode",
+                DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"],
+            )) != int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"]):
                 continue
             display_stage = int(stage.get("displayStage") or 0)
             if display_stage <= 0:
+                continue
+            if (
+                skip_multiplayer_finals
+                and final_stage > 0
+                and display_stage >= final_stage
+            ):
+                # 章末关是多人副本，单人无法挑战；跳到下一章继续。
                 continue
             if stage.get("stageCode") is None:
                 raise RuntimeError(
@@ -10925,7 +12342,7 @@ def first_uncompleted_dungeon_stage(catalog: dict[str, Any]) -> dict[str, Any] |
                 "stage": display_stage,
                 "stageCode": int(stage.get("stageCode")),
                 "available": bool(stage.get("available", True)),
-                "resultCode": 255,
+                "resultCode": int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"]),
                 "catalog": catalog,
             }
     return None
@@ -10943,7 +12360,10 @@ def dungeon_stage_completed_in_catalog(
             continue
         for stage in chapter.get("stages") or []:
             if int(stage.get("displayStage") or 0) == display_stage:
-                return int(stage.get("resultCode", 255)) != 255
+                return int(stage.get(
+                    "resultCode",
+                    DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"],
+                )) != int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"])
     return None
 
 
@@ -10992,7 +12412,7 @@ def dungeon_battle_defeat_confirmed(result: Any) -> bool:
     return any(
         marker in text
         for text in _dungeon_battle_texts(result)
-        for marker in ("战败", "挑战失败", "战斗失败", "副本失败")
+        for marker in DUNGEON_BEHAVIOR_CONTRACT["defeatMarkers"]
     )
 
 
@@ -11059,19 +12479,25 @@ def build_dungeon_prepare_payload(general_id_hexes: list[str], stage_code: int) 
     """
     if not general_id_hexes:
         raise RuntimeError("副本至少需要选择 1 个出征将领")
-    if len(general_id_hexes) > 5:
-        raise RuntimeError("副本编队最多选择5名出征将领")
-    out = bytearray([0x0E, len(general_id_hexes)])
+    if len(general_id_hexes) > DUNGEON_MAX_GENERALS_PER_FORMATION:
+        raise RuntimeError(
+            f"副本编队最多选择{DUNGEON_MAX_GENERALS_PER_FORMATION}名出征将领"
+        )
+    out = bytearray([DUNGEON_ACTION_TYPE, len(general_id_hexes)])
     for gid in general_id_hexes:
         out += bytes.fromhex(normalize_hex_id(gid))
     out += struct.pack(">i", -1)
-    out += struct.pack(">H", 4)
+    out += struct.pack(">H", DUNGEON_SINGLE_PLAYER_TYPE)
     out += struct.pack(">H", int(stage_code))
     return bytes(out)
 
 
 def build_dungeon_expedition_payload(general_id_hexes: list[str], stage_code: int) -> bytes:
-    return build_dungeon_prepare_payload(general_id_hexes, stage_code) + struct.pack(">q", -1) + bytes.fromhex("000000")
+    return (
+        build_dungeon_prepare_payload(general_id_hexes, stage_code)
+        + struct.pack(">q", DUNGEON_IMMEDIATE_RELATED_LONG)
+        + DUNGEON_IMMEDIATE_FLAGS
+    )
 
 
 def parse_dungeon_catalog(payload: bytes) -> dict[str, Any]:
@@ -11166,12 +12592,12 @@ def resolve_dungeon_stage_code(catalog: dict[str, Any], chapter_id: int, display
 
 
 def query_dungeon_catalog(sess: dict[str, Any]) -> dict[str, Any]:
-    code, data, packets = post_game(sess["gameHttp"], [(0x1930, b"")], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-    pkt = next((p for p in packets if p.get("opcode") == 0x8930 and "payload" in p), None)
+    code, data, packets = post_game(sess["gameHttp"], [(DUNGEON_CATALOG_REQUEST_OPCODE, b"")], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+    pkt = next((p for p in packets if p.get("opcode") == DUNGEON_CATALOG_RESPONSE_OPCODE and "payload" in p), None)
     parsed = parse_dungeon_catalog(pkt["payload"]) if pkt else {"parseError": "未返回 0x8930"}
     parsed.update({
         "http": code,
-        "opcode": "0x1930/0x8930",
+        "opcode": f"0x{DUNGEON_CATALOG_REQUEST_OPCODE:04x}/0x{DUNGEON_CATALOG_RESPONSE_OPCODE:04x}",
         "packets": summarize_packets(packets),
         "updatedAt": now_ms(),
     })
@@ -11199,20 +12625,20 @@ def parse_dungeon_state(payload: bytes) -> dict[str, Any]:
 
 
 def query_dungeon_state(sess: dict[str, Any]) -> dict[str, Any]:
-    code, data, packets = post_game(sess["gameHttp"], [(0x1938, b"")], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-    pkt = next((p for p in packets if p.get("opcode") == 0x8938 and "payload" in p), None)
+    code, data, packets = post_game(sess["gameHttp"], [(DUNGEON_STATE_REQUEST_OPCODE, b"")], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+    pkt = next((p for p in packets if p.get("opcode") == DUNGEON_STATE_RESPONSE_OPCODE and "payload" in p), None)
     parsed = parse_dungeon_state(pkt["payload"]) if pkt else {"parseError": "未返回 0x8938", "active": False}
-    parsed.update({"http": code, "opcode": "0x1938/0x8938", "packets": summarize_packets(packets), "updatedAt": now_ms()})
+    parsed.update({"http": code, "opcode": f"0x{DUNGEON_STATE_REQUEST_OPCODE:04x}/0x{DUNGEON_STATE_RESPONSE_OPCODE:04x}", "packets": summarize_packets(packets), "updatedAt": now_ms()})
     sess["lastDungeonState"] = parsed
     persist_runtime_state()
     return parsed
 
 
 def query_dungeon_reward_state(sess: dict[str, Any]) -> dict[str, Any]:
-    code, data, packets = post_game(sess["gameHttp"], [(0x193D, b"")], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-    pkt = next((p for p in packets if p.get("opcode") == 0x893D and "payload" in p), None)
+    code, data, packets = post_game(sess["gameHttp"], [(DUNGEON_REWARD_REQUEST_OPCODE, b"")], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+    pkt = next((p for p in packets if p.get("opcode") == DUNGEON_REWARD_RESPONSE_OPCODE and "payload" in p), None)
     payload = pkt["payload"] if pkt else b""
-    parsed: dict[str, Any] = {"http": code, "opcode": "0x193d/0x893d", "rawHex": payload.hex(), "packets": summarize_packets(packets), "textPreview": printable(payload, 1200), "updatedAt": now_ms()}
+    parsed: dict[str, Any] = {"http": code, "opcode": f"0x{DUNGEON_REWARD_REQUEST_OPCODE:04x}/0x{DUNGEON_REWARD_RESPONSE_OPCODE:04x}", "rawHex": payload.hex(), "packets": summarize_packets(packets), "textPreview": printable(payload, 1200), "updatedAt": now_ms()}
     if len(payload) >= 10 and payload[0] == 1:
         parsed["battleId"] = struct.unpack(">q", payload[1:9])[0]
         parsed["battleIdHex"] = f"{parsed['battleId']:016x}"
@@ -11231,7 +12657,7 @@ def poll_dungeon_battle(sess: dict[str, Any], battle_id: int, *, max_wait_sec: i
                 task_log(task, "副本收到停止请求：完成当前战斗并开箱后停止，不会发起下一轮")
                 stop_noted = True
         payload = bytes([phase]) + struct.pack(">q", int(battle_id))
-        code, data, packets = post_game(sess["gameHttp"], [(0x1702, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+        code, data, packets = post_game(sess["gameHttp"], [(DUNGEON_BATTLE_POLL_REQUEST_OPCODE, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
         summarized = summarize_packets(packets)
         poll_results.append({
             "phase": phase,
@@ -11358,16 +12784,16 @@ def wait_for_dungeon_generals_idle(
 def open_dungeon_chest(sess: dict[str, Any], chest: int | str) -> dict[str, Any]:
     idx = dungeon_chest_index(chest)
     payload = bytes([idx])
-    code, data, packets = post_game(sess["gameHttp"], [(0x193E, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-    pkt = next((p for p in packets if p.get("opcode") == 0x893E and "payload" in p), None)
+    code, data, packets = post_game(sess["gameHttp"], [(DUNGEON_CHEST_REQUEST_OPCODE, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+    pkt = next((p for p in packets if p.get("opcode") == DUNGEON_CHEST_RESPONSE_OPCODE and "payload" in p), None)
     text = printable(pkt["payload"], 2000) if pkt else ""
     success = bool(pkt) and not (pkt.get("payload") or b"").startswith(b"\xff")
     return {
         "success": success,
         "http": code,
-        "opcode": "0x193e/0x893e",
+        "opcode": f"0x{DUNGEON_CHEST_REQUEST_OPCODE:04x}/0x{DUNGEON_CHEST_RESPONSE_OPCODE:04x}",
         "chestIndex": idx,
-        "chestName": {0: "左", 1: "中", 2: "右"}.get(idx, str(idx)),
+        "chestName": list(DUNGEON_BEHAVIOR_CONTRACT["chestNames"])[idx],
         "requestPayloadHex": payload.hex(),
         "textPreview": text,
         "packets": summarize_packets(packets),
@@ -11404,8 +12830,11 @@ def normalize_dungeon_rows(
         general_ids = list(dict.fromkeys(general_ids))
         if not general_ids:
             raise RuntimeError(f"第 {idx + 1} 条副本规则未选择出征将领")
-        if len(general_ids) > 5:
-            raise RuntimeError(f"第 {idx + 1} 条副本规则最多选择5名出征将领")
+        if len(general_ids) > DUNGEON_MAX_GENERALS_PER_FORMATION:
+            raise RuntimeError(
+                f"第 {idx + 1} 条副本规则最多选择"
+                f"{DUNGEON_MAX_GENERALS_PER_FORMATION}名出征将领"
+            )
         missing = [gid for gid in general_ids if known_ids and gid not in known_ids]
         if missing:
             raise RuntimeError(f"第 {idx + 1} 条副本规则存在不属于当前账号的将领：{','.join(missing)}")
@@ -11446,7 +12875,7 @@ def normalize_dungeon_rows(
             "chapterName": str(row.get("chapterName") or row.get("chapter") or f"第{chapter + 1}章"),
             "stage": stage,
             "chest": chest,
-            "chestName": {0: "左", 1: "中", 2: "右"}.get(chest, str(chest)),
+            "chestName": list(DUNGEON_BEHAVIOR_CONTRACT["chestNames"])[chest],
             "fullTroops": bool(row.get("fullTroops", False)),
             "waitForGeneralsIdle": True,
             "openChest": True,
@@ -11465,6 +12894,14 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
     chapter_name = str(opts.get("chapterName") or f"第{chapter + 1}章")
     stage_value = opts.get("stage") if opts.get("stage") is not None else 1
     stage = dungeon_stage_number(stage_value, chapter)
+    final_stage = len(DUNGEON_STATIC_STAGE_CODES.get(chapter) or [])
+    if final_stage and stage >= final_stage:
+        # 章末关是多人副本：0x1520/0x1522 只会建队并回“多人副本创建成功”，
+        # 单人流程永远等不到战斗（抓包 20260726_173635 广宗决战确认）。
+        raise RuntimeError(
+            f"{chapter_name}第{stage}关是本章最后一关（多人副本），"
+            "单人无法挑战，请选择其他关卡"
+        )
     chest = dungeon_chest_index(opts.get("chest") if opts.get("chest") is not None else opts.get("chestName") or "右")
     preflight_options = {
         "force_heal": True,
@@ -11572,6 +13009,14 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
                 runnable=False,
                 message=f"副本{chapter_name}第{stage}关战斗中",
             )
+            # 军情页“辅助实时行动”的战斗标记：真实启动成功才落，
+            # 本函数收尾即清除；只在 schedulerState=fighting 时被读取。
+            task["currentDungeonBattle"] = {
+                "chapterName": chapter_name,
+                "stage": stage,
+                "generalIds": list(general_ids),
+                "startedAt": launch_confirmed_at,
+            }
         if launch_only:
             general_wait_result = {
                 "finished": False,
@@ -11585,6 +13030,12 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
             battle_id = int(
                 dungeon_state_after_launch.get("battleId") or 0
             )
+            if (
+                task is not None
+                and battle_id > 0
+                and isinstance(task.get("currentDungeonBattle"), dict)
+            ):
+                task["currentDungeonBattle"]["battleId"] = battle_id
             if dungeon_state_after_launch.get("active") and battle_id > 0:
                 battle_poll_result = poll_dungeon_battle(
                     sess,
@@ -11633,6 +13084,10 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
                     ),
                     "generalWaitResult": general_wait_result,
                 }
+    if task is not None and not launch_only:
+        # 阻塞式副本执行到这里战斗已经结算（或等待已超时交回上层处理），
+        # 清掉战斗标记；launchOnly 的非阻塞结算由调度器改状态后自然失效。
+        task.pop("currentDungeonBattle", None)
     report = {
         "time": now_ms(),
         "role": sess["role"],
@@ -13271,6 +14726,7 @@ def build_brush_payloads_variant(general_chunks: list[str], target_hex: str, var
     n = len(general_chunks)
     ids = "".join(general_chunks)
     prefix = "0" * 18
+    canonical_action_hex = f"{BRUSH_ACTION_TYPE:02x}"
     variants = {
         # Canonical client shape recovered from unpacked game dex:
         # LscriptPages/game/p;->O(I [J J)V:
@@ -13280,7 +14736,15 @@ def build_brush_payloads_variant(general_chunks: list[str], target_hex: str, var
         #   writeLong(-1), writeByte(0), writeByte(0), writeByte(0), send 0x1522
         # Earlier reports inserted an extra 0000 before target; that made declared length and
         # actual payload diverge and caused the game server to return 0x8522=ff0000.
-        0: {"prepareOp": "1520030", "prepareTrailer": target_hex, "prepareExtra": 0x0a, "expeditionOp": "1522030", "expeditionTrailer": target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x15},
+        0: {
+            "prepareOp": f"1520{canonical_action_hex}0",
+            "prepareTrailer": target_hex,
+            "prepareExtra": 0x0a,
+            "expeditionOp": f"1522{canonical_action_hex}0",
+            "expeditionTrailer": target_hex + "ffffffffffffffff000000",
+            "expeditionExtra": 0x15,
+            "actionType": BRUSH_ACTION_TYPE,
+        },
         # Retained only for offline protocol comparison. The live product path uses
         # variant 0/actionType=3, matching capture 20260710_215812 flows 074/075.
         10: {"prepareOp": "15200a0", "prepareTrailer": target_hex, "prepareExtra": 0x0a, "expeditionOp": "15220a0", "expeditionTrailer": target_hex + "ffffffffffffffff000000", "expeditionExtra": 0x15},
@@ -16994,7 +18458,72 @@ def get_starter_job(job_id: str) -> dict[str, Any]:
     return job
 
 
-def create_starter_job(account_id: str, target_level: int = 66) -> dict[str, Any]:
+def prepare_starter_account_for_server(
+    source_account_id: str,
+    server_query: str,
+) -> dict[str, Any]:
+    """Reuse one stored credential record for the selected starter server."""
+    source_id = str(source_account_id or "")
+    with ACCOUNT_LOCK:
+        source = dict(ACCOUNTS.get(source_id) or {})
+    if not source:
+        raise RuntimeError("所选账号记录不存在")
+    username = str(source.get("username") or "").strip()
+    password = str(source.get("password") or "")
+    platform = platform_display_name(source.get("platform"))
+    target_server = str(server_query or "").strip()
+    if not username or not password:
+        raise RuntimeError(f"账号{username or source_id}没有保存密码，请重新添加账号")
+    if not target_server:
+        raise RuntimeError(f"账号{username}尚未选择区服")
+
+    account = add_local_account(
+        username,
+        password,
+        target_server,
+        platform=platform,
+        serial=str(source.get("serial") or "0"),
+    )
+    target_id = str(account.get("sessionId") or "")
+    with ACCOUNT_LOCK:
+        target = ACCOUNTS.get(target_id) or {}
+        duplicate = next((
+            other
+            for other_id, other in ACCOUNTS.items()
+            if other_id != target_id
+            and account_login_identity(other) == account_login_identity(target)
+            and (
+                other_id in SESSIONS
+                or bool(other.get("started"))
+                or str(other.get("status") or "")
+                in {"checking", "online", "reconnecting"}
+            )
+        ), None)
+    if duplicate is not None:
+        duplicate_server = str(
+            duplicate.get("serverQuery")
+            or (duplicate.get("area") or {}).get("areaName")
+            or "其他区服"
+        )
+        raise RuntimeError(
+            f"同一平台账号已在{duplicate_server}运行，不能同时登录两个区服"
+        )
+    return {
+        "sourceAccountId": source_id,
+        "accountId": target_id,
+        "username": username,
+        "platform": platform,
+        "serverQuery": target_server,
+        "account": account,
+    }
+
+
+def create_starter_job(
+    account_id: str,
+    target_level: int = 66,
+    *,
+    start_worker: bool = True,
+) -> dict[str, Any]:
     account_id = str(account_id or "")
     with ACCOUNT_LOCK:
         account = ACCOUNTS.get(account_id)
@@ -17009,6 +18538,7 @@ def create_starter_job(account_id: str, target_level: int = 66) -> dict[str, Any
     target_level = max(1, min(200, int(target_level or 66)))
     job_id = "starter_" + uuid4().hex
     at = now_ms()
+    created = False
     with STARTER_LOCK, ACCOUNT_STATE_DB_LOCK, _account_state_db_connect() as connection:
         active = connection.execute(
             """
@@ -17034,8 +18564,154 @@ def create_starter_job(account_id: str, target_level: int = 66) -> dict[str, Any
             ),
         )
         connection.commit()
-    start_starter_worker(job_id)
+        created = True
+    if start_worker and created:
+        start_starter_worker(job_id)
     return get_starter_job(job_id)
+
+
+def create_starter_jobs_batch(
+    items: list[dict[str, Any]],
+    target_level: int = 66,
+) -> dict[str, Any]:
+    """Create and start multiple starter jobs after reserving balanced IPs."""
+    rows = [dict(item) for item in (items or []) if isinstance(item, dict)]
+    if not rows:
+        raise RuntimeError("请至少勾选一个起号账号")
+    if len(rows) > 100:
+        raise RuntimeError("单次最多添加100个起号账号")
+
+    target_level = max(1, min(200, int(target_level or 66)))
+    prepared: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    seen_login_ids: set[tuple[str, str]] = set()
+    for index, item in enumerate(rows):
+        source_id = str(item.get("accountId") or "")
+        server_query = str(item.get("serverQuery") or "").strip()
+        try:
+            with ACCOUNT_LOCK:
+                source = ACCOUNTS.get(source_id) or {}
+                login_identity = account_login_identity(source)
+            if not login_identity[1]:
+                raise RuntimeError("所选账号记录不存在")
+            if login_identity in seen_login_ids:
+                raise RuntimeError("同一游戏平台账号一次只能选择一个区服")
+            seen_login_ids.add(login_identity)
+            prepared_row = prepare_starter_account_for_server(
+                source_id,
+                server_query,
+            )
+            prepared_row["index"] = index
+            prepared.append(prepared_row)
+        except Exception as exc:
+            results.append({
+                "index": index,
+                "sourceAccountId": source_id,
+                "serverQuery": server_query,
+                "success": False,
+                "error": str(exc),
+            })
+
+    assignable_ids: list[str] = []
+    for row in prepared:
+        account_id = str(row["accountId"])
+        with ACCOUNT_LOCK:
+            account = ACCOUNTS.get(account_id) or {}
+            already_active = bool(
+                account_id in SESSIONS
+                or account.get("started")
+                or str(account.get("status") or "")
+                in {"checking", "online", "reconnecting"}
+            )
+        row["alreadyActive"] = already_active
+        if not already_active:
+            assignable_ids.append(account_id)
+
+    proxy_plan: dict[str, Any] = {
+        "group": "", "assignments": {}, "errors": {},
+    }
+    if assignable_ids:
+        try:
+            proxy_plan = assign_balanced_proxy_nodes(assignable_ids)
+        except Exception as exc:
+            proxy_plan["errors"] = {
+                account_id: str(exc) for account_id in assignable_ids
+            }
+
+    jobs_to_start: list[str] = []
+    for row in prepared:
+        account_id = str(row["accountId"])
+        assignment = dict(
+            (proxy_plan.get("assignments") or {}).get(account_id) or {}
+        )
+        proxy_error = str(
+            (proxy_plan.get("errors") or {}).get(account_id) or ""
+        )
+        if proxy_error and not row.get("alreadyActive"):
+            results.append({
+                **{key: row[key] for key in (
+                    "index", "sourceAccountId", "accountId", "username",
+                    "platform", "serverQuery",
+                )},
+                "success": False,
+                "error": proxy_error,
+            })
+            continue
+        try:
+            job = create_starter_job(
+                account_id,
+                target_level,
+                start_worker=False,
+            )
+            jobs_to_start.append(str(job.get("job_id") or ""))
+            if not assignment:
+                with ACCOUNT_LOCK:
+                    account = ACCOUNTS.get(account_id) or {}
+                    assignment = {
+                        "group": str(account.get("proxyGroup") or ""),
+                        "node": str(account.get("proxyNode") or ""),
+                        "ip": str(account.get("proxyIp") or ""),
+                    }
+            results.append({
+                **{key: row[key] for key in (
+                    "index", "sourceAccountId", "accountId", "username",
+                    "platform", "serverQuery",
+                )},
+                "success": True,
+                "alreadyActive": bool(row.get("alreadyActive")),
+                "proxy": assignment,
+                "job": job,
+            })
+        except Exception as exc:
+            results.append({
+                **{key: row[key] for key in (
+                    "index", "sourceAccountId", "accountId", "username",
+                    "platform", "serverQuery",
+                )},
+                "success": False,
+                "error": str(exc),
+            })
+
+    for job_id in dict.fromkeys(job_id for job_id in jobs_to_start if job_id):
+        start_starter_worker(job_id)
+    container_count = save_starter_container_count(
+        max(1, len(list_starter_jobs()))
+    )
+    results.sort(key=lambda item: int(item.get("index") or 0))
+    success_count = sum(1 for item in results if item.get("success"))
+    return {
+        "requestedCount": len(rows),
+        "successCount": success_count,
+        "failedCount": len(results) - success_count,
+        "results": results,
+        "jobs": [
+            item["job"] for item in results
+            if item.get("success") and isinstance(item.get("job"), dict)
+        ],
+        "containerCount": container_count,
+        "proxyGroup": str(proxy_plan.get("group") or ""),
+        "maxAccountsPerIp": PROXY_MAX_LIVE_ACCOUNTS_PER_IP,
+    }
 
 
 def starter_step(
@@ -17964,11 +19640,11 @@ def query_owned_cities(sess: dict[str, Any]) -> dict[str, Any]:
     payload = build_owned_city_list_payload(role_id)
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x1318, payload)],
+        [(DAILY_OWNED_CITY_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    response = next((p for p in packets if p.get("opcode") == 0x8318), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_OWNED_CITY_RESPONSE_OPCODE), None)
     if response is None:
         raise GameProtocolResponseError(f"自有城池列表未收到0x8318：http={code}")
     parsed = parse_owned_city_list(response.get("payload") or b"")
@@ -18064,28 +19740,14 @@ def parse_salary_receipt(payload: bytes) -> dict[str, Any]:
 
     already = any(
         marker in cleaned
-        for marker in (
-            "无法再次领取",
-            "已经领取",
-            "已领取",
-            "今日已领取",
-            "本日已领取",
-            "今天已经领取",
-        )
+        for marker in DAILY_SALARY_CONTRACT["alreadyClaimedMarkers"]
     )
     no_office = any(
         marker in cleaned
-        for marker in (
-            "无官职",
-            "没有官职",
-            "只有官员才能领取",
-            "官员才能领取俸禄",
-            "当前不能领取俸禄",
-        )
+        for marker in DAILY_SALARY_CONTRACT["noOfficeMarkers"]
     )
     success_by_text = (
-        "成功" in cleaned
-        or "获得铜钱" in cleaned
+        any(marker in cleaned for marker in DAILY_SALARY_CONTRACT["successMarkers"])
         or (copper is not None or food is not None)
     )
     # 兼容两套回执：status==1 直接成功；或 status==0 且 extra==1/文案成功。
@@ -18177,19 +19839,21 @@ def parse_national_city_page(payload: bytes, requested_category: int = 0) -> dic
     # which made real city pages look empty (and could turn a page count into
     # an enormous value).  Keep the offsets explicit because this parser is
     # also used by the national-collection selector.
-    if len(payload) < 7:
+    header_bytes = int(DAILY_NATIONAL_CONTRACT["responseHeaderBytes"])
+    tail_bytes = int(DAILY_NATIONAL_CONTRACT["recordTailBytes"])
+    if len(payload) < header_bytes:
         raise ValueError(f"0x8404响应过短：{len(payload)}")
     status = payload[0]
     response_category = payload[1]
     total_pages = struct.unpack_from(">H", payload, 2)[0]
     page = struct.unpack_from(">H", payload, 4)[0]
-    count = payload[6]
+    count = payload[header_bytes - 1]
     category = (
         int(response_category)
         if response_category in range(1, 6)
         else int(requested_category)
     )
-    offset = 7
+    offset = header_bytes
     cities: list[dict[str, Any]] = []
     for index in range(int(count)):
         name, offset = _daily_read_utf(payload, offset)
@@ -18200,10 +19864,10 @@ def parse_national_city_page(payload: bytes, requested_category: int = 0) -> dic
         x, offset = _daily_i16(payload, offset)
         y, offset = _daily_i16(payload, offset)
         owner, offset = _daily_read_utf(payload, offset)
-        if offset + 34 > len(payload):
+        if offset + tail_bytes > len(payload):
             raise ValueError(f"国家城池记录{index + 1}尾部不完整")
-        tail = payload[offset:offset + 34]
-        offset += 34
+        tail = payload[offset:offset + tail_bytes]
+        offset += tail_bytes
         kind = _national_kind_from_wire(wire_kind)
         if kind == "unknown":
             kind = _national_kind_from_category(category)
@@ -18338,9 +20002,9 @@ def parse_general_visit_page(payload: bytes) -> dict[str, Any]:
 
 
 def general_visit_already_visited(status: Any, message: Any) -> bool:
-    return int(status or 0) == -2 and any(
+    return int(status or 0) == int(DAILY_GENERAL_VISIT_CONTRACT["alreadyVisitedStatus"]) and any(
         marker in str(message or "")
-        for marker in ("本日已拜访", "今日已拜访", "已经拜访")
+        for marker in DAILY_GENERAL_VISIT_CONTRACT["alreadyVisitedMarkers"]
     )
 
 
@@ -18355,12 +20019,7 @@ def parse_general_visit_receipt(payload: bytes) -> dict[str, Any]:
     # “名将已被俘虏/已被结交”等表示拜访没真正发生，可顺延下一个候选。
     invitation_resolved = int(status) == 0 and any(
         marker in cleaned_message
-        for marker in (
-            "拒绝了阁下的邀请",
-            "接受了阁下的邀请",
-            "愿意追随",
-            "纳入帐下",
-        )
+        for marker in DAILY_GENERAL_VISIT_CONTRACT["invitationResolvedMarkers"]
     )
     visit_succeeded = int(status) == 1 or invitation_resolved
     return {
@@ -18394,11 +20053,11 @@ def query_national_cities(
             payload = build_national_city_list_payload(int(category), page)
             code, _data, packets = post_game(
                 sess["gameHttp"],
-                [(0x1404, payload)],
+        [(DAILY_NATIONAL_LIST_OPCODE, payload)],
                 int(sess["dm"]),
                 account_id=str(sess.get("sessionId") or ""),
             )
-            response = next((p for p in packets if p.get("opcode") == 0x8404), None)
+            response = next((p for p in packets if p.get("opcode") == DAILY_NATIONAL_LIST_RESPONSE_OPCODE), None)
             if response is None:
                 raise GameProtocolResponseError(
                     f"国家城池列表未收到0x8404：category={category} page={page} http={code}"
@@ -18439,11 +20098,11 @@ def query_national_collect_status(sess: dict[str, Any], city: dict[str, Any] | s
     payload = build_national_city_status_payload(city_name)
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x1332, payload)],
+        [(DAILY_NATIONAL_STATUS_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    response = next((p for p in packets if p.get("opcode") == 0x8332), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_NATIONAL_STATUS_RESPONSE_OPCODE), None)
     if response is None:
         raise GameProtocolResponseError(f"{city_name}征收状态未收到0x8332：http={code}")
     parsed = parse_national_collect_status(response.get("payload") or b"")
@@ -18456,15 +20115,15 @@ def collect_national_city(sess: dict[str, Any], city: dict[str, Any] | str) -> d
     payload = build_national_collect_payload(city_name)
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x1334, payload)],
+        [(DAILY_NATIONAL_COLLECT_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    response = next((p for p in packets if p.get("opcode") == 0x8334), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_NATIONAL_COLLECT_RESPONSE_OPCODE), None)
     if response is None:
         raise GameProtocolResponseError(f"{city_name}国家征收未收到0x8334：http={code}")
     result = parse_daily_status_utf_receipt(response.get("payload") or b"", success_status=1)
-    result.update({"city": city_name, "http": int(code), "responseOpcode": "0x8334"})
+    result.update({"city": city_name, "http": int(code), "responseOpcode": f"0x{DAILY_NATIONAL_COLLECT_RESPONSE_OPCODE:04x}"})
     return result
 
 
@@ -18475,15 +20134,15 @@ def claim_national_salary(sess: dict[str, Any]) -> dict[str, Any]:
     payload = build_salary_payload()
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x314B, payload)],
+        [(DAILY_SALARY_REQUEST_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    response = next((p for p in packets if p.get("opcode") == 0xA14B), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_SALARY_RESPONSE_OPCODE), None)
     if response is None:
         raise GameProtocolResponseError(f"国家俸禄未收到0xA14B：http={code}")
     result = parse_salary_receipt(response.get("payload") or b"")
-    result.update({"http": int(code), "responseOpcode": "0xA14B"})
+    result.update({"http": int(code), "responseOpcode": f"0x{DAILY_SALARY_RESPONSE_OPCODE:04x}"})
     return result
 
 
@@ -18503,15 +20162,15 @@ def collect_city_lord(sess: dict[str, Any], fief: dict[str, Any] | str) -> dict[
     payload = build_city_lord_collect_payload(city_name)
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x1330, payload)],
+        [(DAILY_CITY_LORD_COLLECT_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    response = next((p for p in packets if p.get("opcode") == 0x8330), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_CITY_LORD_COLLECT_RESPONSE_OPCODE), None)
     if response is None:
         raise GameProtocolResponseError(f"{city_name}城主征收未收到0x8330：http={code}")
     result = parse_daily_status_utf_receipt(response.get("payload") or b"", success_status=1)
-    result.update({"city": city_name, "http": int(code), "responseOpcode": "0x8330"})
+    result.update({"city": city_name, "http": int(code), "responseOpcode": f"0x{DAILY_CITY_LORD_COLLECT_RESPONSE_OPCODE:04x}"})
     return result
 
 
@@ -18533,11 +20192,11 @@ def query_general_visit_candidates(sess: dict[str, Any]) -> dict[str, Any]:
         payload = build_general_visit_list_payload(page, page_size)
         code, _data, packets = post_game(
             sess["gameHttp"],
-            [(0x3271, payload)],
+            [(DAILY_GENERAL_LIST_OPCODE, payload)],
             int(sess["dm"]),
             account_id=str(sess.get("sessionId") or ""),
         )
-        response = next((p for p in packets if p.get("opcode") == 0xA271), None)
+        response = next((p for p in packets if p.get("opcode") == DAILY_GENERAL_LIST_RESPONSE_OPCODE), None)
         if response is None:
             raise GameProtocolResponseError(f"名将列表未收到0xA271：page={page} http={code}")
         parsed = parse_general_visit_page(response.get("payload") or b"")
@@ -18586,11 +20245,11 @@ def visit_general(sess: dict[str, Any], candidate: dict[str, Any]) -> dict[str, 
     payload = build_general_visit_payload(general_id, page, page_size)
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x3273, payload)],
+        [(DAILY_GENERAL_VISIT_OPCODE, payload)],
         int(sess["dm"]),
         account_id=str(sess.get("sessionId") or ""),
     )
-    response = next((p for p in packets if p.get("opcode") == 0xA273), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_GENERAL_VISIT_RESPONSE_OPCODE), None)
     if response is None:
         raise GameProtocolResponseError(f"拜访{candidate.get('name') or general_id}未收到0xA273：http={code}")
     result = parse_general_visit_receipt(response.get("payload") or b"")
@@ -18600,13 +20259,304 @@ def visit_general(sess: dict[str, Any], candidate: dict[str, Any]) -> dict[str, 
         "page": page,
         "pageSize": page_size,
         "http": int(code),
-        "responseOpcode": "0xA273",
+        "responseOpcode": f"0x{DAILY_GENERAL_VISIT_RESPONSE_OPCODE:04x}",
     })
     return result
 
 
 ARENA_COINS_DUPLICATE_LOG = "领竞技币重复，22点后再领取！"
-DAILY_SIGN_IN_DUPLICATE_LOG = "自动签到重复，本日已签到，明日再签到！"
+
+
+def _contract_opcode(value: Any) -> int:
+    return int(str(value), 0)
+
+
+ACCOUNT_LIFECYCLE_CONTRACT = SHARED_BEHAVIOR_CONTRACT["accountLifecycle"]
+ACCOUNT_STATUS_TEXT = dict(ACCOUNT_LIFECYCLE_CONTRACT["statusText"])
+DAILY_SIGN_IN_CONTRACT = SHARED_BEHAVIOR_CONTRACT["daily"]["signIn"]
+DAILY_SCHEDULE_CONTRACT = SHARED_BEHAVIOR_CONTRACT["daily"]["schedule"]
+DAILY_DIAMOND_BOX_CONTRACT = DAILY_SIGN_IN_CONTRACT["diamondBox"]
+DAILY_ACTIONS_CONTRACT = SHARED_BEHAVIOR_CONTRACT["daily"]["actions"]
+EXPEDITION_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["expedition"]
+MAP_SEARCH_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["mapSearch"]
+MAP_SEARCH_WORLD_CONTRACT = MAP_SEARCH_BEHAVIOR_CONTRACT["world"]
+BRUSH_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["brushYellow"]
+BRUSH_SCHEDULE_CONTRACT = BRUSH_BEHAVIOR_CONTRACT["schedule"]
+
+# Compatibility names below are assigned from the shared contract so the legacy
+# desktop worker and the Android scheduler execute the same limits and timing.
+BRUSH_MAX_GENERALS_PER_FORMATION = int(
+    BRUSH_BEHAVIOR_CONTRACT["maximumGeneralsPerFormation"]
+)
+BRUSH_ACTION_TYPE = int(BRUSH_BEHAVIOR_CONTRACT["actionType"])
+BRUSH_PREPARE_OPCODE = _contract_opcode(
+    EXPEDITION_BEHAVIOR_CONTRACT["prepareOpcode"]
+)
+BRUSH_PREPARE_RESPONSE_OPCODE = _contract_opcode(
+    EXPEDITION_BEHAVIOR_CONTRACT["prepareResponseOpcode"]
+)
+BRUSH_DISPATCH_OPCODE = _contract_opcode(
+    EXPEDITION_BEHAVIOR_CONTRACT["dispatchOpcode"]
+)
+BRUSH_DISPATCH_RESPONSE_OPCODE = _contract_opcode(
+    EXPEDITION_BEHAVIOR_CONTRACT["dispatchResponseOpcode"]
+)
+BRUSH_SOFT_REJECT_PAYLOAD_HEX = str(
+    EXPEDITION_BEHAVIOR_CONTRACT["softRejectPayloadHex"]
+).lower()
+BRUSH_WORLD_X_MIN = int(MAP_SEARCH_WORLD_CONTRACT["xMin"])
+BRUSH_WORLD_X_MAX = int(MAP_SEARCH_WORLD_CONTRACT["xMax"])
+BRUSH_WORLD_Y_MIN = int(MAP_SEARCH_WORLD_CONTRACT["yMin"])
+BRUSH_WORLD_Y_MAX = int(MAP_SEARCH_WORLD_CONTRACT["yMax"])
+BRUSH_WORLD_STEP = int(MAP_SEARCH_WORLD_CONTRACT["step"])
+BRUSH_FULL_SCAN_LIMIT = int(MAP_SEARCH_BEHAVIOR_CONTRACT["fullRequestLimit"])
+MINE_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["mine"]
+MINE_PREVIEW_CONTRACT = MINE_BEHAVIOR_CONTRACT["preview"]
+MINE_SCHEDULE_CONTRACT = MINE_BEHAVIOR_CONTRACT["schedule"]
+MINE_SPEED_CONTRACT = MINE_BEHAVIOR_CONTRACT["speed"]
+MINE_WITHDRAW_CONTRACT = MINE_BEHAVIOR_CONTRACT["withdraw"]
+DAILY_FAILED_FEATURE_RETRY_MS = max(
+    1_000,
+    int(DAILY_SCHEDULE_CONTRACT["failedFeatureRetryMillis"]),
+)
+DAILY_SIGN_IN_REQUEST_OPCODE = _contract_opcode(
+    DAILY_SIGN_IN_CONTRACT["requestOpcode"]
+)
+DAILY_SIGN_IN_ACTIVITY_OPCODE = _contract_opcode(
+    DAILY_SIGN_IN_CONTRACT["activityResponseOpcode"]
+)
+DAILY_SIGN_IN_LEGACY_OPCODE = _contract_opcode(
+    DAILY_SIGN_IN_CONTRACT["legacyResponseOpcode"]
+)
+DAILY_DIAMOND_BOX_REQUEST_OPCODE = _contract_opcode(
+    DAILY_DIAMOND_BOX_CONTRACT["requestOpcode"]
+)
+DAILY_DIAMOND_BOX_RESPONSE_OPCODE = _contract_opcode(
+    DAILY_DIAMOND_BOX_CONTRACT["responseOpcode"]
+)
+DAILY_ARENA_CONTRACT = DAILY_ACTIONS_CONTRACT["arenaCoins"]
+DAILY_ARENA_READ_OPCODE = _contract_opcode(DAILY_ARENA_CONTRACT["readRequestOpcode"])
+DAILY_ARENA_CLAIM_OPCODE = _contract_opcode(DAILY_ARENA_CONTRACT["claimRequestOpcode"])
+DAILY_ARENA_RESPONSE_OPCODE = _contract_opcode(DAILY_ARENA_CONTRACT["claimResponseOpcode"])
+DAILY_DONATE_CONTRACT = DAILY_ACTIONS_CONTRACT["donate"]
+DAILY_DONATE_RESOURCE_OPCODE = _contract_opcode(DAILY_DONATE_CONTRACT["resourceRequestOpcode"])
+DAILY_DONATE_RESOURCE_RESPONSE_OPCODE = _contract_opcode(DAILY_DONATE_CONTRACT["resourceResponseOpcode"])
+DAILY_DONATE_TECH_OPCODE = _contract_opcode(DAILY_DONATE_CONTRACT["technologyRequestOpcode"])
+DAILY_DONATE_TECH_RESPONSE_OPCODE = _contract_opcode(DAILY_DONATE_CONTRACT["technologyResponseOpcode"])
+DAILY_SALARY_CONTRACT = DAILY_ACTIONS_CONTRACT["salary"]
+DAILY_SALARY_REQUEST_OPCODE = _contract_opcode(DAILY_SALARY_CONTRACT["requestOpcode"])
+DAILY_SALARY_RESPONSE_OPCODE = _contract_opcode(DAILY_SALARY_CONTRACT["responseOpcode"])
+DAILY_NATIONAL_CONTRACT = DAILY_ACTIONS_CONTRACT["nationalCollect"]
+DAILY_NATIONAL_LIST_OPCODE = _contract_opcode(DAILY_NATIONAL_CONTRACT["cityListRequestOpcode"])
+DAILY_NATIONAL_LIST_RESPONSE_OPCODE = _contract_opcode(DAILY_NATIONAL_CONTRACT["cityListResponseOpcode"])
+DAILY_NATIONAL_STATUS_OPCODE = _contract_opcode(DAILY_NATIONAL_CONTRACT["statusRequestOpcode"])
+DAILY_NATIONAL_STATUS_RESPONSE_OPCODE = _contract_opcode(DAILY_NATIONAL_CONTRACT["statusResponseOpcode"])
+DAILY_NATIONAL_COLLECT_OPCODE = _contract_opcode(DAILY_NATIONAL_CONTRACT["collectRequestOpcode"])
+DAILY_NATIONAL_COLLECT_RESPONSE_OPCODE = _contract_opcode(DAILY_NATIONAL_CONTRACT["collectResponseOpcode"])
+DAILY_CITY_LORD_CONTRACT = DAILY_ACTIONS_CONTRACT["cityLordCollect"]
+DAILY_OWNED_CITY_OPCODE = _contract_opcode(DAILY_CITY_LORD_CONTRACT["ownedCityRequestOpcode"])
+DAILY_OWNED_CITY_RESPONSE_OPCODE = _contract_opcode(DAILY_CITY_LORD_CONTRACT["ownedCityResponseOpcode"])
+DAILY_CITY_LORD_COLLECT_OPCODE = _contract_opcode(DAILY_CITY_LORD_CONTRACT["collectRequestOpcode"])
+DAILY_CITY_LORD_COLLECT_RESPONSE_OPCODE = _contract_opcode(DAILY_CITY_LORD_CONTRACT["collectResponseOpcode"])
+DAILY_GENERAL_VISIT_CONTRACT = DAILY_ACTIONS_CONTRACT["generalVisit"]
+DAILY_GENERAL_LIST_OPCODE = _contract_opcode(DAILY_GENERAL_VISIT_CONTRACT["listRequestOpcode"])
+DAILY_GENERAL_LIST_RESPONSE_OPCODE = _contract_opcode(DAILY_GENERAL_VISIT_CONTRACT["listResponseOpcode"])
+DAILY_GENERAL_VISIT_OPCODE = _contract_opcode(DAILY_GENERAL_VISIT_CONTRACT["visitRequestOpcode"])
+DAILY_GENERAL_VISIT_RESPONSE_OPCODE = _contract_opcode(DAILY_GENERAL_VISIT_CONTRACT["visitResponseOpcode"])
+# The shared contract is authoritative for limits as well as opcodes.  These
+# names are kept for the older desktop helpers and tests.
+DAILY_GENERAL_PAGE_SIZE = int(DAILY_GENERAL_VISIT_CONTRACT["pageSize"])
+DAILY_NATIONAL_PAGE_SIZE = int(DAILY_NATIONAL_CONTRACT["pageSize"])
+DAILY_NATIONAL_MAX_ATTEMPTS = int(DAILY_NATIONAL_CONTRACT["maxAttempts"])
+DAILY_NATIONAL_CATEGORIES = tuple(
+    int(value) for value in DAILY_NATIONAL_CONTRACT["includedListCategories"]
+)
+MINE_SEARCH_REQUEST_OPCODE = _contract_opcode(
+    MINE_BEHAVIOR_CONTRACT["searchRequestOpcode"]
+)
+MINE_SEARCH_RESPONSE_OPCODE = _contract_opcode(
+    MINE_BEHAVIOR_CONTRACT["searchResponseOpcode"]
+)
+MINE_ACTION_TYPE = int(MINE_BEHAVIOR_CONTRACT["actionType"])
+MINE_MAX_GENERALS_PER_FORMATION = int(
+    MINE_BEHAVIOR_CONTRACT["maximumGeneralsPerFormation"]
+)
+MINE_ALLOWED_SEARCH_SCOPES = tuple(MINE_BEHAVIOR_CONTRACT["allowedSearchScopes"])
+MINE_DEFAULT_SEARCH_SCOPE = str(MINE_BEHAVIOR_CONTRACT["defaultSearchScope"])
+MINE_ALLOWED_MAX_MARCH_MINUTES = tuple(
+    int(value) for value in MINE_BEHAVIOR_CONTRACT["allowedMaxMarchMinutes"]
+)
+MINE_DEFAULT_MAX_MARCH_MINUTES = int(
+    MINE_BEHAVIOR_CONTRACT["defaultMaxMarchMinutes"]
+)
+MINE_TARGET_CACHE_TTL_MS = int(MINE_BEHAVIOR_CONTRACT["targetCacheTtlMillis"])
+MINE_PREVIEW_MINIMUM_BYTES = int(MINE_PREVIEW_CONTRACT["minimumPayloadBytes"])
+MINE_SPEED_REQUEST_OPCODE = _contract_opcode(MINE_SPEED_CONTRACT["requestOpcode"])
+MINE_SPEED_RESPONSE_OPCODE = _contract_opcode(MINE_SPEED_CONTRACT["responseOpcode"])
+MINE_SPEED_STOP_BELOW_SECONDS = int(MINE_SPEED_CONTRACT["stopBelowSeconds"])
+MINE_PREPARE_OPCODE = _contract_opcode(MINE_BEHAVIOR_CONTRACT["prepareOpcode"])
+MINE_PREPARE_RESPONSE_OPCODE = _contract_opcode(
+    MINE_BEHAVIOR_CONTRACT["prepareResponseOpcode"]
+)
+MINE_DISPATCH_OPCODE = _contract_opcode(MINE_BEHAVIOR_CONTRACT["dispatchOpcode"])
+MINE_DISPATCH_RESPONSE_OPCODE = _contract_opcode(
+    MINE_BEHAVIOR_CONTRACT["dispatchResponseOpcode"]
+)
+MINE_WITHDRAW_REQUEST_OPCODE = _contract_opcode(MINE_WITHDRAW_CONTRACT["requestOpcode"])
+MINE_WITHDRAW_RESPONSE_OPCODE = _contract_opcode(MINE_WITHDRAW_CONTRACT["responseOpcode"])
+MINE_WITHDRAW_PAYLOAD_PREFIX = bytes.fromhex(str(MINE_WITHDRAW_CONTRACT["payloadPrefixHex"]))
+MINE_WITHDRAW_PAYLOAD_SUFFIX = bytes.fromhex(str(MINE_WITHDRAW_CONTRACT["payloadSuffixHex"]))
+RAID_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["raid"]
+RAID_FIEF_QUERY_OPCODE = _contract_opcode(RAID_BEHAVIOR_CONTRACT["fiefQueryOpcode"])
+RAID_FIEF_QUERY_RESPONSE_OPCODE = _contract_opcode(
+    RAID_BEHAVIOR_CONTRACT["fiefQueryResponseOpcode"]
+)
+RAID_TARGET_PAYLOAD_PREFIX = bytes.fromhex(
+    str(RAID_BEHAVIOR_CONTRACT["targetPayloadPrefixHex"])
+)
+RAID_ACTION_TYPE = int(RAID_BEHAVIOR_CONTRACT["actionType"])
+RAID_MAX_GENERALS_PER_FORMATION = int(
+    RAID_BEHAVIOR_CONTRACT["maximumGeneralsPerFormation"]
+)
+RAID_PREPARE_OPCODE = _contract_opcode(RAID_BEHAVIOR_CONTRACT["prepareOpcode"])
+RAID_PREPARE_RESPONSE_OPCODE = _contract_opcode(
+    RAID_BEHAVIOR_CONTRACT["prepareResponseOpcode"]
+)
+RAID_DISPATCH_OPCODE = _contract_opcode(RAID_BEHAVIOR_CONTRACT["dispatchOpcode"])
+RAID_DISPATCH_RESPONSE_OPCODE = _contract_opcode(
+    RAID_BEHAVIOR_CONTRACT["dispatchResponseOpcode"]
+)
+RAID_IMMEDIATE_RELATED_LONG = int(RAID_BEHAVIOR_CONTRACT["immediateRelatedLong"])
+RAID_IMMEDIATE_FLAGS = bytes.fromhex(
+    str(RAID_BEHAVIOR_CONTRACT["immediateFlagsHex"])
+)
+LOSSLESS_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["lossless"]
+LOSSLESS_MODE_CONTRACT = LOSSLESS_BEHAVIOR_CONTRACT["modes"]
+LOSSLESS_GUARD_CONTRACT = LOSSLESS_BEHAVIOR_CONTRACT["level10Guard"]
+LOSSLESS_SCHEDULE_CONTRACT = LOSSLESS_BEHAVIOR_CONTRACT["schedule"]
+LOSSLESS_STATUS_REQUEST_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["statusRequestOpcode"]
+)
+LOSSLESS_STATUS_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["statusResponseOpcode"]
+)
+LOSSLESS_CATALOG_REQUEST_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["catalogRequestOpcode"]
+)
+LOSSLESS_CATALOG_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["catalogResponseOpcode"]
+)
+LOSSLESS_SETTLEMENT_REQUEST_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["settlementRequestOpcode"]
+)
+LOSSLESS_SETTLEMENT_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["settlementResponseOpcode"]
+)
+LOSSLESS_LINEUP_REQUEST_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["lineupRequestOpcode"]
+)
+LOSSLESS_LINEUP_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["lineupResponseOpcode"]
+)
+LOSSLESS_SELECT_REQUEST_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["selectRequestOpcode"]
+)
+LOSSLESS_SELECT_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["selectResponseOpcode"]
+)
+LOSSLESS_QUERY_PAYLOAD = bytes.fromhex(
+    str(LOSSLESS_BEHAVIOR_CONTRACT["queryPayloadHex"])
+)
+LOSSLESS_MIN_LEVEL = int(LOSSLESS_BEHAVIOR_CONTRACT["minimumLevel"])
+LOSSLESS_MAX_LEVEL = int(LOSSLESS_BEHAVIOR_CONTRACT["maximumLevel"])
+LOSSLESS_MAX_GENERALS_PER_FORMATION = int(
+    LOSSLESS_BEHAVIOR_CONTRACT["maximumGeneralsPerFormation"]
+)
+LOSSLESS_ACTION_TYPE = int(LOSSLESS_BEHAVIOR_CONTRACT["actionType"])
+LOSSLESS_PREPARE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["prepareOpcode"]
+)
+LOSSLESS_PREPARE_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["prepareResponseOpcode"]
+)
+LOSSLESS_DISPATCH_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["dispatchOpcode"]
+)
+LOSSLESS_DISPATCH_RESPONSE_OPCODE = _contract_opcode(
+    LOSSLESS_BEHAVIOR_CONTRACT["dispatchResponseOpcode"]
+)
+LOSSLESS_IMMEDIATE_RELATED_LONG = int(
+    LOSSLESS_BEHAVIOR_CONTRACT["immediateRelatedLong"]
+)
+LOSSLESS_IMMEDIATE_FLAGS = bytes.fromhex(
+    str(LOSSLESS_BEHAVIOR_CONTRACT["immediateFlagsHex"])
+)
+DUNGEON_BEHAVIOR_CONTRACT = SHARED_BEHAVIOR_CONTRACT["dungeon"]
+DUNGEON_SCHEDULE_CONTRACT = DUNGEON_BEHAVIOR_CONTRACT["schedule"]
+DUNGEON_CATALOG_REQUEST_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["catalogRequestOpcode"]
+)
+DUNGEON_CATALOG_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["catalogResponseOpcode"]
+)
+DUNGEON_STATE_REQUEST_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["stateRequestOpcode"]
+)
+DUNGEON_STATE_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["stateResponseOpcode"]
+)
+DUNGEON_REWARD_REQUEST_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["rewardRequestOpcode"]
+)
+DUNGEON_REWARD_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["rewardResponseOpcode"]
+)
+DUNGEON_BATTLE_POLL_REQUEST_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["battlePollRequestOpcode"]
+)
+DUNGEON_BATTLE_POLL_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["battlePollResponseOpcode"]
+)
+DUNGEON_CHEST_REQUEST_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["chestRequestOpcode"]
+)
+DUNGEON_CHEST_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["chestResponseOpcode"]
+)
+DUNGEON_MAX_GENERALS_PER_FORMATION = int(
+    DUNGEON_BEHAVIOR_CONTRACT["maximumGeneralsPerFormation"]
+)
+DUNGEON_ACTION_TYPE = int(DUNGEON_BEHAVIOR_CONTRACT["actionType"])
+DUNGEON_SINGLE_PLAYER_TYPE = int(DUNGEON_BEHAVIOR_CONTRACT["singlePlayerType"])
+DUNGEON_PREPARE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["prepareOpcode"]
+)
+DUNGEON_PREPARE_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["prepareResponseOpcode"]
+)
+DUNGEON_DISPATCH_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["dispatchOpcode"]
+)
+DUNGEON_DISPATCH_RESPONSE_OPCODE = _contract_opcode(
+    DUNGEON_BEHAVIOR_CONTRACT["dispatchResponseOpcode"]
+)
+DUNGEON_IMMEDIATE_RELATED_LONG = int(
+    DUNGEON_BEHAVIOR_CONTRACT["immediateRelatedLong"]
+)
+DUNGEON_IMMEDIATE_FLAGS = bytes.fromhex(
+    str(DUNGEON_BEHAVIOR_CONTRACT["immediateFlagsHex"])
+)
+MILITARY_SNAPSHOT_CONTRACT = SHARED_BEHAVIOR_CONTRACT["militarySnapshot"]
+MILITARY_SNAPSHOT_REQUEST_OPCODE = _contract_opcode(
+    MILITARY_SNAPSHOT_CONTRACT["requestOpcode"]
+)
+MILITARY_SNAPSHOT_RESPONSE_OPCODE = _contract_opcode(
+    MILITARY_SNAPSHOT_CONTRACT["responseOpcode"]
+)
+MILITARY_INTEL_REQUEST_PAYLOAD = bytes.fromhex(
+    str(MILITARY_SNAPSHOT_CONTRACT["requestPayloadHex"])
+)
+DAILY_SIGN_IN_DUPLICATE_LOG = str(DAILY_SIGN_IN_CONTRACT["duplicateMessage"])
 
 
 def trailing_utf_message(payload: bytes) -> str:
@@ -18677,27 +20627,31 @@ def parse_daily_sign_in_packets(packets: list[dict[str, Any]]) -> dict[str, Any]
     """
     activity_response: dict[str, Any] | None = None
     for packet in packets:
-        if packet.get("opcode") != 0x8134:
+        if packet.get("opcode") != DAILY_SIGN_IN_ACTIVITY_OPCODE:
             continue
         activity_response = packet
         payload = packet.get("payload") or b""
         server_message = trailing_utf_message(payload)
         raw_text = payload.decode("utf-8", errors="ignore")
-        if "本日已签到" in raw_text or "本日已签到" in server_message:
+        duplicate_marker = next((
+            marker for marker in DAILY_SIGN_IN_CONTRACT["duplicateMarkers"]
+            if marker in raw_text or marker in server_message
+        ), "")
+        if duplicate_marker:
             return {
                 "success": True,
                 "status": None,
                 "message": DAILY_SIGN_IN_DUPLICATE_LOG,
                 "alreadyClaimed": True,
                 "duplicateClaim": True,
-                "serverMessage": "本日已签到",
-                "responseOpcode": "0x8134",
+                "serverMessage": duplicate_marker,
+                "responseOpcode": f"0x{DAILY_SIGN_IN_ACTIVITY_OPCODE:04x}",
                 "payloadHex": payload.hex(),
                 "remainingHex": "",
             }
         if server_message and any(
             marker in server_message
-            for marker in ("获得成功", "签到成功", "领取成功")
+            for marker in DAILY_SIGN_IN_CONTRACT["successMarkers"]
         ):
             return {
                 "success": True,
@@ -18706,11 +20660,14 @@ def parse_daily_sign_in_packets(packets: list[dict[str, Any]]) -> dict[str, Any]
                 "serverMessage": server_message,
                 "alreadyClaimed": False,
                 "duplicateClaim": False,
-                "responseOpcode": "0x8134",
+                "responseOpcode": f"0x{DAILY_SIGN_IN_ACTIVITY_OPCODE:04x}",
                 "payloadHex": payload.hex(),
                 "remainingHex": "",
             }
-    response = next((p for p in packets if p.get("opcode") == 0xE202), None)
+    response = next((
+        p for p in packets
+        if p.get("opcode") == DAILY_SIGN_IN_LEGACY_OPCODE
+    ), None)
     if response is None:
         if activity_response is not None:
             payload = activity_response.get("payload") or b""
@@ -18724,14 +20681,18 @@ def parse_daily_sign_in_packets(packets: list[dict[str, Any]]) -> dict[str, Any]
                     "收到 0x8134 签到响应，但未找到成功或已签到标记"
                 ),
                 "serverMessage": server_message,
-                "responseOpcode": "0x8134",
+                "responseOpcode": f"0x{DAILY_SIGN_IN_ACTIVITY_OPCODE:04x}",
                 "payloadHex": payload.hex(),
                 "remainingHex": "",
             }
         return {
             "success": False,
             "status": None,
-            "message": "未收到可识别的签到响应（0xe202/0x8134）",
+            "message": (
+                "未收到可识别的签到响应（"
+                f"0x{DAILY_SIGN_IN_LEGACY_OPCODE:04x}/"
+                f"0x{DAILY_SIGN_IN_ACTIVITY_OPCODE:04x}）"
+            ),
             "responseOpcode": "",
             "payloadHex": "",
             "remainingHex": "",
@@ -18741,15 +20702,15 @@ def parse_daily_sign_in_packets(packets: list[dict[str, Any]]) -> dict[str, Any]
         return {
             "success": True,
             "status": 0,
-            "message": "签到请求已由服务器确认",
-            "responseOpcode": "0xe202",
+            "message": str(DAILY_SIGN_IN_CONTRACT["confirmedMessage"]),
+            "responseOpcode": f"0x{DAILY_SIGN_IN_LEGACY_OPCODE:04x}",
             "payloadHex": "",
             "remainingHex": "",
         }
     parsed = parse_status_message_payload(payload)
     return {
         **parsed,
-        "responseOpcode": "0xe202",
+        "responseOpcode": f"0x{DAILY_SIGN_IN_LEGACY_OPCODE:04x}",
         "payloadHex": payload.hex(),
     }
 
@@ -18765,29 +20726,29 @@ def parse_daily_diamond_box_response(payload: bytes) -> dict[str, Any]:
     raw_text = (payload or b"").decode("utf-8", errors="ignore")
     trailing_message = trailing_utf_message(payload)
     combined_message = f"{raw_text}\n{trailing_message}"
-    if "活动已过期" in raw_text:
+    if any(marker in raw_text for marker in DAILY_DIAMOND_BOX_CONTRACT["expiredMarkers"]):
         server_message = "操作失败，活动已过期。"
         return {
             "success": True,
             "status": struct.unpack(">b", payload[:1])[0] if payload else None,
-            "message": "每日金钻宝箱已经领取过了！",
+            "message": str(DAILY_DIAMOND_BOX_CONTRACT["alreadyClaimedMessage"]),
             "alreadyClaimed": True,
             "serverMessage": server_message,
             "normalizedFromExpiredActivity": True,
             "remainingHex": "",
         }
-    if any(text in combined_message for text in ("已经领取", "已领取", "重复领取")):
+    if any(text in combined_message for text in DAILY_DIAMOND_BOX_CONTRACT["duplicateMarkers"]):
         return {
             "success": True,
             "status": None,
-            "message": "每日金钻宝箱已经领取过了！",
+            "message": str(DAILY_DIAMOND_BOX_CONTRACT["alreadyClaimedMessage"]),
             "alreadyClaimed": True,
             "serverMessage": trailing_message or clean_activity_result_message(raw_text),
             "remainingHex": "",
         }
     if trailing_message and any(
         marker in trailing_message
-        for marker in ("获得成功", "领取成功")
+        for marker in DAILY_SIGN_IN_CONTRACT["successMarkers"]
     ):
         return {
             "success": True,
@@ -18815,10 +20776,10 @@ def parse_daily_diamond_box_response(payload: bytes) -> dict[str, Any]:
         }
     parsed = parse_status_message_payload(payload)
     message = str(parsed.get("message") or "")
-    if any(text in message for text in ("已经领取", "已领取", "重复领取")):
+    if any(text in message for text in DAILY_DIAMOND_BOX_CONTRACT["duplicateMarkers"]):
         parsed.update({
             "success": True,
-            "message": "每日金钻宝箱已经领取过了！",
+            "message": str(DAILY_DIAMOND_BOX_CONTRACT["alreadyClaimedMessage"]),
             "alreadyClaimed": True,
             "serverMessage": message,
         })
@@ -18998,17 +20959,17 @@ def claim_arena_coins(sess: dict[str, Any]) -> dict[str, Any]:
     sid = str(sess.get("sessionId") or "")
     read_code, _read_data, read_packets = post_game(
         sess["gameHttp"],
-        [(0x6260, b"")],
+        [(DAILY_ARENA_READ_OPCODE, b"")],
         int(sess["dm"]),
         account_id=sid,
     )
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x6266, b"")],
+        [(DAILY_ARENA_CLAIM_OPCODE, b"")],
         int(sess["dm"]),
         account_id=sid,
     )
-    response = next((p for p in packets if p.get("opcode") == 0xE266), None)
+    response = next((p for p in packets if p.get("opcode") == DAILY_ARENA_RESPONSE_OPCODE), None)
     parsed = parse_arena_coin_claim_response(response["payload"]) if response else {
         "success": False,
         "status": None,
@@ -19020,7 +20981,7 @@ def claim_arena_coins(sess: dict[str, Any]) -> dict[str, Any]:
     return {
         **parsed,
         "http": code,
-        "responseOpcode": "0xe266" if response else "",
+        "responseOpcode": f"0x{DAILY_ARENA_RESPONSE_OPCODE:04x}" if response else "",
         "payloadHex": response["payload"].hex() if response else "",
         "packets": summarize_packets(packets),
         "readArena": {
@@ -19035,7 +20996,7 @@ def claim_daily_sign_in(sess: dict[str, Any]) -> dict[str, Any]:
     sid = str(sess.get("sessionId") or "")
     code, _data, packets = post_game(
         sess["gameHttp"],
-        [(0x6202, b"")],
+        [(DAILY_SIGN_IN_REQUEST_OPCODE, b"")],
         int(sess["dm"]),
         account_id=sid,
     )
@@ -19427,22 +21388,11 @@ def city_lord_collect_attempt_kind(result: dict[str, Any] | None) -> str:
     if item.get("success"):
         return "collected"
     # 这些是“目标本身不可征”的业务回执：不应算失败，也不应阻塞今日完成。
-    ineligible_markers = (
-        "都城及其周边与之相联的门户城池不能进行征收",
-        "只有城主可以使用城主征收功能",
-        "您不是城主",
-        "不是城主",
-    )
+    ineligible_markers = tuple(DAILY_CITY_LORD_CONTRACT["ineligibleMarkers"])
     if any(marker in message for marker in ineligible_markers):
         return "ineligible"
     # 当日已征过：交互已发生，记为已执行。
-    already_markers = (
-        "已经征收",
-        "本日已征收",
-        "今日已征收",
-        "今天已经征收",
-        "已经进行过征收",
-    )
+    already_markers = tuple(DAILY_CITY_LORD_CONTRACT["alreadyCollectedMarkers"])
     if any(marker in message for marker in already_markers):
         return "already"
     return "failed"
@@ -19731,20 +21681,20 @@ def execute_daily_once_tasks(sess: dict[str, Any], settings: dict[str, Any]) -> 
         log_daily_sign_in_result(sess, sign_result)
         box_code, _box_data, box_packets = post_game(
             sess["gameHttp"],
-            [(0x1134, struct.pack(">qB", 0x0DE2B1, 0))],
+        [(DAILY_DIAMOND_BOX_REQUEST_OPCODE, bytes.fromhex(str(DAILY_DIAMOND_BOX_CONTRACT["payloadHex"])))],
             int(sess["dm"]),
             account_id=sid,
         )
-        box_response = next((p for p in box_packets if p.get("opcode") == 0x8134), None)
+        box_response = next((p for p in box_packets if p.get("opcode") == DAILY_DIAMOND_BOX_RESPONSE_OPCODE), None)
         box_parsed = parse_daily_diamond_box_response(box_response["payload"]) if box_response else {
             "success": False,
             "status": None,
-            "message": "未收到 0x8134 每日金钻宝箱响应",
+            "message": f"未收到 0x{DAILY_DIAMOND_BOX_RESPONSE_OPCODE:04x} 每日金钻宝箱响应",
         }
         box_result = {
             **box_parsed,
             "http": box_code,
-            "responseOpcode": "0x8134" if box_response else "",
+            "responseOpcode": f"0x{DAILY_DIAMOND_BOX_RESPONSE_OPCODE:04x}" if box_response else "",
             "packets": summarize_packets(box_packets),
         }
         result = {
@@ -19803,15 +21753,55 @@ def execute_daily_once_tasks(sess: dict[str, Any], settings: dict[str, Any]) -> 
     return results
 
 
+def update_daily_automation_retry_state(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+    results: dict[str, Any],
+    *,
+    at_ms: int | None = None,
+) -> list[str]:
+    """Persist the per-feature same-day retry set shared with Android semantics.
+
+    Only a server-normalized ``completed`` result or an existing daily completion
+    suppresses a feature until the next day.  A business rejection stays pending
+    and is retried after the interval from ``assistant_behavior_contract.json``.
+    """
+    current_ms = now_ms() if at_ms is None else int(at_ms)
+    today = time.strftime("%Y-%m-%d", time.localtime(current_ms / 1000.0))
+    completed = {
+        str(item.get("key") or "")
+        for item in current_daily_task_completions(sess)
+        if isinstance(item, dict) and item.get("completed") and item.get("key")
+    }
+    pending: list[str] = []
+    for key in DAILY_TASK_NAMES:
+        if not bool(settings.get(key)) or key in completed:
+            continue
+        result = results.get(key)
+        if isinstance(result, dict) and bool(result.get("completed")):
+            continue
+        pending.append(key)
+    sess["dailyAutomationRetryDate"] = today
+    sess["dailyAutomationPendingKeys"] = pending
+    sess["dailyAutomationRetryAt"] = (
+        current_ms + DAILY_FAILED_FEATURE_RETRY_MS
+        if pending else 0
+    )
+    persist_runtime_state()
+    return pending
+
+
 def execute_scheduled_daily_tasks_once(sess: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
-    """Run daily automation only once after login or after the local date changes."""
+    """Run the first daily attempt and schedule rejected features for retry."""
     today = time.strftime("%Y-%m-%d", time.localtime())
     if str(sess.get("dailyAutomationAttemptDate") or "") == today:
         return {}
     # Mark before network I/O so a timeout cannot create a retry loop.
     sess["dailyAutomationAttemptDate"] = today
     persist_runtime_state()
-    return execute_daily_once_tasks(sess, settings)
+    results = execute_daily_once_tasks(sess, settings)
+    update_daily_automation_retry_state(sess, settings, results)
+    return results
 
 
 def newly_enabled_daily_task_settings(
@@ -19878,7 +21868,17 @@ def execute_newly_enabled_daily_tasks_on_save(
         )
     except Exception:
         pass
-    return execute_daily_once_tasks(sess, settings)
+    results = execute_daily_once_tasks(sess, settings)
+    current_daily = dict(
+        new_config.get("dailyTasks")
+        if isinstance(new_config, dict) and isinstance(new_config.get("dailyTasks"), dict)
+        else {}
+    )
+    current_daily["generalVisitGeneralIds"] = normalize_general_visit_ids(
+        new_config.get("generalVisitGeneralIds") if isinstance(new_config, dict) else []
+    )
+    update_daily_automation_retry_state(sess, current_daily, results)
+    return results
 
 
 def execute_arena_automation_after_22_boundary(sess: dict[str, Any]) -> bool:
@@ -19899,8 +21899,8 @@ def country_donation_limits(sess: dict[str, Any]) -> dict[str, int]:
         raise RuntimeError("无法读取当前角色等级，不能计算最高捐献额")
     return {
         "level": level,
-        "copper": level * 1000,
-        "food": level * 3000,
+        "copper": level * int(DAILY_DONATE_CONTRACT["copperPerLevel"]),
+        "food": level * int(DAILY_DONATE_CONTRACT["foodPerLevel"]),
     }
 
 
@@ -20444,8 +22444,8 @@ def execute_country_donation(
         if key == "technology"
         else build_country_donation_payload(**{key: int(amount)})
     )
-    opcode = 0x140A if key == "technology" else 0x140C
-    response_opcode = 0x840A if key == "technology" else 0x840C
+    opcode = DAILY_DONATE_TECH_OPCODE if key == "technology" else DAILY_DONATE_RESOURCE_OPCODE
+    response_opcode = DAILY_DONATE_TECH_RESPONSE_OPCODE if key == "technology" else DAILY_DONATE_RESOURCE_RESPONSE_OPCODE
     code, data, packets = post_game(
         sess["gameHttp"],
         [(opcode, payload)],
@@ -20478,7 +22478,7 @@ def execute_country_donation(
 def execute_daily_country_donations(sess: dict[str, Any]) -> dict[str, Any]:
     """Attempt all three donation endpoints; one rejection never skips siblings."""
     limits = country_donation_limits(sess)
-    limits["technology"] = int(limits.get("level") or 0) * 1000
+    limits["technology"] = int(limits.get("level") or 0) * int(DAILY_DONATE_CONTRACT["technologyPerLevel"])
     specs = (
         ("copper", limits["copper"]),
         ("food", limits["food"]),
@@ -25203,17 +27203,34 @@ def refresh_daily_activity_after_midnight(sess: dict[str, Any]) -> bool:
 
 
 def execute_daily_automation_after_midnight(sess: dict[str, Any]) -> bool:
-    """Run saved daily automation once when heartbeat first observes a new day."""
+    """Run first daily attempt, then retry only unfinished features the same day."""
     today = time.strftime("%Y-%m-%d", time.localtime())
-    if str(sess.get("dailyAutomationAttemptDate") or "") == today:
-        return False
     habits = load_account_habits(sess)
     config = habits.get("config") if isinstance(habits.get("config"), dict) else {}
     settings = dict(config.get("dailyTasks") if isinstance(config.get("dailyTasks"), dict) else {})
     settings["generalVisitGeneralIds"] = normalize_general_visit_ids(
         config.get("generalVisitGeneralIds")
     )
-    execute_scheduled_daily_tasks_once(sess, settings)
+    if str(sess.get("dailyAutomationAttemptDate") or "") != today:
+        execute_scheduled_daily_tasks_once(sess, settings)
+        return True
+
+    if str(sess.get("dailyAutomationRetryDate") or "") != today:
+        return False
+    pending = [
+        key
+        for key in list(sess.get("dailyAutomationPendingKeys") or [])
+        if key in DAILY_TASK_NAMES and bool(settings.get(key))
+    ]
+    if not pending:
+        return False
+    if int(sess.get("dailyAutomationRetryAt") or 0) > now_ms():
+        return False
+
+    retry_settings = {key: True for key in pending}
+    retry_settings["generalVisitGeneralIds"] = settings["generalVisitGeneralIds"]
+    results = execute_daily_once_tasks(sess, retry_settings)
+    update_daily_automation_retry_state(sess, settings, results)
     return True
 
 
@@ -25313,6 +27330,7 @@ def public_account_summary(acc: dict[str, Any]) -> dict[str, Any]:
         "areaName": area.get("areaName"),
         "hasLiveSession": bool(sess),
         "localOnly": bool(acc.get("localOnly")) and not bool(sess),
+        "hasStoredPassword": bool(str(acc.get("password") or "")),
         "dailyStats": current_daily_stats(sess) if sess else None,
         "proxyGroup": acc.get("proxyGroup", ""),
         "proxyNode": acc.get("proxyNode", ""),
@@ -25346,12 +27364,10 @@ def public_account(acc: dict[str, Any]) -> dict[str, Any]:
 
 
 def account_status_text(status: str) -> str:
-    return {
-        "online": "开启",
-        "checking": "检测中",
-        "offline": "掉线",
-        "stopped": "未开启",
-    }.get(str(status or ""), "未开启")
+    return ACCOUNT_STATUS_TEXT.get(
+        str(status or ""),
+        ACCOUNT_STATUS_TEXT["stopped"],
+    )
 
 
 def is_session_invalid_message(message: str) -> bool:
@@ -26603,16 +28619,24 @@ def delete_account(session_id: str) -> None:
 
 
 def brush_scan_coordinates(center_x: int, center_y: int, limit: int) -> list[tuple[int, int]]:
-    cx = max(0, min(int(center_x), 186))
-    cy = max(0, min(int(center_y), 66))
-    max_count = max(1, min(int(limit), 384))
+    cx = max(BRUSH_WORLD_X_MIN, min(int(center_x), BRUSH_WORLD_X_MAX))
+    cy = max(BRUSH_WORLD_Y_MIN, min(int(center_y), BRUSH_WORLD_Y_MAX))
+    max_count = max(1, min(int(limit), BRUSH_FULL_SCAN_LIMIT))
     # Every account must scan the same canonical lattice. The account center
     # only controls priority; using it as the lattice origin creates several
     # shifted grids whose response areas substantially overlap.
     coords = [
         (x, y)
-        for x in range(0, 187, 6)
-        for y in range(0, 67, 6)
+        for x in range(
+            BRUSH_WORLD_X_MIN,
+            BRUSH_WORLD_X_MAX + 1,
+            BRUSH_WORLD_STEP,
+        )
+        for y in range(
+            BRUSH_WORLD_Y_MIN,
+            BRUSH_WORLD_Y_MAX + 1,
+            BRUSH_WORLD_STEP,
+        )
     ]
     coords.sort(key=lambda point: (
         (point[0] - cx) ** 2 + (point[1] - cy) ** 2,
@@ -27675,7 +29699,7 @@ def search_mine_targets(
             request_payload = struct.pack(">HH", int(x), int(y))
             code, data, packets = post_game(
                 sess["gameHttp"],
-                [(0x1542, request_payload)],
+                [(MINE_SEARCH_REQUEST_OPCODE, request_payload)],
                 int(sess["dm"]),
                 account_id=str(sess.get("sessionId") or ""),
                 **({"noncritical": True} if opts.get("noncritical") else {}),
@@ -27683,7 +29707,8 @@ def search_mine_targets(
             response_payloads = [
                 packet["payload"]
                 for packet in packets
-                if packet.get("opcode") == 0x8542 and "payload" in packet
+                if packet.get("opcode") == MINE_SEARCH_RESPONSE_OPCODE
+                and "payload" in packet
             ]
             targets: list[dict[str, Any]] = []
             for response_payload in response_payloads:
@@ -28080,14 +30105,15 @@ def revalidate_shared_mine_target(
         request_payload = struct.pack(">HH", x, y)
         code, data, packets = post_game(
             sess["gameHttp"],
-            [(0x1542, request_payload)],
+            [(MINE_SEARCH_REQUEST_OPCODE, request_payload)],
             int(sess["dm"]),
             account_id=str(sess.get("sessionId") or ""),
         )
         response_payloads = [
             packet["payload"]
             for packet in packets
-            if packet.get("opcode") == 0x8542 and "payload" in packet
+            if packet.get("opcode") == MINE_SEARCH_RESPONSE_OPCODE
+            and "payload" in packet
         ]
         current_targets: list[dict[str, Any]] = []
         for response_payload in response_payloads:
@@ -28161,8 +30187,10 @@ def execute_brush(
     else:
         general_ids = [str(opts.get("generalId") or "")] if str(opts.get("generalId") or "").strip() else []
     general_ids = list(dict.fromkeys(general_ids))
-    if len(general_ids) > 5:
-        raise RuntimeError("刷黄编队最多选择5名出征将领")
+    if len(general_ids) > BRUSH_MAX_GENERALS_PER_FORMATION:
+        raise RuntimeError(
+            f"刷黄编队最多选择{BRUSH_MAX_GENERALS_PER_FORMATION}名出征将领"
+        )
     general_name = str(opts.get("generalName") or "")
     available_generals = sess.get("generals") or []
     selected_generals = [
@@ -28219,7 +30247,7 @@ def execute_brush(
             for r in variant_results
             if r.get("phase") == "expedition"
             for pkt in r.get("packets", [])
-            if pkt.get("opcode") == "0x8522"
+            if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
         ]
         ok_8522 = next((x for x in parsed_8522 if x.get("success")), None)
         if ok_8522:
@@ -28228,27 +30256,47 @@ def execute_brush(
             success_target_candidate = str(vp.get("targetCandidate") or "")
             success_battle_id = ok_8522.get("battleId")
             break
-        variant_text = "\n".join(pkt.get("textPreview", "") for r in variant_results for pkt in r.get("packets", []) if pkt.get("opcode") == "0x8522")
+        variant_text = "\n".join(
+            pkt.get("textPreview", "")
+            for r in variant_results
+            for pkt in r.get("packets", [])
+            if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
+        )
         if any(k in variant_text for k in ["消灭", "出征成功", "刷黄出征成功"]):
             false_positive_note = "响应出现出征文字，但没有正数 battleId，已按出征失败处理"
         expedition_payload_hex = ""
         for r in variant_results:
             if r.get("phase") == "expedition":
                 packets = r.get("packets") or []
-                expedition_payload_hex = "".join(p.get("payloadHex", "") for p in packets if p.get("opcode") == "0x8522")
-        if expedition_payload_hex and expedition_payload_hex != "ff0000":
+                expedition_payload_hex = "".join(
+                    p.get("payloadHex", "")
+                    for p in packets
+                    if p.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
+                )
+        if expedition_payload_hex and expedition_payload_hex != BRUSH_SOFT_REJECT_PAYLOAD_HEX:
             break
-    battle_text = "\n".join(pkt.get("textPreview", "") for r in action_results for pkt in r.get("packets", []) if pkt.get("opcode") == "0x8522").strip()
+    battle_text = "\n".join(
+        pkt.get("textPreview", "")
+        for r in action_results
+        for pkt in r.get("packets", [])
+        if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
+    ).strip()
     expedition_hexes = [
         pkt.get("payloadHex", "")
         for r in action_results
         if r.get("phase") == "expedition"
         for pkt in r.get("packets", [])
-        if pkt.get("opcode") == "0x8522"
+        if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
     ]
     failure_reason = ""
-    if not success and expedition_hexes and all(x == "ff0000" for x in expedition_hexes):
-        failure_reason = "游戏服拒绝出征(0x8522=ff0000)；通常是将领体力、兵力、出征状态或目标状态不满足"
+    if not success and expedition_hexes and all(
+        x == BRUSH_SOFT_REJECT_PAYLOAD_HEX for x in expedition_hexes
+    ):
+        failure_reason = (
+            f"游戏服拒绝出征(0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}="
+            f"{BRUSH_SOFT_REJECT_PAYLOAD_HEX})；通常是将领体力、兵力、"
+            "出征状态或目标状态不满足"
+        )
         if not battle_text:
             battle_text = failure_reason
     elif not success and false_positive_note:
@@ -28262,7 +30310,10 @@ def execute_brush(
         for vp in variant_payloads
     }
     if success and not battle_text:
-        battle_text = f"出征成功：0x8522 status=0 battleId={success_battle_id if success_battle_id is not None else '未知'}"
+        battle_text = (
+            f"出征成功：0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x} status=0 "
+            f"battleId={success_battle_id if success_battle_id is not None else '未知'}"
+        )
     report = {
         "time": now_ms(),
         "role": sess["role"],
@@ -28542,8 +30593,8 @@ def execute_refill_troops(sess: dict[str, Any], general_ids: list[str], *, confi
         chunks.append(general.get("idHex") or f"{int(general['id']):016x}")
         selected.append({"id": general.get("id"), "idHex": general.get("idHex"), "name": general.get("name")})
     payload = build_refill_payload(chunks)
-    code, data, packets = post_game(sess["gameHttp"], [(0x1229, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-    response_payloads = [p["payload"] for p in packets if p.get("opcode") == 0x8229 and "payload" in p]
+    code, data, packets = post_game(sess["gameHttp"], [(FORMATION_REFILL_REQUEST_OPCODE, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+    response_payloads = [p["payload"] for p in packets if p.get("opcode") == FORMATION_REFILL_RESPONSE_OPCODE and "payload" in p]
     parsed = parse_refill_response(response_payloads[0]) if response_payloads else {"success": False, "message": "未收到 0x8229 批量补兵响应"}
     report = {
         "time": now_ms(),
@@ -28742,8 +30793,8 @@ def execute_assign_troops(
         if unsafe_reason:
             raise RuntimeError(unsafe_reason)
     payload = build_assign_troops_payload(general.get("idHex") or f"{int(general['id']):016x}", soldier_type, soldier_count, group=group)
-    code, data, packets = post_game(sess["gameHttp"], [(0x1226, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-    response_payloads = [p["payload"] for p in packets if p.get("opcode") == 0x8226 and "payload" in p]
+    code, data, packets = post_game(sess["gameHttp"], [(FORMATION_ASSIGN_REQUEST_OPCODE, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+    response_payloads = [p["payload"] for p in packets if p.get("opcode") == FORMATION_ASSIGN_RESPONSE_OPCODE and "payload" in p]
     parsed = parse_assign_troops_response(response_payloads[0]) if response_payloads else {"success": False, "message": "未收到 0x8226 配兵响应"}
     target_code = soldier_type_code(soldier_type)
     target_count = int(soldier_count)
@@ -29243,6 +31294,161 @@ def load_general_for_state_machine(task: dict[str, Any], sess: dict[str, Any], g
     return general
 
 
+def general_energy_policy(
+    sess: dict[str, Any],
+    task: dict[str, Any] | None = None,
+) -> tuple[bool, int]:
+    """Return the current account-wide auto-energy policy.
+
+    The common-page setting is authoritative even for an already-running
+    resident task. A task snapshot is only a fallback for compatibility with
+    older saved brush tasks and focused unit tests.
+    """
+    task_config = dict((task or {}).get("config") or {})
+    sid = str(sess.get("sessionId") or task_config.get("sessionId") or "")
+    saved_config = SAVED_CONFIGS.get(sid)
+    if not isinstance(saved_config, dict) and sid:
+        habits = load_account_habits(sess)
+        saved_config = habits.get("config") if isinstance(habits.get("config"), dict) else None
+    config = dict(task_config)
+    if isinstance(saved_config, dict):
+        for key in ("autoEnergy", "energyThreshold"):
+            if key in saved_config:
+                config[key] = saved_config[key]
+
+    raw_enabled = config.get("autoEnergy", True)
+    if isinstance(raw_enabled, str):
+        enabled = raw_enabled.strip().lower() not in {"", "0", "false", "no", "off"}
+    else:
+        enabled = bool(raw_enabled)
+    try:
+        threshold = int(config.get("energyThreshold") or 20)
+    except (TypeError, ValueError):
+        threshold = 20
+    return enabled, max(20, min(threshold, 100))
+
+
+def general_energy_action_lock(
+    sess: dict[str, Any],
+    general_id: str,
+) -> threading.RLock:
+    sid = str(sess.get("sessionId") or f"memory:{id(sess)}")
+    key = (sid, str(general_id))
+    with GENERAL_ENERGY_ACTION_LOCKS_LOCK:
+        return GENERAL_ENERGY_ACTION_LOCKS.setdefault(key, threading.RLock())
+
+
+def ensure_general_energy_for_check(
+    sess: dict[str, Any],
+    general: dict[str, Any],
+    action_name: str,
+    *,
+    task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply the common auto-energy policy before any ordinary dispatch check.
+
+    One check consumes at most one energy item for one general. The confirmed
+    0x8218 response means one item adds 50 energy; a later task check may use
+    another item if the general is still below the configured threshold.
+    """
+    enabled, threshold = general_energy_policy(sess, task)
+    current_raw = general.get("tili")
+    if not general.get("energyReliable") or current_raw is None:
+        return general
+    try:
+        current = int(current_raw)
+    except (TypeError, ValueError):
+        return general
+    if current >= threshold or not enabled:
+        return general
+
+    general_id = str(general.get("id") or general.get("idHex") or "").strip()
+    name = str(general.get("name") or general_id or "未知将领")
+    if not general_id:
+        raise RuntimeError(
+            f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}，"
+            "但缺少有效将领 ID"
+        )
+
+    with general_energy_action_lock(sess, general_id):
+        # A concurrent task may have completed the same action while this task
+        # was waiting for the per-general lock. Reuse the newest cached value.
+        latest = next((
+            item for item in sess.get("generals") or []
+            if str(item.get("id")) == general_id or str(item.get("idHex")) == general_id
+        ), None)
+        if latest and latest.get("energyReliable") and latest.get("tili") is not None:
+            try:
+                latest_energy = int(latest.get("tili"))
+            except (TypeError, ValueError):
+                latest_energy = current
+            if latest_energy >= threshold:
+                general["tili"] = latest_energy
+                return general
+            current = latest_energy
+
+        try:
+            inventory = refresh_inventory(sess)
+        except Exception as exc:
+            raise RuntimeError(
+                f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}；"
+                f"使用活血丹前读取宝库失败：{exc}"
+            ) from exc
+        item = next((
+            row for row in inventory.get("items") or []
+            if int(row.get("itemId") or -1) == 12
+        ), None)
+        available = int((item or {}).get("count") or 0)
+        if available < 1:
+            raise RuntimeError(
+                f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}，"
+                "但宝库没有活血丹"
+            )
+        try:
+            result = execute_use_energy_item(
+                sess,
+                general_id,
+                confirm="use-energy-item",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}；"
+                f"活血丹使用失败：{exc}"
+            ) from exc
+        if not result.get("success"):
+            raise RuntimeError(
+                f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}；"
+                f"活血丹使用失败：{result.get('message') or '无提示'}"
+            )
+
+        updated = current + BRUSH_ENERGY_ITEM_GAIN
+        general["tili"] = updated
+        if latest is not None:
+            latest["tili"] = updated
+        message = (
+            f"自动加体完成：{name} 使用活血丹1个，"
+            f"体力+{BRUSH_ENERGY_ITEM_GAIN}，由{current}更新为{updated}；"
+            f"检查来源={action_name}，设定阈值={threshold}"
+        )
+        if task is not None:
+            task_log(task, message)
+        else:
+            account_log(
+                str(sess.get("sessionId") or ""),
+                message,
+                source="general-energy",
+                detail={
+                    "generalId": general_id,
+                    "generalName": name,
+                    "before": current,
+                    "after": updated,
+                    "threshold": threshold,
+                    "action": action_name,
+                },
+            )
+        return general
+
+
 def dispatch_block_reason(general: dict[str, Any], formation: dict[str, Any]) -> str | None:
     """Return a user-facing preflight reason when dispatch would be rejected by the game server.
 
@@ -29433,6 +31639,12 @@ def prepare_military_generals(
                 f"{action_name}出征前检查：{name} 状态={general.get('displayStatus') or general.get('statusText') or '未知'}，"
                 f"体力={general.get('tili') if general.get('tili') is not None else '未知'}，当前配兵={current_troops}",
             )
+        general = ensure_general_energy_for_check(
+            sess,
+            general,
+            action_name,
+            task=task,
+        )
         block = dispatch_block_reason(general, {})
         if block:
             raise RuntimeError(f"{action_name}出征前检查未通过：{name}；{block}")
@@ -29803,6 +32015,8 @@ SETTINGS_SCOPE_FIELDS = {
         "autoOpenItemNames",
         "autoOpenEnabled",
     },
+    "common.chain": {"chainInventory"},
+    "common.alarm": {"alarm"},
     "brush": {
         "autoStart",
         "reconnectDelayMinutes",
@@ -29829,6 +32043,20 @@ SETTINGS_SCOPE_NESTED_FIELDS = {
         "technologyTargetLevel",
     },
     ("common.daily", "dailyTasks"): set(DAILY_TASK_NAMES),
+    ("common.chain", "chainInventory"): {
+        "enabled",
+        "keepItemName",
+        "keepCount",
+        "autoOpenEnabled",
+        "autoOpenItemNames",
+    },
+    ("common.alarm", "alarm"): {
+        "incomingEnabled",
+        "incomingMode",
+        "militaryEnabled",
+        "militaryMode",
+        "errorEnabled",
+    },
 }
 
 
@@ -29921,8 +32149,11 @@ def normalize_auto_config(
         general_ids = list(dict.fromkeys(general_ids))
         if not general_ids:
             raise RuntimeError(f"第 {row_index + 1} 条已勾选刷黄规则没有选择出征将领")
-        if len(general_ids) > 5:
-            raise RuntimeError(f"第 {row_index + 1} 条刷黄规则最多选择5名出征将领")
+        if len(general_ids) > BRUSH_MAX_GENERALS_PER_FORMATION:
+            raise RuntimeError(
+                f"第 {row_index + 1} 条刷黄规则最多选择"
+                f"{BRUSH_MAX_GENERALS_PER_FORMATION}名出征将领"
+            )
         rule_formations = []
         for general_id in general_ids:
             if known_general_ids and general_id not in known_general_ids:
@@ -30028,6 +32259,22 @@ def normalize_auto_config(
         top_brush_levels = list(brush_rules[0].get("levels") or [])
     if not top_brush_levels:
         top_brush_levels = [1]
+    raw_chain_inventory = (
+        dict(cfg.get("chainInventory"))
+        if isinstance(cfg.get("chainInventory"), dict)
+        else {}
+    )
+    try:
+        chain_keep_count = int(raw_chain_inventory.get("keepCount", 3))
+    except (TypeError, ValueError):
+        chain_keep_count = 3
+    raw_alarm = dict(cfg.get("alarm")) if isinstance(cfg.get("alarm"), dict) else {}
+    incoming_mode = str(raw_alarm.get("incomingMode") or "声音+日志")
+    if incoming_mode not in {"声音+日志", "仅日志", "关闭"}:
+        incoming_mode = "声音+日志"
+    military_mode = str(raw_alarm.get("militaryMode") or "出征/返回")
+    if military_mode not in {"出征/返回", "仅来袭", "全部"}:
+        military_mode = "出征/返回"
     return {
         "sessionId": sess["sessionId"],
         "autoStart": auto_start,
@@ -30054,6 +32301,20 @@ def normalize_auto_config(
         "maxEquipmentLevel": max(1, min(int(cfg.get("maxEquipmentLevel") or brush.get("maxEquipmentLevel") or 20), 100)),
         "autoOpenItemNames": auto_open_names,
         "autoOpenEnabled": bool(cfg.get("autoOpenEnabled", brush.get("autoOpenEnabled", False))),
+        "chainInventory": {
+            "enabled": bool(raw_chain_inventory.get("enabled", False)),
+            "keepItemName": str(raw_chain_inventory.get("keepItemName", "青铜钥匙")).strip()[:80],
+            "keepCount": max(0, min(chain_keep_count, 9999)),
+            "autoOpenEnabled": bool(raw_chain_inventory.get("autoOpenEnabled", False)),
+            "autoOpenItemNames": str(raw_chain_inventory.get("autoOpenItemNames", "50两银票")).strip()[:300],
+        },
+        "alarm": {
+            "incomingEnabled": bool(raw_alarm.get("incomingEnabled", True)) and incoming_mode != "关闭",
+            "incomingMode": incoming_mode,
+            "militaryEnabled": bool(raw_alarm.get("militaryEnabled", True)),
+            "militaryMode": military_mode,
+            "errorEnabled": bool(raw_alarm.get("errorEnabled", True)),
+        },
         "domestic": {
             "enabled": bool((cfg.get("domestic") or {}).get("enabled", False)),
             "emptyBuildingType": int((cfg.get("domestic") or {}).get("emptyBuildingType", 1)),
@@ -30316,22 +32577,23 @@ def prune_auto_tasks() -> None:
 ACTIVE_TASK_STATUSES = {"queued", "starting", "running", "stopping"}
 
 RESIDENT_TASK_PRIORITIES = {
-    "mine": 400,
-    "lossless": 300,
-    "brushYellow": 200,
-    "raid": 125,
-    "dungeon": 100,
+    str(key): int(value)
+    for key, value in _STARTUP_SCHEDULER_CONTRACT["residentPriority"].items()
 }
-
+_RESIDENT_TASK_LABELS = {
+    "mine": "打矿",
+    "lossless": "无损",
+    "brushYellow": "刷黄",
+    "raid": "掠夺",
+    "dungeon": "副本",
+    "ministry": "六部",
+}
 RESIDENT_TASKS = [
-    ("mine", "打矿"),
-    ("lossless", "无损"),
-    ("brushYellow", "刷黄"),
-    ("dungeon", "副本"),
-    ("raid", "掠夺"),
-    ("siege", "抢城"),
-    ("escort", "押镖"),
-    ("treasure", "寻宝"),
+    (key, _RESIDENT_TASK_LABELS[key])
+    for key in sorted(
+        RESIDENT_TASK_PRIORITIES,
+        key=lambda item: -RESIDENT_TASK_PRIORITIES[item],
+    )
 ]
 
 AUTO_TASK_OVERVIEW_KEYS = {
@@ -30342,6 +32604,7 @@ AUTO_TASK_OVERVIEW_KEYS = {
     "auto-mine": "mine",
     "attack-mine": "mine",
     "raid": "raid",
+    "auto-ministry": "ministry",
     "siege": "siege",
     "city-attack": "siege",
     "lossless": "lossless",
@@ -30358,6 +32621,7 @@ TASK_STACK_TYPE_META = {
     "mine": ("mine", "打矿", "resident"),
     "auto-mine": ("mine", "打矿", "resident"),
     "attack-mine": ("mine", "打矿", "resident"),
+    "auto-ministry": ("ministry", "六部", "resident"),
     "raid": ("raid", "掠夺", "resident"),
     "siege": ("siege", "抢城", "resident"),
     "city-attack": ("siege", "抢城", "resident"),
@@ -31139,6 +33403,273 @@ def dismiss_important_notice(sess: dict[str, Any], notice_key: str) -> bool:
         message=str(notice.get("message") or ""),
     )
     return True
+
+
+# --- 军情页“辅助实时行动”（任务引擎侧） -------------------------------------
+#
+# 0x1600/0x8600 只反映野外军情（攻占/驻守/返回）；副本战斗走 0x1938/0x8938
+# 独立信道，正在配兵/发起中的出征也不会出现在军情列表里。这里从任务引擎
+# 真实持有的运行时状态汇总“辅助此刻正在做的军事行动”：
+#
+#   - 刷黄：brushInFlight 在途编队（目标山贼、battleId、出征时刻）
+#   - 副本：execute_dungeon 战斗标记 currentDungeonBattle / currentDungeonStage
+#   - 打矿：lastTarget + 指挥中心 fighting 状态
+#   - 其他常驻任务：schedulerState=fighting/dispatching 与 schedulerMessage
+#
+# 行动的“状态”一律以心跳回来的将领真实忙闲（征/战/防/返）定名，将领已经
+# 全部回闲的在途记录不再展示——宁可少一条也不把已结束的行动冒充“此刻”。
+# 该列表纯本地组装，不发任何游戏请求，因此可以随 2 秒任务轮询实时刷新。
+
+ASSISTANT_OPERATION_STATE_ORDER = {"战斗": 0, "出征": 1, "驻守": 2, "返回": 3, "准备": 4}
+
+
+def _assistant_operation_state_from_generals(states: list[dict[str, Any]]) -> str:
+    """Map real general statuses (征/战/防/返) to the operation state label."""
+    statuses = {str(item.get("status") or "") for item in states}
+    if "战" in statuses:
+        return "战斗"
+    if "征" in statuses:
+        return "出征"
+    if "防" in statuses:
+        return "驻守"
+    if "返" in statuses:
+        return "返回"
+    return ""
+
+
+def _assistant_target_display(target: dict[str, Any] | None) -> str:
+    """Human-readable target like 6级山贼(92,25); never invents missing fields."""
+    data = target if isinstance(target, dict) else {}
+    name = str(data.get("name") or "").strip()
+    level = data.get("level")
+    kind = str(data.get("kind") or "").strip()
+    if not name:
+        if level:
+            name = f"{level}级{kind or '山贼'}"
+        else:
+            name = kind
+    elif level and "级" not in name:
+        name = f"{level}级{name}"
+    x, y = data.get("x"), data.get("y")
+    if name and x is not None and y is not None:
+        return f"{name}({x},{y})"
+    return name
+
+
+def _assistant_int_or_none(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result or None
+
+
+def _assistant_operation(
+    task: dict[str, Any],
+    task_key: str,
+    task_name: str,
+    *,
+    state: str,
+    text: str,
+    general_states: list[dict[str, Any]],
+    target_text: str = "",
+    battle_id: Any = None,
+    cycle_no: Any = None,
+    started_at: Any = None,
+) -> dict[str, Any]:
+    return {
+        "source": "task-engine",
+        "taskKey": task_key,
+        "taskName": task_name,
+        "state": state,
+        "text": text,
+        "generalStates": [
+            {"name": str(item.get("name") or ""), "status": str(item.get("status") or "")}
+            for item in general_states
+        ],
+        "targetText": target_text,
+        "battleId": _assistant_int_or_none(battle_id),
+        "cycleNo": _assistant_int_or_none(cycle_no),
+        "startedAt": _assistant_int_or_none(started_at),
+        "updatedAt": (
+            _assistant_int_or_none(task.get("schedulerUpdatedAt"))
+            or _assistant_int_or_none(task.get("updatedAt"))
+            or now_ms()
+        ),
+    }
+
+
+def _assistant_general_names(states: list[dict[str, Any]], general_ids: list[str]) -> str:
+    names = "、".join(
+        str(item.get("name") or "") for item in states if str(item.get("name") or "")
+    )
+    return names or (f"{len(general_ids)}名将领" if general_ids else "")
+
+
+def assistant_live_operations(sess: dict[str, Any]) -> list[dict[str, Any]]:
+    """军情页的“辅助此刻正在进行的军事行动”；只报真实状态，不猜测。"""
+    sid = str(sess.get("sessionId") or "")
+    if not sid:
+        return []
+    task_names = dict(RESIDENT_TASKS)
+    with TASK_LOCK:
+        tasks = [
+            task
+            for task in AUTO_TASKS.values()
+            if str(task.get("sessionId") or task.get("config", {}).get("sessionId") or "") == sid
+            and str(task.get("status") or "") in ACTIVE_TASK_STATUSES
+        ]
+    ops: list[dict[str, Any]] = []
+    for task in tasks:
+        key = resident_task_key(task)
+        task_name = task_names.get(key)
+        if not task_name:
+            continue
+        scheduler_state = str(task.get("schedulerState") or "")
+        scheduler_ids = [
+            str(item or "").strip()
+            for item in task.get("schedulerGeneralIds") or []
+            if str(item or "").strip()
+        ]
+        if key == "brushYellow":
+            flights = task.get("brushInFlight")
+            # 任务线程会随时 pop 归队编队，这里复制后再遍历，避免并发变更。
+            for flight in (list(flights.values()) if isinstance(flights, dict) else []):
+                if not isinstance(flight, dict):
+                    continue
+                general_ids = [
+                    str(item or "").strip()
+                    for item in flight.get("generalIds") or []
+                    if str(item or "").strip()
+                ]
+                states = cached_general_states(sess, general_ids)
+                state = _assistant_operation_state_from_generals(states)
+                if not state:
+                    # 将领已全部回闲：行动已结束，只剩战后维护，不算军情。
+                    continue
+                target_text = _assistant_target_display(flight.get("target")) or "山贼"
+                names = _assistant_general_names(states, general_ids)
+                verb = {
+                    "战斗": f"正在与{target_text}战斗",
+                    "出征": f"正在出征{target_text}",
+                    "驻守": f"正在驻守{target_text}",
+                    "返回": f"正在从{target_text}返回",
+                }[state]
+                ops.append(_assistant_operation(
+                    task, key, task_name,
+                    state=state,
+                    text=f"{names} {verb}",
+                    general_states=states,
+                    target_text=target_text,
+                    battle_id=flight.get("battleId"),
+                    cycle_no=flight.get("cycleNo"),
+                    started_at=flight.get("dispatchedAt"),
+                ))
+            if scheduler_state == "dispatching":
+                states = cached_general_states(sess, scheduler_ids)
+                names = _assistant_general_names(states, scheduler_ids)
+                ops.append(_assistant_operation(
+                    task, key, task_name,
+                    state="准备",
+                    text=(f"{names} " if names else "") + "已取得出征权，正在执行刷黄治疗/配兵",
+                    general_states=states,
+                ))
+        elif key == "dungeon":
+            battle = task.get("currentDungeonBattle")
+            battle = battle if isinstance(battle, dict) else None
+            stage_info = task.get("currentDungeonStage")
+            stage_info = stage_info if isinstance(stage_info, dict) else None
+            info = battle or stage_info or {}
+            chapter_name = str(info.get("chapterName") or "").strip()
+            stage = info.get("stage")
+            stage_text = (
+                f"{chapter_name}第{stage}关" if chapter_name and stage is not None else ""
+            )
+            if scheduler_state == "fighting":
+                general_ids = [
+                    str(item or "").strip()
+                    for item in (battle or {}).get("generalIds") or scheduler_ids
+                    if str(item or "").strip()
+                ]
+                states = cached_general_states(sess, general_ids)
+                names = _assistant_general_names(states, general_ids)
+                target_text = f"副本{stage_text}" if stage_text else "副本"
+                dungeon_state = sess.get("lastDungeonState")
+                dungeon_state = dungeon_state if isinstance(dungeon_state, dict) else {}
+                battle_id = (battle or {}).get("battleId") or (
+                    dungeon_state.get("battleId") if dungeon_state.get("active") else None
+                )
+                ops.append(_assistant_operation(
+                    task, key, task_name,
+                    state="战斗",
+                    text=f"{names} 正在与{target_text}战斗",
+                    general_states=states,
+                    target_text=target_text,
+                    battle_id=battle_id,
+                    cycle_no=task.get("currentCycle") or task.get("cycle"),
+                    started_at=(battle or {}).get("startedAt"),
+                ))
+            elif scheduler_state == "dispatching":
+                states = cached_general_states(sess, scheduler_ids)
+                names = _assistant_general_names(states, scheduler_ids)
+                suffix = f"副本{stage_text}" if stage_text else "副本"
+                ops.append(_assistant_operation(
+                    task, key, task_name,
+                    state="准备",
+                    text=(f"{names} " if names else "") + f"正在准备{suffix}出征（治疗/配兵）",
+                    general_states=states,
+                    target_text=f"副本{stage_text}" if stage_text else "",
+                ))
+        else:
+            if scheduler_state == "fighting":
+                states = cached_general_states(sess, scheduler_ids)
+                state = _assistant_operation_state_from_generals(states) or "战斗"
+                names = _assistant_general_names(states, scheduler_ids)
+                target_text = (
+                    _assistant_target_display(task.get("lastTarget"))
+                    if key == "mine" else ""
+                )
+                if target_text:
+                    verb = {
+                        "战斗": f"正在攻打{target_text}",
+                        "出征": f"正在出征{target_text}",
+                        "驻守": f"正在驻守{target_text}",
+                        "返回": f"正在从{target_text}返回",
+                    }[state]
+                    text = f"{names} {verb}" if names else verb
+                else:
+                    message = str(task.get("schedulerMessage") or "").strip()
+                    text = message or f"{task_name}战斗进行中"
+                    if names:
+                        text = f"{names}：{text}"
+                battle_id = None
+                if key == "mine":
+                    last_result = task.get("lastResult")
+                    if isinstance(last_result, dict) and last_result.get("success"):
+                        battle_id = last_result.get("successBattleId")
+                ops.append(_assistant_operation(
+                    task, key, task_name,
+                    state=state,
+                    text=text,
+                    general_states=states,
+                    target_text=target_text,
+                    battle_id=battle_id,
+                    cycle_no=task.get("cycle"),
+                ))
+            elif scheduler_state == "dispatching":
+                states = cached_general_states(sess, scheduler_ids)
+                names = _assistant_general_names(states, scheduler_ids)
+                ops.append(_assistant_operation(
+                    task, key, task_name,
+                    state="准备",
+                    text=(f"{names} " if names else "") + f"正在准备{task_name}出征",
+                    general_states=states,
+                ))
+    ops.sort(key=lambda item: (
+        ASSISTANT_OPERATION_STATE_ORDER.get(str(item.get("state") or ""), 9),
+        -int(item.get("startedAt") or item.get("updatedAt") or 0),
+    ))
+    return ops
 
 
 def current_task_overview(sess: dict[str, Any]) -> dict[str, Any]:
@@ -32488,7 +35019,7 @@ def prepare_lossless_target_lineup(
     row: dict[str, Any],
     status: dict[str, Any],
 ) -> dict[str, Any]:
-    level = int(row.get("level") or 10)
+    level = int(row.get("level") or LOSSLESS_GUARD_CONTRACT["level"])
     selected_level = status.get("selectedLevel")
     if selected_level != level:
         selected = select_lossless_level(sess, level)
@@ -32503,9 +35034,9 @@ def prepare_lossless_target_lineup(
             f"读取无损敌军阵容失败：{lineup.get('parseError') or lineup.get('textPreview') or '无提示'}"
         )
     is_level10_guard = (
-        level == 10
-        and int(lineup.get("stageId") or 0) == 0x3011
-        and str(lineup.get("stageName") or "") == "卫兵"
+        level == int(LOSSLESS_GUARD_CONTRACT["level"])
+        and int(lineup.get("stageId") or 0) == int(LOSSLESS_GUARD_CONTRACT["stageId"])
+        and str(lineup.get("stageName") or "") == str(LOSSLESS_GUARD_CONTRACT["stageName"])
     )
     if not is_level10_guard:
         lineup["screening"] = {
@@ -32516,8 +35047,17 @@ def prepare_lossless_target_lineup(
         }
         return lineup
 
-    max_rerolls = int(row.get("maxLineupRerolls") or 80)
-    alternate_level = 7
+    max_rerolls = max(
+        1,
+        min(
+            int(
+                row.get("maxLineupRerolls")
+                or LOSSLESS_GUARD_CONTRACT["defaultMaxRerolls"]
+            ),
+            int(LOSSLESS_GUARD_CONTRACT["maximumMaxRerolls"]),
+        ),
+    )
+    alternate_level = int(LOSSLESS_GUARD_CONTRACT["alternateLevel"])
 
     def wait_screening_interval(action: str) -> None:
         delay = random.uniform(LOSSLESS_SCREEN_DELAY_MIN_SEC, LOSSLESS_SCREEN_DELAY_MAX_SEC)
@@ -32988,7 +35528,10 @@ def next_dungeon_clear_stage(sess: dict[str, Any]) -> dict[str, Any]:
         return {
             "completed": True,
             "catalog": catalog,
-            "message": "副本目录中的所有关卡均已通关",
+            "message": (
+                "所有可单人挑战的副本关卡均已通关"
+                "（各章最后一关为多人副本，不自动挑战）"
+            ),
         }
     stage = dict(stage)
     stage["waitingUnlock"] = not bool(stage.get("available", True))
@@ -33198,6 +35741,13 @@ def dungeon_worker(task_id: str) -> None:
                     general_names.append((g or {}).get("name") or str(gid))
                 chapter_name = str(row.get("chapterName") or f"第{int(row.get('chapter') or 0) + 1}章")
                 task["currentRow"] = idx
+                # 循环模式也记录“当前正在打的关卡”，军情页和任务页共用。
+                task["currentDungeonStage"] = {
+                    "chapter": row.get("chapter"),
+                    "chapterName": chapter_name,
+                    "stage": row.get("stage"),
+                    "stageCode": row.get("stageCode"),
+                }
                 task_log(
                     task,
                     f"副本第 {cycle_no} 轮第 {idx}/{len(active_rows)} 条："
@@ -33544,48 +36094,24 @@ def ensure_brush_energy(
     sess: dict[str, Any],
     general: dict[str, Any],
 ) -> bool:
-    threshold = int(task.get("config", {}).get("energyThreshold") or 20)
+    enabled, threshold = general_energy_policy(sess, task)
     current = general.get("tili")
     if not general.get("energyReliable") or current is None:
         state_machine_stop(task, "无法确认将领体力，不能决定是否使用活血丹")
         return False
-    current = int(current)
-    # 游戏实际规则：仅在“低于阈值”时补体；等于阈值不使用。
-    # 每名低体力将领只使用一颗活血丹，每颗固定增加 50 点体力。
-    if current >= threshold:
-        return True
-    if not task.get("config", {}).get("autoEnergy"):
+    if int(current) < threshold and not enabled:
         state_machine_stop(task, f"将领体力={current}，低于阈值{threshold}；自动使用活血丹未开启")
         return False
     try:
-        inventory = refresh_inventory(sess)
-    except Exception as e:
-        state_machine_stop(task, f"使用活血丹前读取宝库失败：{e}")
-        return False
-    item = next((row for row in inventory.get("items") or [] if int(row.get("itemId") or -1) == 12), None)
-    available = int((item or {}).get("count") or 0)
-    if available < 1:
-        state_machine_stop(task, f"将领体力={current}，低于阈值{threshold}，但宝库没有活血丹")
-        return False
-    try:
-        result = execute_use_energy_item(
+        ensure_general_energy_for_check(
             sess,
-            str(general.get("id") or general.get("idHex") or ""),
-            confirm="use-energy-item",
+            general,
+            "刷黄",
+            task=task,
         )
-    except Exception as e:
-        state_machine_stop(task, f"活血丹使用失败：{e}")
+    except Exception as exc:
+        state_machine_stop(task, str(exc))
         return False
-    if not result.get("success"):
-        state_machine_stop(task, f"活血丹使用失败：{result.get('message') or '无提示'}")
-        return False
-    current += BRUSH_ENERGY_ITEM_GAIN
-    general["tili"] = current
-    task_log(
-        task,
-        f"自动加体完成：{general.get('name') or general.get('id')} 使用活血丹1个，"
-        f"体力+{BRUSH_ENERGY_ITEM_GAIN}，由{current - BRUSH_ENERGY_ITEM_GAIN}更新为{current}",
-    )
     return True
 
 
@@ -35339,8 +37865,11 @@ def normalize_mine_settings(
         general_ids = list(dict.fromkeys(general_ids))
         if not general_ids:
             raise RuntimeError(f"第 {index + 1} 条打矿规则未选择出征将领")
-        if len(general_ids) > 5:
-            raise RuntimeError(f"第 {index + 1} 条打矿规则最多选择5名出征将领")
+        if len(general_ids) > MINE_MAX_GENERALS_PER_FORMATION:
+            raise RuntimeError(
+                f"第 {index + 1} 条打矿规则最多选择"
+                f"{MINE_MAX_GENERALS_PER_FORMATION}名出征将领"
+            )
         missing = [
             general_id
             for general_id in general_ids
@@ -35354,9 +37883,9 @@ def normalize_mine_settings(
         resource_type = str(row.get("resourceType") or "").strip()
         if resource_type not in set(MINE_RESOURCE_OPTIONS):
             raise RuntimeError(f"第 {index + 1} 条打矿规则未选择有效资源类型")
-        scope = str(row.get("scope") or "附近")
-        if scope not in {"定点", "附近", "全国"}:
-            scope = "附近"
+        scope = str(row.get("scope") or MINE_DEFAULT_SEARCH_SCOPE)
+        if scope not in MINE_ALLOWED_SEARCH_SCOPES:
+            scope = MINE_DEFAULT_SEARCH_SCOPE
         x = max(0, min(int(row.get("x") or 0), 186))
         y = max(0, min(int(row.get("y") or 0), 66))
         rows.append({
@@ -35375,9 +37904,9 @@ def normalize_mine_settings(
     try:
         max_march_minutes = int(settings.get("maxMarchMinutes") or 45)
     except (TypeError, ValueError):
-        max_march_minutes = 45
-    if max_march_minutes not in {45, 60, 90}:
-        max_march_minutes = 45
+        max_march_minutes = MINE_DEFAULT_MAX_MARCH_MINUTES
+    if max_march_minutes not in MINE_ALLOWED_MAX_MARCH_MINUTES:
+        max_march_minutes = MINE_DEFAULT_MAX_MARCH_MINUTES
     return {
         # Older saved rows contain a selected item name. Any value other than
         # "不加速" means the new smart-acceleration checkbox is enabled.
@@ -35392,6 +37921,24 @@ def normalize_mine_settings(
         "targetPlayerName": "",
         "rows": rows,
         "uiRows": [dict(row or {}) for row in raw_rows],
+    }
+
+
+MINISTRY_CROP_OPTIONS = ("金银花", "草药", "稻谷", "棉花")
+
+
+def normalize_ministry_settings(body: dict[str, Any]) -> dict[str, Any]:
+    settings = dict(body.get("settings") or body)
+    crop = str(settings.get("crop") or "金银花").strip()
+    if crop not in MINISTRY_CROP_OPTIONS:
+        crop = "金银花"
+    return {
+        "cropEnabled": bool(settings.get("cropEnabled", True)),
+        "crop": crop,
+        "highPriority": bool(settings.get("highPriority", True)),
+        "stealEnabled": bool(settings.get("stealEnabled", True)),
+        "courtesyEnabled": bool(settings.get("courtesyEnabled", True)),
+        "salaryRefresh": bool(settings.get("salaryRefresh", True)),
     }
 
 
@@ -36092,6 +38639,126 @@ def start_auto_mine(
     return {"started": True, "task": task_public(task)}
 
 
+def auto_ministry_worker(task_id: str) -> None:
+    task = AUTO_TASKS.get(task_id)
+    if not task:
+        return
+    cfg = task.get("config") or {}
+    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
+    sess = SESSIONS.get(sid)
+    try:
+        if not sess:
+            raise RuntimeError("六部账号会话不存在，请重新启动账号")
+        task["status"] = "running"
+        task_log(task, "六部常驻任务启动：已确认金银花批量种植；其他动作保持只保存不发送")
+        unsupported = []
+        if cfg.get("stealEnabled"):
+            unsupported.append("偷菜")
+        if cfg.get("courtesyEnabled"):
+            unsupported.append("礼部任务")
+        if cfg.get("salaryRefresh"):
+            unsupported.append("俸禄刷新")
+        if unsupported:
+            task_log(task, f"协议尚未完整确认，当前不会发送：{'、'.join(unsupported)}")
+        while not task["stopEvent"].is_set():
+            if not wait_for_task_account_online(task, sid, "六部"):
+                task["status"] = "stopped"
+                return
+            try:
+                query = query_hubu_plant_state(sess)
+                task["lastQuery"] = query
+                if not query.get("success"):
+                    task_log(task, "六部菜地查询未收到0xe320，10分钟后重试")
+                else:
+                    planted = execute_hubu_batch_plant(
+                        sess,
+                        confirm="hubu-batch-plant",
+                    )
+                    task["lastPlant"] = planted
+                    if planted.get("success"):
+                        task["cycle"] = int(task.get("cycle") or 0) + 1
+                        task_log(task, planted.get("message") or "金银花批量种植成功")
+                    else:
+                        task_log(
+                            task,
+                            planted.get("message") or "当前没有可确认的空菜地，稍后重试",
+                        )
+            except Exception as exc:
+                message = str(exc)
+                mark_account_offline_if_session_invalid(sid, message)
+                task_log(task, f"六部本轮执行失败：{message}；10分钟后重试")
+            task["updatedAt"] = now_ms()
+            task["stopEvent"].wait(
+                int(_STARTUP_SCHEDULER_CONTRACT["ministryPollMillis"]) / 1000
+            )
+        task["status"] = "stopped"
+        task_log(task, "六部常驻任务已停止")
+    except Exception as exc:
+        message = str(exc)
+        mark_account_offline_if_session_invalid(sid, message)
+        task["status"] = "error"
+        task["error"] = f"六部任务异常，已中断：{message}"
+        task_log(task, task["error"])
+    finally:
+        task["stopEvent"].set()
+
+
+def start_auto_ministry(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    sid = str(sess.get("sessionId") or "")
+    request_stop_tasks_for_session_type(
+        sid,
+        "auto-ministry",
+        "收到新的六部设置，停止旧六部任务",
+    )
+    if not settings.get("cropEnabled"):
+        return {
+            "started": False,
+            "disabled": not any(
+                settings.get(key)
+                for key in ("stealEnabled", "courtesyEnabled")
+            ),
+            "reason": "种菜收菜未开启；偷菜和礼部动作协议尚未完整确认，当前不发送",
+        }
+    if settings.get("crop") != "金银花":
+        return {
+            "started": False,
+            "disabled": False,
+            "reason": f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送",
+        }
+    task_id = uuid4().hex[:12]
+    config = {**settings, "sessionId": sid}
+    task = {
+        "taskId": task_id,
+        "type": "auto-ministry",
+        "sessionId": sid,
+        "status": "starting",
+        "cycle": 0,
+        "createdAt": now_ms(),
+        "updatedAt": now_ms(),
+        "config": config,
+        "logs": [],
+        "stopEvent": threading.Event(),
+        "schedulerState": "checking",
+        "schedulerRunnable": True,
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES["ministry"],
+        "schedulerGeneralIds": [],
+        "schedulerMessage": "等待执行六部任务",
+    }
+    thread = threading.Thread(
+        target=auto_ministry_worker,
+        args=(task_id,),
+        daemon=True,
+    )
+    task["thread"] = thread
+    with TASK_LOCK:
+        AUTO_TASKS[task_id] = task
+    thread.start()
+    return {"started": True, "task": task_public(task)}
+
+
 def resume_saved_common_tasks(sess: dict[str, Any]) -> dict[str, Any]:
     sid = str(sess.get("sessionId") or "")
     habits = load_account_habits(sess)
@@ -36155,6 +38822,16 @@ def resume_saved_resident_tasks(sess: dict[str, Any]) -> dict[str, Any]:
             resumed["mine"] = start_auto_mine(sess, mine_settings)
     except Exception as e:
         errors["mine"] = str(e)
+
+    saved_ministry = habits.get("ministry") if isinstance(habits.get("ministry"), dict) else {}
+    try:
+        if saved_ministry:
+            ministry_settings = normalize_ministry_settings(saved_ministry)
+            ministry_start = start_auto_ministry(sess, ministry_settings)
+            if ministry_start.get("started"):
+                resumed["ministry"] = ministry_start
+    except Exception as e:
+        errors["ministry"] = str(e)
 
     lossless_settings = normalize_military_future_settings(
         "lossless",
@@ -36359,6 +39036,14 @@ def public_session(sess: dict[str, Any]) -> dict[str, Any]:
         "army": army_state,
         "technologyStates": technology_states,
         "militaryIntel": sess.get("militaryIntel") or {"events": [], "statusByName": {}, "sourceOpcode": "0x3110/0xa110"},
+        # 军情页专用：0x1600/0x8600 拉到的“此刻进行中的军事行动”。
+        # 与上面的 0xa110 心跳混合包分开，互不覆盖。
+        "militarySnapshot": sess.get("militarySnapshot") or {
+            "actions": [], "actionCount": 0, "incomingCount": 0, "responded": False,
+            "sourceOpcode": "0x1600/0x8600", "updatedAt": 0,
+        },
+        # 军情页“辅助此刻行动”：任务引擎本地状态，纯本地组装，不发游戏请求。
+        "assistantOperations": assistant_live_operations(sess),
         "dailyActivity": sess.get("dailyActivity") or {},
         "dailyStats": current_daily_stats(sess),
         "taskOverview": current_task_overview(sess),
@@ -36400,6 +39085,7 @@ MOBILE_LEGACY_POST_PATHS = frozenset({
     "/api/proxy/select",
     "/api/proxy/detect",
     "/api/starter/jobs/create",
+    "/api/starter/jobs/create-batch",
     "/api/starter/jobs/control",
     "/api/starter/jobs/delete",
     "/api/starter/layout",
@@ -36426,6 +39112,7 @@ MOBILE_LEGACY_POST_PATHS = frozenset({
     "/api/mine/execute",
     "/api/liubu/hubu/query",
     "/api/liubu/hubu/plant",
+    "/api/liubu/save",
     "/api/mine/save",
     "/api/dashboard/mine-settings",
     "/api/raid/fiefs",
@@ -36447,6 +39134,7 @@ MOBILE_LEGACY_POST_PATHS = frozenset({
 
 MOBILE_LEGACY_GET_PATHS = frozenset({
     "/api/health",
+    "/api/reference/guide",
     "/api/accounts",
     "/api/accounts/settings",
     "/api/areas",
@@ -36640,6 +39328,11 @@ def mobile_snapshot_payload(sid: str, *, refresh: bool = False) -> dict[str, Any
             refresh_military_intel(sess)
         except Exception as exc:
             sess["mobileMilitaryRefreshError"] = str(exc)
+        try:
+            # 手机军情页和电脑端同源，用同一份 0x1600/0x8600 快照。
+            refresh_military_snapshot(sess)
+        except Exception as exc:
+            sess["mobileMilitarySnapshotError"] = str(exc)
         persist_runtime_state()
     with ACCOUNT_LOCK:
         acc = dict(ACCOUNTS.get(str(sid)) or {})
@@ -36724,6 +39417,8 @@ def mobile_patch_settings(
         save_account_habits(sess, raid=dict(patch or {}))
     elif scope == "mine":
         save_account_habits(sess, mine=dict(patch or {}))
+    elif scope == "ministry":
+        save_account_habits(sess, ministry=dict(patch or {}))
     elif scope == "militaryFuture":
         save_account_habits(sess, military_future=dict(patch or {}))
     else:
@@ -37040,6 +39735,18 @@ class Handler(SimpleHTTPRequestHandler):
             if isinstance(forwarded.get("config"), dict):
                 forwarded["config"] = dict(forwarded["config"])
                 forwarded["config"]["sessionId"] = sid
+        if isinstance(forwarded.get("accounts"), list):
+            rewritten_accounts = []
+            for raw in forwarded["accounts"]:
+                if not isinstance(raw, dict):
+                    continue
+                item = dict(raw)
+                nested_ref = item.pop("accountRef", None) or item.get("accountId")
+                if nested_ref:
+                    sid, _acc, _sess = mobile_resolve_session(nested_ref)
+                    item["accountId"] = sid
+                rewritten_accounts.append(item)
+            forwarded["accounts"] = rewritten_accounts
         return forwarded
 
     def _mobile_pair_webview(self) -> None:
@@ -37277,6 +39984,15 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed_request.path.startswith("/api/") and not self._require_legacy_api_auth_for_remote():
             return
         self._mobile_rewrite_legacy_query()
+        if parsed_request.path == "/api/reference/guide":
+            try:
+                payload = guide_reference_payload(
+                    urllib.parse.parse_qs(parsed_request.query, keep_blank_values=True)
+                )
+                self.send_json(payload, 200 if payload.get("ok") else 404)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 400)
+            return
         if self.path == "/api/health":
             self.send_json({
                 "ok": True,
@@ -37615,6 +40331,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "tasks": tasks[:10],
                 "taskOverview": current_task_overview(sess) if sess else None,
+                # 军情页 2 秒轮询同一接口即可拿到“辅助此刻行动”，不发游戏请求。
+                "assistantOperations": assistant_live_operations(sess) if sess else [],
             })
             return
         if self.path.startswith("/api/state/refresh"):
@@ -37633,7 +40351,9 @@ class Handler(SimpleHTTPRequestHandler):
                 if scope in {"all", "inventory"}:
                     refresh_inventory(sess)
                 if scope in {"all", "military"}:
-                    refresh_military_intel(sess)
+                    # 军情页要的是“此刻的军情”，来源是 0x1600/0x8600 列表，
+                    # 不再用 0xa110 心跳混合包关键词捞文本。
+                    refresh_military_snapshot(sess)
                 with ACCOUNT_LOCK:
                     acc = ACCOUNTS.get(sid)
                     if acc:
@@ -37657,7 +40377,7 @@ class Handler(SimpleHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             sid = (query.get("sessionId") or [""])[0]
             sess = get_session(sid)
-            refresh_military_intel(sess)
+            refresh_military_snapshot(sess)
             self.send_json({"ok": True, **public_session(sess)})
             return
         super().do_GET()
@@ -38058,6 +40778,13 @@ class Handler(SimpleHTTPRequestHandler):
                 )
                 self.send_json({"ok": True, "job": job})
                 return
+            if self.path == "/api/starter/jobs/create-batch":
+                result = create_starter_jobs_batch(
+                    list(body.get("accounts") or []),
+                    int(body.get("targetLevel") or 66),
+                )
+                self.send_json({"ok": True, **result})
+                return
             if self.path == "/api/starter/jobs/control":
                 job = control_starter_job(
                     str(body.get("jobId") or ""),
@@ -38390,6 +41117,60 @@ class Handler(SimpleHTTPRequestHandler):
                     sess,
                     confirm=str(body.get("confirm") or ""),
                 )})
+                return
+            if self.path == "/api/liubu/save":
+                sid = str(body.get("sessionId") or "")
+                sess = get_session(sid)
+                settings = normalize_ministry_settings(body)
+                saved_files = save_account_habits(sess, ministry=settings)
+                supported_enabled = bool(
+                    settings.get("cropEnabled")
+                    and settings.get("crop") == "金银花"
+                )
+                any_enabled = any(
+                    settings.get(key)
+                    for key in ("cropEnabled", "stealEnabled", "courtesyEnabled")
+                )
+                if supported_enabled:
+                    require_account_online(sid, "启动六部")
+                    ministry_task = start_auto_ministry(sess, settings)
+                    stopped_task_ids: list[str] = []
+                else:
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "auto-ministry",
+                        "六部已确认动作未开启，停止旧六部任务",
+                    )
+                    ministry_task = {
+                        "started": False,
+                        "disabled": not any_enabled,
+                        "reason": (
+                            f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送"
+                            if settings.get("cropEnabled")
+                            else "种菜收菜未开启；偷菜和礼部动作协议尚未完整确认，当前不发送"
+                        ),
+                    }
+                account_log(
+                    sid,
+                    "保存六部配置："
+                    f"种菜={settings.get('cropEnabled')} 作物={settings.get('crop')} "
+                    f"偷菜={settings.get('stealEnabled')} 礼部={settings.get('courtesyEnabled')}",
+                    source="server",
+                    detail={"settings": settings, "savedFiles": saved_files},
+                )
+                self.send_json({
+                    "ok": True,
+                    "saved": True,
+                    "disabled": not any_enabled,
+                    "settings": settings,
+                    "savedFiles": saved_files,
+                    "ministryTask": ministry_task,
+                    "task": ministry_task.get("task"),
+                    "reason": ministry_task.get("reason"),
+                    "stoppedTaskIds": stopped_task_ids,
+                    "accountHabits": load_account_habits(sess),
+                    "taskOverview": current_task_overview(sess),
+                })
                 return
             if self.path == "/api/mine/save":
                 sid = str(body.get("sessionId") or "")

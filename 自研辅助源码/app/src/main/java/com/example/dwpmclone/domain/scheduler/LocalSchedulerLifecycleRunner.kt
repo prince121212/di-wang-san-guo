@@ -17,22 +17,30 @@ class LocalSchedulerLifecycleRunner(
         tick: Int,
         plans: List<SavedTaskPlan>,
         nowMillis: Long = System.currentTimeMillis(),
-        reasonPrefix: String = "service lifecycle tick"
+        reasonPrefix: String = "service lifecycle tick",
+        beforeAccount: (Long) -> Unit = {},
+        afterAccount: (Long) -> Unit = {}
     ): LocalSchedulerLifecycleBatchReport {
         val accountReports = plans.map { plan ->
-            val lifecycle = scheduler.runOnceAndStopOnTerminal(
-                session = plan.session,
-                tasks = plan.tasks,
-                nowMillis = nowMillis,
-                reasonPrefix = "$reasonPrefix=$tick source=${plan.sourceDescription}"
-            )
-            LocalSchedulerAccountLifecycleReport(
-                accountId = plan.session.accountId,
-                sourceMode = plan.session.sourceMode,
-                sourceDescription = plan.sourceDescription,
-                taskTypes = plan.tasks.map { it.type },
-                lifecycleReport = lifecycle
-            )
+            val accountId = plan.session.accountId
+            beforeAccount(accountId)
+            try {
+                val lifecycle = scheduler.runOnceAndStopOnTerminal(
+                    session = plan.session,
+                    tasks = plan.tasks,
+                    nowMillis = nowMillis,
+                    reasonPrefix = "$reasonPrefix=$tick source=${plan.sourceDescription}"
+                )
+                LocalSchedulerAccountLifecycleReport(
+                    accountId = accountId,
+                    sourceMode = plan.session.sourceMode,
+                    sourceDescription = plan.sourceDescription,
+                    taskTypes = plan.tasks.map { it.type },
+                    lifecycleReport = lifecycle
+                )
+            } finally {
+                afterAccount(accountId)
+            }
         }
         return LocalSchedulerLifecycleBatchReport(tick, accountReports)
     }
@@ -50,6 +58,8 @@ data class LocalSchedulerLifecycleBatchReport(
         get() = accounts.mapNotNull { it.lifecycleReport.stopReport }
     val localStopReports: List<TaskLocalStopReport>
         get() = accounts.flatMap { it.lifecycleReport.localStopReports }
+    val deferredIdleTaskCount: Int
+        get() = accounts.sumOf { it.lifecycleReport.deferredIdleTaskCount }
 }
 
 data class LocalSchedulerAccountLifecycleReport(

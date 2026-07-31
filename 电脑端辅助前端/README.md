@@ -19,61 +19,50 @@ python3 server.py
 http://127.0.0.1:17351/index.html
 ```
 
-## 安卓端统一核心（Mobile API）
+## Android 本地 V1（共享前端，不依赖电脑）
 
-安卓端现在是电脑端的控制面，电脑端是唯一的游戏协议、账号会话、任务调度、每日完成锁、代理和日志核心。手机不再复制一套游戏协议，也不会接收游戏密码、`gameHttp`、`dm`、session token 等敏感字段；手机通过 Mobile API 读取脱敏快照、更新配置、启停任务，并在 WebView 中复用这套完整电脑端控制台。
-
-默认服务只监听 `127.0.0.1`。需要让同一局域网的安卓手机访问时，建议在终端运行新增的启动器：
+`index.html`、`app.js`、`styles.css` 和 `assistant-api.js` 是电脑与 Android 共用的单容器 UI 源码，但两端拥有各自独立的执行核心：
 
 ```text
-/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/开启电脑端手机API.command
+电脑浏览器：共享页面 → HTTP /api/* → server.py → 电脑端核心
+Android：   APK 内共享页面 → 本机消息桥 → Kotlin 本地核心 → 游戏服务器
 ```
 
-启动器会要求输入或生成 `DWPM_MOBILE_API_TOKEN`，再以局域网绑定方式重启服务，并在终端显示手机入口。Token 和用于生成 `accountRef` 的 Secret 会保存到用户目录下的私有文件（macOS 默认：`~/Library/Application Support/DWPMDesktop/mobile_api.env`，权限 600），不放在网页根目录；之后直接运行 `重启电脑端辅助.command` 也会保留手机 API。需要撤销手机访问时删除该文件并重启，或重新生成 Token。也可以手动启动：
+Android 构建只复制上述四个静态文件到 APK assets。手机页面里的 `/api/*` 由 `assistant-api.js` 交给 `window.DWPMNativeApi`，不请求本目录的 `server.py`，也不访问电脑地址、Mobile API、代理或云地图。
 
-```bash
-cd "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国"
-export DWPM_DESKTOP_BIND_HOST=0.0.0.0
-export DWPM_MOBILE_API_TOKEN="请替换为随机长 Token"
-export DWPM_MOBILE_API_SECRET="建议固定保存的随机值"
-"$PWD/重启电脑端辅助.command"
-```
+手机模式复用相同控件语义，但只显示一个容器，并移除电脑专属的总控、多容器、地图工具页、一键全启和 IP/代理区域。六部因缺少逐项真机动作证据而在手机模式禁用；打矿撤防历史配置在 Kotlin 任务入口强制关闭。
 
-手机端在 Home →「电脑端统一核心」填写电脑地址和 Token，点击「测试电脑端连接」，再点击「保存并打开完整控制台」。入口地址为：
+### Android 本机接口职责
+
+| 路径组 | 本机职责 |
+|---|---|
+| `/api/accounts/*` | 真实登录、Keystore 凭据、账号启停与删除 |
+| `/api/settings/*` 与各功能保存接口 | 每账号本地配置 |
+| `/api/automation/*` | 启停唯一前台调度服务 |
+| `/api/state/*`、`/api/logs/*` | 本地状态、完成次数和脱敏日志 |
+| `/api/maps/bandits`、`/api/maps/mines` | 手机本地山贼与资源点地图 |
+
+密码和 Session 认证字段使用 Android Keystore 管理的 AES-GCM 密钥分仓保存，不写入账号 JSON 或导出。用户添加手机托管账号时必须明确勾选凭据授权；启动托管还会检查可自动重登的密文是否存在。通知权限和电池优化豁免只在用户点击启动后请求。
+
+完整 Android 架构、构建和验收边界见：
 
 ```text
-http://电脑局域网IP:17351/api/v1/mobile/web?token=DWPM_MOBILE_API_TOKEN
+/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/手机端辅助V1架构.md
+/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码/README.md
 ```
 
-配对请求只用一次 query token，服务端随后换成 `HttpOnly`、`SameSite=Strict` Cookie；普通 API 使用 `Authorization: Bearer`、`X-Device-Id` 和写操作 `Idempotency-Key`。局域网静态访问只开放 `index.html`、`app.js`、`styles.css`，数据库、日志、报告和源码即使持有 Token 也不能下载。`DWPM_MOBILE_API_SECRET` 用于稳定生成不透明 `accountRef`，建议跨重启保持不变。手机 WebView 顶部的“电脑端核心”工具栏还可以打开账号总控、山贼地图和资源地图；电脑版的 `+容器` 只是多窗口排版，不影响手机管理全部账号。
+### 历史 Mobile API 边界
 
-### Mobile API 主要契约
-
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| GET | `/api/v1/mobile/health` | 健康检查与账号/会话数量 |
-| GET | `/api/v1/mobile/capabilities` | 功能矩阵、日常独立开关、兼容桥白名单 |
-| GET | `/api/v1/mobile/accounts` | 脱敏账号列表 |
-| GET | `/api/v1/mobile/accounts/{accountRef}/snapshot` | 角色、资源、将领、军队、背包、科技、军情、任务和最近日志 |
-| GET | `/api/v1/mobile/accounts/{accountRef}/settings` | 设置与配置 revision |
-| POST/PATCH | `/api/v1/mobile/accounts/{accountRef}/settings` | 按 scope + revision 乐观锁更新配置 |
-| GET | `/api/v1/mobile/accounts/{accountRef}/tasks` | 任务状态 |
-| POST | `/api/v1/mobile/accounts/{accountRef}/account` | 启停账号 |
-| POST | `/api/v1/mobile/accounts/{accountRef}/tasks` | 启停保存任务 |
-| POST | `/api/v1/mobile/accounts/{accountRef}/daily` | 签到、竞技币、三项捐献、俸禄、国家征收、城主征收、名将候选/拜访 |
-| GET | `/api/v1/mobile/accounts/{accountRef}/logs` | 增量账号日志 |
-| POST | `/api/v1/mobile/legacy` | 严格白名单的旧电脑端接口兼容桥 |
-
-其中「自动捐献」一次独立任务会依次尝试铜钱、粮食、科技积分三个接口；任一项失败不会跳过兄弟项，也不会改变签到、俸禄、征收或名将拜访的任务锁。名将拜访候选由电脑端实时查询，手机按用户勾选顺序最多提交 4 名，服务器按顺序失败顺延。
+`server.py` 中保留的 `/api/v1/mobile/*`、Token 配对和旧兼容桥只属于电脑端历史兼容能力，不是 Android V1 的运行链路。不要通过启动局域网 Mobile API 来验收手机本地 V1；电脑服务关闭时，Android 本地登录、设置和调度仍应可用。
 
 ### 回归测试
 
 ```bash
-python3 -m unittest discover -s tests -p 'test*.py'
+python3 -m unittest discover -s tests -q
 node --check app.js
 ```
 
-当前 Mobile API 加入后电脑端测试为 380 项；测试账号验收应遵循“先只读快照/设置/日志，再单账号单功能动作”的顺序，避免一次性启动全部账号。
+当前共用前端全量测试为 470 项。真实账号验收遵循“先只读、再单账号单功能”的顺序；未经明确授权不启动批量托管。
 
 ## 同一账号跨区服运行规则
 
@@ -138,6 +127,182 @@ node --check app.js
 - 后端从真实登录数据读取到将领列表；
 - `5000` 筛选命中 `compositionCode=1000` 的 1级山贼；
 - 真实发送 `15200a0 + 15220a0` 后，战报包含 `消灭 步1消灭1级山贼`。
+
+## 2026-07-26 军情解析升级（抓包 20260726_173635）
+
+军情专项抓包（`ctf_out/passive_pcap_hotspot_20260726_173635`，带口述
+时间线）带来四个新结论，全部已进 `parse_8600_military_actions`：
+
+1. **副本关卡战斗真实出现在 0x8600 军情里**：`【副本】…参与副本关卡
+   宦官乱政，战斗进行中`，`targetType=0x0e`，targetName 是关卡名。
+   不带“战斗进行中”后缀的是已建队未开战的多人副本 → 状态“备战”。
+2. **“出征”与“战斗”按尾部区分**：战斗类标签（攻占/消灭/夺取/掠夺）
+   带去程尾部且剩余 > 0 → 状态“出征”（操作者口述“还在行军中”）；
+   剩余为 0（此时文本带“战斗进行中”）→ “战斗”。
+3. **新尾部/目标类型**：山贼去程尾部是 `0x0b`（结构与 0x09 相同），
+   副本尾部是 `0x17`（无行军，剩余恒 0）；`targetType 0x03=山贼、
+   0x0e=副本关卡`。
+4. **marchValue 语义修正**：它是**剩余行军毫秒**（同一 battleId 连续
+   刷新递减：93949→57857→41442→22448；回程 38322→24407→13988），
+   不是旧注释写的“总时长”；eventTimeMs 是恒定的预计到达/到家时刻，
+   战斗中则 ≈ 服务器当前时间（不能当倒计时）。军情页“剩余时长”
+   倒计时锚定 `快照时刻 + marchValue`，每秒原地刷新。
+
+状态排序变为：战斗 → 出征 → 驻守 → 返回 → 备战。
+
+### 副本章末关（多人副本）
+
+每章最后一关是多人副本，单人无法挑战：广宗决战建队后 0x8522 只回
+“多人副本创建成功”，正是此前日志里副本任务卡死的原因。已做三层处理：
+
+- 打通模式 `first_uncompleted_dungeon_stage` 自动跳过章末关
+  （打通倒数第二关会同时解锁本章末关和下一章第一关，口述时间线确认）；
+- `execute_dungeon` 对章末关直接拒绝并给出明确报错；
+- 前端“副本”页关卡下拉不再提供各章最后一关。
+
+顺带记录（**不主动调用**，抓包 flow 019）：解散组队接口为
+`0x193a -> 0x893a`，多人副本误建队后可用它退出。
+
+回归：`tests.test_military_intel` 新增 20260726 抓包样本 13 项断言
+（副本记录、0x0b 尾部、剩余递减、空军情、章末关跳过/拒绝）。
+
+## 2026-07-26 军情页并入“辅助此刻行动”（任务引擎实时）
+
+0x1600/0x8600 只反映野外军情（攻占/驻守/返回）：副本战斗走 0x1938/0x8938
+独立信道，正在配兵/发起中的出征也不会出现在军情列表里。军情页现在分两个
+区块，来源分开、互不冒充：
+
+```text
+辅助此刻行动 · 实时          ← 任务引擎本地状态，纯本地组装，不发游戏请求
+服务器军情 · 0x1600/0x8600   ← 原有军情快照，仍只在进入页面/手动刷新时拉
+```
+
+“辅助此刻行动”覆盖：
+
+- 刷黄：`brushInFlight` 在途编队 → “灰1、车1 正在与6级山贼(92,25)战斗”，
+  含 battleId、第几轮、出征时刻；
+- 副本：`execute_dungeon` 启动成功落下的 `currentDungeonBattle` 战斗标记
+  （循环模式现在也维护 `currentDungeonStage`）→
+  “攻弓2、智步4、智步5、智步6、骑1 正在与副本第1章第12关战斗”；
+- 打矿：`lastTarget` + 指挥中心 fighting → “车1 正在驻守1级镔铁矿(95,30)”；
+- 其他常驻任务：`schedulerState=fighting/dispatching` 与 `schedulerMessage`。
+
+行动“状态”（战斗/出征/驻守/返回）一律以心跳回来的将领真实忙闲
+（征/战/防/返）定名；将领已全部回闲的在途记录不再展示——宁可少一条，
+不把已结束的行动冒充“此刻”。
+
+```text
+server.py
+- assistant_live_operations        汇总入口（public_session 与
+                                   /api/automation/status 均返回 assistantOperations）
+- _assistant_operation_state_from_generals / _assistant_target_display
+
+app.js
+- junqingLiveOpCardHtml / applyAssistantOperations
+- refreshJunqingLiveOps            军情页打开时每 2 秒读 /api/automation/status
+- updateJunqingTimeTexts           每秒原地更新“已进行/预计到达”文本
+
+tests/test_assistant_operations.py  13 项，数据形态取自 2026-07-26 运行日志
+```
+
+刷新节奏：辅助行动随 2 秒任务轮询实时更新（本地数据，零游戏请求）；
+0x1600 服务器军情仍只在进入军情页和点击「刷新军情」时发送，节奏不变。
+
+## 2026-07-26 军情页改用真实军情接口（0x1600/0x8600）
+
+军情页此前的数据来自 `0x3110 -> 0xa110` 心跳混合包，按关键词从文本里
+捞“出征/返回/胜利”，所以既混进活动任务文本，又是历史事件流。本轮改为
+真实军情列表：
+
+```text
+0x1600 -> 0x8600
+```
+
+请求体与真实客户端逐字节一致（`07000000000000000000000014`），常量为
+`server.py: MILITARY_INTEL_REQUEST_PAYLOAD`，打矿召回复核也复用同一常量。
+
+### 军情语义
+
+军情展示的是**此刻正在进行的军事行动**，不是历史记录。同一次出征在
+0x8600 里始终是同一个 `battleId`，随时间在三个状态之间流转：
+
+```text
+【攻占】…战斗进行中  →  【驻守】…驻守在X  →  【返回】…返回某某的封地
+```
+
+行动结束后该记录从军情里消失，页面就应该是空的。
+
+### 已确认的记录结构
+
+每条行动锚定在一个 `【…】` 事件文本上，文本之后的结构按抓包确认：
+
+```text
+u16 state16 | u32 state32 | u64 battleId | u8 generalCount
+generalCount × (u64 generalId + u8 flag)
+u64 targetId | u8 targetType | utf targetName | u16 x | u16 y
+```
+
+- `targetType`：`0x01` 封地/基地（无坐标），`0x02` 野外目标（有坐标）。
+- 行军类尾部 `u8 marchKind(0x09 去程 / 0x0d 回程) + u32 + u64 毫秒时间戳`
+  只在“去程/回程”记录里出现，驻守记录是另一种尾部形状，不解析。
+- 回程时间戳已验证等于预计到家时间（抓包 13:02 召回 → 时间戳 13:35，
+  与操作者口述“返回途中 30 多分钟”吻合）。**战斗态**的时间戳含义未确认，
+  前端不拿它当倒计时展示。
+- 其余尾部字节一律不解释、不猜测；结构自校验失败的候选直接丢弃。
+
+### 关键函数与接口
+
+```text
+server.py
+- MILITARY_INTEL_REQUEST_PAYLOAD
+- parse_8600_military_actions       完整军情记录解析
+- parse_8600_military_march_tail    行军尾部（含预计到达时间）
+- parse_military_snapshot_from_packets
+- refresh_military_snapshot         发送 0x1600 并写入 sess["militarySnapshot"]
+
+app.js
+- renderJunqing / junqingCardHtml / junqingEmptyHtml
+```
+
+- `GET /api/state/refresh?scope=military` 与 `GET /api/military/intel`
+  都改为拉取真实军情快照。
+- `public_session` 新增 `militarySnapshot`；原 `militaryIntel`（0xa110
+  将领忙闲）保持不变，两者互不覆盖，打矿/刷黄状态机不受影响。
+- `militarySnapshot` 列入 `RUNTIME_TRANSIENT_SESSION_FIELDS`，**不持久化**：
+  军情是此刻状态，重启后必须重新向服务器确认，不允许旧军情冒充实时数据。
+
+### 刷新节奏
+
+只在**进入军情页**和**点击「刷新军情」**时发送 0x1600，与真实客户端一致；
+不做常驻轮询，也不并进 20 秒心跳。
+
+### 空态区分
+
+页面把四种情况分开显示，空列表不会冒充“确认无军情”：
+
+```text
+账号未启动          → 提示先启动账号
+从未拉取（updatedAt=0） → 提示点击刷新
+拉取了但没收到 0x8600   → 明示未收到响应
+收到 0x8600 且无行动    → 当前没有进行中的军情
+```
+
+### 回归
+
+```bash
+python3 -m unittest tests.test_military_intel   # 14 项，全部基于真实抓包
+python3 -m unittest discover -s tests -p 'test*.py'
+```
+
+真值来自三份带 `operator_timeline.md` 口述记录的军情抓包：
+
+```text
+ctf_out/passive_pcap_hotspot_20260714_033644   牧场(91,28)，步2/步3/车2/车1
+ctf_out/passive_pcap_hotspot_20260714_044023   镔铁矿(95,30)，步2/车2
+ctf_out/passive_pcap_hotspot_20260714_125113   水晶矿(136,20)，步1/车1
+```
+
+单测断言的坐标和参战将领与玩家当时的口述完全一致，不是自证式断言。
 
 ## 2026-07-14 打矿与资源地图
 

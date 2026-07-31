@@ -2,6 +2,7 @@ package com.example.dwpmclone.domain.scheduler
 
 import com.example.dwpmclone.domain.protocol.AssistantTask
 import com.example.dwpmclone.domain.protocol.TaskType
+import java.security.MessageDigest
 
 /**
  * Keeps task-local Stop decisions stopped across foreground-service ticks.
@@ -16,11 +17,35 @@ class TaskRunSuppressionRegistry {
     private var configSignature: String? = null
 
     @Synchronized
-    fun onConfiguration(signature: String) {
+    fun onConfiguration(signature: String): Boolean {
         if (configSignature != signature) {
             configSignature = signature
             stopped.clear()
             nextRunAtMillis.clear()
+            return true
+        }
+        return false
+    }
+
+    /** Restores only state proven to belong to the exact same saved configuration. */
+    @Synchronized
+    fun restore(
+        signature: String,
+        persistedSignature: String?,
+        statuses: List<TaskRuntimeStatus>,
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        configSignature = signature
+        stopped.clear()
+        nextRunAtMillis.clear()
+        if (signature != persistedSignature) return
+        statuses.forEach { status ->
+            val key = status.accountId to status.type
+            if (status.state == TaskRuntimeState.STOPPED) stopped += key
+            val nextRun = status.nextRunAtMillis
+            if (nextRun != null && nextRun > nowMillis && status.state in RESTORABLE_WAIT_STATES) {
+                nextRunAtMillis[key] = nextRun
+            }
         }
     }
 
@@ -73,8 +98,24 @@ class TaskRunSuppressionRegistry {
     fun nextRunAt(accountId: Long, type: TaskType): Long? =
         nextRunAtMillis[accountId to type]
 
+    @Synchronized
+    fun earliestNextRunAtMillis(): Long? = nextRunAtMillis.values.minOrNull()
+
     private fun safeAdd(nowMillis: Long, delayMillis: Long): Long {
         val delay = delayMillis.coerceAtLeast(0L)
         return if (Long.MAX_VALUE - nowMillis < delay) Long.MAX_VALUE else nowMillis + delay
+    }
+
+    companion object {
+        private val RESTORABLE_WAIT_STATES = setOf(
+            TaskRuntimeState.SLEEPING,
+            TaskRuntimeState.RETRYING,
+            TaskRuntimeState.SERVICE_STOPPED
+        )
+
+        fun configurationSignature(rawConfiguration: String): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(rawConfiguration.toByteArray(Charsets.UTF_8))
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 }

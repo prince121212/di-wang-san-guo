@@ -6,14 +6,28 @@ import com.example.dwpmclone.domain.protocol.GameHexLengthRelation
 import com.example.dwpmclone.domain.protocol.GameCoordinateCodec
 import com.example.dwpmclone.domain.protocol.BatchRefillTroopsShape
 import com.example.dwpmclone.domain.protocol.RankListShape
+import com.example.dwpmclone.domain.protocol.ExecutionRevokedBeforeNetworkException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 
 class RealGameProtocolClientTest {
     private val client = RealGameProtocolClient()
+
+    @Test
+    fun revokedExecutionFailsBeforeOpeningAnyRealProtocolConnection() {
+        val stoppedClient = RealGameProtocolClient(executionAllowed = { false })
+
+        val error = runCatching {
+            stoppedClient.refreshHeartbeat3110("http://127.0.0.1:1/never-open", 1L)
+        }.exceptionOrNull()
+
+        assertTrue(error is ExecutionRevokedBeforeNetworkException)
+        assertTrue(error?.message.orEmpty().contains("后台执行权已撤销"))
+    }
 
     @Test
     fun parseAreaLineReadsPassportFields() {
@@ -53,6 +67,9 @@ class RealGameProtocolClientTest {
         assertEquals(99, state.foodPerHour)
         assertEquals(5, state.resourcePointCurrent)
         assertEquals(8, state.resourcePointCap)
+        assertEquals(0, state.officeFieldFlag)
+        assertEquals(0x0383, state.officeIdUnsigned)
+        assertEquals("抚远将军", state.officeName)
         assertEquals("unit-test", state.sourceOpcode)
         assertEquals(payload.size, state.payloadByteCount)
         assertEquals(state.payloadByteCount - state.parsedHeadByteCount, state.tailByteCount)
@@ -113,6 +130,36 @@ class RealGameProtocolClientTest {
         assertEquals("scriptItem.sc", state.items[0].nameSource)
         assertEquals(22, state.items[1].itemId)
         assertEquals("鲁公手册", state.items[1].name)
+    }
+
+    @Test
+    fun parse8104InventoryReadsEquipmentInstanceAndSafetyMetadata() {
+        val payload = (
+            "0000000000000000000000000000" + // 14-byte reserved head
+                "0032" + // capacity 50
+                "0000" + // no ordinary item stacks
+                "0001" + // one equipment instance
+                "00000000000c95f8" + // instance id
+                "0000" + // template 0: 短剑 Lv.1
+                "02" + // two attributes
+                "0100" + // 良好、未强化
+                "00000000000000000000" + // effect/risk/protocol/pity fields
+                "0000" // empty extra description
+            ).hexToBytesForTest()
+
+        val state = client.parse8104Inventory(payload, "unit-equipment")
+
+        assertEquals(null, state.equipmentParseError)
+        assertEquals(1, state.equipment.size)
+        val equipment = state.equipment.single()
+        assertEquals(0xC95F8L, equipment.instanceId)
+        assertEquals(0, equipment.templateId)
+        assertEquals("短剑", equipment.name)
+        assertEquals(1, equipment.level)
+        assertEquals(1, equipment.quality)
+        assertEquals(0, equipment.strengthen)
+        assertEquals(false, equipment.famous)
+        assertEquals("", equipment.extraText)
     }
 
 
@@ -340,6 +387,8 @@ class RealGameProtocolClientTest {
         out.writeByte(12)
         out.writeByte(5)
         out.writeByte(8)
+        out.writeByte(0) // office field flag
+        out.writeShort(0x0383) // 抚远将军
         out.write(tail)
         return bos.toByteArray()
     }

@@ -5,7 +5,7 @@ import com.example.dwpmclone.domain.model.FamousGeneral
 import com.example.dwpmclone.domain.model.GuideArticle
 
 /**
- * Local data repository for the static-evidence rebuild skeleton.
+ * Local read-only guide repository.
  *
  * It reads only text assets recovered from the APK: `dwsgmjb.TXT` and text files under `guidetxts`.
  * The disguised `guidetxts/guojiafenbu.png` ELF is intentionally not bundled here.

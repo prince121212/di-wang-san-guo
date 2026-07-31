@@ -10,33 +10,21 @@ import java.nio.ByteBuffer
  * network execution.
  */
 object DungeonProtocolShapes {
-    private val staticStageCodes = mapOf(
-        0 to listOf(0, 1, 2) + (4..12),
-        1 to listOf(3) + (13..23),
-        2 to (24..37).toList(),
-        3 to (38..51).toList(),
-        4 to (52..62).toList(),
-        5 to (63..74).toList(),
-        6 to (75..85).toList()
-    )
-
-    const val STATUS_QUERY: String = "00000000000000000001190000"
-    const val STATE_STEP_902: String = "00000000000000000001190200"
-    const val STATE_STEP_904: String = "00000000000000000001190400"
-    const val STATE_STEP_906: String = "00000000000000000001190600"
-
-    /** Recovered auto fuben queries used by ۦ۬ۧ(): 001930=list/target parser, 001938=status/result. */
-    const val FUBEN_TARGET_QUERY: String = "000000000000000000001930"
-    const val FUBEN_STATUS_QUERY: String = "000000000000000000001938"
-
     private const val PREFIX = "000000000000000000"
     private const val SECOND_TAIL = "ffffffffffffffff000000"
     private const val FUBEN_TRAILER = "ffffffff0004"
 
-    fun stageCount(chapter: Int): Int = staticStageCodes[chapter]?.size ?: 0
+    fun stageCount(
+        chapter: Int,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): Int = contract.staticStageCodes[chapter]?.size ?: 0
 
-    fun resolveStageCode(chapter: Int, displayStage: Int): Int {
-        val stages = staticStageCodes[chapter]
+    fun resolveStageCode(
+        chapter: Int,
+        displayStage: Int,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): Int {
+        val stages = contract.staticStageCodes[chapter]
             ?: throw IllegalArgumentException("unsupported dungeon chapter: ${chapter + 1}")
         require(displayStage in 1..stages.size) {
             "chapter ${chapter + 1} has ${stages.size} stages, requested $displayStage"
@@ -47,7 +35,8 @@ object DungeonProtocolShapes {
     fun resolveStageCode(
         catalog: DungeonCatalog,
         chapter: Int,
-        displayStage: Int
+        displayStage: Int,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
     ): Int {
         val serverChapter = catalog.chapters.firstOrNull { it.chapterId == chapter }
         if (serverChapter != null && serverChapter.stages.isNotEmpty()) {
@@ -56,7 +45,7 @@ object DungeonProtocolShapes {
             }
             return serverChapter.stages[displayStage - 1].stageCode
         }
-        return resolveStageCode(chapter, displayStage)
+        return resolveStageCode(chapter, displayStage, contract)
     }
 
     /**
@@ -124,6 +113,7 @@ object DungeonProtocolShapes {
                         chapterId = chapterId,
                         name = name,
                         coords = coords,
+                        detailFlag = detailFlag,
                         stages = stages
                     )
                 )
@@ -148,6 +138,10 @@ object DungeonProtocolShapes {
                     tailCode = payload[9].toInt() and 0xff
                 )
             }
+            // Live account 1608601 returned status=3 after an accepted dungeon run had
+            // finished and all selected generals were idle. Desktop treats every
+            // non-active state as settlement/recovery work instead of stopping the task.
+            3 -> DungeonBattleStatus(DungeonBattlePhase.PENDING_SETTLEMENT)
             4 -> DungeonBattleStatus(DungeonBattlePhase.SETTLEMENT)
             else -> DungeonBattleStatus(DungeonBattlePhase.UNKNOWN, rawStatus = status)
         }
@@ -171,11 +165,14 @@ object DungeonProtocolShapes {
             .putLong(battleId)
             .array()
 
-    fun parseLaunchResponse(payload: ByteArray): DungeonActionReceipt {
+    fun parseLaunchResponse(
+        payload: ByteArray,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): DungeonActionReceipt {
         require(payload.isNotEmpty()) { "0x8522 payload empty" }
         val first = payload[0].toInt() and 0xff
         val text = payload.toString(Charsets.UTF_8)
-        val success = first == 0 || text.contains("副本启动成功")
+        val success = first == 0 || contract.launchSuccessMarkers.any(text::contains)
         return DungeonActionReceipt(success, first, text)
     }
 
@@ -189,32 +186,95 @@ object DungeonProtocolShapes {
         )
     }
 
-    fun buildPreparePayload(generalIds: List<Long>, stageCode: Int): ByteArray {
+    fun buildPreparePayload(
+        generalIds: List<Long>,
+        stageCode: Int,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): ByteArray {
         require(generalIds.isNotEmpty()) { "at least one general is required" }
-        require(generalIds.size <= 0xff) { "too many generals" }
+        require(generalIds.size <= contract.maximumGeneralsPerFormation) {
+            "副本最多选择${contract.maximumGeneralsPerFormation}名将领"
+        }
         require(generalIds.all { it > 0 }) { "general ids must be positive" }
         require(stageCode in 0..0xffff) { "stage code must fit unsigned short" }
         return ByteBuffer.allocate(2 + generalIds.size * 8 + 8)
-            .put(0x0e)
+            .put(contract.actionType.toByte())
             .put(generalIds.size.toByte())
             .also { buffer -> generalIds.forEach(buffer::putLong) }
             .putInt(-1)
-            .putShort(4)
+            .putShort(contract.singlePlayerType.toShort())
             .putShort(stageCode.toShort())
             .array()
     }
 
-    fun buildExpeditionPayload(generalIds: List<Long>, stageCode: Int): ByteArray =
-        ByteBuffer.allocate(buildPreparePayload(generalIds, stageCode).size + 11)
-            .put(buildPreparePayload(generalIds, stageCode))
-            .putLong(-1L)
-            .put(byteArrayOf(0, 0, 0))
+    fun buildExpeditionPayload(
+        generalIds: List<Long>,
+        stageCode: Int,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): ByteArray =
+        ByteBuffer.allocate(buildPreparePayload(generalIds, stageCode, contract).size + 11)
+            .put(buildPreparePayload(generalIds, stageCode, contract))
+            .putLong(contract.immediateRelatedLong)
+            .put(contract.immediateFlags)
             .array()
 
     fun buildOpenChestPayload(position: Int): ByteArray {
         require(position in 0..2) { "chest position must be 0, 1, or 2" }
         return byteArrayOf(position.toByte())
     }
+
+    /** Desktop clear-mode rule: first uncompleted single-player stage in catalog order. */
+    fun firstUncompletedStage(
+        catalog: DungeonCatalog,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): DungeonClearStage? {
+        for (chapter in catalog.chapters.sortedWith(
+            compareBy<DungeonCatalogChapter>({ it.chapterId }, { it.displayChapter })
+        )) {
+            val stages = chapter.stages.sortedBy { it.displayStage }
+            if (stages.isEmpty() && chapter.detailFlag == 0) {
+                return DungeonClearStage(
+                    chapter = chapter.chapterId,
+                    displayStage = 1,
+                    stageCode = contract.staticStageCodes[chapter.chapterId]?.firstOrNull(),
+                    available = false,
+                    lockedChapter = true
+                )
+            }
+            val finalStage = maxOf(
+                contract.staticStageCodes[chapter.chapterId]?.size ?: 0,
+                stages.maxOfOrNull(DungeonCatalogStage::displayStage) ?: 0
+            )
+            for (stage in stages) {
+                if (stage.resultCode != contract.uncompletedResultCode) continue
+                if (stage.displayStage <= 0) continue
+                if (contract.clearModeSkipsMultiplayerFinals &&
+                    finalStage > 0 && stage.displayStage >= finalStage
+                ) {
+                    continue
+                }
+                return DungeonClearStage(
+                    chapter = chapter.chapterId,
+                    displayStage = stage.displayStage,
+                    stageCode = stage.stageCode,
+                    available = stage.available,
+                    lockedChapter = false
+                )
+            }
+        }
+        return null
+    }
+
+    fun stageCompleted(
+        catalog: DungeonCatalog,
+        chapter: Int,
+        displayStage: Int,
+        contract: DungeonBehaviorContract = DungeonBehaviorContract.defaults()
+    ): Boolean? = catalog.chapters
+        .firstOrNull { it.chapterId == chapter }
+        ?.stages
+        ?.firstOrNull { it.displayStage == displayStage }
+        ?.let { it.resultCode != contract.uncompletedResultCode }
 
     /**
      * Recovered p2=4 first expedition stage used by auto chuangguan.
@@ -304,7 +364,16 @@ data class DungeonCatalogChapter(
     val chapterId: Int,
     val name: String,
     val coords: List<Int>,
+    val detailFlag: Int,
     val stages: List<DungeonCatalogStage>
+)
+
+data class DungeonClearStage(
+    val chapter: Int,
+    val displayStage: Int,
+    val stageCode: Int?,
+    val available: Boolean,
+    val lockedChapter: Boolean
 )
 
 data class DungeonCatalogStage(
@@ -326,6 +395,7 @@ data class DungeonBattleStatus(
 enum class DungeonBattlePhase(val protocolStatus: Int) {
     IDLE(0),
     FIGHTING(1),
+    PENDING_SETTLEMENT(3),
     SETTLEMENT(4),
     UNKNOWN(-1)
 }

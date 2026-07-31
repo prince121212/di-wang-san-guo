@@ -12,7 +12,10 @@ class SixMinistriesConfigTest {
             "unverified ministry crop selected: 草药",
             config(cropEnabled = true, crop = "草药").preparationError()
         )
-        assertNull(config(cropEnabled = false, crop = "金银花", stealEnabled = true).preparationError())
+        assertEquals(
+            "verified ministry planting disabled; steal and courtesy actions are not confirmed",
+            config(cropEnabled = false, crop = "金银花", stealEnabled = true).preparationError()
+        )
     }
 
     private fun config(

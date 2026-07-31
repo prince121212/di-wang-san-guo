@@ -6,6 +6,7 @@ import com.example.dwpmclone.domain.protocol.TaskDecision
 import com.example.dwpmclone.domain.protocol.TaskType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class TaskRunSuppressionRegistryTest {
@@ -39,6 +40,7 @@ class TaskRunSuppressionRegistryTest {
         )
 
         assertEquals(61_000L, registry.nextRunAt(7L, TaskType.SHUA_HUANG))
+        assertEquals(61_000L, registry.earliestNextRunAtMillis())
         assertEquals(emptyList<TaskType>(), registry.filter(7L, listOf(brush), 60_999).map { it.type })
         assertEquals(listOf(TaskType.SHUA_HUANG), registry.filter(7L, listOf(brush), 61_000).map { it.type })
 
@@ -47,6 +49,7 @@ class TaskRunSuppressionRegistryTest {
             nowMillis = 61_000
         )
         assertNull(registry.nextRunAt(7L, TaskType.SHUA_HUANG))
+        assertNull(registry.earliestNextRunAtMillis())
     }
 
     @Test
@@ -64,6 +67,44 @@ class TaskRunSuppressionRegistryTest {
 
         assertNull(registry.nextRunAt(7L, TaskType.DAILY))
         assertEquals(listOf(TaskType.DAILY), registry.filter(7L, listOf(daily), 5_001).map { it.type })
+    }
+
+    @Test
+    fun persistedDeadlineAndStopRestoreOnlyForMatchingConfiguration() {
+        val signature = TaskRunSuppressionRegistry.configurationSignature("config-v1")
+        val statuses = listOf(
+            TaskRuntimeStatus(
+                7L,
+                TaskType.SHUA_HUANG,
+                TaskRuntimeState.SERVICE_STOPPED,
+                "service recreated",
+                updatedAtMillis = 1_000L,
+                nextRunAtMillis = 61_000L
+            ),
+            TaskRuntimeStatus(
+                7L,
+                TaskType.DAILY,
+                TaskRuntimeState.STOPPED,
+                "completed",
+                updatedAtMillis = 1_000L
+            )
+        )
+        val tasks = listOf(
+            StubTask(7L, TaskType.SHUA_HUANG),
+            StubTask(7L, TaskType.DAILY)
+        )
+
+        val restored = TaskRunSuppressionRegistry().apply {
+            restore(signature, signature, statuses, nowMillis = 2_000L)
+        }
+        assertEquals(emptyList<TaskType>(), restored.filter(7L, tasks, 2_000L).map { it.type })
+        assertEquals(listOf(TaskType.SHUA_HUANG), restored.filter(7L, tasks, 61_000L).map { it.type })
+
+        val changed = TaskRunSuppressionRegistry().apply {
+            restore("other-signature", signature, statuses, nowMillis = 2_000L)
+        }
+        assertEquals(tasks.map { it.type }, changed.filter(7L, tasks, 2_000L).map { it.type })
+        assertNotEquals(signature, TaskRunSuppressionRegistry.configurationSignature("config-v2"))
     }
 }
 

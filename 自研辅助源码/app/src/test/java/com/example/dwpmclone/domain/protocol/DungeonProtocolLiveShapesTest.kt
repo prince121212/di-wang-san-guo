@@ -64,6 +64,10 @@ class DungeonProtocolLiveShapesTest {
         assertEquals(DungeonBattlePhase.FIGHTING, active.phase)
         assertEquals(0x38f4cL, active.battleId)
         assertEquals(0, active.tailCode)
+        assertEquals(
+            DungeonBattlePhase.PENDING_SETTLEMENT,
+            DungeonProtocolShapes.parseBattleState("03".hexBytes()).phase
+        )
 
         val reward = DungeonProtocolShapes.parseRewardState(
             "010000000000038f4c00000500000022".hexBytes()

@@ -11,7 +11,7 @@ class InventoryAutoOpenPolicyTest {
         assertEquals(
             listOf(
                 "50两银票", "100两银票", "300两银票", "1000两银票",
-                "惊喜宝箱", "实木宝箱", "青铜宝箱", "精铁宝箱", "粮食辎重"
+                "惊喜宝箱", "实木宝箱", "青铜宝箱", "精铁宝箱", "铜钱辎重", "粮食辎重"
             ),
             InventoryAutoOpenPolicy.DESKTOP_ITEM_NAMES
         )

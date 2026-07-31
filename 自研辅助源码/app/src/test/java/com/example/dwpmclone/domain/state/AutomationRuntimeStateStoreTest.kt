@@ -27,6 +27,27 @@ class AutomationRuntimeStateStoreTest {
     }
 
     @Test
+    fun sharedGeneralYieldsButAnIndependentGeneralCanContinue() {
+        val gate = AutomationRuntimeStateStore(defaultBusyLeaseMillis = 300_000L).commandGate
+        assertTrue(
+            gate.tryClaimGenerals(
+                1L, TaskType.AUTO_MINING, "mine", listOf(101L), 1_000L, "打矿"
+            ) is GateResult.Allowed
+        )
+
+        val shared = gate.tryClaimGenerals(
+            1L, TaskType.DUNGEON, "dungeon", listOf(101L), 1_001L, "副本"
+        )
+        val independent = gate.tryClaimGenerals(
+            1L, TaskType.DUNGEON, "dungeon", listOf(202L), 1_001L, "副本"
+        )
+
+        assertTrue(shared is GateResult.Blocked)
+        assertTrue((shared as GateResult.Blocked).reason.contains("101"))
+        assertTrue(independent is GateResult.Allowed)
+    }
+
+    @Test
     fun recoveredState8004CannotReleasePostDispatchLease() {
         val store = AutomationRuntimeStateStore(defaultBusyLeaseMillis = 300_000L, serverIdleConfirmMillis = 10_000L)
         val gate = store.commandGate
@@ -78,15 +99,11 @@ class AutomationRuntimeStateStoreTest {
 
     @Test
     fun brushPersistedAndLocalCountsResetWhenLocalCalendarDayChanges() {
-        val store = AutomationRuntimeStateStore()
-        val dayOne = java.util.Calendar.getInstance().apply {
-            set(2026, java.util.Calendar.JULY, 12, 23, 59, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }.timeInMillis
-        val dayTwo = java.util.Calendar.getInstance().apply {
-            set(2026, java.util.Calendar.JULY, 13, 0, 1, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
-        }.timeInMillis
+        val store = AutomationRuntimeStateStore(timezoneId = "Asia/Shanghai")
+        // UTC 15:59/16:01 straddle midnight in the contract timezone, independent of
+        // the phone's current system timezone.
+        val dayOne = java.time.Instant.parse("2026-07-12T15:59:00Z").toEpochMilli()
+        val dayTwo = java.time.Instant.parse("2026-07-12T16:01:00Z").toEpochMilli()
 
         assertEquals(
             4,

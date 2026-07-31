@@ -24,13 +24,26 @@ object BrushYellowExpeditionShape {
     private const val PREFIX = "000000000000000000"
     private const val SECOND_TAIL = "ffffffffffffffff000000"
 
-    /** Live-verified actionType=10 branch of the 1520 builder used before brush-yellow expedition. */
-    fun buildFirstStage(generalIds: List<String>, targetId: String): String =
-        build1520(generalIds, targetId, opcode = "15200a0", trailerBeforeTarget = "")
+    /** Desktop-captured canonical actionType=3 branch used before brush-yellow expedition. */
+    fun buildFirstStage(
+        generalIds: List<String>,
+        targetId: String,
+        actionType: Int = BrushYellowBehaviorContract.defaults().actionType
+    ): String =
+        build1520(generalIds, targetId, opcode = actionOpcode(0x1520, actionType), trailerBeforeTarget = "")
 
-    /** Live-verified actionType=10 branch of the 1522 builder used as the second brush-yellow expedition request. */
-    fun buildSecondStage(generalIds: List<String>, targetId: String): String =
-        build1522(generalIds, targetId, opcode = "15220a0", trailerBeforeTarget = "")
+    /** Desktop-captured canonical actionType=3 branch used for the mutation request. */
+    fun buildSecondStage(
+        generalIds: List<String>,
+        targetId: String,
+        actionType: Int = BrushYellowBehaviorContract.defaults().actionType
+    ): String =
+        build1522(generalIds, targetId, opcode = actionOpcode(0x1522, actionType), trailerBeforeTarget = "")
+
+    private fun actionOpcode(opcode: Int, actionType: Int): String {
+        require(actionType in 0..255) { "actionType must fit one byte" }
+        return opcode.toString(16).padStart(4, '0') + actionType.toString(16).padStart(2, '0') + "0"
+    }
 
     fun build1520(generalIds: List<String>, targetId: String, opcode: String, trailerBeforeTarget: String = ""): String {
         val idsBlob = generalIds.joinToString(separator = "")
@@ -149,7 +162,8 @@ object BrushYellowPassiveWireDryRunPlanner {
     fun plan(
         generalIds: List<String>,
         targetWireId: String,
-        includeBatchRefill: Boolean = true
+        includeBatchRefill: Boolean = true,
+        actionType: Int = BrushYellowBehaviorContract.defaults().actionType
     ): BrushYellowPassiveWireDryRunPlan {
         val normalizedGenerals = generalIds.map { normalizeEightByteHex(it, "generalId") }
         require(normalizedGenerals.isNotEmpty()) { "generalIds must not be empty" }
@@ -160,13 +174,15 @@ object BrushYellowPassiveWireDryRunPlanner {
             opcode = "1520",
             generalIds = normalizedGenerals,
             targetWireId = target,
-            extraTail = ""
+            extraTail = "",
+            actionType = actionType
         )
         val dispatch = buildExpeditionGameHex(
             opcode = "1522",
             generalIds = normalizedGenerals,
             targetWireId = target,
-            extraTail = SECOND_TAIL
+            extraTail = SECOND_TAIL,
+            actionType = actionType
         )
         return BrushYellowPassiveWireDryRunPlan(
             generalIds = normalizedGenerals,
@@ -179,7 +195,7 @@ object BrushYellowPassiveWireDryRunPlanner {
             dispatchCapturedWireTail = toCapturedWireTail(dispatch),
             networkSendAllowed = false,
             blocker = "passive wire 链路仅用于 dry-run/审计；1229/1520/1522 都是状态改变或出征动作，未进入真实发送 allowlist",
-            evidence = "2026-07-08 bridge100 flows #30/#31/#32 and #38/#39"
+            evidence = "shared-contract canonical brush-yellow actionType=$actionType"
         )
     }
 
@@ -187,9 +203,11 @@ object BrushYellowPassiveWireDryRunPlanner {
         opcode: String,
         generalIds: List<String>,
         targetWireId: String,
-        extraTail: String
+        extraTail: String,
+        actionType: Int
     ): String {
-        val payload = "0a" +
+        require(actionType in 0..255) { "actionType must fit one byte" }
+        val payload = actionType.toString(16).padStart(2, '0') +
             generalIds.size.toString(16).padStart(2, '0') +
             generalIds.joinToString(separator = "") +
             targetWireId +

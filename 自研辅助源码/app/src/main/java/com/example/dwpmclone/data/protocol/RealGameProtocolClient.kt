@@ -3,6 +3,10 @@ package com.example.dwpmclone.data.protocol
 import com.example.dwpmclone.domain.protocol.GameHexDryRunDescriptor
 import com.example.dwpmclone.domain.protocol.GameHexDryRunParser
 import com.example.dwpmclone.domain.protocol.ItemDictionary
+import com.example.dwpmclone.domain.protocol.EquipmentTemplateDictionary
+import com.example.dwpmclone.domain.protocol.ExecutionRevokedBeforeNetworkException
+import com.example.dwpmclone.domain.protocol.LootProtocolShapes
+import com.example.dwpmclone.domain.protocol.LootTargetFief
 import com.example.dwpmclone.domain.protocol.MapTarget
 import com.example.dwpmclone.domain.protocol.MineSearchResult
 import com.example.dwpmclone.domain.protocol.ResourcePointSearchResponseParser
@@ -10,18 +14,12 @@ import com.example.dwpmclone.domain.protocol.TargetSearchResponseParser
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.HttpURLConnection
-import java.net.Proxy
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.Charset
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import javax.net.ssl.HostnameVerifier
-import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /**
  * Real read-only protocol client restored from /帝王三国接口.md.
@@ -36,7 +34,8 @@ import javax.net.ssl.X509TrustManager
  * This class deliberately does not implement any state-changing game action.
  */
 class RealGameProtocolClient(
-    private val networkRoute: GameNetworkRoute? = null
+    /** Dynamic service ownership gate; interactive callers and parser tests default to enabled. */
+    private val executionAllowed: () -> Boolean = { true }
 ) {
     data class Area(
         val target: String,
@@ -79,6 +78,10 @@ class RealGameProtocolClient(
         val generalLimit: Int,
         val resourcePointCurrent: Int,
         val resourcePointCap: Int,
+        val officeFieldFlag: Int?,
+        val officeIdRaw: Int?,
+        val officeIdUnsigned: Int?,
+        val officeName: String,
         val serverTimeMillis: Long,
         val sourceOpcode: String,
         val payloadByteCount: Int,
@@ -104,10 +107,26 @@ class RealGameProtocolClient(
         val rawTailHex: String
     )
 
+    data class InventoryEquipment(
+        val instanceId: Long,
+        val templateId: Int,
+        val name: String,
+        val level: Int,
+        val typeCode: Int,
+        val famous: Boolean,
+        val quality: Int,
+        val strengthen: Int,
+        val extraText: String,
+        val attributes: List<Int>,
+        val rawHex: String
+    )
+
     data class InventoryState(
         val capacity: Int,
         val itemCount: Int,
         val items: List<InventoryStack>,
+        val equipment: List<InventoryEquipment>,
+        val equipmentParseError: String?,
         val sourceOpcode: String,
         val payloadByteCount: Int,
         val payloadHex: String,
@@ -128,7 +147,9 @@ class RealGameProtocolClient(
         val responseOpcodes: List<String>,
         val syncedAt: String,
         val inventoryState: InventoryState?,
-        val dailyActivityState: DailyActivityState?
+        val dailyActivityState: DailyActivityState?,
+        val ownedFiefLocations: List<LootTargetFief>,
+        val ownedFiefLocationError: String?
     )
 
     data class RecoveredReadOnlyGameHexPlan(
@@ -161,7 +182,6 @@ class RealGameProtocolClient(
     )
 
     fun loginAndFetchState(username: String, password: String, serverQuery: String): LoginResult {
-        installTrustAllSslForLegacyPassport()
         val passportText = httpGet(
             PASSPORT + "common/area/list.action",
             mapOf(
@@ -173,8 +193,7 @@ class RealGameProtocolClient(
                 "cVersion" to VERSION,
                 "gameKey" to GAME_KEY,
                 "target" to TARGETS
-            ),
-            https = true
+            )
         )
         val lines = passportText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
         require(lines.isNotEmpty()) { "passport 未返回内容" }
@@ -185,8 +204,7 @@ class RealGameProtocolClient(
         val accountWithSuffix = runCatching {
             httpGet(
                 PASSPORT + "system/user/validate.action",
-                mapOf("session" to session, "target" to "1,2"),
-                https = true
+                mapOf("session" to session, "target" to "1,2")
             ).trim().split('`').getOrNull(1)
         }.getOrNull()
 
@@ -195,8 +213,7 @@ class RealGameProtocolClient(
         val area = selectArea(areas, serverQuery)
         val enter = httpGet(
             PASSPORT + "common/area/enter.action",
-            mapOf("session" to session, "areaKey" to area.serverKey),
-            https = true
+            mapOf("session" to session, "areaKey" to area.serverKey)
         ).trim()
         require(enter == "1") { "进入区服失败：$enter（${area.areaName}/${area.serverKey}）" }
 
@@ -213,6 +230,11 @@ class RealGameProtocolClient(
         require(loginInfo.status == 0) { "游戏登录基础信息失败：${loginInfo.message}" }
         require(loginInfo.roles.isNotEmpty()) { "账号下没有角色" }
         val selectedRole = loginInfo.roles.getOrNull(loginInfo.selectedIndex.coerceAtLeast(0)) ?: loginInfo.roles.first()
+        // 0x1003 回执后才能确定角色 ID。从此处绑定后续登录同步请求，
+        // 让手机端刚登录完就能像电脑端一样显示接口状态点。
+        val previousHealthAccountId = GameRequestHealthSink.currentAccountId()
+        GameRequestHealthSink.bindAccount(selectedRole.roleId)
+        try {
 
         val statePackets1004 = postGame(
             gameHttp,
@@ -248,9 +270,31 @@ class RealGameProtocolClient(
                 DailyActivityE200Parser.parse(it.payload, "live/0x6200/0xe200")
             }.getOrNull()
         }
+        var ownedFiefLocationError: String? = null
+        val ownedFiefPackets = runCatching {
+            postGame(
+                gameHttp,
+                listOf(GameCommand(0x1310, LootProtocolShapes.buildRaidFiefListPayload(state.roleName))),
+                dm = loginInfo.dm
+            )
+        }.getOrElse { error ->
+            ownedFiefLocationError = error.message ?: error::class.java.simpleName
+            emptyList()
+        }
+        val ownedFiefLocations = ownedFiefPackets.firstOrNull { it.opcode == 0x8310 }?.let { packet ->
+            runCatching { LootProtocolShapes.parseFiefList(packet.payload) }
+                .onFailure { error ->
+                    ownedFiefLocationError = "0x8310封地坐标解析失败：${error.message ?: error::class.java.simpleName}"
+                }
+                .getOrDefault(emptyList())
+        } ?: emptyList<LootTargetFief>().also {
+            if (ownedFiefLocationError == null) {
+                ownedFiefLocationError = "0x1310未返回0x8310封地坐标"
+            }
+        }
         val allOpcodes = (
             loginPackets + statePackets1004 + initPackets +
-                inventoryPackets + dailyActivityPackets
+                inventoryPackets + dailyActivityPackets + ownedFiefPackets
             ).map { it.hexOpcode() }
 
         return LoginResult(
@@ -266,8 +310,17 @@ class RealGameProtocolClient(
             responseOpcodes = allOpcodes,
             syncedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date()),
             inventoryState = inventoryState,
-            dailyActivityState = dailyActivityState
+            dailyActivityState = dailyActivityState,
+            ownedFiefLocations = ownedFiefLocations,
+            ownedFiefLocationError = ownedFiefLocationError
         )
+        } finally {
+            if (previousHealthAccountId != null) {
+                GameRequestHealthSink.bindAccount(previousHealthAccountId)
+            } else {
+                GameRequestHealthSink.clearAccount()
+            }
+        }
     }
 
 
@@ -425,12 +478,27 @@ class RealGameProtocolClient(
         val payload = plan.payloadHex.hexToBytes()
         val packets = postGame(gameHttp, listOf(GameCommand(plan.opcode, payload)), dm)
         val responseHex = packets.joinToString(separator = "") { it.payload.toHex() }
-        val responseText = packets.joinToString(separator = "\n") { packet ->
-            runCatching { String(packet.payload, UTF8) }.getOrDefault("")
+        // Match desktop semantics: only 0x8540/0x8542 payloads belong to the map
+        // parser. Concatenating heartbeat/status payloads in front of them can shift the
+        // structured header and silently force the old marker fallback.
+        val targets = if (plan.opcode == 0x1540) {
+            packets.asSequence()
+                .filter { it.opcode == 0x8540 }
+                .flatMap { TargetSearchResponseParser.parse(it.payload.toHex()).asSequence() }
+                .distinctBy { it.id to it.coordinate }
+                .toList()
+        } else {
+            emptyList()
         }
-        val parseInput = responseHex + "\n" + responseText
-        val targets = if (plan.opcode == 0x1540) TargetSearchResponseParser.parse(parseInput) else emptyList()
-        val mines = if (plan.opcode == 0x1542) ResourcePointSearchResponseParser.parse(parseInput) else emptyList()
+        val mines = if (plan.opcode == 0x1542) {
+            packets.asSequence()
+                .filter { it.opcode == 0x8542 }
+                .flatMap { ResourcePointSearchResponseParser.parse(it.payload.toHex()).asSequence() }
+                .distinctBy { it.id to it.coordinate }
+                .toList()
+        } else {
+            emptyList()
+        }
         return RecoveredReadOnlyExecutionResult(
             plan = plan,
             networkSendAttempted = true,
@@ -471,38 +539,60 @@ class RealGameProtocolClient(
         .trim()
         .lowercase(Locale.ROOT)
 
-    private fun httpGet(base: String, params: Map<String, String>, https: Boolean): String {
+    private fun httpGet(base: String, params: Map<String, String>): String {
+        requireExecutionAllowed("passport/get")
         val qs = params.entries.joinToString("&") { (k, v) ->
             URLEncoder.encode(k, "UTF-8") + "=" + URLEncoder.encode(v, "UTF-8")
         }
         val url = URL(base + if (base.contains('?')) "&$qs" else "?$qs")
-        val conn = ((networkRoute ?: GameNetworkRoute(GameProxyMode.SYSTEM_AUTO)).open(url) as HttpURLConnection).apply {
+        val conn = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 20_000
             requestMethod = "GET"
             setRequestProperty("User-Agent", "DWPMClone/1.0 real-protocol")
         }
-        if (https && conn is HttpsURLConnection) {
-            conn.hostnameVerifier = HostnameVerifier { _, _ -> true }
+        return try {
+            readResponse(conn)
+        } finally {
+            conn.disconnect()
         }
-        return readResponse(conn)
     }
 
     private fun postGame(gameHttp: String, commands: List<GameCommand>, dm: Long): List<GamePacket> {
-        val body = makePacket(commands, dm)
-        val url = URL(gameHttp)
-        val conn = ((networkRoute ?: GameNetworkRouteRegistry.route(gameHttp, dm)).open(url) as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 25_000
-            requestMethod = "POST"
-            doOutput = true
-            setRequestProperty("Content-Type", "application/octet-stream")
-            setRequestProperty("User-Agent", "DWPMClone/1.0 real-protocol")
-            setFixedLengthStreamingMode(body.size)
+        val opcodeLabel = commands.firstOrNull()?.opcode?.let { "0x${it.toString(16)}" } ?: "empty"
+        requireExecutionAllowed("real-protocol/$opcodeLabel")
+        // 所有真实游戏请求的唯一出口：在这里统一记录成败，供助手页账号卡的
+        // “最近30次请求”健康点展示（对齐电脑端 acc.recentGameRequests）。
+        val purpose = GameOpcodePurpose.of(commands.firstOrNull()?.opcode)
+        var connection: HttpURLConnection? = null
+        try {
+            val body = makePacket(commands, dm)
+            val url = URL(gameHttp)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 25_000
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/octet-stream")
+                setRequestProperty("User-Agent", "DWPMClone/1.0 real-protocol")
+                setFixedLengthStreamingMode(body.size)
+            }
+            connection = conn
+            conn.outputStream.use { it.write(body) }
+            val bytes = readResponseBytes(conn)
+            val packets = parseGameResponse(bytes)
+            GameRequestHealthSink.record(true, purpose)
+            return packets
+        } catch (error: Throwable) {
+            GameRequestHealthSink.record(false, purpose)
+            throw error
+        } finally {
+            connection?.disconnect()
         }
-        conn.outputStream.use { it.write(body) }
-        val bytes = readResponseBytes(conn)
-        return parseGameResponse(bytes)
+    }
+
+    private fun requireExecutionAllowed(phase: String) {
+        if (!executionAllowed()) throw ExecutionRevokedBeforeNetworkException(phase)
     }
 
     private fun readResponse(conn: HttpURLConnection): String = String(readResponseBytes(conn), UTF8)
@@ -615,6 +705,11 @@ class RealGameProtocolClient(
         val generalLimit = c.i8()
         val resourcePointCurrent = c.i8()
         val resourcePointCap = c.i8()
+        // 对齐电脑端 parse_8004_head：资源点上限后是一个保留 byte
+        // 和真正的官职 short。前面头像后的 short 是头像编号，不是官职。
+        val officeFieldFlag = if (c.remaining >= 3) c.i8() else null
+        val officeIdRaw = if (officeFieldFlag != null) c.i16() else null
+        val officeIdUnsigned = officeIdRaw?.and(0xffff)
         val parsedHeadByteCount = c.position
         val tail = payload.copyOfRange(parsedHeadByteCount, payload.size)
         return RoleState(
@@ -634,6 +729,10 @@ class RealGameProtocolClient(
             generalLimit = generalLimit,
             resourcePointCurrent = resourcePointCurrent,
             resourcePointCap = resourcePointCap,
+            officeFieldFlag = officeFieldFlag,
+            officeIdRaw = officeIdRaw,
+            officeIdUnsigned = officeIdUnsigned,
+            officeName = officeIdUnsigned?.let(OFFICE_NAMES_BY_ID::get).orEmpty(),
             serverTimeMillis = serverTime,
             sourceOpcode = sourceOpcode,
             payloadByteCount = payload.size,
@@ -678,16 +777,86 @@ class RealGameProtocolClient(
                 rawTailHex = rawTail
             )
         }
+        val equipmentResult = parse8104Equipment(payload, itemsEnd)
         return InventoryState(
             capacity = capacity,
             itemCount = itemCount,
             items = items,
+            equipment = equipmentResult.items,
+            equipmentParseError = equipmentResult.error,
             sourceOpcode = sourceOpcode,
             payloadByteCount = payload.size,
             payloadHex = payload.toHex(),
             parsedItemByteCount = itemsEnd,
             tailHex = payload.copyOfRange(itemsEnd, payload.size).toHex()
         )
+    }
+
+    private data class EquipmentParseResult(
+        val items: List<InventoryEquipment>,
+        val endOffset: Int,
+        val error: String?
+    )
+
+    /** V5 equipment block immediately following the fixed 12-byte item records. */
+    private fun parse8104Equipment(payload: ByteArray, offset: Int): EquipmentParseResult {
+        if (offset + 2 > payload.size) {
+            return EquipmentParseResult(emptyList(), offset, "缺少装备数量")
+        }
+        val count = payload.u16At(offset)
+        if (count > 1000) {
+            return EquipmentParseResult(emptyList(), offset, "装备数量异常：$count")
+        }
+        var p = offset + 2
+        val equipment = mutableListOf<InventoryEquipment>()
+        return try {
+            repeat(count) { index ->
+                if (p + 11 > payload.size) error("第 ${index + 1} 条装备记录不完整")
+                val recordOffset = p
+                var instanceId = 0L
+                repeat(8) {
+                    instanceId = (instanceId shl 8) or (payload[p++].toLong() and 0xffL)
+                }
+                val templateId = payload.u16At(p)
+                p += 2
+                val attributeLength = payload[p++].toInt() and 0xff
+                if (attributeLength > 64 || p + attributeLength + 10 > payload.size) {
+                    error("第 ${index + 1} 条装备属性长度异常：$attributeLength")
+                }
+                val attributes = payload.copyOfRange(p, p + attributeLength)
+                    .map { it.toInt() and 0xff }
+                p += attributeLength
+                p += 2 // strengthen effect
+                p += 2 // two risk bytes
+                p += 2 // protocol J
+                p += 2 // pity current
+                p += 2 // pity target
+                val textLength = payload.u16At(p)
+                p += 2
+                if (p + textLength > payload.size) {
+                    error("第 ${index + 1} 条装备额外描述越界：$textLength")
+                }
+                val extraText = String(payload, p, textLength, Charsets.UTF_8)
+                p += textLength
+                val template = EquipmentTemplateDictionary.templateFor(templateId)
+                equipment += InventoryEquipment(
+                    instanceId = instanceId,
+                    templateId = templateId,
+                    name = template?.name ?: "装备#$templateId",
+                    level = template?.level ?: 0,
+                    typeCode = template?.typeCode ?: -1,
+                    famous = template?.famous ?: false,
+                    quality = attributes.getOrNull(0) ?: -1,
+                    strengthen = attributes.getOrNull(1) ?: 0,
+                    extraText = extraText,
+                    attributes = attributes,
+                    rawHex = payload.copyOfRange(recordOffset, p).toHex()
+                )
+            }
+            EquipmentParseResult(equipment, p, null)
+        } catch (error: Exception) {
+            EquipmentParseResult(equipment, p, error.message ?: "装备记录解析失败")
+        }
     }
 
     private class PacketWriter {
@@ -709,6 +878,7 @@ class RealGameProtocolClient(
     private class PacketCursor(private val data: ByteArray) {
         private var p = 0
         val position: Int get() = p
+        val remaining: Int get() = data.size - p
         fun u8(): Int = data[p++].toInt() and 0xff
         fun i8(): Int = data[p++].toInt()
         fun u16(): Int {
@@ -780,24 +950,37 @@ class RealGameProtocolClient(
         private const val TARGETS = "1,2,3,5,11,12,13,14,15,16,17,18,19,20,21,31,32,33,34,41,91"
         private const val INVENTORY_ITEM_RECORD_LEN = 12
         private val READ_ONLY_GAME_HEX_OPCODE_ALLOWLIST = setOf(0x1540, 0x1542)
-
-        @Volatile private var sslInstalled = false
-        private fun installTrustAllSslForLegacyPassport() {
-            if (sslInstalled) return
-            synchronized(this) {
-                if (sslInstalled) return
-                val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
-                    override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) = Unit
-                    override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) = Unit
-                    override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
-                })
-                val ctx = SSLContext.getInstance("TLS")
-                ctx.init(null, trustAll, java.security.SecureRandom())
-                HttpsURLConnection.setDefaultSSLSocketFactory(ctx.socketFactory)
-                HttpsURLConnection.setDefaultHostnameVerifier { _, _ -> true }
-                sslInstalled = true
+        private val OFFICE_NAMES_BY_ID: Map<Int, String> = buildMap {
+            put(0x0000, "游民")
+            put(0x0001, "细作")
+            put(0x0100, "国民")
+            repeat(0x19) { index ->
+                put(0x0200 + index, "侍郎")
+                put(0x0280 + index, "都尉")
             }
+            put(0x0300, "兵部尚书")
+            put(0x0301, "吏部尚书")
+            put(0x0302, "民部尚书")
+            put(0x0303, "刑部尚书")
+            put(0x0304, "工部尚书")
+            put(0x0305, "户部尚书")
+            put(0x0306, "礼部尚书")
+            put(0x0307, "学部尚书")
+            put(0x0380, "虎威将军")
+            put(0x0381, "破虏将军")
+            put(0x0382, "奋武将军")
+            put(0x0383, "抚远将军")
+            put(0x0384, "征东将军")
+            put(0x0385, "平西将军")
+            put(0x0386, "镇北将军")
+            put(0x0387, "定南将军")
+            put(0x0400, "丞相")
+            put(0x0401, "丞相")
+            put(0x0480, "大都督")
+            put(0x0481, "大都督")
+            put(0x0500, "国王")
         }
+
     }
 }
 

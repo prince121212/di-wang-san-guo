@@ -14,16 +14,26 @@ import org.json.JSONObject
  * Account/session fields are allowed to be persisted only after a real protocol login succeeds.
  * Do not write placeholders, inferred role data, or reversed/plain password stand-ins here.
  */
-class LocalAccountRepository(context: Context) {
+class LocalAccountRepository(
+    context: Context,
+    private val sessionSecrets: SessionSecretVault = KeystoreSessionSecretVault(context)
+) {
     private val prefs = context.getSharedPreferences("dwpm_clone_accounts", Context.MODE_PRIVATE)
+
+    init {
+        migrateLegacySecrets()
+    }
 
     fun listAccounts(): List<GameAccount> {
         val root = JSONObject(prefs.getString(KEY_ACCOUNTS, "{\"accounts\":[]}") ?: "{\"accounts\":[]}")
         val arr = root.optJSONArray("accounts") ?: JSONArray()
-        return (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index)?.toGameAccount() }
+        return (0 until arr.length())
+            .mapNotNull { index -> arr.optJSONObject(index)?.toGameAccount() }
+            .map { it.withSessionSecrets() }
     }
 
     fun upsert(account: GameAccount) {
+        saveSessionSecrets(account)
         val accounts = listAccounts().filterNot { it.id == account.id } + account
         saveAll(accounts.sortedBy { it.id })
     }
@@ -53,11 +63,13 @@ class LocalAccountRepository(context: Context) {
     }
 
     fun delete(accountId: Long) {
+        sessionSecrets.delete(accountId)
         saveAll(listAccounts().filterNot { it.id == accountId })
     }
 
     fun clear() {
-        prefs.edit().remove(KEY_ACCOUNTS).apply()
+        sessionSecrets.clear()
+        check(prefs.edit().remove(KEY_ACCOUNTS).commit()) { "无法清理账号数据" }
     }
 
     fun exportAll(): JSONObject = JSONObject()
@@ -71,21 +83,82 @@ class LocalAccountRepository(context: Context) {
         val arr = json.optJSONArray("accounts") ?: return ImportResult(false, 0, "missing accounts array")
         val imported = (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.toGameAccount() }
         val merged = if (clearExisting) imported else (listAccounts().filterNot { old -> imported.any { it.id == old.id } } + imported)
+        if (clearExisting) sessionSecrets.clear()
+        imported.forEach(::saveSessionSecrets)
         saveAll(merged.sortedBy { it.id })
         return ImportResult(true, imported.size, "imported ${imported.size} account entries")
     }
 
-    @Deprecated("Account-processing UI must not create placeholder accounts; persist only RealGameProtocolClient success results.")
-    fun upsertFromAccountProcessingValues(@Suppress("UNUSED_PARAMETER") values: JSONObject, @Suppress("UNUSED_PARAMETER") accountId: Long = DEFAULT_ACCOUNT_ID): GameAccount {
-        throw UnsupportedOperationException("真实协议登录成功前禁止保存账号占位数据")
+    private fun saveAll(accounts: List<GameAccount>) {
+        check(
+            prefs.edit().putString(KEY_ACCOUNTS, JSONObject()
+                .put("schema_version", EXPORT_SCHEMA_VERSION)
+                .put("accounts", JSONArray().also { arr -> accounts.forEach { arr.put(it.toJson()) } })
+                .toString()
+            ).commit()
+        ) { "无法持久化账号数据" }
     }
 
-    private fun saveAll(accounts: List<GameAccount>) {
-        prefs.edit().putString(KEY_ACCOUNTS, JSONObject()
-            .put("schema_version", EXPORT_SCHEMA_VERSION)
-            .put("accounts", JSONArray().also { arr -> accounts.forEach { arr.put(it.toJson()) } })
-            .toString()
-        ).apply()
+    /** Encrypts session secrets left by pre-V1 builds before removing their plaintext copies. */
+    private fun migrateLegacySecrets() {
+        val raw = prefs.getString(KEY_ACCOUNTS, null) ?: return
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return
+        val array = root.optJSONArray("accounts") ?: return
+        var changed = false
+        for (index in 0 until array.length()) {
+            val account = array.optJSONObject(index) ?: continue
+            val accountId = account.optLong("id", -1L)
+            if (account.has("encryptedPassword")) {
+                account.remove("encryptedPassword")
+                changed = true
+            }
+            val session = account.optJSONObject("session") ?: continue
+            val token = session.optString("tokenCiphertext")
+            if (token.isNotBlank() && token != SESSION_PRESENT_MARKER) {
+                session.put("tokenCiphertext", SESSION_PRESENT_MARKER)
+                changed = true
+            }
+            val extra = session.optJSONObject("channelExtra") ?: continue
+            val keys = extra.keys().asSequence().toList()
+            val secrets = keys
+                .filter(SessionSecretPolicy::isSensitiveKey)
+                .associateWith { key -> extra.optString(key) }
+                .filterValues(String::isNotBlank)
+            if (accountId > 0L && secrets.isNotEmpty()) {
+                val migrated = runCatching {
+                    sessionSecrets.save(accountId, secrets)
+                }.isSuccess
+                secrets.keys.forEach(extra::remove)
+                if (!migrated) {
+                    // An authentication-bound legacy key can be unavailable during an
+                    // OEM unlock transition. Never retain plaintext or pretend the
+                    // Session is recoverable; require a fresh explicit login instead.
+                    session.put("tokenCiphertext", "")
+                        .put("sourceMode", 0)
+                    account.put("enabled", false)
+                        .put("loginState", "RELOGIN_REQUIRED")
+                }
+                changed = true
+            }
+        }
+        if (changed) {
+            check(prefs.edit().putString(KEY_ACCOUNTS, root.toString()).commit()) {
+                "无法清理历史明文 Session 字段"
+            }
+        }
+    }
+
+    private fun saveSessionSecrets(account: GameAccount) {
+        val session = account.session ?: return
+        val secrets = SessionSecretPolicy.secretFields(session.channelExtra)
+        if (secrets.isNotEmpty()) sessionSecrets.save(account.id, secrets)
+    }
+
+    private fun GameAccount.withSessionSecrets(): GameAccount {
+        val current = session ?: return this
+        val decrypted = runCatching { sessionSecrets.load(id) }.getOrDefault(emptyMap())
+        if (decrypted.isEmpty()) return this
+        return copy(session = current.copy(channelExtra = current.channelExtra + decrypted))
     }
 
     private fun JSONObject.toGameAccount(): GameAccount? = runCatching {
@@ -93,7 +166,6 @@ class LocalAccountRepository(context: Context) {
             id = optLong("id", DEFAULT_ACCOUNT_ID),
             displayName = optString("displayName").ifBlank { null },
             username = optString("username"),
-            encryptedPassword = optString("encryptedPassword").ifBlank { null },
             serverName = optString("serverName"),
             serverId = optString("serverId").ifBlank { null },
             gameVersion = runCatching { GameVersion.valueOf(optString("gameVersion")) }.getOrDefault(GameVersion.OTHER),
@@ -103,8 +175,9 @@ class LocalAccountRepository(context: Context) {
             monarchName = optString("monarchName").ifBlank { null },
             nation = optString("nation").ifBlank { null },
             loginState = optString("loginState", "NO_REAL_PROTOCOL_LOGIN"),
-            gameAuthSignPlaceholder = optString("gameAuthSignPlaceholder").ifBlank { null },
-            antiBanIpEnabled = optBoolean("antiBanIpEnabled", false)
+            gameAuthSignEvidence = optString("gameAuthSignEvidence").ifBlank {
+                optString("gameAuthSignPlaceholder")
+            }.ifBlank { null }
         )
     }.getOrNull()
 
@@ -112,7 +185,6 @@ class LocalAccountRepository(context: Context) {
         .put("id", id)
         .put("displayName", displayName)
         .put("username", username)
-        .put("encryptedPassword", encryptedPassword)
         .put("serverName", serverName)
         .put("serverId", serverId)
         .put("gameVersion", gameVersion.name)
@@ -122,8 +194,7 @@ class LocalAccountRepository(context: Context) {
         .put("monarchName", monarchName)
         .put("nation", nation)
         .put("loginState", loginState)
-        .put("gameAuthSignPlaceholder", gameAuthSignPlaceholder)
-        .put("antiBanIpEnabled", antiBanIpEnabled)
+        .put("gameAuthSignEvidence", gameAuthSignEvidence)
 
     private fun JSONObject.toGameSession(): GameSession = GameSession(
         accountId = optLong("accountId"),
@@ -137,33 +208,18 @@ class LocalAccountRepository(context: Context) {
 
     private fun GameSession.toJson(): JSONObject = JSONObject()
         .put("accountId", accountId)
-        .put("tokenCiphertext", tokenCiphertext)
+        .put("tokenCiphertext", if (sourceMode == 1) SESSION_PRESENT_MARKER else "")
         .put("expiresAtMillis", expiresAtMillis)
         .put("channelExtra", JSONObject().also { obj ->
-            channelExtra.toSortedMap().forEach { (key, value) -> obj.put(key, value) }
+            SessionSecretPolicy.publicFields(channelExtra).toSortedMap()
+                .forEach { (key, value) -> obj.put(key, value) }
         })
         .put("sourceMode", sourceMode)
-
-    private fun parseVersion(text: String): GameVersion = when {
-        text.contains("腾讯") || text.contains("QQ", ignoreCase = true) -> GameVersion.TENCENT_CLASSIC
-        text.contains("官方") -> GameVersion.OFFICIAL_CLASSIC
-        text.contains("繁") || text.contains("傳") -> GameVersion.TRADITIONAL
-        else -> GameVersion.OTHER
-    }
-
-    private fun parseChannel(text: String): Channel = when {
-        text.contains("微信") -> Channel.WECHAT
-        text.contains("QQ", ignoreCase = true) || text.contains("腾讯") -> Channel.QQ
-        text.contains("360") -> Channel.QIHOO_360
-        text.contains("UC", ignoreCase = true) || text.contains("九游") -> Channel.UC_9GAME
-        text.contains("当乐") -> Channel.DANGLE
-        text.contains("官方") -> Channel.OFFICIAL
-        else -> Channel.UNKNOWN
-    }
 
     companion object {
         const val EXPORT_SCHEMA_VERSION = "0.2-real-protocol-accounts"
         const val DEFAULT_ACCOUNT_ID = 1L
+        const val SESSION_PRESENT_MARKER = "keystore-managed-login"
         private const val KEY_ACCOUNTS = "accounts_json"
     }
 }

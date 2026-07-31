@@ -1,11 +1,57 @@
 package com.example.dwpmclone.data.protocol
 
+import com.example.dwpmclone.domain.protocol.BatchRefillTroopsShape
+import com.example.dwpmclone.domain.protocol.GeneralProtocolShapes
+import java.io.File
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Formation122xResponseParserTest {
+    @Test
+    fun sharedFixtureMatchesAndroidAssignmentAndRefillShapes() {
+        val file = listOf(
+            File("../shared_core/protocol_parity_fixtures.json"),
+            File("../../shared_core/protocol_parity_fixtures.json"),
+            File("shared_core/protocol_parity_fixtures.json")
+        ).first(File::exists)
+        val fixtures = JSONObject(file.readText()).getJSONObject("fixtures")
+        val assignment = fixtures.getJSONObject("formationAssign1226")
+        val assignmentExpected = assignment.getJSONObject("expected")
+        val assignmentPayload = GeneralProtocolShapes.formationAssignShape(
+            assignment.getLong("generalId").toString(16),
+            assignment.getInt("soldierTypeCode").toString(16),
+            assignment.getInt("soldierCount")
+        ).substringAfter("1226")
+        val assignmentReceipt = Formation122xResponseParser.parse8226(
+            assignment.getString("successResponseHex")
+        )
+
+        assertEquals(assignment.getString("requestPayloadHex"), assignmentPayload)
+        assertEquals(assignmentExpected.getBoolean("success"), assignmentReceipt.success)
+        assertEquals(assignmentExpected.getInt("previousType"), assignmentReceipt.previousType)
+        assertEquals(assignmentExpected.getInt("previousCount"), assignmentReceipt.previousCount)
+        assertEquals(assignmentExpected.getInt("assignedType"), assignmentReceipt.assignedType)
+        assertEquals(assignmentExpected.getInt("assignedCount"), assignmentReceipt.assignedCount)
+
+        val refill = fixtures.getJSONObject("formationRefill1229")
+        val refillExpected = refill.getJSONObject("expected")
+        val ids = refill.getJSONArray("generalIds")
+        val refillPayload = BatchRefillTroopsShape.build(
+            (0 until ids.length()).map { ids.getLong(it).toString(16) }
+        ).substringAfter("1229")
+        val refillReceipt = Formation122xResponseParser.parse8229(refill.getString("successResponseHex"))
+
+        assertEquals(refill.getString("requestPayloadHex"), refillPayload)
+        assertEquals(refillExpected.getBoolean("success"), refillReceipt.success)
+        assertEquals(refillExpected.getString("message"), refillReceipt.message)
+        assertEquals(refillExpected.getInt("entryCount"), refillReceipt.entries.size)
+        assertEquals(refillExpected.getInt("firstSoldierType"), refillReceipt.entries.first().soldierType)
+        assertEquals(refillExpected.getInt("firstSoldierCount"), refillReceipt.entries.first().soldierCount)
+    }
+
     @Test
     fun captured8226UsesNewTypeAndCountRatherThanPreviousPair() {
         val capturedPayload = "0100000000006b4d9a0008007200080085010300000004"

@@ -1,0 +1,505 @@
+{
+  "schemaVersion": 1,
+  "contractId": "dwpm-cross-platform-assistant-v1",
+  "timezone": "Asia/Shanghai",
+  "resultSemantics": {
+    "serverConfirmedSuccessRequired": true,
+    "duplicateDailyReceiptCountsAsCompleted": true,
+    "dailyFeaturesAreIndependent": true,
+    "oneDailyFailureMustNotBlockSiblings": true,
+    "partialSuccessMustNotCreateSuccessRecord": true,
+    "skippedActionMustNotCreateSuccessRecord": true,
+    "successRecordsAreStructuredFacts": true
+  },
+  "scheduler": {
+    "residentPriority": {
+      "mine": 400,
+      "lossless": 300,
+      "brushYellow": 200,
+      "raid": 125,
+      "dungeon": 100,
+      "ministry": 50
+    },
+    "sameGeneralMutualExclusionRequired": true,
+    "onlyRunnableResidentBlocksLowerPriority": true,
+    "formationPrerequisiteRunsFirst": false,
+    "dailyFeaturesRunBeforeResidents": false,
+    "militaryLaneRunsBeforeIdleLane": true,
+    "expeditionPreparationIsTaskScoped": true,
+    "idleLaneMustYieldToDueMilitaryWork": true,
+    "observationRefreshMayRunBetweenLanes": true,
+    "waitStatePersistsAcrossProcess": true,
+    "dayBoundaryUsesContractTimezone": true,
+    "ministryPollMillis": 600000,
+    "sameAccountUiAndBackgroundShareOneLock": true,
+    "differentAccountsMayRunIndependently": true,
+    "residentActivation": {
+      "startedField": "savedTasksStarted",
+      "activeKeysField": "activeResidentTaskKeys",
+      "presentEmptyKeysMeansNoResidentTask": true,
+      "savingEnabledResidentWhileOnlineStartsIt": true
+    }
+  },
+  "accountLifecycle": {
+    "startedRequiresExecutionOwner": true,
+    "startRunsFreshLogin": true,
+    "heartbeatIntervalMillis": 20000,
+    "persistedSessionMayBeRetainedForReconnect": true,
+    "stoppedOrOfflineSessionMustNotBePresentedAsUsable": true,
+    "manualProtocolOperationRequiresRunningOnlineAccount": true,
+    "statusText": {
+      "online": "开启",
+      "checking": "检测中",
+      "offline": "掉线",
+      "stopped": "未开启"
+    }
+  },
+  "daily": {
+    "schedule": {
+      "failedFeatureRetryMillis": 60000,
+      "completedFeatureSleep": "nextChinaDay",
+      "cycles": {
+        "arenaCoins": "22:00 Asia/Shanghai",
+        "default": "00:00 Asia/Shanghai"
+      },
+      "nationalCitizenSkips": [
+        "salary",
+        "nationalCollect",
+        "generalVisit"
+      ]
+    },
+    "features": [
+      {
+        "key": "autoSignIn",
+        "label": "自动签到",
+        "androidTaskType": "DAILY_SIGN_IN"
+      },
+      {
+        "key": "arenaCoins",
+        "label": "领竞技币",
+        "androidTaskType": "DAILY_ARENA_COINS"
+      },
+      {
+        "key": "autoDonate",
+        "label": "自动捐献",
+        "androidTaskType": "DAILY_DONATE"
+      },
+      {
+        "key": "salary",
+        "label": "国家俸禄",
+        "androidTaskType": "DAILY_SALARY"
+      },
+      {
+        "key": "nationalCollect",
+        "label": "国家征收",
+        "androidTaskType": "DAILY_NATIONAL_COLLECT"
+      },
+      {
+        "key": "cityLordCollect",
+        "label": "城主征收",
+        "androidTaskType": "DAILY_CITY_LORD_COLLECT"
+      },
+      {
+        "key": "generalVisit",
+        "label": "名将拜访",
+        "androidTaskType": "DAILY_GENERAL_VISIT"
+      }
+    ],
+    "signIn": {
+      "requestOpcode": "0x6202",
+      "activityResponseOpcode": "0x8134",
+      "legacyResponseOpcode": "0xe202",
+      "successMarkers": [
+        "获得成功",
+        "签到成功",
+        "领取成功"
+      ],
+      "duplicateMarkers": [
+        "本日已签到"
+      ],
+      "duplicateMessage": "自动签到重复，本日已签到，明日再签到！",
+      "confirmedMessage": "签到请求已由服务器确认",
+      "diamondBox": {
+        "requestOpcode": "0x1134",
+        "responseOpcode": "0x8134",
+        "payloadHex": "00000000000de2b100",
+        "expiredMarkers": [
+          "活动已过期"
+        ],
+        "duplicateMarkers": [
+          "已经领取",
+          "已领取",
+          "重复领取"
+        ],
+        "alreadyClaimedMessage": "每日金钻宝箱已经领取过了！"
+      }
+    },
+    "actions": {
+      "arenaCoins": {
+        "readRequestOpcode": "0x6260",
+        "claimRequestOpcode": "0x6266",
+        "claimResponseOpcode": "0xe266"
+      },
+      "donate": {
+        "resourceRequestOpcode": "0x140c",
+        "resourceResponseOpcode": "0x840c",
+        "technologyRequestOpcode": "0x140a",
+        "technologyResponseOpcode": "0x840a",
+        "copperPerLevel": 1000,
+        "foodPerLevel": 3000,
+        "technologyPerLevel": 1000
+      },
+      "salary": {
+        "requestOpcode": "0x314b",
+        "responseOpcode": "0xa14b",
+        "payloadHex": "01",
+        "alreadyClaimedMarkers": [
+          "无法再次领取",
+          "已经领取",
+          "已领取",
+          "今日已领取",
+          "本日已领取",
+          "今天已经领取"
+        ],
+        "noOfficeMarkers": [
+          "无官职",
+          "没有官职",
+          "只有官员才能领取",
+          "官员才能领取俸禄",
+          "当前不能领取俸禄"
+        ],
+        "successMarkers": [
+          "成功",
+          "获得铜钱"
+        ]
+      },
+      "nationalCollect": {
+        "cityListRequestOpcode": "0x1404",
+        "cityListResponseOpcode": "0x8404",
+        "statusRequestOpcode": "0x1332",
+        "statusResponseOpcode": "0x8332",
+        "collectRequestOpcode": "0x1334",
+        "collectResponseOpcode": "0x8334",
+        "includedListCategories": [1, 2, 3],
+        "responseHeaderBytes": 7,
+        "recordTailBytes": 34,
+        "pageSize": 10,
+        "maxAttempts": 20
+      },
+      "cityLordCollect": {
+        "ownedCityRequestOpcode": "0x1318",
+        "ownedCityResponseOpcode": "0x8318",
+        "ownedCityPayloadSuffixHex": "0000",
+        "collectRequestOpcode": "0x1330",
+        "collectResponseOpcode": "0x8330",
+        "ineligibleMarkers": [
+          "都城及其周边与之相联的门户城池不能进行征收",
+          "只有城主可以使用城主征收功能",
+          "您不是城主",
+          "不是城主"
+        ],
+        "alreadyCollectedMarkers": [
+          "已经征收",
+          "本日已征收",
+          "今日已征收",
+          "今天已经征收",
+          "已经进行过征收"
+        ]
+      },
+      "generalVisit": {
+        "listRequestOpcode": "0x3271",
+        "listResponseOpcode": "0xa271",
+        "visitRequestOpcode": "0x3273",
+        "visitResponseOpcode": "0xa273",
+        "pageSize": 4,
+        "maxSelected": 4,
+        "alreadyVisitedStatus": -2,
+        "alreadyVisitedMarkers": [
+          "本日已拜访",
+          "今日已拜访",
+          "已经拜访"
+        ],
+        "invitationResolvedMarkers": [
+          "拒绝了阁下的邀请",
+          "接受了阁下的邀请",
+          "愿意追随",
+          "纳入帐下"
+        ]
+      }
+    }
+  },
+  "expedition": {
+    "prepareOpcode": "0x1520",
+    "prepareResponseOpcode": "0x8520",
+    "dispatchOpcode": "0x1522",
+    "dispatchResponseOpcode": "0x8522",
+    "serverConfirmedSuccessRequired": true,
+    "dispatchSuccessRequiresPositiveBattleId": true,
+    "softRejectPayloadHex": "ff0000"
+  },
+  "formation": {
+    "assignRequestOpcode": "0x1226",
+    "assignResponseOpcode": "0x8226",
+    "refillRequestOpcode": "0x1229",
+    "refillResponseOpcode": "0x8229",
+    "idleGeneralStatus": 0,
+    "clampCountToTroopLimit": true,
+    "precheckIdleSoldierInventory": true,
+    "exactAssignedTypeAndCountRequired": true,
+    "clearOtherGeneralsSkipsBusy": true,
+    "assignmentDoesNotImplicitlyRefill": true,
+    "completedSleepMillis": 31536000000
+  },
+  "mapSearch": {
+    "banditRequestOpcode": "0x1540",
+    "banditResponseOpcode": "0x8540",
+    "realEnemyUnitCompositionRequired": true,
+    "world": {
+      "xMin": 0,
+      "xMax": 186,
+      "yMin": 0,
+      "yMax": 66,
+      "step": 6
+    },
+    "nearbyRequestLimit": 80,
+    "fullRequestLimit": 384,
+    "preparationBatchSize": 10,
+    "idleScanBatchSize": 1,
+    "scanCoordinateCacheTtlMillis": 120000,
+    "targetCacheTtlMillis": 1800000,
+    "filters": [
+      "targetKind",
+      "levels",
+      "drops",
+      "maxFoot",
+      "maxBow",
+      "maxCavalry",
+      "maxChariot",
+      "distance"
+    ]
+  },
+  "brushYellow": {
+    "minimumRoleLevel": 30,
+    "maximumGeneralsPerFormation": 5,
+    "actionType": 3,
+    "exactSelectedLevelsRequired": true,
+    "schedule": {
+      "transientRetryMillis": 10000,
+      "targetUnavailableRetryMillis": 10000,
+      "busyGeneralPollMillis": 30000,
+      "postDispatchPollMillis": 30000,
+      "postReturnMaintenanceDelayMillis": 1000,
+      "formationShortageRetryMillis": 60000,
+      "mapPreparationIdlePauseMillis": 2000,
+      "settlementFullRefreshMillis": 30000,
+      "settlementRecheckGraceMillis": 300000
+    }
+  },
+  "mine": {
+    "searchRequestOpcode": "0x1542",
+    "searchResponseOpcode": "0x8542",
+    "actionType": 2,
+    "maximumGeneralsPerFormation": 5,
+    "allowedSearchScopes": ["\u5b9a\u70b9", "\u9644\u8fd1", "\u5168\u56fd"],
+    "defaultSearchScope": "\u9644\u8fd1",
+    "allowedMaxMarchMinutes": [45, 60, 90],
+    "defaultMaxMarchMinutes": 45,
+    "targetCacheTtlMillis": 10800000,
+    "playerOccupiedTargetsAllowed": false,
+    "exactSelectedLevelRequired": true,
+    "resourceCapacityCheckRequired": true,
+    "fullLoyaltyDefault": true,
+    "replenishTroopsDefault": true,
+    "prepareOpcode": "0x1520",
+    "prepareResponseOpcode": "0x8520",
+    "dispatchOpcode": "0x1522",
+    "dispatchResponseOpcode": "0x8522",
+    "dispatchSuccessRequiresPositiveBattleId": true,
+    "preview": {
+      "minimumPayloadBytes": 25,
+      "requireTargetCoordinateMatch": true
+    },
+    "schedule": {
+      "targetUnavailableRetryMillis": 10000,
+      "formationShortageRetryMillis": 60000,
+      "postDispatchPollMillis": 5000,
+      "garrisonPollMillis": 10000,
+      "missingMilitaryGraceMillis": 120000,
+      "settlementTimeoutMillis": 14400000,
+      "postCycleSleepMillis": 30000
+    },
+    "speed": {
+      "requestOpcode": "0x1524",
+      "responseOpcode": "0x8524",
+      "stopBelowSeconds": 60,
+      "itemSeconds": {
+        "76": 900,
+        "77": 1800,
+        "78": 3600,
+        "79": 10800
+      }
+    },
+    "withdraw": {
+      "afterGarrisonRequired": true,
+      "requestOpcode": "0x1526",
+      "responseOpcode": "0x8526",
+      "payloadPrefixHex": "0101",
+      "payloadSuffixHex": "00",
+      "requireExactBattleIdMatch": true
+    }
+  },
+  "raid": {
+    "fiefQueryOpcode": "0x1310",
+    "fiefQueryResponseOpcode": "0x8310",
+    "targetPayloadPrefixHex": "0001",
+    "actionType": 1,
+    "maximumGeneralsPerFormation": 5,
+    "fiefIndexIsOneBased": true,
+    "fullTroopsDefault": true,
+    "fullLoyaltyDefault": false,
+    "prepareOpcode": "0x1520",
+    "prepareResponseOpcode": "0x8520",
+    "dispatchOpcode": "0x1522",
+    "dispatchResponseOpcode": "0x8522",
+    "dispatchSuccessRequiresPositiveBattleId": true,
+    "immediateRelatedLong": -1,
+    "immediateFlagsHex": "000000",
+    "busyGeneralPollMillis": 10000,
+    "postDispatchPollMillis": 60000
+  },
+  "lossless": {
+    "statusRequestOpcode": "0x1900",
+    "statusResponseOpcode": "0x8900",
+    "catalogRequestOpcode": "0x1904",
+    "catalogResponseOpcode": "0x8904",
+    "settlementRequestOpcode": "0x1902",
+    "settlementResponseOpcode": "0x8902",
+    "lineupRequestOpcode": "0x1906",
+    "lineupResponseOpcode": "0x8906",
+    "selectRequestOpcode": "0x1908",
+    "selectResponseOpcode": "0x8908",
+    "queryPayloadHex": "00",
+    "minimumLevel": 1,
+    "maximumLevel": 10,
+    "serverDailyLimit": 5,
+    "maximumGeneralsPerFormation": 5,
+    "fullTroopsDefault": false,
+    "actionType": 11,
+    "prepareOpcode": "0x1520",
+    "prepareResponseOpcode": "0x8520",
+    "dispatchOpcode": "0x1522",
+    "dispatchResponseOpcode": "0x8522",
+    "dispatchSuccessRequiresPositiveBattleId": true,
+    "immediateRelatedLong": -1,
+    "immediateFlagsHex": "000000",
+    "modes": {
+      "cooldown": 0,
+      "ready": [1, 2],
+      "fighting": 3,
+      "dailyDone": 4
+    },
+    "stageNames": ["卫兵", "小队长", "大队长", "头目", "首领"],
+    "level10Guard": {
+      "level": 10,
+      "stageId": 12305,
+      "stageName": "卫兵",
+      "enemyCount": 5,
+      "chariotTokens": ["弩车", "投石车", "冲车"],
+      "catapultToken": "投石车",
+      "minimumChariots": 3,
+      "lastChariotMustBeCatapult": true,
+      "alternateLevel": 7,
+      "defaultMaxRerolls": 80,
+      "maximumMaxRerolls": 300,
+      "rerollDelayMinMillis": 1000,
+      "rerollDelayMaxMillis": 2500
+    },
+    "schedule": {
+      "settlementRecheckMillis": 500,
+      "fightingPollMillis": 20000,
+      "cooldownPollMinMillis": 5000,
+      "cooldownPollMaxMillis": 60000,
+      "rerollNextCheckMillis": 4000,
+      "postDispatchPollMillis": 20000,
+      "battleTimeoutMillis": 900000
+    }
+  },
+  "dungeon": {
+    "catalogRequestOpcode": "0x1930",
+    "catalogResponseOpcode": "0x8930",
+    "stateRequestOpcode": "0x1938",
+    "stateResponseOpcode": "0x8938",
+    "rewardRequestOpcode": "0x193d",
+    "rewardResponseOpcode": "0x893d",
+    "battlePollRequestOpcode": "0x1702",
+    "battlePollResponseOpcode": "0x8702",
+    "chestRequestOpcode": "0x193e",
+    "chestResponseOpcode": "0x893e",
+    "maximumGeneralsPerFormation": 5,
+    "actionType": 14,
+    "singlePlayerType": 4,
+    "prepareOpcode": "0x1520",
+    "prepareResponseOpcode": "0x8520",
+    "dispatchOpcode": "0x1522",
+    "dispatchResponseOpcode": "0x8522",
+    "immediateRelatedLong": -1,
+    "immediateFlagsHex": "000000",
+    "allowedModes": ["loop", "clear"],
+    "defaultMode": "loop",
+    "chestNames": ["左", "中", "右"],
+    "uncompletedResultCode": 255,
+    "clearModeSkipsMultiplayerFinals": true,
+    "clearModeRequiresCatalogConfirmation": true,
+    "clearModePausesOnDefeat": true,
+    "defeatMarkers": ["战败", "挑战失败", "战斗失败", "副本失败"],
+    "launchSuccessMarkers": ["单人副本启动成功"],
+    "staticStageCodes": {
+      "0": [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "1": [3, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "2": [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37],
+      "3": [38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51],
+      "4": [52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62],
+      "5": [63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74],
+      "6": [75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85]
+    },
+    "schedule": {
+      "postLaunchPollMillis": 10000,
+      "battlePollMillis": 2000,
+      "battleTimeoutMillis": 480000,
+      "postCompletionMillis": 500,
+      "waitingUnlockMillis": 60000,
+      "dailyDonePollMillis": 60000
+    }
+  },
+  "militarySnapshot": {
+    "requestOpcode": "0x1600",
+    "responseOpcode": "0x8600",
+    "requestPayloadHex": "07000000000000000000000014",
+    "displayOrder": "active first, then remaining time ascending, then stable source order",
+    "alarmOnlyModeDoesNotPlaySoundOrVibrate": true
+  },
+  "internalAffairs": {
+    "upgradeBuildingsFlagIsAuthoritative": true,
+    "fillEveryAvailableBuildingAndTechnologyQueuePerRun": true,
+    "buildingCostsComeFromLiveGameState": true,
+    "technologyCostsComeFromLiveGameState": true
+  },
+  "sixMinistries": {
+    "verifiedCrop": "金银花",
+    "onlyVerifiedPlantingMaySend": true,
+    "unconfirmedHarvestStealAndCourtesyMustNotSend": true
+  },
+  "brushCenter": {
+    "source": "loginOwnedFiefCoordinateCache",
+    "selection": "majority fief among selected generals; tie uses first selected general",
+    "missingCoordinateMustFail": true,
+    "fakeDefaultCoordinateForbidden": true
+  },
+  "logging": {
+    "storage": "JSONL append",
+    "maximumEntries": 1500,
+    "cursor": "monotonic entry id",
+    "successRecordLimit": 50,
+    "successRecordOrder": "newest first"
+  }
+}

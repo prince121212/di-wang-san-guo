@@ -36,7 +36,11 @@ class VerifyOverallRegressionReadinessTest(unittest.TestCase):
         self.assertTrue(report["summary"]["actionSafetyInvariantReady"])
         self.assertFalse(report["summary"]["trueDeviceRegressionReady"])
         self.assertFalse(report["summary"]["realActionNetworkAllowed"])
-        self.assertIn("authorizedDeviceCount=0", report["missingLive"])
+        if report["summary"]["authorizedDeviceCount"] <= 0:
+            self.assertIn("authorizedDeviceCount=0", report["missingLive"])
+        else:
+            self.assertNotIn("authorizedDeviceCount=0", report["missingLive"])
+        self.assertTrue(report["missingLive"])
 
 
     def test_positive_native_wrapper_fixture_sets_dry_run_but_not_true_device_ready(self):

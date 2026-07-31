@@ -10,6 +10,36 @@ import org.junit.Test
 
 class CommonMainUiConfigMappingTest {
     @Test
+    fun desktopFrequentFieldsControlMaintenanceAndExpeditionPolicy() {
+        val configs = JSONObject().put(
+            "77::general",
+            feature(
+                JSONObject()
+                    .put("healWounded", false)
+                    .put("autoEnergy", true)
+                    .put("energyThreshold", 35)
+                    .put("foodToCopper", true)
+                    .put("copperFloorWan", 20)
+            )
+        )
+        val export = JSONObject()
+            .put("schema_version", "1.0-local")
+            .put("configs", configs)
+
+        val plan = SavedConfigTaskPlanFactory.plan(77L, export)
+        val general = plan.tasks.single { it.type == TaskType.GENERAL } as GeneralMaintenanceTask
+        val conversion = plan.tasks.single { it.type == TaskType.FOOD_TO_COPPER } as FoodToCopperTask
+
+        assertFalse(general.config.autoHeal)
+        assertEquals(35, general.config.minEnergy)
+        assertEquals("false", plan.session.channelExtra["expeditionHealWounded"])
+        assertEquals("35", plan.session.channelExtra["expeditionMinimumEnergy"])
+        assertEquals(20, conversion.config.copperFloorWan)
+        assertEquals("true", plan.session.channelExtra["foodToCopperEnabled"])
+        assertEquals("20", plan.session.channelExtra["copperFloorWan"])
+    }
+
+    @Test
     fun commonMainGeneralMapsButHistoricalCaptiveFieldsAreIgnoredForDesktopParity() {
         val configs = JSONObject()
             .put(
@@ -34,16 +64,15 @@ class CommonMainUiConfigMappingTest {
                 )
             )
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", configs)
 
         val tasks = SavedConfigTaskPlanFactory.plan(77L, export).tasks
-        val general = tasks.single { it.type == TaskType.GENERAL } as GeneralMaintenanceMockTask
+        val general = tasks.single { it.type == TaskType.GENERAL } as GeneralMaintenanceTask
 
         assertTrue(general.config.autoHeal)
         assertTrue(general.config.autoEnergy)
         assertEquals(35, general.config.minEnergy)
-        assertFalse(tasks.any { it.type == TaskType.SURRENDER_RELEASE })
     }
 
     @Test
@@ -58,15 +87,39 @@ class CommonMainUiConfigMappingTest {
             )
         )
         val export = JSONObject()
-            .put("schema_version", "0.1-static-mock")
+            .put("schema_version", "1.0-local")
             .put("configs", configs)
 
         val tasks = SavedConfigTaskPlanFactory.plan(77L, export).tasks
-        val internal = tasks.single { it.type == TaskType.INTERNAL } as InternalAffairsMockTask
+        val internal = tasks.single { it.type == TaskType.INTERNAL } as InternalAffairsTask
 
         assertFalse(internal.config.enabled)
         assertTrue(internal.config.upgradeTechnology)
         assertEquals(setOf(5, 8, 13), internal.config.technologyIds)
+    }
+
+    @Test
+    fun desktopUpgradeBuildingsSwitchIsPreservedIndependentlyFromAutoDomestic() {
+        val export = JSONObject()
+            .put("schema_version", "1.0-local")
+            .put(
+                "configs",
+                JSONObject().put(
+                    "77::internal_affairs",
+                    feature(
+                        JSONObject()
+                            .put("enabled", true)
+                            .put("upgradeBuildings", false)
+                            .put("emptyBuildingType", 1)
+                    )
+                )
+            )
+
+        val internal = SavedConfigTaskPlanFactory.plan(77L, export).tasks
+            .single { it.type == TaskType.INTERNAL } as InternalAffairsTask
+
+        assertTrue(internal.config.enabled)
+        assertFalse(internal.config.upgradeBuildings)
     }
 
     private fun feature(values: JSONObject): JSONObject =

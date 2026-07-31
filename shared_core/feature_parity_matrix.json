@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "scope": "电脑端单账号容器与手机端本地单账号容器",
+  "excluded": [
+    "电脑端多容器总控",
+    "电脑端起号工具",
+    "电脑端代理与IP节点管理",
+    "电脑端服务关闭与诊断接口"
+  ],
+  "deferred": [
+    "抢城",
+    "押镖",
+    "寻宝",
+    "连体物品整理"
+  ],
+  "verification": {
+    "codeAndOfflineTests": "aligned",
+    "realDeviceRegression": "pending",
+    "statusMeaning": {
+      "aligned": "无需真机动作即可完成的代码与行为契约已一致",
+      "aligned_pending_device": "代码、协议形状、调度和离线测试已一致，仅缺真机回归证据",
+      "deferred": "按当前范围置灰且 API 失败关闭"
+    }
+  },
+  "features": [
+    { "id": "accountLifecycle", "label": "账号登录、启停、删除、重连", "status": "aligned" },
+    { "id": "roleState", "label": "角色、资源、将领、军队、背包、状态", "status": "aligned" },
+    { "id": "formations", "label": "配兵、补兵、清空其他将领", "status": "aligned" },
+    { "id": "brushYellow", "label": "找黄、推荐中心、筛选、出征、治疗、次数", "status": "aligned_pending_device" },
+    { "id": "mine", "label": "找矿、筛选、占矿、加速、撤防", "status": "aligned_pending_device" },
+    { "id": "raid", "label": "掠夺", "status": "aligned_pending_device" },
+    { "id": "grabCity", "label": "抢城", "status": "deferred" },
+    { "id": "lossless", "label": "无损", "status": "aligned_pending_device" },
+    { "id": "dungeon", "label": "副本", "status": "aligned_pending_device" },
+    { "id": "convoy", "label": "押镖", "status": "deferred" },
+    { "id": "treasure", "label": "寻宝", "status": "deferred" },
+    { "id": "domestic", "label": "内政、建筑、科技", "status": "aligned_pending_device" },
+    { "id": "generalMaintenance", "label": "治疗、加体、加忠；未开放俘虏控件与电脑端一致禁用", "status": "aligned_pending_device" },
+    { "id": "inventory", "label": "丢弃、保留、装备、开箱", "status": "aligned_pending_device" },
+    { "id": "chainInventory", "label": "连体物品整理", "status": "deferred" },
+    { "id": "sixMinistries", "label": "六部已确认的金银花种植；未确认动作不发送", "status": "aligned_pending_device" },
+    { "id": "dailySignIn", "label": "自动签到", "status": "aligned_pending_device" },
+    { "id": "dailyArena", "label": "领竞技币（每日22:00周期）", "status": "aligned_pending_device" },
+    { "id": "dailyDonate", "label": "自动捐献", "status": "aligned_pending_device" },
+    { "id": "dailySalary", "label": "国家俸禄", "status": "aligned_pending_device" },
+    { "id": "dailyNationalCollect", "label": "国家征收", "status": "aligned_pending_device" },
+    { "id": "dailyCityLordCollect", "label": "城主征收", "status": "aligned_pending_device" },
+    { "id": "dailyGeneralVisit", "label": "名将拜访", "status": "aligned_pending_device" },
+    { "id": "militaryIntel", "label": "军情与国家", "status": "aligned_pending_device" },
+    { "id": "alarm", "label": "来袭、军情、异常警报", "status": "aligned_pending_device" },
+    { "id": "logsAndStatus", "label": "JSONL日志、结构化成功记录、任务状态、每日完成", "status": "aligned" },
+    { "id": "guides", "label": "查名将、查攻略、查开服时间", "status": "aligned" }
+  ]
+}
