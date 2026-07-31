@@ -208,15 +208,22 @@ class AccountSessionRecovery(
     private val stateTransitions: AccountStateTransitionSource,
     private val probe: SessionHealthProbe = RealSessionHealthProbe(),
 ) {
+    private val processRecovery = AccountProcessRecoveryCoordinator(stateTransitions)
+
     fun prepareProcessRecovery(nowMillis: Long) {
-        accounts.listAccounts().forEach { account ->
-            val transition = transition(
-                account,
-                AccountStateEvents.PROCESS_RECOVERED,
-                nowMillis
-            )
-            applyTransition(account, transition)
-        }
+        processRecovery.prepare(
+            store = object : AccountProcessRecoveryStore {
+                override fun snapshots(): List<AccountProcessRecoverySnapshot> =
+                    accounts.listAccounts().map { account ->
+                        AccountProcessRecoverySnapshot(account, reconnects.state(account.id))
+                    }
+
+                override fun apply(account: GameAccount, transition: AccountStateTransition) {
+                    applyTransition(account, transition)
+                }
+            },
+            nowMillis = nowMillis
+        )
     }
 
     fun reconcile(nowMillis: Long, forceValidation: Boolean): SessionRecoverySummary {
