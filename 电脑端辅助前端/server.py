@@ -115,8 +115,18 @@ from dwpm_core.features.lossless import (
     parse_lossless_status as shared_parse_lossless_status,
 )
 from dwpm_core.features.generals import (
+    OFFICE_NAMES_BY_ID as SHARED_OFFICE_NAMES_BY_ID,
     general_status_text_from_code as shared_general_status_text_from_code,
+    office_name_from_id as shared_office_name_from_id,
+    parse_8004_head as shared_parse_8004_head,
+    parse_a110_general_statuses as shared_parse_a110_general_statuses,
+    parse_idle_army_from_8004 as shared_parse_idle_army_from_8004,
+    parse_military_intel_from_a110 as shared_parse_military_intel_from_a110,
     recover_generals_from_8004 as shared_recover_generals_from_8004,
+)
+from dwpm_core.features.inventory import (
+    parse_8104_equipment_records as shared_parse_8104_equipment_records,
+    parse_8104_inventory as shared_parse_8104_inventory,
 )
 from dwpm_core.features.military import (
     MILITARY_ACTION_STATE_BY_TAG as SHARED_MILITARY_ACTION_STATE_BY_TAG,
@@ -11640,143 +11650,11 @@ def recover_generals_from_8004(hexstr: str) -> list[dict[str, Any]]:
     return shared_recover_generals_from_8004(hexstr)
 
 
-def parse_idle_army_from_8004(hexstr: str, generals: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Parse idle/unassigned soldiers from 0x8004.
-
-    Correct 0x8004 fief soldier block observed in live captures is compact:
-      0x1d, idleTypeCount, repeated(byte soldierType, int idleCount),
-      woundedTypeCount, repeated(byte soldierType, int woundedCount).
-
-    The older int-count/short-type table-like data later in 0x8004 belongs to other
-    config/reward sections and must not be shown as role -> army.
-    """
-    if not hexstr:
-        return []
-    try:
-        bs = bytes.fromhex(hexstr)
-    except Exception:
-        return []
-    valid_codes = set(SOLDIER_CODE_NAMES.keys())
-
-    def prev_fief_name(pos: int) -> str:
-        try:
-            strings = extract_utf_strings(bs[max(0, pos - 700):pos], min_len=2, max_len=40)
-        except Exception:
-            return ""
-        for item in reversed(strings):
-            text = str(item.get("text") or "")
-            if any(k in text for k in ["基地", "封地", "城", "县", "郡"]):
-                return text
-        return ""
-
-    candidates: list[dict[str, Any]] = []
-    for marker in range(0, max(0, len(bs) - 3)):
-        if bs[marker] != 0x1D:
-            continue
-        pos = marker + 1
-        idle_type_count = bs[pos]
-        pos += 1
-        if not (0 <= idle_type_count <= 16):
-            continue
-        idle_rows: list[tuple[int, int]] = []
-        ok = True
-        for _ in range(idle_type_count):
-            if pos + 5 > len(bs):
-                ok = False
-                break
-            typ = bs[pos]
-            amount = int.from_bytes(bs[pos + 1:pos + 5], "big", signed=True)
-            pos += 5
-            if typ not in valid_codes or amount < 0 or amount > 500000:
-                ok = False
-                break
-            idle_rows.append((typ, amount))
-        if not ok or pos >= len(bs):
-            continue
-        wounded_type_count = bs[pos]
-        pos += 1
-        if not (0 <= wounded_type_count <= 16):
-            continue
-        wounded_rows: list[tuple[int, int]] = []
-        for _ in range(wounded_type_count):
-            if pos + 5 > len(bs):
-                ok = False
-                break
-            typ = bs[pos]
-            amount = int.from_bytes(bs[pos + 1:pos + 5], "big", signed=True)
-            pos += 5
-            if typ not in valid_codes or amount < 0 or amount > 500000:
-                ok = False
-                break
-            wounded_rows.append((typ, amount))
-        if not ok:
-            continue
-        if not any(v for _, v in idle_rows + wounded_rows):
-            continue
-        fief_name = prev_fief_name(marker)
-        if not fief_name:
-            continue
-        merged: dict[int, dict[str, Any]] = {}
-        order: list[int] = []
-        for typ, amount in idle_rows:
-            if typ not in merged:
-                merged[typ] = {
-                    "soldierTypeCode": typ,
-                    "soldierType": soldier_type_name(typ),
-                    "idleCount": 0,
-                    "count": 0,
-                    "amount": 0,
-                    "woundedCount": 0,
-                    "hurtSoldierCount": 0,
-                    "fiefName": fief_name,
-                    "offset": marker,
-                }
-                order.append(typ)
-            merged[typ]["idleCount"] += amount
-            merged[typ]["count"] = merged[typ]["idleCount"]
-            merged[typ]["amount"] = merged[typ]["idleCount"]
-        for typ, amount in wounded_rows:
-            if typ not in merged:
-                merged[typ] = {
-                    "soldierTypeCode": typ,
-                    "soldierType": soldier_type_name(typ),
-                    "idleCount": 0,
-                    "count": 0,
-                    "amount": 0,
-                    "woundedCount": 0,
-                    "hurtSoldierCount": 0,
-                    "fiefName": fief_name,
-                    "offset": marker,
-                }
-                order.append(typ)
-            merged[typ]["woundedCount"] += amount
-            merged[typ]["hurtSoldierCount"] = merged[typ]["woundedCount"]
-        rows = [merged[t] for t in order]
-        # UI's role-army page defaults to the current/base fief. Prefer the 基地 block
-        # when several fief-like blocks are present.
-        score = (1 if "基地" in fief_name else 0, len(rows), sum(int(r["idleCount"]) + int(r["woundedCount"]) for r in rows), -marker)
-        candidates.append({"marker": marker, "fiefName": fief_name, "rows": rows, "score": score})
-    if not candidates:
-        return []
-    # Return all fief army blocks, not only the base fief. The role -> army page
-    # should show idle/wounded soldiers for every fief separately.
-    out: list[dict[str, Any]] = []
-    merged: dict[tuple[str, int], dict[str, Any]] = {}
-    for cand in sorted(candidates, key=lambda x: int(x.get("marker") or 0)):
-        for row in cand.get("rows") or []:
-            key = (str(row.get("fiefName") or ""), int(row.get("soldierTypeCode") or 0))
-            if key not in merged:
-                item = dict(row)
-                merged[key] = item
-                out.append(item)
-            else:
-                item = merged[key]
-                item["idleCount"] = int(item.get("idleCount") or 0) + int(row.get("idleCount") or 0)
-                item["count"] = item["idleCount"]
-                item["amount"] = item["idleCount"]
-                item["woundedCount"] = int(item.get("woundedCount") or 0) + int(row.get("woundedCount") or 0)
-                item["hurtSoldierCount"] = item["woundedCount"]
-    return out
+def parse_idle_army_from_8004(
+    hexstr: str,
+    generals: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return shared_parse_idle_army_from_8004(hexstr, generals)
 
 
 def extract_utf_strings(payload: bytes, *, min_len: int = 2, max_len: int = 180) -> list[dict[str, Any]]:
@@ -11880,112 +11758,22 @@ def general_status_text_from_code(status_code: Any) -> str:
     return shared_general_status_text_from_code(status_code)
 
 
-def parse_a110_general_statuses(payload: bytes, generals: list[dict[str, Any]]) -> dict[str, Any]:
-    """Recover explicit general status codes from 0xa110 general records.
-
-    Important correction: the fields at body+0x42/body+0x46 are also non-zero in
-    ordinary 0x8004 idle general records, so they are *not* reliable march/task flags.
-    The stable UI status byte is the same 114-byte body field used by 0x8004:
-    body+0x56 (Lo/a.Vo in the original client). body+0x58 is not the state.
-    """
-    BODY_LEN = 114
-    REPEATED_ID_OFFSET = 0x3A
-    HERO_STATUS_OFFSET = 0x56
-    LEGACY_STATUS58_OFFSET = 0x58
-
-    status_by_name: dict[str, str] = {}
-    status_by_id: dict[str, str] = {}
-    records: list[dict[str, Any]] = []
-    seen: set[int] = set()
-
-    for g in generals:
-        try:
-            gid = int(g.get("id") or 0)
-        except Exception:
-            continue
-        name = str(g.get("name") or "")
-        if gid <= 0 or not name:
-            continue
-        gid_bytes = gid.to_bytes(8, "big", signed=False)
-        name_bytes = name.encode("utf-8")
-        needle = gid_bytes + len(name_bytes).to_bytes(2, "big") + name_bytes
-        start = 0
-        while True:
-            pos = payload.find(needle, start)
-            if pos < 0:
-                break
-            start = pos + 1
-            body_off = pos + len(needle)
-            if body_off + BODY_LEN > len(payload):
-                continue
-            body = payload[body_off:body_off + BODY_LEN]
-            if body[REPEATED_ID_OFFSET:REPEATED_ID_OFFSET + 8] != gid_bytes:
-                continue
-            if body[-2:] != b"\xff\xff":
-                continue
-            status_code = body[HERO_STATUS_OFFSET]
-            state = general_status_text_from_code(status_code)
-            if gid in seen:
-                continue
-            seen.add(gid)
-            status_by_name[name] = state
-            status_by_id[str(gid)] = state
-            status_by_id[f"{gid:016x}"] = state
-            records.append({
-                "id": gid,
-                "idHex": f"{gid:016x}",
-                "name": name,
-                "state": state,
-                "statusCode": status_code,
-                "heroStatusCode": status_code,
-                "stateCode56": status_code,
-                "rawStatus58": body[LEGACY_STATUS58_OFFSET],
-                "status58": body[LEGACY_STATUS58_OFFSET],
-                "busy": False if state == "闲" else True,
-                "recordOffset": pos,
-                "bodyOffset": body_off,
-                "source": "0x3110/0xa110-general-status-code56",
-            })
-            break
-
-    return {
-        "statusByName": status_by_name,
-        "statusById": status_by_id,
-        "records": records,
-    }
+def parse_a110_general_statuses(
+    payload: bytes,
+    generals: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return shared_parse_a110_general_statuses(payload, generals)
 
 
-def parse_military_intel_from_a110(payload: bytes, generals: list[dict[str, Any]]) -> dict[str, Any]:
-    names = [str(g.get("name") or "") for g in generals if g.get("name")]
-    events = []
-    for item in extract_utf_strings(payload):
-        text = str(item["text"])
-        if not any(k in text for k in ["【返回】", "返回", "出征", "战斗", "攻打", "行军", "剿灭", "胜利", "失败"]):
-            continue
-        matched = [name for name in names if name and name in text]
-        if not matched and not any(k in text for k in ["【返回】", "返回", "剿灭"]):
-            continue
-        state = ""
-        if "返回" in text:
-            state = "返回"
-        elif any(k in text for k in ["出征", "战斗", "攻打", "行军", "剿灭"]):
-            state = "征"
-        event = {
-            "text": text,
-            "offset": item["offset"],
-            "state": state,
-            "generalNames": matched,
-        }
-        events.append(event)
-    status = parse_a110_general_statuses(payload, generals)
-    return {
-        "sourceOpcode": "0x3110/0xa110",
-        "events": events,
-        "statusByName": status["statusByName"],
-        "statusById": status["statusById"],
-        "generalStatusRecords": status["records"],
-        "updatedAt": now_ms(),
-    }
+def parse_military_intel_from_a110(
+    payload: bytes,
+    generals: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return shared_parse_military_intel_from_a110(
+        payload,
+        generals,
+        updated_at=now_ms(),
+    )
 
 
 def update_military_intel_from_packets(sess: dict[str, Any], packets: list[dict[str, Any]], http_code: int = 200, persist: bool = False) -> dict[str, Any]:
@@ -12075,46 +11863,12 @@ def refresh_military_intel(sess: dict[str, Any]) -> dict[str, Any]:
     return update_military_intel_from_packets(sess, packets, code, persist=True)
 
 
-OFFICE_NAMES_BY_ID: dict[int, str] = {
-    # 游民/细作是没有正式官职的身份，但客户端使用同一字段表示。
-    0x0000: "游民",
-    0x0001: "细作",
-    0x0100: "国民",
-    0x0400: "丞相",
-    0x0401: "丞相",
-    0x0480: "大都督",
-    0x0481: "大都督",
-    0x0500: "国王",
-}
-OFFICE_NAMES_BY_ID.update({0x0200 + index: "侍郎" for index in range(0x19)})
-OFFICE_NAMES_BY_ID.update({0x0280 + index: "都尉" for index in range(0x19)})
-OFFICE_NAMES_BY_ID.update({
-    0x0300: "兵部尚书",
-    0x0301: "吏部尚书",
-    0x0302: "民部尚书",
-    0x0303: "刑部尚书",
-    0x0304: "工部尚书",
-    0x0305: "户部尚书",
-    0x0306: "礼部尚书",
-    0x0307: "学部尚书",
-    0x0380: "虎威将军",
-    0x0381: "破虏将军",
-    0x0382: "奋武将军",
-    0x0383: "抚远将军",
-    0x0384: "征东将军",
-    0x0385: "平西将军",
-    0x0386: "镇北将军",
-    0x0387: "定南将军",
-})
+OFFICE_NAMES_BY_ID = SHARED_OFFICE_NAMES_BY_ID
 
 
 def office_name_from_id(office_id: Any) -> str:
     """Return the client-visible office name for the 0x8004 office short."""
-    try:
-        normalized = int(office_id) & 0xFFFF
-    except (TypeError, ValueError):
-        return ""
-    return OFFICE_NAMES_BY_ID.get(normalized, "")
+    return shared_office_name_from_id(office_id)
 
 
 def role_is_national_citizen(sess: dict[str, Any]) -> bool:
@@ -12171,133 +11925,11 @@ def national_citizen_daily_skip_result(sess: dict[str, Any]) -> dict[str, Any] |
     }
 
 
-def parse_8004_head(payload: bytes, source_opcode: str = "0x1016/0x8004") -> dict[str, Any]:
-    """Parse the stable monarch/resource head of 0x8004.
-
-    This mirrors the Android RealGameProtocolClient.parse8004Head() parser so the
-    desktop UI can replace prototype/hardcoded role rows with live account data.
-    """
-    p = 0
-
-    def i8() -> int:
-        nonlocal p
-        v = payload[p]
-        p += 1
-        return v
-
-    def i16() -> int:
-        nonlocal p
-        v = int.from_bytes(payload[p:p + 2], "big", signed=True)
-        p += 2
-        return v
-
-    def i32() -> int:
-        nonlocal p
-        v = int.from_bytes(payload[p:p + 4], "big", signed=True)
-        p += 4
-        return v
-
-    def i64() -> int:
-        nonlocal p
-        v = int.from_bytes(payload[p:p + 8], "big", signed=True)
-        p += 8
-        return v
-
-    def utf_at_cursor() -> str:
-        nonlocal p
-        s, p2 = read_utf(payload, p)
-        p = p2
-        return s
-
-    if len(payload) < 96:
-        return {"sourceOpcode": source_opcode, "payloadByteCount": len(payload), "parseError": "0x8004 payload too short"}
-    try:
-        status1 = i8()
-        status2 = i8()
-        server_time = i64()
-        role_id = i64()
-        role_name = utf_at_cursor()
-        flag_b = i8()
-        level = i8()
-        copper = i64()
-        food = i64()
-        field_f = i64()
-        flag_g = i8()
-        # 这里的 short 是头像资源编号（data.i.h），不是官职。
-        avatar_short_raw = i16()
-        flag_x = i8()
-        prestige = i64()
-        prestige_prev = i64()
-        prestige_next = i64()
-        skip_long = i64()
-        flag_l = i8()
-        copper_per_hour = i32()
-        food_per_hour = i32()
-        battle_merit_candidate = i64()
-        field_p = i64()
-        population_current = i64()
-        population_cap = i64()
-        fief_limit = i8()
-        general_limit = i8()
-        resource_point_current = i8()
-        resource_point_cap = i8()
-        # data.i.x 在资源点上限后还会读一个保留 byte，再读官职 short（data.i.w）。
-        office_field_flag = None
-        office_id_raw = None
-        if len(payload) - p >= 3:
-            office_field_flag = i8()
-            office_id_raw = i16()
-        parsed = p
-        tail = payload[parsed:]
-        return {
-            "roleId": role_id,
-            "roleName": role_name,
-            "level": level,
-            "copper": copper,
-            "food": food,
-            "prestige": prestige,
-            "prestigePrevThreshold": prestige_prev,
-            "prestigeNextThreshold": prestige_next,
-            "copperPerHour": copper_per_hour,
-            "foodPerHour": food_per_hour,
-            "populationCurrent": population_current,
-            "populationCap": population_cap,
-            "fiefLimit": fief_limit,
-            "generalLimit": general_limit,
-            "resourcePointCurrent": resource_point_current,
-            "resourcePointCap": resource_point_cap,
-            "serverTimeMillis": server_time,
-            # 中段未完全定性字段：保留原始值，供协议差分/后续映射。
-            "status1": status1,
-            "status2": status2,
-            "flagB": flag_b,
-            "fieldF": field_f,
-            "flagG": flag_g,
-            # 兼容旧字段名：历史版本误把头像 short 标成了 officeShort。
-            "officeShortRaw": avatar_short_raw,
-            "officeShortUnsigned": avatar_short_raw & 0xFFFF,
-            "avatarShortRaw": avatar_short_raw,
-            "avatarShortUnsigned": avatar_short_raw & 0xFFFF,
-            "officeFieldFlag": office_field_flag,
-            "officeId": office_id_raw,
-            "officeIdRaw": office_id_raw,
-            "officeIdUnsigned": (
-                office_id_raw & 0xFFFF if office_id_raw is not None else None
-            ),
-            "officeName": office_name_from_id(office_id_raw),
-            "flagX": flag_x,
-            "skipLong": skip_long,
-            "flagL": flag_l,
-            "battleMeritCandidate": battle_merit_candidate,
-            "fieldP": field_p,
-            "sourceOpcode": source_opcode,
-            "payloadByteCount": len(payload),
-            "parsedHeadByteCount": parsed,
-            "tailByteCount": len(tail),
-            "tailUtf8Preview": printable(tail, 300),
-        }
-    except Exception as e:
-        return {"sourceOpcode": source_opcode, "payloadByteCount": len(payload), "parseError": str(e)}
+def parse_8004_head(
+    payload: bytes,
+    source_opcode: str = "0x1016/0x8004",
+) -> dict[str, Any]:
+    return shared_parse_8004_head(payload, source_opcode)
 
 
 def item_names_by_id() -> dict[int, str]:
@@ -12343,195 +11975,29 @@ def equipment_templates_by_id() -> dict[int, dict[str, Any]]:
     return templates
 
 
-def parse_8104_equipment_records(payload: bytes, offset: int) -> tuple[list[dict[str, Any]], int, str]:
-    """Parse the V5 bank-0 equipment block following the fixed item table."""
-    if offset + 2 > len(payload):
-        return [], offset, "缺少装备数量"
-    p = offset
-    count = int.from_bytes(payload[p:p + 2], "big", signed=False)
-    p += 2
-    if count > 1000:
-        return [], offset, f"装备数量异常：{count}"
-    templates = equipment_templates_by_id()
-    equipment: list[dict[str, Any]] = []
-    try:
-        for index in range(count):
-            if p + 11 > len(payload):
-                raise ValueError(f"第 {index + 1} 条装备记录不完整")
-            record_offset = p
-            instance_id = int.from_bytes(payload[p:p + 8], "big", signed=True)
-            p += 8
-            template_id = int.from_bytes(payload[p:p + 2], "big", signed=False)
-            p += 2
-            attr_len = payload[p]
-            p += 1
-            if attr_len > 64 or p + attr_len + 10 > len(payload):
-                raise ValueError(f"第 {index + 1} 条装备属性长度异常：{attr_len}")
-            attrs = list(payload[p:p + attr_len])
-            p += attr_len
-            strengthen_effect = int.from_bytes(payload[p:p + 2], "big", signed=False)
-            p += 2
-            risk0 = payload[p]
-            risk1 = payload[p + 1]
-            p += 2
-            protocol_j = int.from_bytes(payload[p:p + 2], "big", signed=False)
-            p += 2
-            pity_current = int.from_bytes(payload[p:p + 2], "big", signed=False)
-            p += 2
-            pity_target = int.from_bytes(payload[p:p + 2], "big", signed=False)
-            p += 2
-            extra_text, p = read_utf(payload, p)
-            template = templates.get(template_id) or {
-                "templateId": template_id,
-                "name": f"装备#{template_id}",
-                "level": 0,
-                "typeCode": -1,
-                "famous": False,
-                "description": "",
-            }
-            quality = attrs[0] if attrs else -1
-            strengthen = attrs[1] if len(attrs) > 1 else 0
-            equipment.append({
-                "index": index,
-                "instanceId": instance_id,
-                "id": instance_id,
-                "instanceIdHex": f"{instance_id:016x}" if instance_id >= 0 else "",
-                "templateId": template_id,
-                "name": template["name"],
-                "level": int(template["level"]),
-                "typeCode": int(template["typeCode"]),
-                "famous": bool(template["famous"]),
-                "quality": quality,
-                "qualityName": EQUIPMENT_QUALITY_NAMES[quality] if 0 <= quality < len(EQUIPMENT_QUALITY_NAMES) else f"品质{quality}",
-                "strengthen": strengthen,
-                "attributes": attrs,
-                "strengthenEffect": strengthen_effect,
-                "risk": [risk0, risk1],
-                "protocolJ": protocol_j,
-                "pityCurrent": pity_current,
-                "pityTarget": pity_target,
-                "extraText": extra_text,
-                "templateDescription": template["description"],
-                "offset": record_offset,
-                "rawHex": payload[record_offset:p].hex(),
-            })
-        return equipment, p, ""
-    except Exception as e:
-        return equipment, p, str(e)
+def parse_8104_equipment_records(
+    payload: bytes,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int, str]:
+    return shared_parse_8104_equipment_records(
+        payload,
+        offset,
+        equipment_templates_by_id(),
+        EQUIPMENT_QUALITY_NAMES,
+    )
 
 
-def parse_8104_inventory(payload: bytes, source_opcode: str = "0x1104/0x8104") -> dict[str, Any]:
-    """Conservative 0x8104 inventory parser.
-
-    The stable header is:
-      14 bytes reserved/account context, u16 capacity, u16 itemCount.
-
-    Observed 20260710 samples contain the visible bag list immediately after
-    the header as itemCount fixed records:
-      u16 itemId, u16 count, 8 reserved zero bytes.
-
-    Bytes after those itemCount records are detail/metadata blocks. Do not scan
-    them as bag items, otherwise overlapping bytes create false goods such as
-    "黄金包 x256" or huge "活血丹" counts.
-    """
-    if len(payload) < 18:
-        return {"sourceOpcode": source_opcode, "items": [], "parseError": f"0x8104 payload too short: {len(payload)}"}
-    capacity = int.from_bytes(payload[14:16], "big", signed=False)
-    item_count = int.from_bytes(payload[16:18], "big", signed=False)
-    names = item_names_by_id()
-    items: list[dict[str, Any]] = []
-    seen: set[tuple[int, int]] = set()
-
-    def add_item(item_id: int, count: int, off: int, layout: str, raw_len: int = 16) -> None:
-        if item_id not in names or count <= 0 or count > 500000:
-            return
-        key = (item_id, off)
-        if key in seen:
-            return
-        seen.add(key)
-        items.append({
-            "index": len(items),
-            "itemId": item_id,
-            "id": item_id,
-            "name": names.get(item_id, f"道具#{item_id}"),
-            "count": count,
-            "offset": off,
-            "layout": layout,
-            "rawHex": payload[off:min(off + raw_len, len(payload))].hex(),
-            "source": source_opcode,
-        })
-
-    # Preferred live layout: exact fixed-size visible bag table.
-    table_off = 18
-    table_len = item_count * 12
-    if item_count > 0 and table_off + table_len <= len(payload):
-        fixed_rows: list[tuple[int, int, int]] = []
-        fixed_ok = True
-        for idx in range(item_count):
-            off = table_off + idx * 12
-            item_id = int.from_bytes(payload[off:off + 2], "big", signed=False)
-            count = int.from_bytes(payload[off + 2:off + 4], "big", signed=False)
-            reserved = payload[off + 4:off + 12]
-            # itemId 0 is valid: 徭役令.
-            if item_id not in names or count <= 0 or count > 500000 or reserved != b"\x00" * 8:
-                fixed_ok = False
-                break
-            fixed_rows.append((off, item_id, count))
-        if fixed_ok and (fixed_rows or item_count == 0):
-            for off, item_id, count in fixed_rows:
-                add_item(item_id, count, off, "u16-id-u16-count-reserved8", 12)
-            equipment, v5_end, equipment_error = parse_8104_equipment_records(payload, table_off + table_len)
-            parsed = {
-                "sourceOpcode": source_opcode,
-                "capacity": capacity,
-                "itemCount": item_count,
-                "items": items,
-                "equipmentCount": len(equipment),
-                "equipment": equipment,
-                "payloadByteCount": len(payload),
-                "parsedItemCount": len(items),
-                "dictionarySize": len(names),
-                "layout": "u16-id-u16-count-reserved8-table",
-                "v5EndOffset": v5_end,
-            }
-            if equipment_error:
-                parsed["equipmentParseError"] = equipment_error
-            return parsed
-
-    # Fallback for older/uncertain captures. Kept conservative and bounded by
-    # itemCount; preferred table parser above should handle current live 0x8104.
-    first_off = 18
-    if first_off + 16 <= len(payload):
-        item_id = int.from_bytes(payload[first_off:first_off + 4], "big", signed=False)
-        count_a = int.from_bytes(payload[first_off + 12:first_off + 14], "big", signed=False)
-        count_b = int.from_bytes(payload[first_off + 14:first_off + 16], "big", signed=False)
-        add_item(item_id, count_b or count_a, first_off, "int-id-reserved-count-slot", 16)
-
-    for off in range(18, max(18, len(payload) - 3)):
-        if first_off <= off < first_off + 16:
-            continue
-        item_id = int.from_bytes(payload[off:off + 2], "big", signed=False)
-        count = int.from_bytes(payload[off + 2:off + 4], "big", signed=False)
-        if item_id not in names or count <= 0:
-            continue
-        prefix8 = payload[max(18, off - 8):off]
-        prefix6 = payload[max(18, off - 6):off]
-        if prefix8 == b"\x00" * 8 or prefix6 == b"\x00" * 6:
-            # Ignore the low half of the first int-id record; it was already handled above.
-            if off == first_off + 2:
-                continue
-            add_item(item_id, count, off, "zero-prefix-u16-id-u16-count", 12)
-        if len(items) >= item_count:
-            break
-    return {
-        "sourceOpcode": source_opcode,
-        "capacity": capacity,
-        "itemCount": item_count,
-        "items": items,
-        "payloadByteCount": len(payload),
-        "parsedItemCount": len(items),
-        "dictionarySize": len(names),
-    }
+def parse_8104_inventory(
+    payload: bytes,
+    source_opcode: str = "0x1104/0x8104",
+) -> dict[str, Any]:
+    return shared_parse_8104_inventory(
+        payload,
+        source_opcode,
+        item_names=item_names_by_id(),
+        equipment_templates=equipment_templates_by_id(),
+        quality_names=EQUIPMENT_QUALITY_NAMES,
+    )
 
 
 def parse_status_utf(payload: bytes) -> tuple[int | None, str, int]:

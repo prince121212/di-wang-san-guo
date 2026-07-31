@@ -4,7 +4,54 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from .formation import soldier_type_name
+from ..protocol.wire import extract_utf_strings, printable, read_utf
+from .formation import SOLDIER_CODE_NAMES, soldier_type_name
+
+
+OFFICE_NAMES_BY_ID = {
+    0x0000: "游民",
+    0x0001: "细作",
+    0x0100: "国民",
+    0x0400: "丞相",
+    0x0401: "丞相",
+    0x0480: "大都督",
+    0x0481: "大都督",
+    0x0500: "国王",
+}
+OFFICE_NAMES_BY_ID.update(
+    {0x0200 + index: "侍郎" for index in range(0x19)}
+)
+OFFICE_NAMES_BY_ID.update(
+    {0x0280 + index: "都尉" for index in range(0x19)}
+)
+OFFICE_NAMES_BY_ID.update(
+    {
+        0x0300: "兵部尚书",
+        0x0301: "吏部尚书",
+        0x0302: "民部尚书",
+        0x0303: "刑部尚书",
+        0x0304: "工部尚书",
+        0x0305: "户部尚书",
+        0x0306: "礼部尚书",
+        0x0307: "学部尚书",
+        0x0380: "虎威将军",
+        0x0381: "破虏将军",
+        0x0382: "奋武将军",
+        0x0383: "抚远将军",
+        0x0384: "征东将军",
+        0x0385: "平西将军",
+        0x0386: "镇北将军",
+        0x0387: "定南将军",
+    }
+)
+
+
+def office_name_from_id(office_id: Any) -> str:
+    try:
+        normalized = int(office_id) & 0xFFFF
+    except (TypeError, ValueError):
+        return ""
+    return OFFICE_NAMES_BY_ID.get(normalized, "")
 
 
 def general_status_text_from_code(status_code: Any) -> str:
@@ -348,3 +395,468 @@ def recover_generals_from_8004(hexstr: str) -> List[Dict[str, Any]]:
                     }
                 )
     return final
+
+
+def parse_idle_army_from_8004(
+    hexstr: str,
+    generals: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    del generals
+    if not hexstr:
+        return []
+    try:
+        payload = bytes.fromhex(hexstr)
+    except Exception:
+        return []
+    valid_codes = set(SOLDIER_CODE_NAMES.keys())
+
+    def previous_fief_name(position: int) -> str:
+        try:
+            strings = extract_utf_strings(
+                payload[max(0, position - 700):position],
+                min_len=2,
+                max_len=40,
+            )
+        except Exception:
+            return ""
+        for item in reversed(strings):
+            text = str(item.get("text") or "")
+            if any(token in text for token in ("基地", "封地", "城", "县", "郡")):
+                return text
+        return ""
+
+    candidates = []
+    for marker in range(0, max(0, len(payload) - 3)):
+        if payload[marker] != 0x1D:
+            continue
+        position = marker + 1
+        idle_type_count = payload[position]
+        position += 1
+        if not 0 <= idle_type_count <= 16:
+            continue
+        idle_rows = []
+        valid = True
+        for _ in range(idle_type_count):
+            if position + 5 > len(payload):
+                valid = False
+                break
+            soldier_type = payload[position]
+            amount = int.from_bytes(
+                payload[position + 1:position + 5],
+                "big",
+                signed=True,
+            )
+            position += 5
+            if (
+                soldier_type not in valid_codes
+                or amount < 0
+                or amount > 500000
+            ):
+                valid = False
+                break
+            idle_rows.append((soldier_type, amount))
+        if not valid or position >= len(payload):
+            continue
+        wounded_type_count = payload[position]
+        position += 1
+        if not 0 <= wounded_type_count <= 16:
+            continue
+        wounded_rows = []
+        for _ in range(wounded_type_count):
+            if position + 5 > len(payload):
+                valid = False
+                break
+            soldier_type = payload[position]
+            amount = int.from_bytes(
+                payload[position + 1:position + 5],
+                "big",
+                signed=True,
+            )
+            position += 5
+            if (
+                soldier_type not in valid_codes
+                or amount < 0
+                or amount > 500000
+            ):
+                valid = False
+                break
+            wounded_rows.append((soldier_type, amount))
+        if not valid:
+            continue
+        if not any(value for _, value in idle_rows + wounded_rows):
+            continue
+        fief_name = previous_fief_name(marker)
+        if not fief_name:
+            continue
+        merged: Dict[int, Dict[str, Any]] = {}
+        order = []
+        for soldier_type, amount in idle_rows:
+            if soldier_type not in merged:
+                merged[soldier_type] = {
+                    "soldierTypeCode": soldier_type,
+                    "soldierType": soldier_type_name(soldier_type),
+                    "idleCount": 0,
+                    "count": 0,
+                    "amount": 0,
+                    "woundedCount": 0,
+                    "hurtSoldierCount": 0,
+                    "fiefName": fief_name,
+                    "offset": marker,
+                }
+                order.append(soldier_type)
+            merged[soldier_type]["idleCount"] += amount
+            merged[soldier_type]["count"] = merged[soldier_type]["idleCount"]
+            merged[soldier_type]["amount"] = merged[soldier_type]["idleCount"]
+        for soldier_type, amount in wounded_rows:
+            if soldier_type not in merged:
+                merged[soldier_type] = {
+                    "soldierTypeCode": soldier_type,
+                    "soldierType": soldier_type_name(soldier_type),
+                    "idleCount": 0,
+                    "count": 0,
+                    "amount": 0,
+                    "woundedCount": 0,
+                    "hurtSoldierCount": 0,
+                    "fiefName": fief_name,
+                    "offset": marker,
+                }
+                order.append(soldier_type)
+            merged[soldier_type]["woundedCount"] += amount
+            merged[soldier_type]["hurtSoldierCount"] = merged[soldier_type][
+                "woundedCount"
+            ]
+        rows = [merged[soldier_type] for soldier_type in order]
+        score = (
+            1 if "基地" in fief_name else 0,
+            len(rows),
+            sum(
+                int(row["idleCount"]) + int(row["woundedCount"])
+                for row in rows
+            ),
+            -marker,
+        )
+        candidates.append(
+            {
+                "marker": marker,
+                "fiefName": fief_name,
+                "rows": rows,
+                "score": score,
+            }
+        )
+    if not candidates:
+        return []
+    output = []
+    merged_rows: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for candidate in sorted(
+        candidates,
+        key=lambda item: int(item.get("marker") or 0),
+    ):
+        for row in candidate.get("rows") or []:
+            key = (
+                str(row.get("fiefName") or ""),
+                int(row.get("soldierTypeCode") or 0),
+            )
+            if key not in merged_rows:
+                item = dict(row)
+                merged_rows[key] = item
+                output.append(item)
+            else:
+                item = merged_rows[key]
+                item["idleCount"] = int(item.get("idleCount") or 0) + int(
+                    row.get("idleCount") or 0
+                )
+                item["count"] = item["idleCount"]
+                item["amount"] = item["idleCount"]
+                item["woundedCount"] = int(
+                    item.get("woundedCount") or 0
+                ) + int(row.get("woundedCount") or 0)
+                item["hurtSoldierCount"] = item["woundedCount"]
+    return output
+
+
+def parse_8004_head(
+    payload: bytes,
+    source_opcode: str = "0x1016/0x8004",
+) -> Dict[str, Any]:
+    position = 0
+
+    def i8() -> int:
+        nonlocal position
+        value = payload[position]
+        position += 1
+        return value
+
+    def i16() -> int:
+        nonlocal position
+        value = int.from_bytes(
+            payload[position:position + 2],
+            "big",
+            signed=True,
+        )
+        position += 2
+        return value
+
+    def i32() -> int:
+        nonlocal position
+        value = int.from_bytes(
+            payload[position:position + 4],
+            "big",
+            signed=True,
+        )
+        position += 4
+        return value
+
+    def i64() -> int:
+        nonlocal position
+        value = int.from_bytes(
+            payload[position:position + 8],
+            "big",
+            signed=True,
+        )
+        position += 8
+        return value
+
+    def utf_at_cursor() -> str:
+        nonlocal position
+        value, next_position = read_utf(payload, position)
+        position = next_position
+        return value
+
+    if len(payload) < 96:
+        return {
+            "sourceOpcode": source_opcode,
+            "payloadByteCount": len(payload),
+            "parseError": "0x8004 payload too short",
+        }
+    try:
+        status1 = i8()
+        status2 = i8()
+        server_time = i64()
+        role_id = i64()
+        role_name = utf_at_cursor()
+        flag_b = i8()
+        level = i8()
+        copper = i64()
+        food = i64()
+        field_f = i64()
+        flag_g = i8()
+        avatar_short_raw = i16()
+        flag_x = i8()
+        prestige = i64()
+        prestige_previous = i64()
+        prestige_next = i64()
+        skip_long = i64()
+        flag_l = i8()
+        copper_per_hour = i32()
+        food_per_hour = i32()
+        battle_merit_candidate = i64()
+        field_p = i64()
+        population_current = i64()
+        population_cap = i64()
+        fief_limit = i8()
+        general_limit = i8()
+        resource_point_current = i8()
+        resource_point_cap = i8()
+        office_field_flag = None
+        office_id_raw = None
+        if len(payload) - position >= 3:
+            office_field_flag = i8()
+            office_id_raw = i16()
+        parsed = position
+        tail = payload[parsed:]
+        return {
+            "roleId": role_id,
+            "roleName": role_name,
+            "level": level,
+            "copper": copper,
+            "food": food,
+            "prestige": prestige,
+            "prestigePrevThreshold": prestige_previous,
+            "prestigeNextThreshold": prestige_next,
+            "copperPerHour": copper_per_hour,
+            "foodPerHour": food_per_hour,
+            "populationCurrent": population_current,
+            "populationCap": population_cap,
+            "fiefLimit": fief_limit,
+            "generalLimit": general_limit,
+            "resourcePointCurrent": resource_point_current,
+            "resourcePointCap": resource_point_cap,
+            "serverTimeMillis": server_time,
+            "status1": status1,
+            "status2": status2,
+            "flagB": flag_b,
+            "fieldF": field_f,
+            "flagG": flag_g,
+            "officeShortRaw": avatar_short_raw,
+            "officeShortUnsigned": avatar_short_raw & 0xFFFF,
+            "avatarShortRaw": avatar_short_raw,
+            "avatarShortUnsigned": avatar_short_raw & 0xFFFF,
+            "officeFieldFlag": office_field_flag,
+            "officeId": office_id_raw,
+            "officeIdRaw": office_id_raw,
+            "officeIdUnsigned": (
+                office_id_raw & 0xFFFF
+                if office_id_raw is not None
+                else None
+            ),
+            "officeName": office_name_from_id(office_id_raw),
+            "flagX": flag_x,
+            "skipLong": skip_long,
+            "flagL": flag_l,
+            "battleMeritCandidate": battle_merit_candidate,
+            "fieldP": field_p,
+            "sourceOpcode": source_opcode,
+            "payloadByteCount": len(payload),
+            "parsedHeadByteCount": parsed,
+            "tailByteCount": len(tail),
+            "tailUtf8Preview": printable(tail, 300),
+        }
+    except Exception as error:
+        return {
+            "sourceOpcode": source_opcode,
+            "payloadByteCount": len(payload),
+            "parseError": str(error),
+        }
+
+
+def parse_a110_general_statuses(
+    payload: bytes,
+    generals: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    body_length = 114
+    repeated_id_offset = 0x3A
+    hero_status_offset = 0x56
+    legacy_status58_offset = 0x58
+    status_by_name = {}
+    status_by_id = {}
+    records = []
+    seen = set()
+
+    for general in generals:
+        try:
+            general_id = int(general.get("id") or 0)
+        except Exception:
+            continue
+        name = str(general.get("name") or "")
+        if general_id <= 0 or not name:
+            continue
+        general_id_bytes = general_id.to_bytes(8, "big", signed=False)
+        name_bytes = name.encode("utf-8")
+        needle = (
+            general_id_bytes
+            + len(name_bytes).to_bytes(2, "big")
+            + name_bytes
+        )
+        start = 0
+        while True:
+            position = payload.find(needle, start)
+            if position < 0:
+                break
+            start = position + 1
+            body_offset = position + len(needle)
+            if body_offset + body_length > len(payload):
+                continue
+            body = payload[body_offset:body_offset + body_length]
+            if (
+                body[
+                    repeated_id_offset:repeated_id_offset + 8
+                ]
+                != general_id_bytes
+            ):
+                continue
+            if body[-2:] != b"\xff\xff":
+                continue
+            status_code = body[hero_status_offset]
+            state = general_status_text_from_code(status_code)
+            if general_id in seen:
+                continue
+            seen.add(general_id)
+            status_by_name[name] = state
+            status_by_id[str(general_id)] = state
+            status_by_id[f"{general_id:016x}"] = state
+            records.append(
+                {
+                    "id": general_id,
+                    "idHex": f"{general_id:016x}",
+                    "name": name,
+                    "state": state,
+                    "statusCode": status_code,
+                    "heroStatusCode": status_code,
+                    "stateCode56": status_code,
+                    "rawStatus58": body[legacy_status58_offset],
+                    "status58": body[legacy_status58_offset],
+                    "busy": False if state == "闲" else True,
+                    "recordOffset": position,
+                    "bodyOffset": body_offset,
+                    "source": "0x3110/0xa110-general-status-code56",
+                }
+            )
+            break
+    return {
+        "statusByName": status_by_name,
+        "statusById": status_by_id,
+        "records": records,
+    }
+
+
+def parse_military_intel_from_a110(
+    payload: bytes,
+    generals: List[Dict[str, Any]],
+    *,
+    updated_at: Optional[int] = None,
+) -> Dict[str, Any]:
+    names = [
+        str(general.get("name") or "")
+        for general in generals
+        if general.get("name")
+    ]
+    events = []
+    for item in extract_utf_strings(payload):
+        text = str(item["text"])
+        if not any(
+            token in text
+            for token in (
+                "【返回】",
+                "返回",
+                "出征",
+                "战斗",
+                "攻打",
+                "行军",
+                "剿灭",
+                "胜利",
+                "失败",
+            )
+        ):
+            continue
+        matched = [name for name in names if name and name in text]
+        if not matched and not any(
+            token in text for token in ("【返回】", "返回", "剿灭")
+        ):
+            continue
+        state = ""
+        if "返回" in text:
+            state = "返回"
+        elif any(
+            token in text
+            for token in ("出征", "战斗", "攻打", "行军", "剿灭")
+        ):
+            state = "征"
+        events.append(
+            {
+                "text": text,
+                "offset": item["offset"],
+                "state": state,
+                "generalNames": matched,
+            }
+        )
+    status = parse_a110_general_statuses(payload, generals)
+    output = {
+        "sourceOpcode": "0x3110/0xa110",
+        "events": events,
+        "statusByName": status["statusByName"],
+        "statusById": status["statusById"],
+        "generalStatusRecords": status["records"],
+    }
+    if updated_at is not None:
+        output["updatedAt"] = int(updated_at)
+    return output

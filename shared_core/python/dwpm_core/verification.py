@@ -54,7 +54,13 @@ from .features.dungeon import (
     parse_dungeon_state,
     resolve_dungeon_stage_code,
 )
-from .features.generals import recover_generals_from_8004
+from .features.generals import (
+    parse_8004_head,
+    parse_a110_general_statuses,
+    parse_idle_army_from_8004,
+    recover_generals_from_8004,
+)
+from .features.inventory import parse_8104_inventory
 from .features.military import (
     MILITARY_INTEL_REQUEST_PAYLOAD,
     build_military_snapshot,
@@ -626,6 +632,86 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             )
         },
         general_fixture["expected"],
+    )
+    role_head_fixture = fixtures["roleHead8004"]
+    role_head = parse_8004_head(
+        bytes.fromhex(role_head_fixture["responseHex"])
+    )
+    check(
+        "role.8004",
+        {
+            key: role_head.get(key)
+            for key in role_head_fixture["expected"]
+        },
+        role_head_fixture["expected"],
+    )
+    idle_army_fixture = fixtures["idleArmy8004"]
+    idle_army = parse_idle_army_from_8004(
+        idle_army_fixture["responseHex"]
+    )
+    check(
+        "army.8004",
+        [
+            {
+                key: row.get(key)
+                for key in (
+                    "soldierTypeCode",
+                    "soldierType",
+                    "idleCount",
+                    "woundedCount",
+                    "fiefName",
+                )
+            }
+            for row in idle_army
+        ],
+        idle_army_fixture["expected"],
+    )
+    status_fixture = fixtures["generalStatusA110"]
+    status_result = parse_a110_general_statuses(
+        bytes.fromhex(status_fixture["responseHex"]),
+        [status_fixture["general"]],
+    )
+    first_status = (status_result.get("records") or [{}])[0]
+    check(
+        "generals.a110",
+        {
+            key: first_status.get(key)
+            for key in status_fixture["expected"]
+        },
+        status_fixture["expected"],
+    )
+    inventory_fixture = fixtures["inventory8104Compact"]
+    inventory = parse_8104_inventory(
+        bytes.fromhex(inventory_fixture["responseHex"]),
+        item_names={
+            int(key): value
+            for key, value in inventory_fixture["itemNames"].items()
+        },
+        equipment_templates={
+            int(key): value
+            for key, value in inventory_fixture["equipmentTemplates"].items()
+        },
+    )
+    first_equipment = (inventory.get("equipment") or [{}])[0]
+    check(
+        "inventory.8104",
+        {
+            "capacity": inventory.get("capacity"),
+            "itemCount": inventory.get("itemCount"),
+            "itemIds": [
+                row.get("itemId")
+                for row in inventory.get("items") or []
+            ],
+            "itemCounts": [
+                row.get("count")
+                for row in inventory.get("items") or []
+            ],
+            "equipmentCount": inventory.get("equipmentCount"),
+            "equipmentName": first_equipment.get("name"),
+            "equipmentQuality": first_equipment.get("qualityName"),
+            "equipmentStrengthen": first_equipment.get("strengthen"),
+        },
+        inventory_fixture["expected"],
     )
     incoming_payload = bytes.fromhex(military_incoming_fixture["responseHex"])
     military_snapshot = build_military_snapshot(

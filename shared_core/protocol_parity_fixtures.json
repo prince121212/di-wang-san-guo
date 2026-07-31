@@ -237,6 +237,75 @@
         "troopLimit": 1154
       }
     },
+    "roleHead8004": {
+      "responseHex": "00000000018bcfe5680000000000000000ca0009e588a9e8908de4b8b000570000000000000000000000000000000000000000000000000000840000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040801020003839988",
+      "expected": {
+        "roleId": 202,
+        "roleName": "利萍丰",
+        "level": 87,
+        "serverTimeMillis": 1700000000000,
+        "fiefLimit": 4,
+        "generalLimit": 8,
+        "resourcePointCurrent": 1,
+        "resourcePointCap": 2,
+        "officeIdUnsigned": 899,
+        "officeName": "抚远将军"
+      }
+    },
+    "idleArmy8004": {
+      "responseHex": "000ce6b58be8af95e59fbae59cb01d0203000000780400000032010300000007",
+      "expected": [
+        {
+          "soldierTypeCode": 3,
+          "soldierType": "轻骑兵",
+          "idleCount": 120,
+          "woundedCount": 7,
+          "fiefName": "测试基地"
+        },
+        {
+          "soldierTypeCode": 4,
+          "soldierType": "弩车",
+          "idleCount": 50,
+          "woundedCount": 0,
+          "fiefName": "测试基地"
+        }
+      ]
+    },
+    "generalStatusA110": {
+      "general": {"id": 528290, "name": "步2"},
+      "responseHex": "0000000000080fa20004e6ada532000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080fa200000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000ffff",
+      "expected": {
+        "id": 528290,
+        "name": "步2",
+        "state": "战",
+        "statusCode": 6,
+        "busy": true
+      }
+    },
+    "inventory8104Compact": {
+      "responseHex": "000000000000000000000000000000320002004c00030000000000000000000c000500000000000000000001000000000000007b0000020203000a01020004000500060006e6b58be8af95",
+      "itemNames": {"12": "活血丹", "76": "初级行军符"},
+      "equipmentTemplates": {
+        "0": {
+          "templateId": 0,
+          "name": "短剑",
+          "level": 1,
+          "typeCode": 0,
+          "famous": false,
+          "description": ""
+        }
+      },
+      "expected": {
+        "capacity": 50,
+        "itemCount": 2,
+        "itemIds": [76, 12],
+        "itemCounts": [3, 5],
+        "equipmentCount": 1,
+        "equipmentName": "短剑",
+        "equipmentQuality": "优秀",
+        "equipmentStrengthen": 3
+      }
+    },
     "raidActionType1": {
       "generalIds": [1, 2],
       "targetId": 101,
