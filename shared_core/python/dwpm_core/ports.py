@@ -9,7 +9,21 @@ from typing import Mapping, Optional, Protocol
 
 
 class CredentialPort(Protocol):
+    def save_password(self, account_ref: str, password: str) -> None:
+        ...
+
     def load_password(self, account_ref: str) -> Optional[str]:
+        ...
+
+    def delete(self, account_ref: str) -> None:
+        ...
+
+
+class SessionSecretPort(Protocol):
+    def save(self, account_ref: str, values: Mapping[str, str]) -> None:
+        ...
+
+    def load(self, account_ref: str) -> Mapping[str, str]:
         ...
 
     def delete(self, account_ref: str) -> None:
@@ -92,6 +106,7 @@ class PlatformPorts:
     """The complete host boundary passed to one process-wide CoreFacade."""
 
     credentials: Optional[CredentialPort] = None
+    session_secrets: Optional[SessionSecretPort] = None
     data_directory: Optional[DataDirectoryPort] = None
     clock: ClockPort = field(default_factory=SystemClockPort)
     network_state: NetworkStatePort = field(

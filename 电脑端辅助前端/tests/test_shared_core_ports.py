@@ -24,16 +24,32 @@ class FakeHostedBridge:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self.deleted = []
+        self.passwords = {}
+        self.session_secrets = {}
         self.events = []
         self.logs = []
         self.notifications = []
         self.wakes = []
 
+    def savePassword(self, account_ref: str, password: str) -> None:
+        self.passwords[account_ref] = password
+
     def loadPassword(self, account_ref: str):
-        return "keystore-only" if account_ref == "7" else None
+        return self.passwords.get(account_ref) or (
+            "keystore-only" if account_ref == "7" else None
+        )
 
     def deleteCredential(self, account_ref: str) -> None:
         self.deleted.append(account_ref)
+
+    def saveSessionSecrets(self, account_ref: str, payload: str) -> None:
+        self.session_secrets[account_ref] = json.loads(payload)
+
+    def loadSessionSecrets(self, account_ref: str) -> str:
+        return json.dumps(self.session_secrets.get(account_ref, {}))
+
+    def deleteSessionSecrets(self, account_ref: str) -> None:
+        self.session_secrets.pop(account_ref, None)
 
     def dataDirectory(self) -> str:
         return str(self.directory)
@@ -63,10 +79,25 @@ class SharedCorePlatformPortTests(unittest.TestCase):
             bridge = FakeHostedBridge(Path(directory))
             ports = platform_ports_from_host_bridge(bridge)
 
+            ports.credentials.save_password("9", "memory-only-password")
+            self.assertEqual(
+                ports.credentials.load_password("9"),
+                "memory-only-password",
+            )
             self.assertEqual(ports.credentials.load_password("7"), "keystore-only")
             self.assertIsNone(ports.credentials.load_password("8"))
             ports.credentials.delete("7")
             self.assertEqual(bridge.deleted, ["7"])
+            ports.session_secrets.save(
+                "7",
+                {"dm": "123", "sessionToken": "temporary"},
+            )
+            self.assertEqual(
+                ports.session_secrets.load("7"),
+                {"dm": "123", "sessionToken": "temporary"},
+            )
+            ports.session_secrets.delete("7")
+            self.assertEqual(ports.session_secrets.load("7"), {})
             self.assertEqual(ports.data_directory.data_directory(), Path(directory))
             self.assertTrue(ports.network_state.is_available())
             ports.notifications.notify({"message": "通知"})

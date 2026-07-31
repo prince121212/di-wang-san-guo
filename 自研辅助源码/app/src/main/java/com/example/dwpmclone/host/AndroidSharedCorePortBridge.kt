@@ -14,6 +14,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import com.example.dwpmclone.AssistantWebActivity
 import com.example.dwpmclone.data.local.KeystoreCredentialVault
+import com.example.dwpmclone.data.local.KeystoreSessionSecretVault
 import com.example.dwpmclone.data.local.TaskLogRepository
 import com.example.dwpmclone.service.AssistantForegroundService
 import java.util.ArrayDeque
@@ -32,15 +33,43 @@ import org.json.JSONObject
 class AndroidSharedCorePortBridge(context: Context) {
     private val appContext = context.applicationContext
     private val credentials = KeystoreCredentialVault(appContext)
+    private val sessionSecrets = KeystoreSessionSecretVault(appContext)
     private val logs = TaskLogRepository(appContext)
 
     fun dataDirectory(): String = appContext.filesDir.absolutePath
+
+    fun savePassword(accountRef: String, password: String) {
+        accountRef.trim().toLongOrNull()?.takeIf { it > 0L }
+            ?.let { credentials.savePassword(it, password) }
+            ?: throw IllegalArgumentException("账号 ID 无效")
+    }
 
     fun loadPassword(accountRef: String): String? =
         accountRef.trim().toLongOrNull()?.takeIf { it > 0L }?.let(credentials::loadPassword)
 
     fun deleteCredential(accountRef: String) {
         accountRef.trim().toLongOrNull()?.takeIf { it > 0L }?.let(credentials::delete)
+    }
+
+    fun saveSessionSecrets(accountRef: String, valuesJson: String) {
+        val accountId = accountRef.trim().toLongOrNull()?.takeIf { it > 0L }
+            ?: throw IllegalArgumentException("账号 ID 无效")
+        val payload = JSONObject(valuesJson)
+        val values = payload.keys().asSequence()
+            .associateWith { key -> payload.optString(key) }
+            .filterValues(String::isNotBlank)
+        sessionSecrets.save(accountId, values)
+    }
+
+    fun loadSessionSecrets(accountRef: String): String {
+        val accountId = accountRef.trim().toLongOrNull()?.takeIf { it > 0L }
+            ?: return "{}"
+        return JSONObject(sessionSecrets.load(accountId)).toString()
+    }
+
+    fun deleteSessionSecrets(accountRef: String) {
+        accountRef.trim().toLongOrNull()?.takeIf { it > 0L }
+            ?.let(sessionSecrets::delete)
     }
 
     fun networkAvailable(): Boolean {

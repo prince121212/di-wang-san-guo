@@ -82,6 +82,9 @@ class SharedPythonCoreHostContractTest {
         )
 
         assertTrue(ports.contains("KeystoreCredentialVault"))
+        assertTrue(ports.contains("KeystoreSessionSecretVault"))
+        assertTrue(ports.contains("saveSessionSecrets"))
+        assertTrue(ports.contains("loadSessionSecrets"))
         assertTrue(ports.contains("networkAvailable"))
         assertTrue(ports.contains("NotificationManager"))
         assertTrue(ports.contains("AlarmManager"))

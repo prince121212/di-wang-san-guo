@@ -129,6 +129,11 @@ class CoreFacade:
                 "recordCount": self._accounts.snapshot()["count"],
                 "secrets": "platform-ports-only",
             },
+            "platformCapabilities": {
+                "credentials": self._ports.credentials is not None,
+                "sessionSecrets": self._ports.session_secrets is not None,
+                "networkState": self._ports.network_state is not None,
+            },
         }
 
     def health_json(self) -> str:
