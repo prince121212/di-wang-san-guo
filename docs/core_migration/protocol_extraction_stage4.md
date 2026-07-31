@@ -26,15 +26,25 @@
 
 电脑端保留原函数名兼容现有调用者，但实现均为共享函数的薄委托。抽离前后使用同一批抓包 fixture 做完整结果对比，0x8540 和 0x8542 的返回对象逐字段相等。
 
+## 批次 3：掠夺、无损与副本
+
+继续抽离三组纯业务规则：
+
+- `dwpm_core.features.raid`：0x1310 查询 payload 与 0x8310 玩家封地列表解析。
+- `dwpm_core.features.lossless`：等级规范化、0x8900 状态、0x8904 目录、0x8906 敌军阵容、0x8908 等级选择回执、0x8902 结算，以及 10 级卫兵阵容判定。
+- `dwpm_core.features.dungeon`：副本输入规范化、0x8930 目录、首个未通关关卡选择、多人末关跳过、关卡编号解析、0x8938 战斗状态、开箱位置和明确战败识别。
+
+迁移过程中全量测试捕获到一次私有战败文本收集函数遗漏；现已将该函数也纳入共享模块，并由桌面兼容包装调用。修正后电脑端 555 项测试全部通过。
+
 ## 离线同源验证
 
 `CoreFacade.protocol_fixture_report()` 直接从共享 `protocol_parity_fixtures.json` 运行字节断言。Android Debug APK 通过进程内路由 `GET /api/core/verification/protocol` 执行了同一份 Python 代码：
 
 ```text
-checkCount   = 33
-passedCount  = 33
+checkCount   = 44
+passedCount  = 44
 failureCount = 0
-coreHash     = 3c10eafd5a4c7aa8447ab3cf70c91a5fef9503e65c1d8417e888ea7ca712ee12
+coreHash     = 9c409a1994dc2399b4f6823768f3c2f4274f060a5ee12526792a0597e76aa041
 ```
 
 覆盖项包括：
@@ -44,11 +54,12 @@ coreHash     = 3c10eafd5a4c7aa8447ab3cf70c91a5fef9503e65c1d8417e888ea7ca712ee12
 - 五种出征功能的预出征与正式出征字节。
 - 出征、打矿预览、召回和行军加速回执。
 - 0x8540/0x8542 目标解析、扫描顺序以及等级和归属筛选。
+- 掠夺封地、无损状态/结算/阵容和副本目录/通关选择/战斗状态。
 
 该路由只在 Debug 版开放，全程不登录账号、不读取 Session、不访问网络。
 
 ## 后续批次
 
-- 掠夺、无损、副本和军情回执解析。
+- 军情回执解析。
 - 角色、将领、军队、背包与日常纯解析。
 - 全部协议 fixture 纳入 APK 内自检后，才结束阶段 4。

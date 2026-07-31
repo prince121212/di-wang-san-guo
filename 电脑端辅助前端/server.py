@@ -97,6 +97,44 @@ from dwpm_core.features.mine import (
     parse_mine_preview as shared_parse_mine_preview,
     parse_recall_response as shared_parse_recall_response,
 )
+from dwpm_core.features.raid import (
+    build_raid_fief_list_payload as shared_build_raid_fief_list_payload,
+    parse_raid_fief_list as shared_parse_raid_fief_list,
+)
+from dwpm_core.features.lossless import (
+    LOSSLESS_DAILY_LIMIT as SHARED_LOSSLESS_DAILY_LIMIT,
+    LOSSLESS_MODE_NAMES as SHARED_LOSSLESS_MODE_NAMES,
+    LOSSLESS_STAGE_NAMES as SHARED_LOSSLESS_STAGE_NAMES,
+    evaluate_level10_guard_lineup as shared_evaluate_level10_guard_lineup,
+    lossless_level_number as shared_lossless_level_number,
+    lossless_status_phase as shared_lossless_status_phase,
+    parse_lossless_catalog as shared_parse_lossless_catalog,
+    parse_lossless_lineup as shared_parse_lossless_lineup,
+    parse_lossless_select_response as shared_parse_lossless_select_response,
+    parse_lossless_settlement as shared_parse_lossless_settlement,
+    parse_lossless_status as shared_parse_lossless_status,
+)
+from dwpm_core.features.dungeon import (
+    DUNGEON_CHAPTER_MAP as SHARED_DUNGEON_CHAPTER_MAP,
+    DUNGEON_CHAPTER_STAGE_COUNTS as SHARED_DUNGEON_CHAPTER_STAGE_COUNTS,
+    DUNGEON_CHEST_MAP as SHARED_DUNGEON_CHEST_MAP,
+    DUNGEON_MODE_CLEAR as SHARED_DUNGEON_MODE_CLEAR,
+    DUNGEON_MODE_LOOP as SHARED_DUNGEON_MODE_LOOP,
+    DUNGEON_STATIC_STAGE_CODES as SHARED_DUNGEON_STATIC_STAGE_CODES,
+    dungeon_battle_defeat_confirmed as shared_dungeon_battle_defeat_confirmed,
+    dungeon_battle_texts as shared_dungeon_battle_texts,
+    dungeon_chapter_final_stage as shared_dungeon_chapter_final_stage,
+    dungeon_chapter_number as shared_dungeon_chapter_number,
+    dungeon_chest_index as shared_dungeon_chest_index,
+    dungeon_stage_completed_in_catalog as shared_dungeon_stage_completed_in_catalog,
+    dungeon_stage_number as shared_dungeon_stage_number,
+    first_uncompleted_dungeon_stage as shared_first_uncompleted_dungeon_stage,
+    is_dungeon_pending_chest_error as shared_is_dungeon_pending_chest_error,
+    normalize_dungeon_mode as shared_normalize_dungeon_mode,
+    parse_dungeon_catalog as shared_parse_dungeon_catalog,
+    parse_dungeon_state as shared_parse_dungeon_state,
+    resolve_dungeon_stage_code as shared_resolve_dungeon_stage_code,
+)
 from dwpm_core.features.targets import (
     KIND_MARKERS as SHARED_KIND_MARKERS,
     MINE_BUSINESS_IDS as SHARED_MINE_BUSINESS_IDS,
@@ -9001,71 +9039,12 @@ def accelerate_mine_march(
 
 def build_raid_fief_list_payload(player_name: str) -> bytes:
     """0x1310 查询指定玩家封地列表：0001 + UTF(playerName)。"""
-    name = str(player_name or "").strip()
-    if not name:
-        raise RuntimeError("请填写要掠夺的玩家名称")
-    return RAID_TARGET_PAYLOAD_PREFIX + utf(name)
+    return shared_build_raid_fief_list_payload(player_name)
 
 
 def parse_raid_fief_list(payload: bytes) -> dict[str, Any]:
-    """解析 0x8310 玩家封地列表。
-
-    已验证样本结构：
-      u16 flag/status, UTF playerName, UTF countryName, u8 count,
-      repeat count: i64 targetId, UTF fiefName, u8 type/serial, UTF cityName, 5-byte tail.
-    """
-    p = 0
-    out: dict[str, Any] = {"rawHex": payload.hex()[:4096], "fiefs": []}
-    try:
-        if len(payload) < 6:
-            raise RuntimeError("0x8310 响应过短")
-        flag = struct.unpack(">H", payload[p:p + 2])[0]; p += 2
-        player_name, p = read_utf(payload, p)
-        country, p = read_utf(payload, p)
-        if p >= len(payload):
-            raise RuntimeError("0x8310 缺少封地数量")
-        count = payload[p]; p += 1
-        fiefs: list[dict[str, Any]] = []
-        for idx in range(int(count)):
-            if p + 8 > len(payload):
-                raise RuntimeError(f"第 {idx + 1} 条封地缺少 targetId")
-            target_id = struct.unpack(">q", payload[p:p + 8])[0]; p += 8
-            fief_name, p = read_utf(payload, p)
-            serial_byte = payload[p] if p < len(payload) else None
-            if p < len(payload):
-                p += 1
-            city_name, p = read_utf(payload, p)
-            tail = payload[p:p + 5]
-            p += min(5, max(0, len(payload) - p))
-            map_flag = tail[0] if len(tail) >= 1 else None
-            map_x = struct.unpack(">H", tail[1:3])[0] if len(tail) >= 3 else None
-            map_y = struct.unpack(">H", tail[3:5])[0] if len(tail) >= 5 else None
-            fiefs.append({
-                "index": idx + 1,
-                "targetId": target_id,
-                "targetIdHex": f"{target_id:016x}",
-                "targetHex": f"{target_id:016x}",
-                "fiefName": fief_name,
-                "name": fief_name,
-                "cityName": city_name,
-                "city": city_name,
-                "serialByte": serial_byte,
-                "tailHex": tail.hex(),
-                "mapFlag": map_flag,
-                "x": map_x,
-                "y": map_y,
-            })
-        out.update({
-            "flag": flag,
-            "playerName": player_name,
-            "country": country,
-            "count": count,
-            "fiefs": fiefs,
-            "parsedBytes": p,
-        })
-    except Exception as e:
-        out.update({"parseError": str(e), "textPreview": printable(payload, 1200)})
-    return out
+    """解析 0x8310 玩家封地列表。"""
+    return shared_parse_raid_fief_list(payload)
 
 
 def query_raid_fiefs(sess: dict[str, Any], player_name: str) -> dict[str, Any]:
@@ -11216,404 +11195,41 @@ def execute_raid(
     return report
 
 
-LOSSLESS_DAILY_LIMIT = int(_STARTUP_LOSSLESS_CONTRACT["serverDailyLimit"])
-LOSSLESS_MODE_NAMES = {
-    int(_STARTUP_LOSSLESS_CONTRACT["modes"]["cooldown"]): "冷却中",
-    **{
-        int(value): "可出征"
-        for value in _STARTUP_LOSSLESS_CONTRACT["modes"]["ready"]
-    },
-    int(_STARTUP_LOSSLESS_CONTRACT["modes"]["fighting"]): "战斗中",
-    int(_STARTUP_LOSSLESS_CONTRACT["modes"]["dailyDone"]): "今日次数已用完",
-}
-LOSSLESS_STAGE_NAMES = list(_STARTUP_LOSSLESS_CONTRACT["stageNames"])
+LOSSLESS_DAILY_LIMIT = SHARED_LOSSLESS_DAILY_LIMIT
+LOSSLESS_MODE_NAMES = SHARED_LOSSLESS_MODE_NAMES
+LOSSLESS_STAGE_NAMES = SHARED_LOSSLESS_STAGE_NAMES
 
 
 def lossless_level_number(value: Any) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        level = value
-    else:
-        match = re.search(r"(\d+)", str(value or "").strip())
-        if not match:
-            raise RuntimeError(f"无损等级无效：{value}")
-        level = int(match.group(1))
-    if not LOSSLESS_MIN_LEVEL <= level <= LOSSLESS_MAX_LEVEL:
-        raise RuntimeError(f"无损等级超出范围：{value}")
-    return level
+    return shared_lossless_level_number(value)
 
 
 def lossless_status_phase(status: dict[str, Any]) -> str:
-    if status.get("parseError"):
-        return "error"
-    if status.get("settlementPending"):
-        return "settlement"
-    mode = status.get("mode")
-    remaining = int(status.get("remainingAttempts") or 0)
-    if remaining <= 0 or mode == int(LOSSLESS_MODE_CONTRACT["dailyDone"]):
-        return "daily_done"
-    if mode == int(LOSSLESS_MODE_CONTRACT["cooldown"]):
-        return "cooldown"
-    if mode == int(LOSSLESS_MODE_CONTRACT["fighting"]):
-        return "fighting"
-    if mode in {int(value) for value in LOSSLESS_MODE_CONTRACT["ready"]}:
-        return "ready"
-    return "unknown"
+    return shared_lossless_status_phase(status)
 
 
 def parse_lossless_status(payload: bytes) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "rawHex": payload.hex(),
-        "state": None,
-        "mode": None,
-        "stateName": "未知",
-        "dispatchable": False,
-    }
-    if len(payload) < 13:
-        out["parseError"] = f"0x8900 公共字段不足：{len(payload)}/13"
-        return out
-    action_timer_ms = struct.unpack(">q", payload[0:8])[0]
-    mode = int(payload[8])
-    remaining_attempts = int(payload[9])
-    progress_code = int(payload[10])
-    status_flag = int(payload[11])
-    settlement_pending = bool(payload[12])
-    out.update({
-        "actionTimerMs": max(0, action_timer_ms),
-        "actionTimerSec": max(0, action_timer_ms // 1000),
-        "cooldownMs": 0,
-        "cooldownSec": 0,
-        "mode": mode,
-        "remainingAttempts": remaining_attempts,
-        "usedAttempts": max(0, LOSSLESS_DAILY_LIMIT - remaining_attempts),
-        "state": mode,
-        "progressCode": progress_code,
-        "statusFlag": status_flag,
-        "settlementPending": settlement_pending,
-        "auxFlags": [progress_code, status_flag],
-    })
-
-    if mode == 0:
-        if len(payload) < 25:
-            out["tailParseError"] = f"0x8900 冷却字段不足：{len(payload)}/25"
-        else:
-            cooldown_ms = struct.unpack(">q", payload[13:21])[0]
-            out.update({
-                "cooldownMs": max(0, cooldown_ms),
-                "cooldownSec": max(0, cooldown_ms // 1000),
-                "reopenCost": struct.unpack(">i", payload[21:25])[0],
-                "parsedBytes": 25,
-            })
-            if len(payload) > 25:
-                out["tailHex"] = payload[25:].hex()
-    elif len(payload) < 23:
-        out["tailParseError"] = f"0x8900 关卡字段不足：{len(payload)}/23"
-    else:
-        selected_level_index = struct.unpack(">q", payload[13:21])[0]
-        stage_id = struct.unpack(">h", payload[21:23])[0]
-        out.update({
-            "selectedLevelIndex": None if selected_level_index < 0 else selected_level_index,
-            "selectedLevel": None if selected_level_index < 0 else selected_level_index + 1,
-            "stageId": None if stage_id < 0 else stage_id,
-            "stageIdHex": None if stage_id < 0 else f"{stage_id & 0xffff:04x}",
-            "parsedBytes": 23,
-        })
-    if mode == 3 and len(payload) > 23:
-        p = 23
-        try:
-            out["activeLevel"] = int(payload[p])
-            p += 1
-            active_level_name, p = read_utf(payload, p)
-            out["activeLevelName"] = active_level_name
-            out["parsedBytes"] = p
-            if p != len(payload):
-                out["tailHex"] = payload[p:].hex()
-        except Exception as e:
-            out["tailParseError"] = str(e)
-
-    phase = lossless_status_phase(out)
-    out.update({
-        "phase": phase,
-        "stateName": {
-            "settlement": "待结算",
-            "daily_done": "今日次数已用完",
-        }.get(phase, LOSSLESS_MODE_NAMES.get(mode, f"未知状态({mode})")),
-        "dispatchable": phase == "ready",
-    })
-    return out
+    return shared_parse_lossless_status(payload)
 
 
 def parse_lossless_catalog(payload: bytes) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "rawHex": payload.hex()[:8192],
-        "levels": [],
-        "stageById": {},
-        "textPreview": printable(payload, 1600),
-    }
-    if len(payload) < 4:
-        out["parseError"] = "0x8904 数据不足"
-        return out
-    p = 0
-    try:
-        level_count = struct.unpack(">i", payload[p:p + 4])[0]
-        p += 4
-        if not 0 <= level_count <= 20:
-            raise ValueError(f"等级数量异常：{level_count}")
-        levels: list[dict[str, Any]] = []
-        stage_by_id: dict[str, dict[str, Any]] = {}
-        for _ in range(level_count):
-            if p + 9 > len(payload):
-                raise ValueError(f"等级头越界：pos={p}")
-            level_index = struct.unpack(">q", payload[p:p + 8])[0]
-            p += 8
-            level_number = int(payload[p])
-            p += 1
-            level_name, p = read_utf(payload, p)
-            if p + 4 > len(payload):
-                raise ValueError(f"阶段数量越界：level={level_number} pos={p}")
-            stage_count = struct.unpack(">i", payload[p:p + 4])[0]
-            p += 4
-            if not 0 <= stage_count <= 20:
-                raise ValueError(f"阶段数量异常：level={level_number} count={stage_count}")
-            stages = []
-            for stage_index in range(stage_count):
-                if p + 2 > len(payload):
-                    raise ValueError(f"阶段编号越界：level={level_number} index={stage_index}")
-                stage_id = struct.unpack(">H", payload[p:p + 2])[0]
-                p += 2
-                stage_name, p = read_utf(payload, p)
-                stage = {
-                    "stageIndex": stage_index,
-                    "stageNumber": stage_index + 1,
-                    "stageId": stage_id,
-                    "stageIdHex": f"{stage_id:04x}",
-                    "name": stage_name,
-                }
-                stages.append(stage)
-                stage_by_id[str(stage_id)] = {
-                    **stage,
-                    "levelIndex": level_index,
-                    "level": level_number,
-                    "levelName": level_name,
-                }
-            levels.append({
-                "levelIndex": level_index,
-                "level": level_number,
-                "name": level_name,
-                "stages": stages,
-            })
-        out.update({
-            "levelCount": level_count,
-            "levels": levels,
-            "stageById": stage_by_id,
-            "parsedBytes": p,
-        })
-        if p != len(payload):
-            out["tailHex"] = payload[p:].hex()
-    except Exception as e:
-        out["parseError"] = str(e)
-    return out
+    return shared_parse_lossless_catalog(payload)
 
 
 def parse_lossless_lineup(payload: bytes) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "rawHex": payload.hex()[:8192],
-        "enemies": [],
-        "textPreview": printable(payload, 1600),
-    }
-    if len(payload) < 3:
-        out["parseError"] = "0x8906 数据不足"
-        return out
-    p = 0
-    try:
-        status = int(payload[p])
-        p += 1
-        stage_id = struct.unpack(">H", payload[p:p + 2])[0]
-        p += 2
-        level_name, p = read_utf(payload, p)
-        stage_name, p = read_utf(payload, p)
-        if p + 4 > len(payload):
-            raise ValueError("敌军数量越界")
-        enemy_count = struct.unpack(">i", payload[p:p + 4])[0]
-        p += 4
-        if not 0 <= enemy_count <= 50:
-            raise ValueError(f"敌军数量异常：{enemy_count}")
-        enemies = []
-        for index in range(enemy_count):
-            general_name, p = read_utf(payload, p)
-            if p + 10 > len(payload):
-                raise ValueError(f"敌军字段越界：index={index} pos={p}")
-            unknown_a = struct.unpack(">i", payload[p:p + 4])[0]
-            p += 4
-            unknown_b = struct.unpack(">H", payload[p:p + 2])[0]
-            p += 2
-            unknown_c = struct.unpack(">i", payload[p:p + 4])[0]
-            p += 4
-            soldier_type, p = read_utf(payload, p)
-            if p + 4 > len(payload):
-                raise ValueError(f"敌军兵力越界：index={index} pos={p}")
-            soldier_count = struct.unpack(">i", payload[p:p + 4])[0]
-            p += 4
-            enemies.append({
-                "index": index,
-                "position": index + 1,
-                "generalName": general_name,
-                "soldierType": soldier_type,
-                "soldierCount": soldier_count,
-                "unknownA": unknown_a,
-                "unknownB": unknown_b,
-                "unknownC": unknown_c,
-            })
-        out.update({
-            "status": status,
-            "success": status == 0,
-            "stageId": stage_id,
-            "stageIdHex": f"{stage_id:04x}",
-            "levelName": level_name,
-            "stageName": stage_name,
-            "enemyCount": enemy_count,
-            "enemies": enemies,
-            "parsedBytes": p,
-        })
-        if p != len(payload):
-            out["tailHex"] = payload[p:].hex()
-    except Exception as e:
-        out["parseError"] = str(e)
-    return out
+    return shared_parse_lossless_lineup(payload)
 
 
 def evaluate_level10_guard_lineup(lineup: dict[str, Any]) -> dict[str, Any]:
-    enemies = list(lineup.get("enemies") or [])
-    chariot_tokens = tuple(str(value) for value in LOSSLESS_GUARD_CONTRACT["chariotTokens"])
-    catapult_token = str(LOSSLESS_GUARD_CONTRACT["catapultToken"])
-    chariot_indices = [
-        index
-        for index, enemy in enumerate(enemies)
-        if any(token in str(enemy.get("soldierType") or "") for token in chariot_tokens)
-    ]
-    catapult_indices = [
-        index
-        for index, enemy in enumerate(enemies)
-        if catapult_token in str(enemy.get("soldierType") or "")
-    ]
-    other_chariot_indices = [index for index in chariot_indices if index not in catapult_indices]
-    last_chariot_is_catapult = (
-        bool(chariot_indices)
-        and chariot_indices[-1] in catapult_indices
-    )
-    qualified = (
-        len(enemies) == int(LOSSLESS_GUARD_CONTRACT["enemyCount"])
-        and len(chariot_indices) >= int(LOSSLESS_GUARD_CONTRACT["minimumChariots"])
-        and bool(catapult_indices)
-        and last_chariot_is_catapult
-    )
-    if len(enemies) != int(LOSSLESS_GUARD_CONTRACT["enemyCount"]):
-        reason = f"敌军数量不是{LOSSLESS_GUARD_CONTRACT['enemyCount']}，而是{len(enemies)}"
-    elif len(chariot_indices) < int(LOSSLESS_GUARD_CONTRACT["minimumChariots"]):
-        reason = (
-            f"战车类只有{len(chariot_indices)}名，少于"
-            f"{LOSSLESS_GUARD_CONTRACT['minimumChariots']}名"
-        )
-    elif not catapult_indices:
-        reason = "没有投石车"
-    elif not last_chariot_is_catapult:
-        reason = "所有战车兵种中的最后一个不是投石车"
-    else:
-        reason = "符合10级卫兵筛选条件"
-    return {
-        "qualified": qualified,
-        "reason": reason,
-        "chariotCount": len(chariot_indices),
-        "chariotPositions": [index + 1 for index in chariot_indices],
-        "catapultPositions": [index + 1 for index in catapult_indices],
-        "otherChariotPositions": [index + 1 for index in other_chariot_indices],
-        "formation": [
-            f"{enemy.get('soldierCount')}{enemy.get('soldierType')}"
-            for enemy in enemies
-        ],
-    }
+    return shared_evaluate_level10_guard_lineup(lineup)
 
 
 def parse_lossless_select_response(payload: bytes) -> dict[str, Any]:
-    out: dict[str, Any] = {"rawHex": payload.hex(), "success": False}
-    if len(payload) < 4:
-        out["parseError"] = "0x8908 数据不足"
-        return out
-    p = 0
-    try:
-        status = struct.unpack(">i", payload[p:p + 4])[0]
-        p += 4
-        message, p = read_utf(payload, p)
-        if p + 10 > len(payload):
-            raise ValueError("0x8908 缺少等级或阶段字段")
-        selected_level_index = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        stage_id = struct.unpack(">H", payload[p:p + 2])[0]
-        p += 2
-        out.update({
-            "status": status,
-            "success": status == 1,
-            "message": message,
-            "selectedLevelIndex": selected_level_index,
-            "selectedLevel": selected_level_index + 1,
-            "stageId": stage_id,
-            "stageIdHex": f"{stage_id:04x}",
-            "parsedBytes": p,
-        })
-    except Exception as e:
-        out["parseError"] = str(e)
-    return out
+    return shared_parse_lossless_select_response(payload)
 
 
 def parse_lossless_settlement(payload: bytes) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "rawHex": payload.hex()[:8192],
-        "success": False,
-        "textPreview": printable(payload, 2000),
-    }
-    if not payload:
-        out["parseError"] = "0x8902 空响应"
-        return out
-    p = 0
-    try:
-        status = struct.unpack(">b", payload[p:p + 1])[0]
-        p += 1
-        out["status"] = status
-        if status != 0:
-            out["message"] = "没有待结算的无损战报" if status == -1 else f"无损结算失败状态 {status}"
-            out["parsedBytes"] = p
-            return out
-        if p + 9 > len(payload):
-            raise ValueError(f"0x8902 成功响应字段不足：{len(payload)}/10")
-        mode_after = struct.unpack(">b", payload[p:p + 1])[0]
-        p += 1
-        battle_id = struct.unpack(">q", payload[p:p + 8])[0]
-        p += 8
-        out.update({
-            "modeAfterSettlement": mode_after,
-            "battleId": battle_id,
-            "battleIdHex": f"{battle_id:016x}",
-        })
-        text_fields = []
-        for key in ("resultText", "generalText", "extraText"):
-            if p + 2 > len(payload):
-                break
-            value, p = read_utf(payload, p)
-            out[key] = value
-            text_fields.append(value)
-        if p < len(payload):
-            out["tailHex"] = payload[p:].hex()
-        message = text_fields[0] if text_fields else ""
-        combined_text = "\n".join(text_fields) or out["textPreview"]
-        out.update({
-            "message": message,
-            "success": True,
-            "battleWon": any(token in combined_text for token in ("胜利", "成功", "通关")) and "失败" not in combined_text,
-            "battleFailed": "失败" in combined_text,
-            "parsedBytes": p,
-        })
-    except Exception as e:
-        out["parseError"] = str(e)
-    return out
+    return shared_parse_lossless_settlement(payload)
 
 
 def query_lossless_status(sess: dict[str, Any]) -> dict[str, Any]:
@@ -11908,42 +11524,12 @@ def normalize_lossless_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[
     return rows
 
 
-DUNGEON_CHAPTER_MAP = {
-    "第一章": 0,
-    "第二章": 1,
-    "第三章": 2,
-    "第四章": 3,
-    "第五章": 4,
-    "第六章": 5,
-    "第七章": 6,
-    "山贼之乱": 0,
-    "长安之乱": 2,
-    "徐州之争": 3,
-    "伪帝袁术": 4,
-    "官渡之战（上）": 5,
-    "官渡之战（下）": 6,
-}
-DUNGEON_CHEST_MAP = {
-    **{
-        str(name): index
-        for index, name in enumerate(_STARTUP_DUNGEON_CONTRACT["chestNames"])
-    },
-    "left": 0,
-    "middle": 1,
-    "right": 2,
-}
-DUNGEON_STATIC_STAGE_CODES = {
-    int(chapter): [int(value) for value in values]
-    for chapter, values in _STARTUP_DUNGEON_CONTRACT["staticStageCodes"].items()
-}
-DUNGEON_CHAPTER_STAGE_COUNTS = {
-    chapter_id: len(stage_codes)
-    for chapter_id, stage_codes in DUNGEON_STATIC_STAGE_CODES.items()
-}
-
-DUNGEON_MODE_LOOP, DUNGEON_MODE_CLEAR = tuple(
-    _STARTUP_DUNGEON_CONTRACT["allowedModes"]
-)
+DUNGEON_CHAPTER_MAP = SHARED_DUNGEON_CHAPTER_MAP
+DUNGEON_CHEST_MAP = SHARED_DUNGEON_CHEST_MAP
+DUNGEON_STATIC_STAGE_CODES = SHARED_DUNGEON_STATIC_STAGE_CODES
+DUNGEON_CHAPTER_STAGE_COUNTS = SHARED_DUNGEON_CHAPTER_STAGE_COUNTS
+DUNGEON_MODE_LOOP = SHARED_DUNGEON_MODE_LOOP
+DUNGEON_MODE_CLEAR = SHARED_DUNGEON_MODE_CLEAR
 
 
 def normalize_dungeon_mode(value: Any) -> str:
@@ -11952,46 +11538,15 @@ def normalize_dungeon_mode(value: Any) -> str:
     ``loop`` preserves the original behavior (repeat one configured stage),
     while ``clear`` advances to the first server-reported stage not yet passed.
     """
-    if isinstance(value, bool):
-        return DUNGEON_MODE_CLEAR if value else DUNGEON_MODE_LOOP
-    text = str(value or "").strip().lower()
-    if text in {"clear", "progressive", "progress", "通关", "打通", "打通副本"}:
-        return DUNGEON_MODE_CLEAR
-    return str(DUNGEON_BEHAVIOR_CONTRACT["defaultMode"])
+    return shared_normalize_dungeon_mode(value)
 
 
 def dungeon_chapter_number(value: Any) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        if 0 <= value <= 20:
-            return value
-        raise RuntimeError(f"副本章节超出范围：{value}")
-    text = str(value if value is not None else "").strip()
-    if text in DUNGEON_CHAPTER_MAP:
-        return int(DUNGEON_CHAPTER_MAP[text])
-    display_match = re.fullmatch(r"第\s*(\d+)\s*章", text)
-    if display_match:
-        n = int(display_match.group(1))
-        if 1 <= n <= 21:
-            return n - 1
-    m = re.search(r"(\d+)", text)
-    if m:
-        n = int(m.group(1))
-        if 0 <= n <= 20:
-            return n
-    raise RuntimeError(f"副本章节无效：{value}")
+    return shared_dungeon_chapter_number(value)
 
 
 def dungeon_stage_number(value: Any, chapter_id: int | None = None) -> int:
-    try:
-        n = int(str(value or "").strip())
-    except Exception:
-        raise RuntimeError(f"副本关卡无效：{value}")
-    if not (1 <= n <= 50):
-        raise RuntimeError(f"副本关卡超出范围：{value}")
-    chapter_stage_count = DUNGEON_CHAPTER_STAGE_COUNTS.get(chapter_id) if chapter_id is not None else None
-    if chapter_stage_count is not None and n > chapter_stage_count:
-        raise RuntimeError(f"副本第 {chapter_id + 1} 章只有 {chapter_stage_count} 关，不能选择第 {n} 关")
-    return n
+    return shared_dungeon_stage_number(value, chapter_id)
 
 
 def dungeon_chapter_final_stage(chapter_id: int, stages: list[dict[str, Any]]) -> int:
@@ -12002,12 +11557,7 @@ def dungeon_chapter_final_stage(chapter_id: int, stages: list[dict[str, Any]]) -
     “副本未确认启动成功：多人副本创建成功”的失败来源）。客户端静态表
     DUNGEON_STATIC_STAGE_CODES 给出每章关卡数；目录行齐全时两者一致。
     """
-    static_codes = DUNGEON_STATIC_STAGE_CODES.get(int(chapter_id)) or []
-    max_display = max(
-        (int(stage.get("displayStage") or 0) for stage in stages),
-        default=0,
-    )
-    return max(len(static_codes), max_display)
+    return shared_dungeon_chapter_final_stage(chapter_id, stages)
 
 
 def first_uncompleted_dungeon_stage(
@@ -12026,72 +11576,10 @@ def first_uncompleted_dungeon_stage(
     打通倒数第二关会同时解锁本章末关和下一章第一关（口述时间线
     2026-07-26 17:39:45 确认），所以跳过末关不会卡住推进。
     """
-    if skip_multiplayer_finals is None:
-        skip_multiplayer_finals = bool(
-            DUNGEON_BEHAVIOR_CONTRACT["clearModeSkipsMultiplayerFinals"]
-        )
-    chapters = [
-        chapter for chapter in (catalog.get("chapters") or [])
-        if isinstance(chapter, dict)
-    ]
-    chapters.sort(key=lambda item: (
-        int(item.get("chapterId") if item.get("chapterId") is not None else item.get("displayChapter") or 0),
-        int(item.get("displayChapter") or 0),
-    ))
-    for chapter in chapters:
-        stages = [row for row in (chapter.get("stages") or []) if isinstance(row, dict)]
-        stages.sort(key=lambda item: int(item.get("displayStage") or 0))
-        chapter_id = int(
-            chapter.get("chapterId")
-            if chapter.get("chapterId") is not None
-            else int(chapter.get("displayChapter") or 1) - 1
-        )
-        if not stages and int(chapter.get("detailFlag") or 0) == 0:
-            static_codes = DUNGEON_STATIC_STAGE_CODES.get(chapter_id) or []
-            return {
-                "chapter": chapter_id,
-                "chapterName": f"第{chapter_id + 1}章",
-                "catalogChapterName": str(chapter.get("name") or ""),
-                "stage": 1,
-                # The task will not dispatch while available=False.  This is
-                # display metadata only; the live code is read after unlock.
-                "stageCode": int(static_codes[0]) if static_codes else None,
-                "available": False,
-                "resultCode": int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"]),
-                "lockedChapter": True,
-                "catalog": catalog,
-            }
-        final_stage = dungeon_chapter_final_stage(chapter_id, stages)
-        for stage in stages:
-            if int(stage.get(
-                "resultCode",
-                DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"],
-            )) != int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"]):
-                continue
-            display_stage = int(stage.get("displayStage") or 0)
-            if display_stage <= 0:
-                continue
-            if (
-                skip_multiplayer_finals
-                and final_stage > 0
-                and display_stage >= final_stage
-            ):
-                # 章末关是多人副本，单人无法挑战；跳到下一章继续。
-                continue
-            if stage.get("stageCode") is None:
-                raise RuntimeError(
-                    f"副本第{chapter_id + 1}章第{display_stage}关缺少服务器关卡编号"
-                )
-            return {
-                "chapter": chapter_id,
-                "chapterName": f"第{chapter_id + 1}章",
-                "stage": display_stage,
-                "stageCode": int(stage.get("stageCode")),
-                "available": bool(stage.get("available", True)),
-                "resultCode": int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"]),
-                "catalog": catalog,
-            }
-    return None
+    return shared_first_uncompleted_dungeon_stage(
+        catalog,
+        skip_multiplayer_finals=skip_multiplayer_finals,
+    )
 
 
 def dungeon_stage_completed_in_catalog(
@@ -12099,87 +11587,24 @@ def dungeon_stage_completed_in_catalog(
     stage_ref: dict[str, Any],
 ) -> bool | None:
     """Return whether a particular stage is now passed; ``None`` means unknown."""
-    chapter_id = int(stage_ref.get("chapter") or 0)
-    display_stage = int(stage_ref.get("stage") or 0)
-    for chapter in catalog.get("chapters") or []:
-        if int(chapter.get("chapterId", -1)) != chapter_id:
-            continue
-        for stage in chapter.get("stages") or []:
-            if int(stage.get("displayStage") or 0) == display_stage:
-                return int(stage.get(
-                    "resultCode",
-                    DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"],
-                )) != int(DUNGEON_BEHAVIOR_CONTRACT["uncompletedResultCode"])
-    return None
+    return shared_dungeon_stage_completed_in_catalog(catalog, stage_ref)
 
 
 def _dungeon_battle_texts(result: Any) -> list[str]:
-    """Collect only server text fields that can contain a terminal battle result."""
-    if not isinstance(result, dict):
-        return []
-    texts: list[str] = []
-
-    def add(value: Any) -> None:
-        text = str(value or "").strip()
-        if text:
-            texts.append(text)
-
-    for source in (
-        result,
-        result.get("chestResult"),
-        result.get("rewardState"),
-        result.get("dungeonStateAfterLaunch"),
-    ):
-        if isinstance(source, dict):
-            for key in (
-                "textPreview", "message", "serverMessage", "launchText",
-                "failureReason",
-            ):
-                add(source.get(key))
-    for action in result.get("actionResults") or []:
-        if not isinstance(action, dict):
-            continue
-        for packet in action.get("packets") or []:
-            if isinstance(packet, dict):
-                add(packet.get("textPreview"))
-    for poll in (result.get("battlePoll") or {}).get("polls") or []:
-        if not isinstance(poll, dict):
-            continue
-        for packet in poll.get("packets") or []:
-            if isinstance(packet, dict):
-                add(packet.get("textPreview"))
-    return texts
+    return shared_dungeon_battle_texts(result)
 
 
 def dungeon_battle_defeat_confirmed(result: Any) -> bool:
     """Recognize an explicit defeat, never a generic transport/chest error."""
-    if isinstance(result, dict) and result.get("defeatConfirmed") is True:
-        return True
-    return any(
-        marker in text
-        for text in _dungeon_battle_texts(result)
-        for marker in DUNGEON_BEHAVIOR_CONTRACT["defeatMarkers"]
-    )
+    return shared_dungeon_battle_defeat_confirmed(result)
 
 
 def dungeon_chest_index(value: Any) -> int:
-    text = str(value if value is not None else "").strip()
-    if text in DUNGEON_CHEST_MAP:
-        return int(DUNGEON_CHEST_MAP[text])
-    try:
-        n = int(text)
-    except Exception:
-        raise RuntimeError(f"副本开箱位置无效：{value}")
-    if n in {0, 1, 2}:
-        return n
-    if n in {1, 2, 3}:
-        return n - 1
-    raise RuntimeError(f"副本开箱位置超出范围：{value}")
+    return shared_dungeon_chest_index(value)
 
 
 def is_dungeon_pending_chest_error(message: Any) -> bool:
-    text = re.sub(r"[\s：:。.-]+", "", str(message or ""))
-    return "副本个人状态异常" in text and "非空闲状态" in text
+    return shared_is_dungeon_pending_chest_error(message)
 
 
 def dungeon_generals_are_idle(sess: dict[str, Any], general_ids: list[str]) -> bool:
@@ -12236,89 +11661,15 @@ def parse_dungeon_catalog(payload: bytes) -> dict[str, Any]:
     目录中的章节、关卡均为零起始协议编号；UI 的“第3关”需要换算为
     当前章节关卡列表中的第3项，不能直接把数字 3 发给 0x1520/0x1522。
     """
-    result: dict[str, Any] = {
-        "rawHex": payload.hex()[:4096],
-        "chapters": [],
-        "chapterNames": [],
-        "textPreview": printable(payload, 1200),
-    }
-    if len(payload) < 2:
-        result["parseError"] = "0x8930 数据不足"
-        return result
-    status = int(payload[0])
-    result["status"] = status
-    if status != 0:
-        result["parseError"] = f"0x8930 返回状态={status}"
-        return result
-    p = 1
-    try:
-        chapter_count = int(payload[p])
-        p += 1
-        chapters: list[dict[str, Any]] = []
-        for display_index in range(chapter_count):
-            if p + 10 > len(payload):
-                raise ValueError(f"章节头越界：index={display_index} pos={p}")
-            chapter_id, coord_a, coord_b, coord_c = struct.unpack(">HHHH", payload[p:p + 8])
-            p += 8
-            name, p = read_utf(payload, p)
-            if p >= len(payload):
-                raise ValueError(f"章节状态越界：index={display_index} pos={p}")
-            detail_flag = int(payload[p])
-            p += 1
-            stage_entries: list[dict[str, Any]] = []
-            if detail_flag == 1:
-                if p >= len(payload):
-                    raise ValueError(f"关卡数量越界：index={display_index} pos={p}")
-                stage_count = int(payload[p])
-                p += 1
-                for stage_index in range(stage_count):
-                    if p + 4 > len(payload):
-                        raise ValueError(f"关卡条目越界：chapter={chapter_id} index={stage_index} pos={p}")
-                    stage_code = struct.unpack(">H", payload[p:p + 2])[0]
-                    available = int(payload[p + 2])
-                    result_code = int(payload[p + 3])
-                    p += 4
-                    stage_entries.append({
-                        "displayStage": stage_index + 1,
-                        "stageCode": stage_code,
-                        "available": bool(available),
-                        "availableCode": available,
-                        "resultCode": result_code,
-                    })
-            chapters.append({
-                "displayChapter": display_index + 1,
-                "chapterId": chapter_id,
-                "name": name,
-                "detailFlag": detail_flag,
-                "coords": [coord_a, coord_b, coord_c],
-                "stages": stage_entries,
-            })
-        result["chapters"] = chapters
-        result["chapterNames"] = [str(x.get("name") or "") for x in chapters if x.get("name")]
-        result["parsedBytes"] = p
-    except Exception as e:
-        result["parseError"] = str(e)
-    return result
+    return shared_parse_dungeon_catalog(payload)
 
 
 def resolve_dungeon_stage_code(catalog: dict[str, Any], chapter_id: int, display_stage: int) -> int:
-    chapter = next(
-        (x for x in (catalog.get("chapters") or []) if int(x.get("chapterId", -1)) == int(chapter_id)),
-        None,
+    return shared_resolve_dungeon_stage_code(
+        catalog,
+        chapter_id,
+        display_stage,
     )
-    stages = chapter.get("stages") if chapter else None
-    if isinstance(stages, list) and stages:
-        if not (1 <= display_stage <= len(stages)):
-            raise RuntimeError(f"副本第 {chapter_id + 1} 章当前只有 {len(stages)} 关，不能选择第 {display_stage} 关")
-        stage_code = stages[display_stage - 1].get("stageCode")
-        if stage_code is None:
-            raise RuntimeError(f"副本第 {chapter_id + 1} 章第 {display_stage} 关缺少服务器关卡编号")
-        return int(stage_code)
-    static_codes = DUNGEON_STATIC_STAGE_CODES.get(chapter_id) or []
-    if not (1 <= display_stage <= len(static_codes)):
-        detail = f"：{catalog.get('parseError')}" if catalog.get("parseError") else ""
-        raise RuntimeError(f"无法解析副本第 {chapter_id + 1} 章第 {display_stage} 关{detail}")
-    return int(static_codes[display_stage - 1])
 
 
 def query_dungeon_catalog(sess: dict[str, Any]) -> dict[str, Any]:
@@ -12337,21 +11688,7 @@ def query_dungeon_catalog(sess: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_dungeon_state(payload: bytes) -> dict[str, Any]:
-    out: dict[str, Any] = {"rawHex": payload.hex(), "status": None, "active": False}
-    if not payload:
-        return out
-    status = payload[0]
-    out["status"] = int(status)
-    if status == 1 and len(payload) >= 10:
-        battle_id = struct.unpack(">q", payload[1:9])[0]
-        out.update({"active": True, "battleId": battle_id, "battleIdHex": f"{battle_id:016x}", "tailByte": payload[9]})
-    elif status == 0:
-        out["message"] = "无副本战斗"
-    elif status == 4:
-        out["message"] = "副本战斗已结束/可结算"
-    else:
-        out["message"] = f"副本状态={status}"
-    return out
+    return shared_parse_dungeon_state(payload)
 
 
 def query_dungeon_state(sess: dict[str, Any]) -> dict[str, Any]:

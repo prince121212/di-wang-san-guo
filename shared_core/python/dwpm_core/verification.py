@@ -38,6 +38,22 @@ from .features.targets import (
     parse_mine_resources,
     target_matches_search_filter,
 )
+from .features.raid import (
+    build_raid_fief_list_payload,
+    parse_raid_fief_list,
+)
+from .features.lossless import (
+    evaluate_level10_guard_lineup,
+    parse_lossless_settlement,
+    parse_lossless_status,
+)
+from .features.dungeon import (
+    dungeon_chest_index,
+    first_uncompleted_dungeon_stage,
+    parse_dungeon_catalog,
+    parse_dungeon_state,
+    resolve_dungeon_stage_code,
+)
 
 
 def verify_protocol_fixtures() -> Dict[str, Any]:
@@ -359,6 +375,178 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
         ],
         [target["matches"] for target in mine_filter["targets"]],
     )
+
+    raid_fief = fixtures["raidFief8310"]
+    raid_fief_expected = raid_fief["expected"]
+    check(
+        "raid.fief.request",
+        build_raid_fief_list_payload(raid_fief["playerName"]).hex(),
+        raid_fief["requestPayloadHex"],
+    )
+    raid_fief_result = parse_raid_fief_list(
+        bytes.fromhex(raid_fief["responseHex"])
+    )
+    first_fief = (raid_fief_result.get("fiefs") or [{}])[0]
+    check(
+        "raid.fief.parse",
+        {
+            "playerName": raid_fief_result.get("playerName"),
+            "country": raid_fief_result.get("country"),
+            "count": raid_fief_result.get("count"),
+            "firstTargetId": first_fief.get("targetId"),
+            "firstName": first_fief.get("name"),
+            "firstCityName": first_fief.get("cityName"),
+            "firstX": first_fief.get("x"),
+            "firstY": first_fief.get("y"),
+        },
+        raid_fief_expected,
+    )
+    raid_receipts = fixtures["raidDispatchReceipts"]
+    check(
+        "receipt.dispatch.missingBattleId",
+        parse_dispatch_response(
+            bytes.fromhex(raid_receipts["missingBattleIdResponseHex"])
+        ).get("success"),
+        False,
+    )
+
+    lossless_status_fixture = fixtures["losslessCooldown8900"]
+    lossless_status_expected = lossless_status_fixture["expected"]
+    lossless_status = parse_lossless_status(
+        bytes.fromhex(lossless_status_fixture["responseHex"])
+    )
+    check(
+        "lossless.status",
+        {
+            "phase": lossless_status.get("phase"),
+            "mode": lossless_status.get("mode"),
+            "remainingAttempts": lossless_status.get("remainingAttempts"),
+            "actionTimerMillis": lossless_status.get("actionTimerMs"),
+            "cooldownMillis": lossless_status.get("cooldownMs"),
+            "reopenCost": lossless_status.get("reopenCost"),
+        },
+        lossless_status_expected,
+    )
+    lossless_settlement_fixture = fixtures["losslessSettlement8902Failed"]
+    lossless_settlement_expected = lossless_settlement_fixture["expected"]
+    lossless_settlement = parse_lossless_settlement(
+        bytes.fromhex(lossless_settlement_fixture["responseHex"])
+    )
+    check(
+        "lossless.settlement",
+        {
+            key: lossless_settlement.get(key)
+            for key in (
+                "success",
+                "battleFailed",
+                "battleId",
+                "resultText",
+                "generalText",
+            )
+        },
+        lossless_settlement_expected,
+    )
+    guard_fixture = fixtures["losslessLevel10LastChariot"]
+    guard_result = evaluate_level10_guard_lineup(
+        {
+            "stageId": guard_fixture["stageId"],
+            "stageName": guard_fixture["stageName"],
+            "enemies": [
+                {
+                    "position": index + 1,
+                    "soldierType": soldier_type,
+                    "soldierCount": 100,
+                }
+                for index, soldier_type in enumerate(
+                    guard_fixture["soldierTypes"]
+                )
+            ],
+        }
+    )
+    check(
+        "lossless.guard",
+        {
+            key: guard_result.get(key)
+            for key in ("qualified", "chariotPositions", "catapultPositions")
+        },
+        guard_fixture["expected"],
+    )
+
+    dungeon_catalog_fixture = fixtures["dungeonCatalog8930"]
+    dungeon_catalog_expected = dungeon_catalog_fixture["expected"]
+    dungeon_catalog = parse_dungeon_catalog(
+        bytes.fromhex(dungeon_catalog_fixture["responseHex"])
+    )
+    first_chapter = (dungeon_catalog.get("chapters") or [{}])[0]
+    first_stages = first_chapter.get("stages") or []
+    check(
+        "dungeon.catalog",
+        {
+            "chapterCount": len(dungeon_catalog.get("chapters") or []),
+            "firstChapterName": first_chapter.get("name"),
+            "firstChapterStageCount": len(first_stages),
+            "displayStage3Code": first_stages[2].get("stageCode"),
+            "displayStage4Code": first_stages[3].get("stageCode"),
+        },
+        {
+            key: dungeon_catalog_expected[key]
+            for key in (
+                "chapterCount",
+                "firstChapterName",
+                "firstChapterStageCount",
+                "displayStage3Code",
+                "displayStage4Code",
+            )
+        },
+    )
+    first_uncompleted = first_uncompleted_dungeon_stage(dungeon_catalog) or {}
+    check(
+        "dungeon.progression",
+        {
+            "firstUncompletedChapter": first_uncompleted.get("chapter"),
+            "firstUncompletedDisplayStage": first_uncompleted.get("stage"),
+            "firstUncompletedStageCode": first_uncompleted.get("stageCode"),
+            "firstUncompletedAvailable": first_uncompleted.get("available"),
+            "chapter7DisplayStage11Code": resolve_dungeon_stage_code(
+                dungeon_catalog,
+                6,
+                11,
+            ),
+        },
+        {
+            key: dungeon_catalog_expected[key]
+            for key in (
+                "firstUncompletedChapter",
+                "firstUncompletedDisplayStage",
+                "firstUncompletedStageCode",
+                "firstUncompletedAvailable",
+                "chapter7DisplayStage11Code",
+            )
+        },
+    )
+    dungeon_state_fixture = fixtures["dungeonStateAndPoll"]
+    check(
+        "dungeon.state.idle",
+        parse_dungeon_state(
+            bytes.fromhex(dungeon_state_fixture["idleResponseHex"])
+        ).get("active"),
+        False,
+    )
+    dungeon_active = parse_dungeon_state(
+        bytes.fromhex(dungeon_state_fixture["fightingResponseHex"])
+    )
+    check(
+        "dungeon.state.fighting",
+        {
+            "active": dungeon_active.get("active"),
+            "battleId": dungeon_active.get("battleId"),
+        },
+        {
+            "active": True,
+            "battleId": dungeon_state_fixture["expected"]["battleId"],
+        },
+    )
+    check("dungeon.chest", dungeon_chest_index("右"), 2)
 
     for feature, fixture_name, target_name, prepare_builder, dispatch_builder in (
         (
