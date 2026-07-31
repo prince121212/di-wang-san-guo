@@ -54,15 +54,27 @@
 
 电脑端本地物品和装备静态表作为只读数据参数传给共享解析器；字段读取、边界判定、回退规则和输出结构均只存在于共享 Python。真实 0x8104 抓包仍解析为 26 组道具、7 件装备，电脑端 566 项测试全部通过。
 
+## 批次 6：日常协议
+
+新增 `dwpm_core.features.daily`，统一以下纯逻辑：
+
+- 0xe200 日常活动、0xe266 竞技币重复回执。
+- 0x8134 签到/金钻宝箱成功、重复和活动过期语义。
+- 0xa14b 国家俸禄、0x8404 国家城池、0x8318 城主城池。
+- 0xa271/0xa273 名将列表、拜访成功、拒绝邀请和当日已拜访。
+- 对应请求 payload、UTF 尾部读取与结果文案清洗。
+
+桌面端 571 项测试全部通过；重复领取、拒绝邀请等幂等完成语义也在 APK 内直接运行共享实现验证。
+
 ## 离线同源验证
 
 `CoreFacade.protocol_fixture_report()` 直接从共享 `protocol_parity_fixtures.json` 运行字节断言。Android Debug APK 通过进程内路由 `GET /api/core/verification/protocol` 执行了同一份 Python 代码：
 
 ```text
-checkCount   = 53
-passedCount  = 53
+checkCount   = 68
+passedCount  = 68
 failureCount = 0
-coreHash     = b44c5f39092420325686689cf777e084d4b821aaf29f01d627b10def2bdb5ee0
+coreHash     = 63211873f2630e550deb3df2ff423ffc0ac0015576dcc0b216cbcb37db6470cc
 ```
 
 覆盖项包括：
@@ -75,10 +87,11 @@ coreHash     = b44c5f39092420325686689cf777e084d4b821aaf29f01d627b10def2bdb5ee0
 - 掠夺封地、无损状态/结算/阵容和副本目录/通关选择/战斗状态。
 - 0x8600 来袭/行军/战斗/驻守/返回、军情快照和将领底层记录。
 - 0x8004 角色/将领/军队、0xa110 状态与 0x8104 道具/装备。
+- 签到、竞技币、金钻宝箱、国家俸禄/征收、城主城池与名将拜访。
 
 该路由只在 Debug 版开放，全程不登录账号、不读取 Session、不访问网络。
 
 ## 后续批次
 
-- 日常、内政和六部纯解析与规则。
+- 内政和六部纯解析与规则。
 - 全部协议 fixture 纳入 APK 内自检后，才结束阶段 4。

@@ -61,6 +61,20 @@ from .features.generals import (
     recover_generals_from_8004,
 )
 from .features.inventory import parse_8104_inventory
+from .features.daily import (
+    build_owned_city_list_payload,
+    build_salary_payload,
+    general_visit_already_visited,
+    parse_arena_coin_claim_response,
+    parse_daily_diamond_box_response,
+    parse_daily_sign_in_packets,
+    parse_e200_daily_activity,
+    parse_general_visit_page,
+    parse_general_visit_receipt,
+    parse_national_city_page,
+    parse_owned_city_list,
+    parse_salary_receipt,
+)
 from .features.military import (
     MILITARY_INTEL_REQUEST_PAYLOAD,
     build_military_snapshot,
@@ -712,6 +726,165 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             "equipmentStrengthen": first_equipment.get("strengthen"),
         },
         inventory_fixture["expected"],
+    )
+    for fixture_name in (
+        "dailyNationalCity8404State",
+        "dailyNationalCity8404Commandery",
+        "dailyNationalCity8404County",
+        "dailyNationalCity8404Small",
+    ):
+        national_fixture = fixtures[fixture_name]
+        national_page = parse_national_city_page(
+            bytes.fromhex(national_fixture["responseHex"]),
+            national_fixture["requestedCategory"],
+        )
+        national_city = (national_page.get("cities") or [{}])[0]
+        check(
+            f"daily.national.{national_fixture['requestedCategory']}",
+            {
+                "category": national_page.get("category"),
+                **{
+                    key: national_city.get(key)
+                    for key in ("name", "kind", "x", "y")
+                },
+            },
+            national_fixture["expected"],
+        )
+    owned_city_fixture = fixtures["dailyOwnedCity8318Nanhua"]
+    check(
+        "daily.ownedCity.request",
+        build_owned_city_list_payload(owned_city_fixture["roleId"]).hex(),
+        owned_city_fixture["requestHex"],
+    )
+    owned_city_result = parse_owned_city_list(
+        bytes.fromhex(owned_city_fixture["responseHex"])
+    )
+    owned_city = (owned_city_result.get("cities") or [{}])[0]
+    check(
+        "daily.ownedCity.parse",
+        {
+            "id": owned_city.get("cityId"),
+            **{
+                key: owned_city.get(key)
+                for key in (
+                    "kindCode",
+                    "name",
+                    "x",
+                    "y",
+                    "ownerName",
+                    "ownerLevel",
+                )
+            },
+        },
+        owned_city_fixture["expected"],
+    )
+    salary_fixture = fixtures["dailySalaryA14bSuccess"]
+    check(
+        "daily.salary.request",
+        build_salary_payload().hex(),
+        salary_fixture["requestHex"],
+    )
+    salary_result = parse_salary_receipt(
+        bytes.fromhex(salary_fixture["responseHex"])
+    )
+    check(
+        "daily.salary.parse",
+        {
+            key: salary_result.get(key)
+            for key in salary_fixture["expected"]
+        },
+        salary_fixture["expected"],
+    )
+    for fixture_name in (
+        "dailyGeneralVisitA273Rejected",
+        "dailyGeneralVisitA273AlreadyVisited",
+    ):
+        visit_fixture = fixtures[fixture_name]
+        visit_result = parse_general_visit_receipt(
+            bytes.fromhex(visit_fixture["responseHex"])
+        )
+        check(
+            f"daily.visit.{fixture_name}",
+            {
+                key: visit_result.get(key)
+                for key in visit_fixture["expected"]
+            },
+            visit_fixture["expected"],
+        )
+    visit_page_fixture = fixtures["dailyGeneralVisitA271AlreadyVisited"]
+    visit_page = parse_general_visit_page(
+        bytes.fromhex(visit_page_fixture["responseHex"])
+    )
+    visit_page_expected = visit_page_fixture["expected"]
+    check(
+        "daily.visit.page",
+        {
+            "status": visit_page.get("status"),
+            "message": visit_page.get("message"),
+            "completed": general_visit_already_visited(
+                visit_page.get("status"),
+                visit_page.get("message"),
+            ),
+            "alreadyVisited": general_visit_already_visited(
+                visit_page.get("status"),
+                visit_page.get("message"),
+            ),
+            "candidateCount": len(visit_page.get("candidates") or []),
+        },
+        visit_page_expected,
+    )
+    activity_fixture = fixtures["dailyActivityE200"]
+    activity = parse_e200_daily_activity(
+        bytes.fromhex(activity_fixture["responseHex"])
+    )
+    check(
+        "daily.activity.e200",
+        {
+            key: activity.get("treasureOccupied", {}).get(key)
+            for key in activity_fixture["expected"]
+        },
+        activity_fixture["expected"],
+    )
+    arena_fixture = fixtures["dailyArenaDuplicateE266"]
+    arena_result = parse_arena_coin_claim_response(
+        bytes.fromhex(arena_fixture["responseHex"])
+    )
+    check(
+        "daily.arena.duplicate",
+        {
+            key: arena_result.get(key)
+            for key in arena_fixture["expected"]
+        },
+        arena_fixture["expected"],
+    )
+    sign_fixture = fixtures["dailySignIn8134Duplicate"]
+    sign_result = parse_daily_sign_in_packets(
+        [
+            {
+                "opcode": int(sign_fixture["responseOpcode"], 0),
+                "payload": bytes.fromhex(sign_fixture["responseHex"]),
+            }
+        ]
+    )
+    check(
+        "daily.signIn.duplicate",
+        {
+            key: sign_result.get(key)
+            for key in sign_fixture["expected"]
+        },
+        sign_fixture["expected"],
+    )
+    diamond_fixture = fixtures["dailyDiamondExpired8134"]
+    diamond_result = parse_daily_diamond_box_response(
+        bytes.fromhex(diamond_fixture["responseHex"])
+    )
+    check(
+        "daily.diamond.expired",
+        {
+            key: diamond_result.get(key)
+            for key in diamond_fixture["expected"]
+        },
+        diamond_fixture["expected"],
     )
     incoming_payload = bytes.fromhex(military_incoming_fixture["responseHex"])
     military_snapshot = build_military_snapshot(

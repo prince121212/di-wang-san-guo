@@ -48,6 +48,46 @@
       "duplicateReceiptCountsAsCompleted": true,
       "nationalCitizenSkipMessage": "国民跳过"
     },
+    "dailyActivityE200": {
+      "responseHex": "0016e68890e58a9fe58da0e9a28632e4b8aae5ae9de8978f0003312f3200032b3130",
+      "expected": {
+        "text": "成功占领2个宝藏",
+        "progress": "1/2",
+        "current": 1,
+        "target": 2,
+        "reward": "+10"
+      }
+    },
+    "dailyArenaDuplicateE266": {
+      "responseHex": "fe00000100000000000325e40000012c",
+      "expected": {
+        "success": true,
+        "status": -2,
+        "alreadyClaimed": true,
+        "duplicateClaim": true,
+        "message": "领竞技币重复，22点后再领取！"
+      }
+    },
+    "dailySignIn8134Duplicate": {
+      "responseOpcode": "0x8134",
+      "responseHex": "0a0001000fe69cace697a5e5b7b2e7adbee588b0",
+      "expected": {
+        "success": true,
+        "alreadyClaimed": true,
+        "duplicateClaim": true,
+        "serverMessage": "本日已签到",
+        "message": "自动签到重复，本日已签到，明日再签到！"
+      }
+    },
+    "dailyDiamondExpired8134": {
+      "responseHex": "fe010100000000000ce591a8e5b9b4e6b4bbe58aa80021e6938de4bd9ce5a4b1e8b4a5efbc8ce6b4bbe58aa8e5b7b2e8bf87e69c9fe38082",
+      "expected": {
+        "success": true,
+        "alreadyClaimed": true,
+        "serverMessage": "操作失败，活动已过期。",
+        "message": "每日金钻宝箱已经领取过了！"
+      }
+    },
     "inventory8104LiveCapture": {
       "sourceFile": "ctf_out/passive_pcap_hotspot_20260710_215812/live_analyzed/030/resp.bin",
       "responseOpcode": "0x8104",
