@@ -621,7 +621,7 @@ Android 宿主
 
 ### 工作项 T7.2：迁移本地快速路由
 
-> 状态：执行中；`GET /api/accounts` 已切换，`POST /api/military/future/save` 和 `POST /api/liubu/save` 已成为两端共享的本地设置写入切片，其余设置、日志、任务状态和缓存路由待继续。
+> 状态：执行中；`GET /api/accounts`、`GET /api/accounts/settings` 已切换，`POST /api/military/future/save` 和 `POST /api/liubu/save` 已成为两端共享的本地设置写入切片，其余设置、日志、任务状态和缓存路由待继续。
 
 - 优先迁移账号展示、设置读取/保存、日志、任务状态和缓存快照。
 - 本地保存必须真实落盘后才返回“已保存”，且不触发或等待游戏网络。

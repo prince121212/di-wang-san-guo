@@ -63,7 +63,16 @@
 - 设置缺少 `settings` 时在落盘前拒绝；未确认作物可保存但 `activationAllowed=false`。
 - 电脑端不再在已落盘后因六部在线检查将保存报为失败。账号正在运行时只快速投递后台任务；未运行时返回“设置已保存，等待开始”。任务启动异常也不会反向覆盖本地保存成功。
 
-最新 APK 在真机冷启动共享核心后，`GET /api/health` 返回 `migratedRouteCount=5`、`coreInitialized=true`；最新冷启动调用为 378 ms，调用前后 `AssistantForegroundService` 均未启动。
+`GET /api/accounts/settings` 已切换为共享本地读取路由：
+
+- 电脑端只提供 SQLite 设置快照和公开账号卡；Android 只提供 `LocalConfigRepository` 快照和公开账号卡。
+- 文件名、路径、`exists`、稳定排序的 JSON 内容和最终响应结构由共享 Python 统一生成。
+- Android 已删除 `selected.toString(2)` 这一第二套返回拼装。
+- 共享路由会在返回前拒绝设置快照中的密码、Token、Secret 或 Credential 字段。
+
+真机连续 10 次热态读取结果：P50 38.3 ms，P95/P99 39.9 ms；返回 1 个可解析的 `account-config.json`，敏感路径 0。取样前后游戏请求历史哈希不变，`AssistantForegroundService` 未启动。
+
+最新 APK 上 `GET /api/health` 返回 `migratedRouteCount=6`、`coreInitialized=true`，热态调用为 13.7 ms。
 
 ## 真机门禁验证与发现的问题
 
@@ -92,7 +101,7 @@
 
 ## 当前回归证据
 
-- 电脑端 Python：635 项测试通过。
+- 电脑端 Python：638 项测试通过。
 - `app.js` 与 `assistant-api.js`：Node.js 语法检查通过。
 - Native Bridge operation 行为测试：通过，覆盖 `202 → RUNNING → SUCCEEDED`。
 - Android JVM：585 项测试、0 失败、0 错误；Release Kotlin 编译通过。
@@ -101,7 +110,7 @@
 
 ## 尚未完成
 
-- `GET /api/accounts/settings` 与除 `POST /api/military/future/save`、`POST /api/liubu/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
+- 除 `POST /api/military/future/save`、`POST /api/liubu/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
 - 日志、任务状态、地图缓存等本地路由尚未逐条切换所有者。
 - `/api/state/refresh` 的非军情 scope 及其他旧网络路由仍可能同步等待旧 Kotlin 网络实现。
 - 军情真实成功路径尚未获得用户授权进行真机验证。
