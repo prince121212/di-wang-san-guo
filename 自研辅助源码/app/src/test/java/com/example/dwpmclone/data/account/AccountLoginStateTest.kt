@@ -36,7 +36,7 @@ class AccountLoginStateTest {
         )
         assertFalse(service.contains("heartbeatIntervalMillis = behaviorContract.accountLifecycle"))
         assertEquals(true, service.contains("lifecycleDecisions = SharedPythonCoreHost.get(this)"))
-        assertEquals(true, host.contains(": AccountLifecycleDecisionSource"))
+        assertEquals(true, host.contains("AccountLifecycleDecisionSource,"))
         assertEquals(true, host.contains("account_lifecycle_snapshot_json"))
     }
 

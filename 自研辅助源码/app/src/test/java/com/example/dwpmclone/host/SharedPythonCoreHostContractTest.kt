@@ -38,6 +38,9 @@ class SharedPythonCoreHostContractTest {
         assertTrue(host.contains("operations-v2.json"))
         assertTrue(host.contains("\"dispatch_json\""))
         assertTrue(host.contains("\"account_lifecycle_snapshot_json\""))
+        assertTrue(host.contains("\"account_records_snapshot_json\""))
+        assertTrue(host.contains("\"account_record_presentation_json\""))
+        assertTrue(host.contains("SharedAccountStateGateway"))
     }
 
     @Test
@@ -90,6 +93,26 @@ class SharedPythonCoreHostContractTest {
         assertTrue(operations.contains("dwpm-network-"))
         assertTrue(operations.contains("UNCERTAIN"))
         assertTrue(operations.contains("request-already-sent"))
+    }
+
+    @Test
+    fun accountMetadataUsesSharedPythonWhileSecretsRemainInKeystore() {
+        val repository = source(
+            "app/src/main/java/com/example/dwpmclone/data/local/LocalAccountRepository.kt",
+            "src/main/java/com/example/dwpmclone/data/local/LocalAccountRepository.kt"
+        )
+        val store = source(
+            "../shared_core/python/dwpm_core/account/store.py",
+            "../../shared_core/python/dwpm_core/account/store.py"
+        )
+
+        assertTrue(repository.contains("SharedPythonCoreHost.get(context)"))
+        assertTrue(repository.contains("accountRecordsImportIfEmpty"))
+        assertTrue(repository.contains("listPublicAccounts"))
+        assertTrue(repository.contains("SessionSecretPolicy.publicFields"))
+        assertTrue(store.contains("secrets\": \"platform-ports-only"))
+        assertTrue(store.contains("sensitive field cannot enter account store"))
+        assertFalse(store.contains("load_password("))
     }
 
     private fun source(vararg candidates: String): String {

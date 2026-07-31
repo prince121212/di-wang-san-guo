@@ -1,6 +1,7 @@
 package com.example.dwpmclone.data.local
 
 import android.content.Context
+import com.example.dwpmclone.host.SharedPythonCoreHost
 import com.example.dwpmclone.domain.model.Channel
 import com.example.dwpmclone.domain.model.GameAccount
 import com.example.dwpmclone.domain.model.GameSession
@@ -16,30 +17,42 @@ import org.json.JSONObject
  */
 class LocalAccountRepository(
     context: Context,
-    private val sessionSecrets: SessionSecretVault = KeystoreSessionSecretVault(context)
+    private val sessionSecrets: SessionSecretVault = KeystoreSessionSecretVault(context),
+    private val sharedAccounts: SharedAccountStateGateway = SharedPythonCoreHost.get(context)
 ) {
     private val prefs = context.getSharedPreferences("dwpm_clone_accounts", Context.MODE_PRIVATE)
 
     init {
         migrateLegacySecrets()
+        migrateLegacyAccountsToSharedCore()
     }
 
     fun listAccounts(): List<GameAccount> {
-        val root = JSONObject(prefs.getString(KEY_ACCOUNTS, "{\"accounts\":[]}") ?: "{\"accounts\":[]}")
-        val arr = root.optJSONArray("accounts") ?: JSONArray()
-        return (0 until arr.length())
-            .mapNotNull { index -> arr.optJSONObject(index)?.toGameAccount() }
+        return accountArray(sharedAccounts.accountRecordsSnapshot())
             .map { it.withSessionSecrets() }
+    }
+
+    /** UI/local reads must not decrypt Keystore Session fields. */
+    fun listPublicAccounts(): List<GameAccount> {
+        return accountArray(sharedAccounts.accountRecordsPresentationSnapshot())
     }
 
     fun upsert(account: GameAccount) {
         saveSessionSecrets(account)
-        val accounts = listAccounts().filterNot { it.id == account.id } + account
-        saveAll(accounts.sortedBy { it.id })
+        val result = sharedAccounts.accountRecordUpsert(account.toSharedJson())
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "无法写入共享账号状态"
+        }
     }
 
-    fun get(accountId: Long): GameAccount? =
-        listAccounts().firstOrNull { it.id == accountId }
+    fun get(accountId: Long): GameAccount? = accountFromResult(
+        sharedAccounts.accountRecord(accountId.toString())
+    )?.withSessionSecrets()
+
+    fun getPublic(accountId: Long): GameAccount? = accountFromResult(
+        sharedAccounts.accountRecordPresentation(accountId.toString())
+    )
 
     fun setEnabled(accountId: Long, enabled: Boolean, loginState: String? = null) {
         val account = get(accountId) ?: return
@@ -64,17 +77,25 @@ class LocalAccountRepository(
 
     fun delete(accountId: Long) {
         sessionSecrets.delete(accountId)
-        saveAll(listAccounts().filterNot { it.id == accountId })
+        val result = sharedAccounts.accountRecordDelete(accountId.toString())
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "无法删除共享账号状态"
+        }
     }
 
     fun clear() {
         sessionSecrets.clear()
-        check(prefs.edit().remove(KEY_ACCOUNTS).commit()) { "无法清理账号数据" }
+        val result = sharedAccounts.accountRecordsClear()
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "无法清理共享账号状态"
+        }
     }
 
     fun exportAll(): JSONObject = JSONObject()
         .put("schema_version", EXPORT_SCHEMA_VERSION)
-        .put("accounts", JSONArray().also { arr -> listAccounts().forEach { arr.put(it.toJson()) } })
+        .put("accounts", JSONArray().also { arr -> listPublicAccounts().forEach { arr.put(it.toJson()) } })
 
     fun importAll(json: JSONObject, clearExisting: Boolean = false): ImportResult {
         if (json.optString("schema_version") != EXPORT_SCHEMA_VERSION) {
@@ -90,13 +111,52 @@ class LocalAccountRepository(
     }
 
     private fun saveAll(accounts: List<GameAccount>) {
-        check(
-            prefs.edit().putString(KEY_ACCOUNTS, JSONObject()
-                .put("schema_version", EXPORT_SCHEMA_VERSION)
-                .put("accounts", JSONArray().also { arr -> accounts.forEach { arr.put(it.toJson()) } })
-                .toString()
-            ).commit()
-        ) { "无法持久化账号数据" }
+        val records = JSONArray().also { output ->
+            accounts.sortedBy { it.id }.forEach { output.put(it.toSharedJson()) }
+        }
+        val result = sharedAccounts.accountRecordsReplace(records)
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "无法替换共享账号状态"
+        }
+    }
+
+    private fun accountArray(snapshot: JSONObject): List<GameAccount> {
+        check(snapshot.optBoolean("ok", false)) {
+            snapshot.optJSONObject("error")?.optString("message")
+                ?: "无法读取共享账号状态"
+        }
+        val records = snapshot.optJSONArray("accounts") ?: JSONArray()
+        return (0 until records.length())
+            .mapNotNull { index -> records.optJSONObject(index)?.toGameAccount() }
+    }
+
+    private fun accountFromResult(result: JSONObject): GameAccount? {
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "无法读取共享账号状态"
+        }
+        return result.optJSONObject("account")?.toGameAccount()
+    }
+
+    private fun migrateLegacyAccountsToSharedCore() {
+        if (prefs.getBoolean(KEY_SHARED_MIGRATION_DONE, false)) return
+        val raw = prefs.getString(KEY_ACCOUNTS, null) ?: return
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return
+        val oldAccounts = root.optJSONArray("accounts") ?: return
+        val publicRecords = JSONArray().also { output ->
+            (0 until oldAccounts.length())
+                .mapNotNull { index -> oldAccounts.optJSONObject(index)?.toGameAccount() }
+                .forEach { output.put(it.toSharedJson()) }
+        }
+        val result = sharedAccounts.accountRecordsImportIfEmpty(publicRecords)
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "旧账号迁移到共享核心失败"
+        }
+        check(prefs.edit().putBoolean(KEY_SHARED_MIGRATION_DONE, true).commit()) {
+            "无法记录共享账号迁移状态"
+        }
     }
 
     /** Encrypts session secrets left by pre-V1 builds before removing their plaintext copies. */
@@ -198,9 +258,9 @@ class LocalAccountRepository(
 
     private fun JSONObject.toGameSession(): GameSession = GameSession(
         accountId = optLong("accountId"),
-        tokenCiphertext = optString("tokenCiphertext"),
+        tokenCiphertext = if (optInt("sourceMode", 0) == 1) SESSION_PRESENT_MARKER else "",
         expiresAtMillis = if (has("expiresAtMillis") && !isNull("expiresAtMillis")) optLong("expiresAtMillis") else null,
-        channelExtra = optJSONObject("channelExtra")?.let { extra ->
+        channelExtra = (optJSONObject("publicState") ?: optJSONObject("channelExtra"))?.let { extra ->
             extra.keys().asSequence().associateWith { key -> extra.optString(key) }
         } ?: emptyMap(),
         sourceMode = optInt("sourceMode", 0)
@@ -216,10 +276,36 @@ class LocalAccountRepository(
         })
         .put("sourceMode", sourceMode)
 
+    private fun GameAccount.toSharedJson(): JSONObject = JSONObject()
+        .put("accountRef", id.toString())
+        .put("id", id)
+        .put("displayName", displayName)
+        .put("username", username)
+        .put("serverName", serverName)
+        .put("serverId", serverId)
+        .put("gameVersion", gameVersion.name)
+        .put("channel", channel.name)
+        .put("session", session?.toSharedJson())
+        .put("enabled", enabled)
+        .put("monarchName", monarchName)
+        .put("nation", nation)
+        .put("loginState", loginState)
+        .put("gameAuthSignEvidence", gameAuthSignEvidence)
+
+    private fun GameSession.toSharedJson(): JSONObject = JSONObject()
+        .put("accountId", accountId)
+        .put("expiresAtMillis", expiresAtMillis)
+        .put("publicState", JSONObject().also { obj ->
+            SessionSecretPolicy.publicFields(channelExtra).toSortedMap()
+                .forEach { (key, value) -> obj.put(key, value) }
+        })
+        .put("sourceMode", sourceMode)
+
     companion object {
         const val EXPORT_SCHEMA_VERSION = "0.2-real-protocol-accounts"
         const val DEFAULT_ACCOUNT_ID = 1L
         const val SESSION_PRESENT_MARKER = "keystore-managed-login"
         private const val KEY_ACCOUNTS = "accounts_json"
+        private const val KEY_SHARED_MIGRATION_DONE = "shared_python_accounts_v1_migrated"
     }
 }

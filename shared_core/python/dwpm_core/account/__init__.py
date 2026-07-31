@@ -15,11 +15,13 @@ from .protocol import (
     parse_8003_login,
     parse_passport_area_list,
 )
+from .store import DurableAccountStore, assert_public_account_record
 
 __all__ = [
     "AccountLifecyclePolicy",
     "area_catalog_signature",
     "classify_reconnect_failure",
+    "DurableAccountStore",
     "find_login_area",
     "is_network_failure_message",
     "is_session_invalid_message",
@@ -28,4 +30,5 @@ __all__ = [
     "reconnect_delay_millis",
     "reconnect_kind_label",
     "requires_relogin",
+    "assert_public_account_record",
 ]

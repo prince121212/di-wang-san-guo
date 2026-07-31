@@ -7,13 +7,16 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.example.dwpmclone.data.account.AccountLifecycleDecision
 import com.example.dwpmclone.data.account.AccountLifecycleDecisionSource
+import com.example.dwpmclone.data.local.SharedAccountStateGateway
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
 /** Process-wide Android host for the repository's single shared Python core. */
-class SharedPythonCoreHost private constructor(context: Context) : AccountLifecycleDecisionSource {
+class SharedPythonCoreHost private constructor(context: Context) :
+    AccountLifecycleDecisionSource,
+    SharedAccountStateGateway {
     private val appContext = context.applicationContext
     private val platformPorts = AndroidSharedCorePortBridge(appContext)
     private val initializationLock = Any()
@@ -92,6 +95,33 @@ class SharedPythonCoreHost private constructor(context: Context) : AccountLifecy
             heartbeatIntervalMillis = result.getLong("heartbeatIntervalMillis")
         )
     }
+
+    override fun accountRecordsSnapshot(): JSONObject =
+        callJson("account_records_snapshot_json")
+
+    override fun accountRecordsPresentationSnapshot(): JSONObject =
+        callJson("account_records_presentation_snapshot_json")
+
+    override fun accountRecord(accountRef: String): JSONObject =
+        callJson("account_record_json", accountRef)
+
+    override fun accountRecordPresentation(accountRef: String): JSONObject =
+        callJson("account_record_presentation_json", accountRef)
+
+    override fun accountRecordUpsert(record: JSONObject): JSONObject =
+        callJson("account_record_upsert_json", record.toString())
+
+    override fun accountRecordsImportIfEmpty(records: org.json.JSONArray): JSONObject =
+        callJson("account_records_import_if_empty_json", records.toString())
+
+    override fun accountRecordsReplace(records: org.json.JSONArray): JSONObject =
+        callJson("account_records_replace_json", records.toString())
+
+    override fun accountRecordDelete(accountRef: String): JSONObject =
+        callJson("account_record_delete_json", accountRef)
+
+    override fun accountRecordsClear(): JSONObject =
+        callJson("account_records_clear_json")
 
     fun submitSimulatedNetworkOperation(
         durationMillis: Long,

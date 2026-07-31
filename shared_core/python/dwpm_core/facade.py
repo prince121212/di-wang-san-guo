@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .account.lifecycle import AccountLifecyclePolicy
+from .account.store import DurableAccountStore
 from .contracts import load_behavior_contract, load_route_ownership
 from .hashing import compute_core_hash
 from .models import CoreResponse
@@ -53,6 +54,7 @@ class CoreFacade:
         shared_root: Optional[Path] = None,
         operation_store_path: Optional[str] = None,
         ports: Optional[PlatformPorts] = None,
+        account_store_path: Optional[str] = None,
     ) -> None:
         self._shared_root = shared_root
         self._ports = ports or PlatformPorts()
@@ -66,6 +68,13 @@ class CoreFacade:
         }
         self._core_hash = compute_core_hash(shared_root)
         store_path = self._resolve_operation_store_path(operation_store_path)
+        self._accounts = DurableAccountStore(
+            self._resolve_account_store_path(
+                account_store_path,
+                store_path,
+            ),
+            now_millis=self._ports.clock.now_millis,
+        )
         self._operations = DurableOperationStore(
             store_path,
             now_millis=self._ports.clock.now_millis,
@@ -112,6 +121,13 @@ class CoreFacade:
                     CANCELLED,
                     UNCERTAIN,
                 ],
+            },
+            "accountStateStore": {
+                "persistence": (
+                    "durable" if self._accounts.persistent else "memory"
+                ),
+                "recordCount": self._accounts.snapshot()["count"],
+                "secrets": "platform-ports-only",
             },
         }
 
@@ -170,6 +186,112 @@ class CoreFacade:
                 now_millis,
             )
         )
+
+    def account_records_snapshot(self) -> Dict[str, Any]:
+        return self._accounts.snapshot()
+
+    def account_records_snapshot_json(self) -> str:
+        return self._json(self.account_records_snapshot())
+
+    def account_records_presentation_snapshot_json(self) -> str:
+        return self._json(self._accounts.presentation_snapshot())
+
+    def account_record_json(self, account_ref: str) -> str:
+        try:
+            account = self._accounts.get(account_ref)
+            result = {"ok": True, "account": account}
+        except ValueError as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_READ_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_record_presentation_json(self, account_ref: str) -> str:
+        try:
+            account = self._accounts.get_presentation(account_ref)
+            result = {
+                "ok": True,
+                "account": account,
+                "projection": "local-presentation",
+            }
+        except ValueError as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_READ_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_record_upsert(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "account": self._accounts.upsert(record),
+        }
+
+    def account_record_upsert_json(self, record_json: str) -> str:
+        try:
+            record = json.loads(record_json or "{}")
+            result = self.account_record_upsert(record)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_RECORD_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_records_import_if_empty_json(self, records_json: str) -> str:
+        try:
+            records = json.loads(records_json or "[]")
+            result = self._accounts.import_if_empty(records)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_IMPORT_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_records_replace_json(self, records_json: str) -> str:
+        try:
+            records = json.loads(records_json or "[]")
+            result = self._accounts.replace_all(records)
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_REPLACE_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_record_delete_json(self, account_ref: str) -> str:
+        try:
+            deleted = self._accounts.delete(account_ref)
+            result = {"ok": True, "deleted": deleted}
+        except ValueError as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_DELETE_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_records_clear_json(self) -> str:
+        return self._json({"ok": True, "deletedCount": self._accounts.clear()})
 
     def route_metadata(self, method: str, path: str) -> Optional[Dict[str, Any]]:
         key = self._route_key(method, path)
@@ -471,6 +593,20 @@ class CoreFacade:
         if data_port is None:
             return None
         return data_port.data_directory() / "shared_core" / "operations-v2.json"
+
+    def _resolve_account_store_path(
+        self,
+        account_store_path: Optional[str],
+        operation_store_path: Optional[Path],
+    ) -> Optional[Path]:
+        if account_store_path:
+            return Path(account_store_path)
+        if operation_store_path is not None:
+            return operation_store_path.parent / "accounts-v1.json"
+        data_port = self._ports.data_directory
+        if data_port is None:
+            return None
+        return data_port.data_directory() / "shared_core" / "accounts-v1.json"
 
     def _health_route(
         self,

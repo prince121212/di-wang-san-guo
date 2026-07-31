@@ -567,7 +567,7 @@ class LocalAssistantApiController(
     private fun stateRefresh(request: AssistantApiRequest): AssistantApiResponse {
         val accountId = query(request.path)["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
-        val account = accounts.get(accountId) ?: return failure(request, 404, "账号不存在")
+        val account = accounts.getPublic(accountId) ?: return failure(request, 404, "账号不存在")
         val session = sessionJson(account)
         return ok(request, session)
     }
@@ -575,7 +575,7 @@ class LocalAssistantApiController(
     private fun localMap(request: AssistantApiRequest, kind: LocalMapKind): AssistantApiResponse {
         val accountId = query(request.path)["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
-        val account = accounts.get(accountId) ?: return failure(request, 404, "账号不存在")
+        val account = accounts.getPublic(accountId) ?: return failure(request, 404, "账号不存在")
         val serverId = account.serverId
             ?: account.session?.channelExtra?.get("serverKey")
             ?: account.serverName.takeIf { it.isNotBlank() }
@@ -591,7 +591,7 @@ class LocalAssistantApiController(
     private fun accountSettings(request: AssistantApiRequest): AssistantApiResponse {
         val accountId = query(request.path)["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
-        val account = accounts.get(accountId) ?: return failure(request, 404, "账号不存在")
+        val account = accounts.getPublic(accountId) ?: return failure(request, 404, "账号不存在")
         val all = configs.exportAll().optJSONObject("configs") ?: JSONObject()
         val selected = JSONObject()
         val prefix = "$accountId::"
@@ -610,7 +610,7 @@ class LocalAssistantApiController(
     }
 
     private fun accountArray(): JSONArray = JSONArray().apply {
-        accounts.listAccounts().forEach { put(accountJson(it)) }
+        accounts.listPublicAccounts().forEach { put(accountJson(it)) }
     }
 
     private fun accountJson(account: GameAccount): JSONObject {
@@ -801,7 +801,7 @@ class LocalAssistantApiController(
         }
 
     private fun taskOverview(accountId: Long): JSONObject {
-        val account = accounts.get(accountId)
+        val account = accounts.getPublic(accountId)
         val nowMillis = System.currentTimeMillis()
         val schedulerActive = account?.enabled == true &&
             AssistantForegroundService.isExecutionOwnerActive()
@@ -931,7 +931,7 @@ class LocalAssistantApiController(
     }
 
     private fun assistantOperations(accountId: Long): JSONArray {
-        val account = accounts.get(accountId) ?: return JSONArray()
+        val account = accounts.getPublic(accountId) ?: return JSONArray()
         val generalArray = jsonArray(account.session?.channelExtra?.get("generalsJson"))
         val generals = (0 until generalArray.length()).mapNotNull { index ->
             generalArray.optJSONObject(index)?.let { general ->
@@ -1008,7 +1008,7 @@ class LocalAssistantApiController(
     }
 
     private fun accountConnectionNotice(accountId: Long): JSONObject? {
-        val account = accounts.get(accountId) ?: return null
+        val account = accounts.getPublic(accountId) ?: return null
         if (!account.enabled || account.loginState == AccountLoginState.ONLINE) return null
         val extra = account.session?.channelExtra.orEmpty()
         val retry = reconnects.state(accountId)
