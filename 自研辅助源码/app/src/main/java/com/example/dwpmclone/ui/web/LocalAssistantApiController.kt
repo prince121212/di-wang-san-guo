@@ -404,13 +404,22 @@ class LocalAssistantApiController(
         val body = request.body ?: throw IllegalArgumentException("缺少设置内容")
         val sharedPlan = if (route in setOf(
                 "/api/military/future/save",
-                "/api/liubu/save"
+                "/api/liubu/save",
+                "/api/formations/save"
             )
         ) {
+            val planningBody = if (route == "/api/formations/save") {
+                JSONObject(body.toString()).put(
+                    "knownGenerals",
+                    jsonArray(account.session?.channelExtra?.get("generalsJson"))
+                )
+            } else {
+                body
+            }
             val dispatched = sharedPythonCore.dispatch(
                 request.method,
                 route,
-                body,
+                planningBody,
                 JSONObject()
                     .put("requestId", request.id)
                     .put("source", "android-webview")
@@ -432,6 +441,7 @@ class LocalAssistantApiController(
             "activationAllowed",
             !mapping.disabled
         ) ?: !mapping.disabled
+        val executionAccepted = activationAllowed && route != "/api/formations/save"
         mapping.configs.forEach { (featureId, values) ->
             configs.saveFeatureConfig(account.id, featureId, JSONObject().put("values", values))
         }
@@ -452,15 +462,15 @@ class LocalAssistantApiController(
                 .put("militaryFile", "手机本地存储/account-config.json")
                 .put("ministryFile", "手机本地存储/account-config.json"))
             .put("stoppedTaskIds", JSONArray())
-            .put("waitingForMilitaryStart", activationAllowed && !account.enabled)
+            .put("waitingForMilitaryStart", executionAccepted && !account.enabled)
 
-        val taskStarted = activationAllowed && account.enabled
+        val taskStarted = executionAccepted && account.enabled
         data.put(
             "execution",
             JSONObject()
-                .put("accepted", activationAllowed)
+                .put("accepted", executionAccepted)
                 .put("started", taskStarted)
-                .put("waitingForAccountStart", activationAllowed && !account.enabled)
+                .put("waitingForAccountStart", executionAccepted && !account.enabled)
                 .put("owner", "android-local-scheduler")
         )
         sharedPlan?.optJSONObject("response")?.let { response ->
@@ -469,22 +479,11 @@ class LocalAssistantApiController(
 
         when (route) {
             "/api/formations/save" -> {
-                val values = mapping.configs.getValue(LocalSettingsConfigMapper.FORMATION)
-                val rows = values.optJSONArray("rows") ?: JSONArray()
-                data.put("formations", rows)
-                    .put("normalizedFormations", rows)
-                    .put("formationOptions", JSONObject()
-                        .put("clearOtherGenerals", values.optBoolean("clearOtherGenerals", false)))
-                    .put("unresolvedGeneralIds", JSONArray())
-                    .put("applyTask", JSONObject()
-                        .put("started", taskStarted)
-                        .apply {
-                            if (taskStarted) {
-                                put("message", "已交给手机本地调度器串行应用")
-                            } else {
-                                put("reason", if (mapping.disabled) "没有启用的配兵规则" else "账号启动后自动应用")
-                            }
-                        })
+                data.put("applyTask", JSONObject()
+                    .put("started", false)
+                    .put("reason", data.optString("applyReason").ifBlank {
+                        "设置已保存；配兵应用将作为独立网络任务执行"
+                    }))
             }
             "/api/raid/execute" -> data.put("raidTask", schedulerTaskState(
                 taskStarted,

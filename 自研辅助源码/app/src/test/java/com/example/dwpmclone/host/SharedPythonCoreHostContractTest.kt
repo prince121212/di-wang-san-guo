@@ -135,10 +135,12 @@ class SharedPythonCoreHostContractTest {
         assertTrue(controller.contains("\"/api/military/future/save\""))
         assertTrue(controller.contains("\"/api/liubu/save\""))
         assertTrue(controller.contains("\"/api/accounts/settings\""))
+        assertTrue(controller.contains("\"/api/formations/save\""))
         assertTrue(controller.contains("val dispatched = sharedPythonCore.dispatch("))
         assertTrue(controller.contains("networkRequired"))
         assertFalse(settingsMapper.contains("private fun future("))
         assertFalse(settingsMapper.contains("private fun ministries("))
+        assertFalse(settingsMapper.contains("private fun formation("))
     }
 
     @Test

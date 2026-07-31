@@ -12,6 +12,7 @@ import json
 from typing import Any, Dict
 
 from .features.dungeon import normalize_dungeon_mode
+from .features.formation import SOLDIER_TYPE_CODES
 from .features.ministries import (
     ministry_planting_allowed,
     normalize_ministry_settings,
@@ -179,6 +180,8 @@ def settings_write_plan(route: str, body: Any) -> Dict[str, Any]:
         return _future_military_write_plan(normalized_route, request)
     if normalized_route == "/api/liubu/save":
         return _ministry_write_plan(normalized_route, request)
+    if normalized_route == "/api/formations/save":
+        return _formation_write_plan(normalized_route, request)
     raise ValueError(f"共享设置核心尚未迁移该接口：{normalized_route}")
 
 
@@ -257,5 +260,155 @@ def _ministry_write_plan(
             "supportedEnabled": supported,
             "unconfirmedActions": unconfirmed_ministry_actions(settings),
             "reason": reason,
+        },
+    }
+
+
+def _formation_write_plan(
+    route: str,
+    request: Dict[str, Any],
+) -> Dict[str, Any]:
+    raw_rows = request.get("formations")
+    if not isinstance(raw_rows, list):
+        raise ValueError("配兵保存缺少 formations")
+    known_generals = request.get("knownGenerals")
+    known_generals = known_generals if isinstance(known_generals, list) else []
+    known_ids: set[str] = set()
+    known_names: Dict[str, str] = {}
+    for raw_general in known_generals:
+        if not isinstance(raw_general, dict):
+            continue
+        name = str(raw_general.get("name") or "").strip()
+        for value in (raw_general.get("id"), raw_general.get("idHex")):
+            identity = str(value or "").strip()
+            if not identity:
+                continue
+            known_ids.add(identity)
+            if name:
+                known_names[identity] = name
+
+    ui_rows = []
+    normalized_rows = []
+    unresolved_ids = []
+    unresolved_seen: set[str] = set()
+    configured_ids: set[str] = set()
+    for index, raw_row in enumerate(raw_rows):
+        if not isinstance(raw_row, dict):
+            continue
+        row = deepcopy(raw_row)
+        enabled = row.get("enabled", True) is True
+        raw_ids = row.get("generalIds")
+        if isinstance(raw_ids, list):
+            ids = [
+                str(value).strip()
+                for value in raw_ids
+                if str(value or "").strip()
+            ]
+        else:
+            fallback = str(row.get("generalId") or "").strip()
+            ids = [fallback] if fallback else []
+        ids = list(dict.fromkeys(ids))
+        if len(ids) > 5:
+            raise ValueError(f"第 {index + 1} 条配兵规则一次最多选择5名将领")
+        if enabled and not ids:
+            raise ValueError(f"第 {index + 1} 条启用的配兵规则未选择将领")
+        soldier_type = str(row.get("soldierType") or "轻骑兵").strip()
+        soldier_code = None
+        try:
+            soldier_code = int(soldier_type)
+        except (TypeError, ValueError):
+            pass
+        if enabled and not (
+            soldier_type in SOLDIER_TYPE_CODES
+            or soldier_code in SOLDIER_TYPE_CODES.values()
+        ):
+            raise ValueError(f"第 {index + 1} 条配兵规则兵种无效：{soldier_type}")
+        try:
+            soldier_count = int(row.get("soldierCount") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"第 {index + 1} 条配兵规则兵力数量无效") from error
+        if enabled and soldier_count <= 0:
+            raise ValueError(f"第 {index + 1} 条配兵规则兵力数量必须大于 0")
+        snapshots = (
+            deepcopy(row.get("generalNameSnapshots"))
+            if isinstance(row.get("generalNameSnapshots"), dict)
+            else {}
+        )
+        for general_id in ids:
+            if known_names.get(general_id):
+                snapshots[general_id] = known_names[general_id]
+        row.update(
+            enabled=enabled,
+            generalIds=ids,
+            generalId=ids[0] if ids else "",
+            soldierType=soldier_type,
+            soldierCount=max(0, soldier_count),
+        )
+        if snapshots:
+            row["generalNameSnapshots"] = snapshots
+        ui_rows.append(row)
+
+        if not enabled:
+            continue
+        for general_id in ids:
+            if general_id in configured_ids:
+                raise ValueError(f"将领 {general_id} 被重复配置，请只在一个配兵规则里选择它")
+            configured_ids.add(general_id)
+            if known_ids and general_id not in known_ids and general_id not in unresolved_seen:
+                unresolved_seen.add(general_id)
+                unresolved_ids.append(general_id)
+            normalized = {
+                "enabled": True,
+                "generalId": general_id,
+                "generalIds": [general_id],
+                "soldierType": soldier_type,
+                "soldierCount": soldier_count,
+                "sourceRowIndex": index,
+            }
+            if snapshots:
+                normalized["generalNameSnapshots"] = deepcopy(snapshots)
+            normalized_rows.append(normalized)
+
+    raw_options = request.get("formationOptions")
+    raw_options = raw_options if isinstance(raw_options, dict) else {}
+    options = {
+        "clearOtherGenerals": bool(
+            raw_options.get("clearOtherGenerals")
+            or request.get("clearOtherGenerals")
+        )
+    }
+    enabled = bool(normalized_rows)
+    activation_allowed = enabled and not unresolved_ids
+    if not enabled:
+        apply_reason = "没有启用的配兵规则"
+    elif unresolved_ids:
+        apply_reason = (
+            f"当前同步未找到将领 ID：{','.join(unresolved_ids)}；"
+            "配置已保留，刷新角色状态后再执行"
+        )
+    else:
+        apply_reason = "设置已保存，配兵应用是独立的账号网络任务"
+    return {
+        "route": route,
+        "configs": {
+            "formation_troop": {
+                "enabled": enabled,
+                "clearOtherGenerals": options["clearOtherGenerals"],
+                "rows": ui_rows,
+            }
+        },
+        "disabled": not enabled,
+        "activationAllowed": activation_allowed,
+        "networkRequired": False,
+        "followUpOperation": {
+            "kind": "apply-formations",
+            "required": activation_allowed,
+        },
+        "response": {
+            "formations": ui_rows,
+            "normalizedFormations": normalized_rows,
+            "formationOptions": options,
+            "unresolvedGeneralIds": unresolved_ids,
+            "applyReason": apply_reason,
         },
     }

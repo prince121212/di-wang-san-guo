@@ -174,6 +174,73 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertIn("缺少 settings", missing.body["error"])
         facade.close()
 
+    def test_formation_settings_plan_preserves_unknown_ids_and_splits_execution(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        response = facade.dispatch(
+            "POST",
+            "/api/formations/save",
+            {
+                "formations": [
+                    {
+                        "enabled": True,
+                        "generalIds": ["7", "8"],
+                        "soldierType": "近卫兵",
+                        "soldierCount": 1800,
+                        "generalNameSnapshots": {"8": "旧名"},
+                    },
+                    {
+                        "enabled": False,
+                        "generalIds": [],
+                        "soldierType": "民兵",
+                        "soldierCount": 0,
+                    },
+                ],
+                "formationOptions": {"clearOtherGenerals": False},
+                "knownGenerals": [{"id": 7, "idHex": "07", "name": "关羽"}],
+            },
+        )
+
+        self.assertEqual(response.status, 200)
+        plan = response.body["plan"]
+        self.assertFalse(plan["networkRequired"])
+        self.assertFalse(plan["activationAllowed"])
+        self.assertEqual(plan["response"]["unresolvedGeneralIds"], ["8"])
+        self.assertEqual(
+            plan["response"]["formations"][0]["generalNameSnapshots"],
+            {"7": "关羽", "8": "旧名"},
+        )
+        self.assertEqual(len(plan["response"]["normalizedFormations"]), 2)
+        self.assertEqual(facade.operations_snapshot()["count"], 0)
+        facade.close()
+
+    def test_formation_settings_plan_rejects_duplicates_and_invalid_enabled_rows(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        duplicate = facade.dispatch(
+            "POST",
+            "/api/formations/save",
+            {
+                "formations": [
+                    {"enabled": True, "generalIds": ["7"], "soldierType": "近卫兵", "soldierCount": 1},
+                    {"enabled": True, "generalIds": ["7"], "soldierType": "近卫兵", "soldierCount": 1},
+                ]
+            },
+        )
+        invalid = facade.dispatch(
+            "POST",
+            "/api/formations/save",
+            {
+                "formations": [
+                    {"enabled": True, "generalIds": [], "soldierType": "未知兵种", "soldierCount": 0}
+                ]
+            },
+        )
+
+        self.assertEqual(duplicate.status, 400)
+        self.assertIn("重复配置", duplicate.body["error"])
+        self.assertEqual(invalid.status, 400)
+        self.assertIn("未选择将领", invalid.body["error"])
+        facade.close()
+
     def test_hosted_military_refresh_is_accepted_then_completed_by_shared_operation(self) -> None:
         class HostBridge:
             def __init__(self) -> None:

@@ -24,17 +24,12 @@ object LocalSettingsConfigMapper {
     const val LOSSLESS = "military_lossless"
     const val DUNGEON = "dungeon"
 
-    private val troopTypes = setOf(
-        "民兵", "弩兵", "弓兵", "轻骑兵", "弩车", "冲城车", "轻步兵", "近卫兵",
-        "重步兵", "弩骑兵", "重骑兵", "铁骑兵", "投石车", "重弩车", "强弩兵", "骁骑兵"
-    )
     private val mineTypes = setOf(
         "金矿", "银矿", "冰玉矿", "仙芝园", "玄铁矿", "玉露园", "水晶矿", "灵草园",
         "牧场", "一级牧场", "二级牧场", "三级牧场", "镔铁矿", "浆果园"
     )
 
     fun map(route: String, body: JSONObject): LocalSettingsMapping = when (route) {
-        "/api/formations/save" -> formation(body)
         "/api/raid/execute" -> raid(body)
         "/api/mine/save" -> mine(body)
         "/api/lossless/execute" -> lossless(body)
@@ -132,27 +127,6 @@ object LocalSettingsConfigMapper {
         }
         if (config.length() > 0) habits.put("config", config)
         return habits
-    }
-
-    private fun formation(body: JSONObject): LocalSettingsMapping {
-        val rows = normalizeGeneralRows(body.optJSONArray("formations") ?: JSONArray(), max = 5) { row, enabled ->
-            val troopType = row.optString("soldierType", "轻骑兵").trim()
-            val troopCount = row.optInt("soldierCount", 0)
-            if (enabled) {
-                require(troopType in troopTypes || troopType.toIntOrNull() in 0..15) { "配兵兵种无效：$troopType" }
-                require(troopCount > 0) { "启用的配兵规则兵力必须大于0" }
-            }
-            row.put("soldierType", troopType).put("soldierCount", troopCount.coerceAtLeast(0))
-        }
-        val enabled = rows.anyEnabled()
-        val clearOther = body.optJSONObject("formationOptions")?.optBoolean("clearOtherGenerals", false) == true
-        return LocalSettingsMapping(
-            mapOf(FORMATION to JSONObject()
-                .put("enabled", enabled)
-                .put("clearOtherGenerals", clearOther)
-                .put("rows", rows)),
-            disabled = !enabled
-        )
     }
 
     private fun raid(body: JSONObject): LocalSettingsMapping {

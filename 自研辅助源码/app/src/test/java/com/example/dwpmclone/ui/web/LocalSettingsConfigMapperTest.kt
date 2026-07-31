@@ -18,11 +18,12 @@ class LocalSettingsConfigMapperTest {
     @Test
     fun dedicatedSaveRoutesMapDirectlyIntoSchedulerFeatureConfigs() {
         val values = linkedMapOf<String, JSONObject>()
-        merge(values, LocalSettingsConfigMapper.map("/api/formations/save", JSONObject()
-            .put("formations", JSONArray().put(row(7L, 8L)
+        values[LocalSettingsConfigMapper.FORMATION] = JSONObject()
+            .put("enabled", true)
+            .put("clearOtherGenerals", false)
+            .put("rows", JSONArray().put(row(7L, 8L)
                 .put("soldierType", "近卫兵")
                 .put("soldierCount", 1800)))
-            .put("formationOptions", JSONObject().put("clearOtherGenerals", false))))
         merge(values, LocalSettingsConfigMapper.map("/api/raid/execute", JSONObject()
             .put("confirm", "raid")
             .put("rows", JSONArray().put(row(7L, 8L)
@@ -180,12 +181,6 @@ class LocalSettingsConfigMapperTest {
             LocalSettingsConfigMapper.map("/api/raid/execute", JSONObject()
                 .put("confirm", "")
                 .put("rows", JSONArray().put(row(7L).put("playerName", "目标").put("fiefIndex", 1))))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            LocalSettingsConfigMapper.map("/api/formations/save", JSONObject()
-                .put("formations", JSONArray().put(row(1L, 2L, 3L, 4L, 5L, 6L)
-                    .put("soldierType", "近卫兵")
-                    .put("soldierCount", 100))))
         }
         assertThrows(IllegalArgumentException::class.java) {
             LocalSettingsConfigMapper.map("/api/military/future/save", JSONObject()

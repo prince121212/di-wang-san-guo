@@ -48,6 +48,12 @@
         "path": "/api/accounts/settings",
         "desktop": "shared-python",
         "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/formations/save",
+        "desktop": "shared-python",
+        "android": "shared-python"
       }
     ]
   },

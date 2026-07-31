@@ -37205,27 +37205,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if self.path == "/api/formations/save":
                 sess = get_session(str(body.get("sessionId") or ""))
-                ui_formations = list(body.get("formations") or [])
-                ui_formations, _has_unresolved = sanitize_formation_rows(sess, ui_formations)
-                has_enabled_row = any(
-                    bool(row.get("enabled", True)) and bool(row.get("generalIds") or row.get("generalId"))
-                    for row in ui_formations
-                    if isinstance(row, dict)
-                )
-                formations = (
-                    normalize_formation_rules(
-                        sess,
-                        ui_formations,
-                        require_known=False,
-                    )
-                    if has_enabled_row else []
-                )
-                raw_options = body.get("formationOptions") if isinstance(body.get("formationOptions"), dict) else {}
-                formation_options = {
-                    "clearOtherGenerals": bool(raw_options.get("clearOtherGenerals") or body.get("clearOtherGenerals"))
-                }
+                planning_body = dict(body)
+                planning_body["knownGenerals"] = list(sess.get("generals") or [])
+                write_plan = shared_settings_write_plan(self.path, planning_body)
+                response_fields = write_plan.get("response") or {}
+                ui_formations = list(response_fields.get("formations") or [])
+                formations = list(response_fields.get("normalizedFormations") or [])
+                formation_options = dict(response_fields.get("formationOptions") or {})
                 SAVED_FORMATION_RULES[sess["sessionId"]] = formations
-                unresolved_ids = unresolved_formation_general_ids(sess, ui_formations)
+                unresolved_ids = list(response_fields.get("unresolvedGeneralIds") or [])
                 sess["unresolvedFormationGeneralIds"] = unresolved_ids
                 saved_files = save_account_habits(sess, formations=ui_formations, formation_options=formation_options)
                 persist_runtime_state()
@@ -37244,23 +37232,39 @@ class Handler(SimpleHTTPRequestHandler):
                         "unresolvedGeneralIds": unresolved_ids,
                     },
                 )
-                apply_task = (
-                    start_apply_formations_task(
-                        sess,
-                        formations,
-                        clear_other_generals=bool(formation_options.get("clearOtherGenerals")),
+                with ACCOUNT_LOCK:
+                    account_started = bool(
+                        (ACCOUNTS.get(str(sess["sessionId"])) or {}).get("started")
                     )
-                    if formations and not unresolved_ids
-                    else {
+                if write_plan.get("activationAllowed") and account_started:
+                    try:
+                        apply_task = start_apply_formations_task(
+                            sess,
+                            formations,
+                            clear_other_generals=bool(
+                                formation_options.get("clearOtherGenerals")
+                            ),
+                        )
+                    except Exception as exc:
+                        apply_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，配兵任务启动失败",
+                        }
+                else:
+                    apply_task = {
                         "started": False,
+                        "waitingForAccountStart": bool(
+                            write_plan.get("activationAllowed")
+                            and not account_started
+                        ),
                         "reason": (
-                            f"当前同步未找到将领 ID：{','.join(unresolved_ids)}；"
-                            "配置已保留，刷新角色状态后再执行"
-                            if unresolved_ids
-                            else "没有启用的配兵规则"
+                            "设置已保存，等待用户开始执行任务"
+                            if write_plan.get("activationAllowed")
+                            and not account_started
+                            else str(response_fields.get("applyReason") or "")
                         ),
                     }
-                )
                 self.send_json({
                     "ok": True,
                     "saved": True,
@@ -37272,6 +37276,13 @@ class Handler(SimpleHTTPRequestHandler):
                     "unresolvedGeneralIds": unresolved_ids,
                     "applyTask": apply_task,
                     "task": apply_task.get("task") if apply_task.get("started") else None,
+                    "execution": {
+                        "accepted": bool(write_plan.get("activationAllowed")),
+                        "started": bool(apply_task.get("started")),
+                        "waitingForAccountStart": bool(
+                            apply_task.get("waitingForAccountStart")
+                        ),
+                    },
                     "accountHabits": load_account_habits(sess),
                 })
                 return

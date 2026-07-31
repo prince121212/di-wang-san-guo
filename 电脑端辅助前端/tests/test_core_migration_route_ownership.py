@@ -100,6 +100,12 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(account_settings["currentDesktopOwner"], "shared-python")
         self.assertEqual(account_settings["currentAndroidOwner"], "shared-python")
+        formation_settings = next(
+            row for row in normalized["routes"]
+            if (row["method"], row["path"]) == ("POST", "/api/formations/save")
+        )
+        self.assertEqual(formation_settings["currentDesktopOwner"], "shared-python")
+        self.assertEqual(formation_settings["currentAndroidOwner"], "shared-python")
 
     def test_desktop_handler_paths_are_all_classified(self) -> None:
         source = DESKTOP_SERVER.read_text(encoding="utf-8")
@@ -152,6 +158,17 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         self.assertIn('"/api/accounts/settings"', android_route)
         self.assertIn("sharedPythonCore.dispatch(", android_route)
         self.assertNotIn("selected.toString(2)", android_route)
+
+    def test_formation_settings_route_uses_shared_write_plan(self) -> None:
+        source = DESKTOP_SERVER.read_text(encoding="utf-8")
+        route = source.split(
+            'if self.path == "/api/formations/save":',
+            1,
+        )[1].split('if self.path == "/api/formations/unassign-all":', 1)[0]
+
+        self.assertIn("shared_settings_write_plan(self.path, planning_body)", route)
+        self.assertNotIn("sanitize_formation_rows", route)
+        self.assertNotIn("normalize_formation_rules", route)
 
     def test_android_allow_list_is_covered_and_known_gaps_are_explicit(self) -> None:
         source = "\n".join(path.read_text(encoding="utf-8") for path in ANDROID_ROUTE_SOURCES)
