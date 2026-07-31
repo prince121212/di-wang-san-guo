@@ -46,7 +46,7 @@
 
 这里不能在 Python→Kotlin 同步回调中阻塞等锁：旧调度器持有账号锁期间，协议结果回写可能再次调用共享 Python；反向阻塞会形成“调度器持账号锁等 Python / Python operation 等账号锁”的锁反转。当前非阻塞握手消除了这个环。
 
-### 4. 首个本地设置写入切片
+### 4. 本地设置写入切片
 
 `POST /api/military/future/save` 已同时切换电脑端和 Android 的业务所有者为共享 Python：
 
@@ -56,7 +56,14 @@
 - Android Kotlin 中原有的 `future()` 业务分支已删除，不再出现“电脑端可保存、Android 直接拒绝”的分叉。
 - 该路由只完成本地校验和落盘，不启动 Service，不等待游戏服务器。
 
-最新 APK 在真机冷启动共享核心后，`GET /api/health` 返回 `migratedRouteCount=4`、`coreInitialized=true`；冷启动调用为 479 ms，调用前后 `AssistantForegroundService` 均未启动。
+`POST /api/liubu/save` 也已切换为两端共享设置写入计划：
+
+- 作物默认值、允许列表、“只有金银花种植可发送”门禁、未确认动作和用户提示均由共享 Python 生成。
+- Kotlin 中原有的 `ministries()` 映射已删除。
+- 设置缺少 `settings` 时在落盘前拒绝；未确认作物可保存但 `activationAllowed=false`。
+- 电脑端不再在已落盘后因六部在线检查将保存报为失败。账号正在运行时只快速投递后台任务；未运行时返回“设置已保存，等待开始”。任务启动异常也不会反向覆盖本地保存成功。
+
+最新 APK 在真机冷启动共享核心后，`GET /api/health` 返回 `migratedRouteCount=5`、`coreInitialized=true`；最新冷启动调用为 378 ms，调用前后 `AssistantForegroundService` 均未启动。
 
 ## 真机门禁验证与发现的问题
 
@@ -85,7 +92,7 @@
 
 ## 当前回归证据
 
-- 电脑端 Python：633 项测试通过。
+- 电脑端 Python：635 项测试通过。
 - `app.js` 与 `assistant-api.js`：Node.js 语法检查通过。
 - Native Bridge operation 行为测试：通过，覆盖 `202 → RUNNING → SUCCEEDED`。
 - Android JVM：585 项测试、0 失败、0 错误；Release Kotlin 编译通过。
@@ -94,7 +101,7 @@
 
 ## 尚未完成
 
-- `GET /api/accounts/settings` 与除 `POST /api/military/future/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
+- `GET /api/accounts/settings` 与除 `POST /api/military/future/save`、`POST /api/liubu/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
 - 日志、任务状态、地图缓存等本地路由尚未逐条切换所有者。
 - `/api/state/refresh` 的非军情 scope 及其他旧网络路由仍可能同步等待旧 Kotlin 网络实现。
 - 军情真实成功路径尚未获得用户授权进行真机验证。
