@@ -46,6 +46,18 @@
 
 这里不能在 Python→Kotlin 同步回调中阻塞等锁：旧调度器持有账号锁期间，协议结果回写可能再次调用共享 Python；反向阻塞会形成“调度器持账号锁等 Python / Python operation 等账号锁”的锁反转。当前非阻塞握手消除了这个环。
 
+### 4. 首个本地设置写入切片
+
+`POST /api/military/future/save` 已同时切换电脑端和 Android 的业务所有者为共享 Python：
+
+- 押镖、寻宝、无损和副本的字段规范化、兼容别名、就绪状态和未抓包功能的失败关闭语义只保留在 `dwpm_core/settings.py`。
+- 共享路由返回结构化本地写入计划，并显式标记 `networkRequired=false`。
+- 电脑端只把计划写入现有 SQLite 账号习惯库；Android 只把计划写入 `LocalConfigRepository`。
+- Android Kotlin 中原有的 `future()` 业务分支已删除，不再出现“电脑端可保存、Android 直接拒绝”的分叉。
+- 该路由只完成本地校验和落盘，不启动 Service，不等待游戏服务器。
+
+最新 APK 在真机冷启动共享核心后，`GET /api/health` 返回 `migratedRouteCount=4`、`coreInitialized=true`；冷启动调用为 479 ms，调用前后 `AssistantForegroundService` 均未启动。
+
 ## 真机门禁验证与发现的问题
 
 首次负向验证时发现：共享 operation 把“自身正在运行”误当成 Android 前台 Service 仍持有执行权。账号元数据仍为启用状态，因此测试意外进入旧只读网络适配器并发送了一次 `0x1600` 军情查询；请求成功返回，但缺少 `0x8600`，operation 最终为 `FAILED`。
@@ -73,7 +85,7 @@
 
 ## 当前回归证据
 
-- 电脑端 Python：630 项测试通过。
+- 电脑端 Python：633 项测试通过。
 - `app.js` 与 `assistant-api.js`：Node.js 语法检查通过。
 - Native Bridge operation 行为测试：通过，覆盖 `202 → RUNNING → SUCCEEDED`。
 - Android JVM：585 项测试、0 失败、0 错误；Release Kotlin 编译通过。
@@ -82,7 +94,7 @@
 
 ## 尚未完成
 
-- `GET /api/accounts/settings` 与设置保存系列路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未成为两端共享业务代码。
+- `GET /api/accounts/settings` 与除 `POST /api/military/future/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
 - 日志、任务状态、地图缓存等本地路由尚未逐条切换所有者。
 - `/api/state/refresh` 的非军情 scope 及其他旧网络路由仍可能同步等待旧 Kotlin 网络实现。
 - 军情真实成功路径尚未获得用户授权进行真机验证。
