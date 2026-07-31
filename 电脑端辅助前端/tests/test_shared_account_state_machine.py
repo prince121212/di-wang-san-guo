@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +25,17 @@ from dwpm_core.account.state_machine import (  # noqa: E402
     reduce_account_event,
 )
 from dwpm_core.facade import CoreFacade  # noqa: E402
+
+
+SERVER_PATH = ROOT / "电脑端辅助前端" / "server.py"
+SPEC = importlib.util.spec_from_file_location(
+    "dwpm_server_shared_account_state_machine_test",
+    SERVER_PATH,
+)
+SERVER = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+sys.modules[SPEC.name] = SERVER
+SPEC.loader.exec_module(SERVER)
 
 
 class SharedAccountStateMachineTests(unittest.TestCase):
@@ -202,6 +214,42 @@ class SharedAccountStateMachineTests(unittest.TestCase):
             )
         finally:
             facade.close()
+
+    def test_desktop_runtime_projection_applies_the_same_happy_path(self) -> None:
+        account = {
+            "sessionId": "desktop-offline",
+            "started": False,
+            "status": "stopped",
+            "lastError": "",
+        }
+        started = SERVER.apply_shared_account_transition(
+            account,
+            EVENT_USER_START,
+            now_millis_value=1_000,
+            session_credential_present=False,
+        )
+        self.assertEqual(started["loginState"], "REAL_PROTOCOL_CHECKING")
+        self.assertEqual(account["status"], "checking")
+        self.assertTrue(account["started"])
+
+        online = SERVER.apply_shared_account_transition(
+            account,
+            EVENT_LOGIN_SUCCEEDED,
+            now_millis_value=2_000,
+            session_credential_present=True,
+        )
+        self.assertEqual(online["loginState"], "REAL_PROTOCOL_ONLINE")
+        self.assertEqual(account["status"], "online")
+
+        stopped = SERVER.apply_shared_account_transition(
+            account,
+            EVENT_USER_STOP,
+            now_millis_value=3_000,
+            session_credential_present=True,
+        )
+        self.assertEqual(stopped["loginState"], "REAL_PROTOCOL_STOPPED")
+        self.assertEqual(account["status"], "stopped")
+        self.assertFalse(account["started"])
 
 
 if __name__ == "__main__":

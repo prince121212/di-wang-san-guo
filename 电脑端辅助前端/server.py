@@ -71,6 +71,11 @@ from dwpm_core.account import (
     parse_passport_area_list as shared_parse_passport_area_list,
     reconnect_kind_label as shared_reconnect_kind_label,
 )
+from dwpm_core.account.state_machine import (
+    EVENT_LOGIN_SUCCEEDED as SHARED_EVENT_LOGIN_SUCCEEDED,
+    EVENT_USER_START as SHARED_EVENT_USER_START,
+    EVENT_USER_STOP as SHARED_EVENT_USER_STOP,
+)
 from dwpm_core.features.expedition import (
     build_brush_payloads as shared_build_brush_payloads,
     build_brush_payloads_variant as shared_build_brush_payloads_variant,
@@ -23238,6 +23243,59 @@ def account_status_text(status: str) -> str:
     )
 
 
+def apply_shared_account_transition(
+    acc: dict[str, Any],
+    event: str,
+    *,
+    message: str = "",
+    now_millis_value: int | None = None,
+    session_credential_present: bool | None = None,
+) -> dict[str, Any]:
+    """Apply the shared lifecycle reducer to one desktop runtime projection."""
+
+    transition_at = int(now_millis_value or now_ms())
+    sid = str(acc.get("sessionId") or "")
+    transition = SHARED_PYTHON_CORE.account_transition(
+        {
+            "desiredStarted": bool(acc.get("started")),
+            "loginState": str(acc.get("status") or "stopped"),
+            "sessionCredentialPresent": (
+                bool(sid and sid in SESSIONS)
+                if session_credential_present is None
+                else bool(session_credential_present)
+            ),
+            "failureKind": str(acc.get("reconnectFailureKind") or ""),
+            "failureCount": int(acc.get("reconnectFailureCount") or 0),
+            "nextRetryAtMillis": acc.get("reconnectAt"),
+            "lastError": str(acc.get("lastError") or ""),
+            "lastValidatedAtMillis": (
+                (acc.get("lastHeartbeat") or {}).get("checkedAt")
+                if isinstance(acc.get("lastHeartbeat"), dict)
+                else None
+            ),
+        },
+        event,
+        {"message": str(message or "")},
+        transition_at,
+    )
+    canonical = str(transition["loginState"])
+    status = {
+        "REAL_PROTOCOL_ONLINE": "online",
+        "REAL_PROTOCOL_CHECKING": "checking",
+        "REAL_PROTOCOL_NETWORK_PAUSED": "offline",
+        "REAL_PROTOCOL_NEED_RELOGIN": "offline",
+        "REAL_PROTOCOL_OFFLINE": "offline",
+        "REAL_PROTOCOL_STOPPED": "stopped",
+    }.get(canonical, "offline")
+    acc["started"] = bool(transition["desiredStarted"])
+    acc["status"] = status
+    acc["lastError"] = str(transition.get("lastError") or "")
+    acc["reconnectFailureKind"] = str(transition.get("failureKind") or "")
+    acc["reconnectFailureCount"] = int(transition.get("failureCount") or 0)
+    acc["reconnectAt"] = transition.get("nextRetryAtMillis")
+    return transition
+
+
 def is_session_invalid_message(message: str) -> bool:
     return shared_is_session_invalid_message(message)
 
@@ -24163,10 +24221,13 @@ def start_account(
         if old_stop:
             old_stop.set()
         acc["stopEvent"] = threading.Event()
-        acc["status"] = "checking"
-        acc["started"] = True
-        acc["startedAt"] = now_ms()
-        acc["lastError"] = ""
+        started_at = now_ms()
+        apply_shared_account_transition(
+            acc,
+            SHARED_EVENT_USER_START,
+            now_millis_value=started_at,
+        )
+        acc["startedAt"] = started_at
         acc["sessionInvalidatedAt"] = None
         acc["reconnectState"] = "reconnecting" if automatic_reconnect else ""
         acc["reconnectAt"] = None
@@ -24321,9 +24382,13 @@ def start_account(
     with ACCOUNT_LOCK:
         acc = ACCOUNTS[actual_session_id]
         acc["lastHeartbeat"] = hb
-        acc["status"] = "online" if hb.get("online") else "offline"
-        acc["lastError"] = "" if hb.get("online") else hb.get("message", "心跳未确认在线")
         if hb.get("online"):
+            apply_shared_account_transition(
+                acc,
+                SHARED_EVENT_LOGIN_SUCCEEDED,
+                now_millis_value=int(hb.get("checkedAt") or now_ms()),
+                session_credential_present=True,
+            )
             acc["reconnectState"] = ""
             acc["reconnectAt"] = None
             acc["reconnectReason"] = ""
@@ -24338,6 +24403,9 @@ def start_account(
             acc["heartbeatNetworkTriedProxyNodes"] = []
             acc["networkDegraded"] = False
             acc["responseUnconfirmed"] = False
+        else:
+            acc["status"] = "offline"
+            acc["lastError"] = hb.get("message", "心跳未确认在线")
     session_invalid = bool(hb.get("sessionInvalid")) or is_session_invalid_message(str(hb.get("message") or ""))
     system_log(
         f"启动后心跳：{hb.get('message') or ('在线' if hb.get('online') else '离线')}",
@@ -24382,8 +24450,11 @@ def stop_account(session_id: str, *, reason: str = "") -> dict[str, Any]:
             raise RuntimeError("账号不存在")
         if acc.get("stopEvent"):
             acc["stopEvent"].set()
-        acc["status"] = "stopped"
-        acc["started"] = False
+        apply_shared_account_transition(
+            acc,
+            SHARED_EVENT_USER_STOP,
+            message=reason,
+        )
         acc["lastError"] = str(reason or "")
         acc["lastHeartbeat"] = {
             "online": False,
