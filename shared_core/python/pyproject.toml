@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dwpm-core"
+version = "0.1.0"
+description = "Shared Python business core for the DWPM desktop and Android hosts"
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = ["dwpm_core"]

@@ -52,6 +52,16 @@ from typing import Any, Callable
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent
+SHARED_PYTHON_SOURCE_DIR = ROOT.parent / "shared_core" / "python"
+if not SHARED_PYTHON_SOURCE_DIR.is_dir():
+    raise RuntimeError(f"shared Python core is missing: {SHARED_PYTHON_SOURCE_DIR}")
+if str(SHARED_PYTHON_SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SHARED_PYTHON_SOURCE_DIR))
+
+from dwpm_core import CoreFacade
+
+
+SHARED_PYTHON_CORE = CoreFacade(ROOT.parent / "shared_core")
 SHARED_BEHAVIOR_CONTRACT_PATH = (
     ROOT.parent / "shared_core" / "assistant_behavior_contract.json"
 )
@@ -39995,7 +40005,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path == "/api/health":
             self.send_json({
-                "ok": True,
+                **SHARED_PYTHON_CORE.health(),
                 "version": APP_VERSION,
                 "sessions": len(SESSIONS),
                 "accounts": len(ACCOUNTS),
