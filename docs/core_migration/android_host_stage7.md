@@ -72,7 +72,15 @@
 
 真机连续 10 次热态读取结果：P50 38.3 ms，P95/P99 39.9 ms；返回 1 个可解析的 `account-config.json`，敏感路径 0。取样前后游戏请求历史哈希不变，`AssistantForegroundService` 未启动。
 
-最新 APK 上 `GET /api/health` 返回 `migratedRouteCount=6`、`coreInitialized=true`，热态调用为 13.7 ms。
+`POST /api/formations/save` 已切换为共享本地写入计划：
+
+- 将领 ID 去重、每行上限、兵种与兵力校验、跨行重复检查、将领名快照和未同步 ID 判定均由共享 Python 生成。
+- 未同步将领 ID 不会被删除；设置可正常落盘，但 `activationAllowed=false`，禁止发包。
+- Kotlin 中原有的 `formation()` 业务映射已删除。
+- 电脑端在账号运行时仍可在落盘后快速投递旧后台配兵任务，但任务启动异常不再覆盖本地保存成功。
+- Android 尚未迁移真实配兵网络 operation，因此现在返回“设置已保存，实际配兵属于独立网络任务”，不再伪造“已启动”。
+
+最新 APK 上 `GET /api/health` 返回 `migratedRouteCount=7`、`coreInitialized=true`；该验证未启动 `AssistantForegroundService`。
 
 ## 真机门禁验证与发现的问题
 
@@ -101,7 +109,7 @@
 
 ## 当前回归证据
 
-- 电脑端 Python：638 项测试通过。
+- 电脑端 Python：641 项测试通过。
 - `app.js` 与 `assistant-api.js`：Node.js 语法检查通过。
 - Native Bridge operation 行为测试：通过，覆盖 `202 → RUNNING → SUCCEEDED`。
 - Android JVM：585 项测试、0 失败、0 错误；Release Kotlin 编译通过。
@@ -110,7 +118,7 @@
 
 ## 尚未完成
 
-- 除 `POST /api/military/future/save`、`POST /api/liubu/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
+- 除 `POST /api/military/future/save`、`POST /api/liubu/save`、`POST /api/formations/save` 以外的设置保存路由仍由 Kotlin 负责映射；虽然已经进入独立 local-write 并使用同步 `commit()`，但尚未全部成为两端共享业务代码。
 - 日志、任务状态、地图缓存等本地路由尚未逐条切换所有者。
 - `/api/state/refresh` 的非军情 scope 及其他旧网络路由仍可能同步等待旧 Kotlin 网络实现。
 - 军情真实成功路径尚未获得用户授权进行真机验证。
