@@ -11,6 +11,11 @@ from copy import deepcopy
 from typing import Any, Dict
 
 from .features.dungeon import normalize_dungeon_mode
+from .features.ministries import (
+    ministry_planting_allowed,
+    normalize_ministry_settings,
+    unconfirmed_ministry_actions,
+)
 
 
 MILITARY_FUTURE_READINESS: Dict[str, Dict[str, Any]] = {
@@ -127,8 +132,17 @@ def settings_write_plan(route: str, body: Any) -> Dict[str, Any]:
 
     normalized_route = str(route or "").split("?", 1)[0]
     request = deepcopy(body) if isinstance(body, dict) else {}
-    if normalized_route != "/api/military/future/save":
-        raise ValueError(f"共享设置核心尚未迁移该接口：{normalized_route}")
+    if normalized_route == "/api/military/future/save":
+        return _future_military_write_plan(normalized_route, request)
+    if normalized_route == "/api/liubu/save":
+        return _ministry_write_plan(normalized_route, request)
+    raise ValueError(f"共享设置核心尚未迁移该接口：{normalized_route}")
+
+
+def _future_military_write_plan(
+    route: str,
+    request: Dict[str, Any],
+) -> Dict[str, Any]:
     feature = str(request.get("feature") or "").strip()
     settings = normalize_military_future_settings(
         feature,
@@ -141,15 +155,64 @@ def settings_write_plan(route: str, body: Any) -> Dict[str, Any]:
         for row in settings.get("rows") or []
     )
     return {
-        "route": normalized_route,
+        "route": route,
         "configs": {
             _MILITARY_FUTURE_FEATURE_CONFIG_IDS[feature]: settings,
         },
         "disabled": not (executable and enabled),
+        "activationAllowed": executable and enabled,
         "networkRequired": False,
         "response": {
             "feature": feature,
             "settings": settings,
             "readiness": readiness,
+        },
+    }
+
+
+def _ministry_write_plan(
+    route: str,
+    request: Dict[str, Any],
+) -> Dict[str, Any]:
+    raw_settings = request.get("settings")
+    if not isinstance(raw_settings, dict):
+        raise ValueError("六部保存缺少 settings")
+    settings = normalize_ministry_settings({"settings": raw_settings})
+    supported = ministry_planting_allowed(settings)
+    requested = any(
+        settings.get(key)
+        for key in (
+            "cropEnabled",
+            "stealEnabled",
+            "courtesyEnabled",
+            "salaryRefresh",
+        )
+    )
+    config = {
+        **settings,
+        "enabled": supported,
+        "supportedEnabled": supported,
+        "requested": requested,
+    }
+    if not requested:
+        reason = "六部任务已关闭"
+    elif supported:
+        reason = "六部设置已保存，由账号任务队列执行金银花种植"
+    elif settings.get("cropEnabled"):
+        reason = f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送"
+    else:
+        reason = "种菜收菜未开启；偷菜、礼部和俸禄刷新协议尚未完整确认，当前不发送"
+    return {
+        "route": route,
+        "configs": {"six_ministries": config},
+        "disabled": not requested,
+        "activationAllowed": supported,
+        "networkRequired": False,
+        "response": {
+            "settings": config,
+            "requested": requested,
+            "supportedEnabled": supported,
+            "unconfirmedActions": unconfirmed_ministry_actions(settings),
+            "reason": reason,
         },
     }

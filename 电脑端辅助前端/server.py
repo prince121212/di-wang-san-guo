@@ -11536,6 +11536,30 @@ def normalize_military_future_settings(feature: str, settings: Any) -> dict[str,
     return shared_normalize_military_future_settings(feature, settings)
 
 
+def shared_settings_write_plan(
+    route: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    planned = SHARED_PYTHON_CORE.dispatch(
+        "POST",
+        route,
+        body,
+        {
+            "requestId": f"desktop-settings-{now_ms()}",
+            "source": "desktop-http",
+            "platform": "desktop",
+        },
+    )
+    if planned.status != 200 or not planned.body.get("ok"):
+        raise RuntimeError(
+            str(planned.body.get("error") or "共享设置核心拒绝保存")
+        )
+    write_plan = planned.body.get("plan")
+    if not isinstance(write_plan, dict) or write_plan.get("networkRequired") is not False:
+        raise RuntimeError("本地设置写入计划无效或尝试等待游戏网络")
+    return write_plan
+
+
 def printable(bs: bytes, limit: int = 512) -> str:
     return shared_printable(bs, limit)
 
@@ -36742,17 +36766,40 @@ class Handler(SimpleHTTPRequestHandler):
             if self.path == "/api/liubu/save":
                 sid = str(body.get("sessionId") or "")
                 sess = get_session(sid)
-                settings = normalize_ministry_settings(body)
-                saved_files = save_account_habits(sess, ministry=settings)
-                supported_enabled = shared_ministry_planting_allowed(settings)
-                any_enabled = any(
-                    settings.get(key)
-                    for key in ("cropEnabled", "stealEnabled", "courtesyEnabled")
+                write_plan = shared_settings_write_plan(self.path, body)
+                settings = dict(
+                    (write_plan.get("configs") or {}).get("six_ministries")
+                    or {}
                 )
-                if supported_enabled:
-                    require_account_online(sid, "启动六部")
-                    ministry_task = start_auto_ministry(sess, settings)
+                response_fields = write_plan.get("response") or {}
+                saved_files = save_account_habits(sess, ministry=settings)
+                supported_enabled = bool(write_plan.get("activationAllowed"))
+                any_enabled = bool(response_fields.get("requested"))
+                with ACCOUNT_LOCK:
+                    account_started = bool(
+                        (ACCOUNTS.get(sid) or {}).get("started")
+                    )
+                if supported_enabled and account_started:
+                    try:
+                        ministry_task = start_auto_ministry(sess, settings)
+                    except Exception as exc:
+                        ministry_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，六部任务启动失败",
+                        }
                     stopped_task_ids: list[str] = []
+                elif supported_enabled:
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "auto-ministry",
+                        "六部设置已保存，等待用户开始执行任务",
+                    )
+                    ministry_task = {
+                        "started": False,
+                        "waitingForAccountStart": True,
+                        "reason": "设置已保存，等待用户开始执行任务",
+                    }
                 else:
                     stopped_task_ids = request_stop_tasks_for_session_type(
                         sid,
@@ -36762,11 +36809,7 @@ class Handler(SimpleHTTPRequestHandler):
                     ministry_task = {
                         "started": False,
                         "disabled": not any_enabled,
-                        "reason": (
-                            f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送"
-                            if settings.get("cropEnabled")
-                            else "种菜收菜未开启；偷菜和礼部动作协议尚未完整确认，当前不发送"
-                        ),
+                        "reason": str(response_fields.get("reason") or ""),
                     }
                 account_log(
                     sid,
@@ -36781,6 +36824,13 @@ class Handler(SimpleHTTPRequestHandler):
                     "saved": True,
                     "disabled": not any_enabled,
                     "settings": settings,
+                    "execution": {
+                        "accepted": supported_enabled,
+                        "started": bool(ministry_task.get("started")),
+                        "waitingForAccountStart": bool(
+                            ministry_task.get("waitingForAccountStart")
+                        ),
+                    },
                     "savedFiles": saved_files,
                     "ministryTask": ministry_task,
                     "task": ministry_task.get("task"),
@@ -37035,21 +37085,7 @@ class Handler(SimpleHTTPRequestHandler):
             if self.path == "/api/military/future/save":
                 sid = str(body.get("sessionId") or "")
                 sess = get_session(sid)
-                planned = SHARED_PYTHON_CORE.dispatch(
-                    "POST",
-                    self.path,
-                    body,
-                    {
-                        "requestId": f"desktop-settings-{now_ms()}",
-                        "source": "desktop-http",
-                        "platform": "desktop",
-                    },
-                )
-                if planned.status != 200 or not planned.body.get("ok"):
-                    raise RuntimeError(
-                        str(planned.body.get("error") or "共享设置核心拒绝保存")
-                    )
-                write_plan = planned.body.get("plan") or {}
+                write_plan = shared_settings_write_plan(self.path, body)
                 response_fields = write_plan.get("response") or {}
                 feature = str(response_fields.get("feature") or "").strip()
                 settings = dict(response_fields.get("settings") or {})

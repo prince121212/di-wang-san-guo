@@ -93,6 +93,10 @@ class CoreFacade:
                 "POST",
                 "/api/military/future/save",
             ): self._settings_write_plan_route,
+            (
+                "POST",
+                "/api/liubu/save",
+            ): self._ministry_settings_write_plan_route,
         }
         self._network_handlers: Dict[
             tuple[str, str],
@@ -812,6 +816,19 @@ class CoreFacade:
             "ok": True,
             "plan": self.settings_write_plan(
                 "/api/military/future/save",
+                body,
+            ),
+        }
+
+    def _ministry_settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/liubu/save",
                 body,
             ),
         }

@@ -421,7 +421,8 @@ class MobileApiContractTests(unittest.TestCase):
             self.assertTrue(any("config" in kwargs for kwargs in saved_kwargs))
             self.assertTrue(any("ministry" in kwargs for kwargs in saved_kwargs))
             self.assertTrue(any("mine" in kwargs for kwargs in saved_kwargs))
-            self.assertEqual(2, require_online.call_count)
+            # 设置保存不再绑定六部的在线检查；只有打矿旧路由仍检查。
+            self.assertEqual(1, require_online.call_count)
             start_ministry.assert_called_once()
             start_mine.assert_called_once()
         finally:

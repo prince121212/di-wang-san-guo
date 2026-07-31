@@ -402,7 +402,11 @@ class LocalAssistantApiController(
     private fun saveMappedSettings(request: AssistantApiRequest, route: String): AssistantApiResponse {
         val account = requireAccount(request.body)
         val body = request.body ?: throw IllegalArgumentException("缺少设置内容")
-        val sharedPlan = if (route == "/api/military/future/save") {
+        val sharedPlan = if (route in setOf(
+                "/api/military/future/save",
+                "/api/liubu/save"
+            )
+        ) {
             val dispatched = sharedPythonCore.dispatch(
                 request.method,
                 route,
@@ -424,6 +428,10 @@ class LocalAssistantApiController(
         }
         val mapping = sharedPlan?.let(::settingsMappingFromSharedPlan)
             ?: LocalSettingsConfigMapper.map(route, body)
+        val activationAllowed = sharedPlan?.optBoolean(
+            "activationAllowed",
+            !mapping.disabled
+        ) ?: !mapping.disabled
         mapping.configs.forEach { (featureId, values) ->
             configs.saveFeatureConfig(account.id, featureId, JSONObject().put("values", values))
         }
@@ -444,15 +452,15 @@ class LocalAssistantApiController(
                 .put("militaryFile", "手机本地存储/account-config.json")
                 .put("ministryFile", "手机本地存储/account-config.json"))
             .put("stoppedTaskIds", JSONArray())
-            .put("waitingForMilitaryStart", !mapping.disabled && !account.enabled)
+            .put("waitingForMilitaryStart", activationAllowed && !account.enabled)
 
-        val taskStarted = !mapping.disabled && account.enabled
+        val taskStarted = activationAllowed && account.enabled
         data.put(
             "execution",
             JSONObject()
-                .put("accepted", !mapping.disabled)
+                .put("accepted", activationAllowed)
                 .put("started", taskStarted)
-                .put("waitingForAccountStart", !mapping.disabled && !account.enabled)
+                .put("waitingForAccountStart", activationAllowed && !account.enabled)
                 .put("owner", "android-local-scheduler")
         )
         sharedPlan?.optJSONObject("response")?.let { response ->
@@ -492,22 +500,11 @@ class LocalAssistantApiController(
             ))
             "/api/liubu/save" -> {
                 val values = mapping.configs.getValue(LocalSettingsConfigMapper.MINISTRIES)
-                val cropEnabled = values.optBoolean("cropEnabled", false)
-                val crop = values.optString("crop", com.example.dwpmclone.domain.model.MinistryProtocolCrop.VERIFIED_NAME)
                 val supported = values.optBoolean("supportedEnabled", false)
-                data.put(
-                    "reason",
-                    when {
-                        mapping.disabled -> "六部任务已关闭"
-                        supported -> "六部设置已保存，由手机本地调度器执行金银花种植"
-                        cropEnabled -> "${crop}协议尚未确认；配置已保存但不会发送"
-                        else -> "种菜收菜未开启；偷菜和礼部动作协议尚未完整确认，当前不发送"
-                    }
-                )
                 data.put("ministryTask", schedulerTaskState(
                     taskStarted && supported,
                     !supported,
-                    if (mapping.disabled) "六部任务已关闭" else "当前没有可执行的已确认动作",
+                    data.optString("reason").ifBlank { "当前没有可执行的已确认动作" },
                     "账号启动后执行金银花种植"
                 ))
             }

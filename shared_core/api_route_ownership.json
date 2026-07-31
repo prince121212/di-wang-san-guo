@@ -36,6 +36,12 @@
         "path": "/api/military/future/save",
         "desktop": "shared-python",
         "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/liubu/save",
+        "desktop": "shared-python",
+        "android": "shared-python"
       }
     ]
   },

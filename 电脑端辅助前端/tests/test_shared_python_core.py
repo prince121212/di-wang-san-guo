@@ -82,6 +82,54 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertIn("未知军事功能", result.body["error"])
         facade.close()
 
+    def test_ministry_settings_write_plan_separates_save_from_activation(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        unverified = facade.dispatch(
+            "POST",
+            "/api/liubu/save",
+            {
+                "settings": {
+                    "cropEnabled": True,
+                    "crop": "草药",
+                    "stealEnabled": True,
+                }
+            },
+        )
+        verified = facade.dispatch(
+            "POST",
+            "/api/liubu/save",
+            {
+                "settings": {
+                    "cropEnabled": True,
+                    "crop": "金银花",
+                    "stealEnabled": False,
+                    "courtesyEnabled": False,
+                    "salaryRefresh": False,
+                }
+            },
+        )
+
+        self.assertEqual(unverified.status, 200)
+        unverified_plan = unverified.body["plan"]
+        self.assertFalse(unverified_plan["networkRequired"])
+        self.assertFalse(unverified_plan["activationAllowed"])
+        self.assertTrue(unverified_plan["response"]["requested"])
+        self.assertIn("配置已保存但不会发送", unverified_plan["response"]["reason"])
+
+        verified_plan = verified.body["plan"]
+        self.assertTrue(verified_plan["activationAllowed"])
+        self.assertTrue(
+            verified_plan["configs"]["six_ministries"]["supportedEnabled"]
+        )
+        missing = facade.dispatch(
+            "POST",
+            "/api/liubu/save",
+            {"sessionId": "202"},
+        )
+        self.assertEqual(missing.status, 400)
+        self.assertIn("缺少 settings", missing.body["error"])
+        facade.close()
+
     def test_hosted_military_refresh_is_accepted_then_completed_by_shared_operation(self) -> None:
         class HostBridge:
             def __init__(self) -> None:

@@ -1,6 +1,5 @@
 package com.example.dwpmclone.ui.web
 
-import com.example.dwpmclone.domain.model.MinistryProtocolCrop
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -38,7 +37,6 @@ object LocalSettingsConfigMapper {
         "/api/formations/save" -> formation(body)
         "/api/raid/execute" -> raid(body)
         "/api/mine/save" -> mine(body)
-        "/api/liubu/save" -> ministries(body)
         "/api/lossless/execute" -> lossless(body)
         "/api/dungeon/execute" -> dungeon(body)
         "/api/settings/save" -> scoped(body)
@@ -200,22 +198,6 @@ object LocalSettingsConfigMapper {
             .put("maxMarchMinutes", source.optInt("maxMarchMinutes", 45).takeIf { it in setOf(45, 60, 90) } ?: 45)
             .put("rows", rows)
         return LocalSettingsMapping(mapOf(MINE to source), disabled = !enabled)
-    }
-
-    private fun ministries(body: JSONObject): LocalSettingsMapping {
-        val values = body.optJSONObject("settings")?.copy()
-            ?: throw IllegalArgumentException("六部保存缺少 settings")
-        val cropEnabled = values.optBoolean("cropEnabled", false)
-        val stealEnabled = values.optBoolean("stealEnabled", false)
-        val requested = cropEnabled || stealEnabled ||
-            values.optBoolean("courtesyEnabled", false) ||
-            values.optBoolean("salaryRefresh", false)
-        val supported = cropEnabled &&
-            values.optString("crop", MinistryProtocolCrop.VERIFIED_NAME) == MinistryProtocolCrop.VERIFIED_NAME
-        values.put("enabled", supported)
-            .put("supportedEnabled", supported)
-            .put("requested", requested)
-        return LocalSettingsMapping(mapOf(MINISTRIES to values), disabled = !requested)
     }
 
     private fun lossless(body: JSONObject): LocalSettingsMapping {

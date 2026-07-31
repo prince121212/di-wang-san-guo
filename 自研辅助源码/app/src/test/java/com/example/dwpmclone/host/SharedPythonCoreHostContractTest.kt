@@ -131,10 +131,12 @@ class SharedPythonCoreHostContractTest {
             "app/src/main/java/com/example/dwpmclone/ui/web/LocalSettingsConfigMapper.kt",
             "src/main/java/com/example/dwpmclone/ui/web/LocalSettingsConfigMapper.kt"
         )
-        assertTrue(controller.contains("route == \"/api/military/future/save\""))
+        assertTrue(controller.contains("\"/api/military/future/save\""))
+        assertTrue(controller.contains("\"/api/liubu/save\""))
         assertTrue(controller.contains("val dispatched = sharedPythonCore.dispatch("))
         assertTrue(controller.contains("networkRequired"))
         assertFalse(settingsMapper.contains("private fun future("))
+        assertFalse(settingsMapper.contains("private fun ministries("))
     }
 
     @Test
