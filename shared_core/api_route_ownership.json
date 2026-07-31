@@ -6,6 +6,21 @@
     "network-operation": "立即创建 operationId，按账号异步等待游戏服务器真实结果"
   },
   "targetOwner": "shared-python",
+  "currentOwnerModel": {
+    "allowed": ["desktop-python", "android-kotlin", "shared-python"],
+    "defaults": {
+      "desktop": "desktop-python",
+      "android": "android-kotlin"
+    },
+    "overrides": [
+      {
+        "method": "GET",
+        "path": "/api/health",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      }
+    ]
+  },
   "routes": [
     { "method": "GET", "path": "/api/health", "feature": "system", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "GET", "path": "/api/accounts", "feature": "account", "responseClass": "local", "currentAndroid": "implemented" },

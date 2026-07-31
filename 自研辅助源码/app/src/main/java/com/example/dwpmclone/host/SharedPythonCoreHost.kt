@@ -13,6 +13,7 @@ import org.json.JSONObject
 /** Process-wide Android host for the repository's single shared Python core. */
 class SharedPythonCoreHost private constructor(context: Context) {
     private val appContext = context.applicationContext
+    private val platformPorts = AndroidSharedCorePortBridge(appContext)
     private val initializationLock = Any()
     private val warmupScheduled = AtomicBoolean(false)
     private val callCount = AtomicLong(0)
@@ -44,6 +45,19 @@ class SharedPythonCoreHost private constructor(context: Context) {
 
     fun health(): JSONObject = callJson("health_json")
         .put("androidPythonHost", metrics())
+
+    fun dispatch(
+        method: String,
+        path: String,
+        body: JSONObject = JSONObject(),
+        requestContext: JSONObject = JSONObject()
+    ): JSONObject = callJson(
+        "dispatch_json",
+        method,
+        path,
+        body.toString(),
+        requestContext.toString()
+    )
 
     fun submitSimulatedNetworkOperation(
         durationMillis: Long,
@@ -96,10 +110,14 @@ class SharedPythonCoreHost private constructor(context: Context) {
             val coreStartedAt = SystemClock.elapsedRealtime()
             val python = Python.getInstance()
             val operationStore = appContext.filesDir
-                .resolve("shared_python_core/operations-v1.json")
+                .resolve("shared_python_core/operations-v2.json")
                 .absolutePath
             val initialized = requireNotNull(
-                python.getModule("dwpm_core").callAttr("create_hosted_core", operationStore)
+                python.getModule("dwpm_core").callAttr(
+                    "create_hosted_core",
+                    operationStore,
+                    platformPorts
+                )
             ) { "Shared Python CoreFacade initialization returned null" }
             pythonVersion = python.getModule("platform").callAttr("python_version")?.toString()
             coreInitializationMillis = SystemClock.elapsedRealtime() - coreStartedAt

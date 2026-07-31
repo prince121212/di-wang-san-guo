@@ -124,10 +124,21 @@ class LocalAssistantApiController(
     }
 
     private fun sharedCoreHealth(request: AssistantApiRequest): AssistantApiResponse {
-        val health = sharedPythonCore.health()
+        val dispatched = sharedPythonCore.dispatch(
+            "GET",
+            "/api/health",
+            requestContext = JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+        )
+        val status = dispatched.optInt("status", 500)
+        val health = (dispatched.optJSONObject("body") ?: JSONObject())
             .put("apiVersion", AssistantApiResponse.API_VERSION)
-            .put("androidBusinessOwner", "migration-poc-only")
-        return ok(request, health)
+            .put("androidBusinessOwner", "mixed-by-route-contract")
+            .put("androidLegacyBusinessOwner", "android-kotlin")
+            .put("sharedPythonMigratedRoute", "GET /api/health")
+            .put("androidPythonHost", sharedPythonCore.metrics())
+        return AssistantApiResponse(request.id, status, health)
     }
 
     private fun submitSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {

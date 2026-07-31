@@ -20,6 +20,8 @@ if str(CORE_SOURCE) not in sys.path:
 
 from dwpm_core import CORE_ID, CORE_VERSION, CoreFacade, compute_core_hash
 from dwpm_core.hashing import hash_records, source_manifest
+from dwpm_core.operations import OperationUncertainError
+from dwpm_core.ports import PlatformPorts
 
 
 SPEC = importlib.util.spec_from_file_location("dwpm_server_shared_core_test", SERVER_PATH)
@@ -67,7 +69,7 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertIn("assistant_behavior_contract.json", manifest["files"])
         self.assertTrue(all(not path.startswith("/") for path in manifest["files"]))
 
-    def test_phase_two_dispatch_only_owns_health(self) -> None:
+    def test_phase_five_dispatch_declares_but_fails_closed_for_unmigrated_routes(self) -> None:
         facade = CoreFacade(ROOT / "shared_core")
 
         health = facade.dispatch_local("GET", "/api/health?probe=1")
@@ -75,8 +77,344 @@ class SharedPythonCoreTests(unittest.TestCase):
 
         self.assertEqual(health.status, 200)
         self.assertTrue(health.body["ok"])
-        self.assertEqual(unmigrated.status, 404)
+        self.assertEqual(unmigrated.status, 501)
+        self.assertEqual(unmigrated.body["code"], "ROUTE_NOT_MIGRATED")
         self.assertIn("not migrated", unmigrated.body["error"])
+
+    def test_dispatch_json_is_the_same_host_neutral_entry_point(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+
+        direct = facade.dispatch("GET", "/api/health")
+        bridged = json.loads(
+            facade.dispatch_json("GET", "/api/health", "{}", "{}")
+        )
+
+        self.assertEqual(bridged, direct.to_dict())
+        self.assertEqual(direct.status, 200)
+        self.assertEqual(
+            direct.body["operationModel"]["networkLane"],
+            "per-account",
+        )
+        self.assertEqual(
+            direct.body["operationModel"]["localLane"],
+            "direct",
+        )
+        facade.close()
+
+    def test_long_network_operation_never_blocks_local_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            facade = CoreFacade(
+                ROOT / "shared_core",
+                str(Path(directory) / "operations.json"),
+            )
+            started = threading.Event()
+
+            facade.register_local_route(
+                "GET",
+                "/api/accounts/settings",
+                lambda body, context: {"ok": True, "saved": True},
+            )
+
+            def slow_query(body, context, execution):
+                started.set()
+                execution.wait(0.25)
+                return {"ok": True, "refreshed": True}
+
+            facade.register_network_route(
+                "GET",
+                "/api/state/refresh",
+                slow_query,
+            )
+            submitted_at = time.perf_counter()
+            accepted = facade.dispatch(
+                "GET",
+                "/api/state/refresh",
+                {"accountRef": "account-a"},
+                {"requestId": "refresh-a-1"},
+            )
+            submit_millis = (time.perf_counter() - submitted_at) * 1000
+            self.assertEqual(accepted.status, 202)
+            self.assertLess(submit_millis, 100)
+            self.assertTrue(started.wait(1))
+
+            latencies = []
+            for _ in range(20):
+                local_started = time.perf_counter()
+                local = facade.dispatch("GET", "/api/accounts/settings")
+                latencies.append((time.perf_counter() - local_started) * 1000)
+                self.assertEqual(local.status, 200)
+            self.assertLess(max(latencies), 100)
+
+            operation_id = accepted.body["operationId"]
+            final = self.wait_for_operation(facade, operation_id)
+            self.assertEqual(final["status"], "SUCCEEDED")
+            facade.close()
+
+    def test_network_lanes_serialize_one_account_and_parallelize_accounts(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        release = threading.Event()
+        a1_started = threading.Event()
+        a2_started = threading.Event()
+        b1_started = threading.Event()
+        events = []
+        events_lock = threading.Lock()
+
+        def lane_probe(body, context, execution):
+            label = body["label"]
+            with events_lock:
+                events.append(("start", label, time.monotonic()))
+            {"a1": a1_started, "a2": a2_started, "b1": b1_started}[label].set()
+            if label in {"a1", "b1"}:
+                while not release.wait(0.02):
+                    execution.raise_if_cancelled()
+            with events_lock:
+                events.append(("end", label, time.monotonic()))
+            return {"ok": True, "label": label}
+
+        facade.register_network_route(
+            "GET",
+            "/api/state/refresh",
+            lane_probe,
+        )
+
+        def submit(account: str, label: str):
+            return facade.dispatch(
+                "GET",
+                "/api/state/refresh",
+                {"accountRef": account, "label": label},
+                {"requestId": f"lane-{label}"},
+            )
+
+        a1 = submit("account-a", "a1")
+        self.assertTrue(a1_started.wait(1))
+        a2 = submit("account-a", "a2")
+        b1 = submit("account-b", "b1")
+        self.assertTrue(b1_started.wait(1))
+        self.assertFalse(a2_started.wait(0.05))
+        release.set()
+        for response in (a1, a2, b1):
+            final = self.wait_for_operation(facade, response.body["operationId"])
+            self.assertEqual(final["status"], "SUCCEEDED")
+        self.assertTrue(a2_started.is_set())
+
+        times = {(phase, label): stamp for phase, label, stamp in events}
+        self.assertGreaterEqual(times[("start", "a2")], times[("end", "a1")])
+        self.assertLess(times[("start", "b1")], times[("end", "a1")])
+        facade.close()
+
+    def test_sent_mutation_timeout_becomes_uncertain_and_is_not_replayed(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        executions = []
+
+        def uncertain_mutation(body, context, execution):
+            executions.append(body["targetId"])
+            execution.mark_request_sent({"opcode": "0x1522"})
+            raise RuntimeError("game reply timed out")
+
+        facade.register_network_route(
+            "POST",
+            "/api/brush/execute",
+            uncertain_mutation,
+        )
+        first = facade.dispatch(
+            "POST",
+            "/api/brush/execute",
+            {"accountRef": "account-a", "targetId": 123},
+            {"requestId": "brush-uncertain-1"},
+        )
+        final = self.wait_for_operation(facade, first.body["operationId"])
+        self.assertEqual(final["status"], "UNCERTAIN")
+        self.assertTrue(final["requestSent"])
+
+        duplicate = facade.dispatch(
+            "POST",
+            "/api/brush/execute",
+            {"accountRef": "account-a", "targetId": 123},
+            {"requestId": "brush-uncertain-1"},
+        )
+        self.assertEqual(duplicate.body["operationId"], first.body["operationId"])
+        self.assertTrue(duplicate.body["deduplicated"])
+        self.assertEqual(executions, [123])
+        facade.close()
+
+    def test_queued_operation_can_cancel_but_sent_mutation_cannot(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        first_started = threading.Event()
+        sent_started = threading.Event()
+        release = threading.Event()
+
+        def controlled(body, context, execution):
+            if body["label"] == "first":
+                first_started.set()
+            if body.get("sent"):
+                execution.mark_request_sent({"opcode": "0x1522"})
+                sent_started.set()
+            while not release.wait(0.02):
+                execution.raise_if_cancelled()
+            return {"ok": True}
+
+        facade.register_network_route(
+            "POST",
+            "/api/brush/execute",
+            controlled,
+        )
+        first = facade.dispatch(
+            "POST",
+            "/api/brush/execute",
+            {"accountRef": "account-a", "label": "first", "sent": True},
+            {"requestId": "cancel-first"},
+        )
+        self.assertTrue(first_started.wait(1))
+        self.assertTrue(sent_started.wait(1))
+        queued = facade.dispatch(
+            "POST",
+            "/api/brush/execute",
+            {"accountRef": "account-a", "label": "queued", "sent": False},
+            {"requestId": "cancel-queued"},
+        )
+
+        queued_cancelled = facade.cancel_operation(queued.body["operationId"])
+        sent_cancel = facade.cancel_operation(first.body["operationId"])
+        self.assertEqual(
+            queued_cancelled["operation"]["status"],
+            "CANCELLED",
+        )
+        self.assertEqual(sent_cancel["operation"]["status"], "RUNNING")
+        self.assertEqual(
+            sent_cancel["operation"]["cancellationDenied"],
+            "request-already-sent",
+        )
+        release.set()
+        self.assertEqual(
+            self.wait_for_operation(facade, first.body["operationId"])["status"],
+            "SUCCEEDED",
+        )
+        facade.close()
+
+    def test_recovery_marks_sent_running_mutation_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "operations.json"
+            ledger.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "operations": [
+                            {
+                                "operationId": "op_recovery_sent",
+                                "kind": "route:POST:/api/brush/execute",
+                                "operationType": "mutation",
+                                "accountRef": "account-a",
+                                "idempotencyKey": "recovery-sent-1",
+                                "status": "RUNNING",
+                                "submittedAtMillis": 100,
+                                "startedAtMillis": 110,
+                                "updatedAtMillis": 120,
+                                "completedAtMillis": None,
+                                "payload": {"body": {"targetId": 1}},
+                                "progress": 50,
+                                "progressDetails": None,
+                                "requestSent": True,
+                                "requestSentAtMillis": 115,
+                                "requestMetadata": {"opcode": "0x1522"},
+                                "cancelRequested": False,
+                                "result": None,
+                                "error": None,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            facade = CoreFacade(ROOT / "shared_core", str(ledger))
+            recovered = facade.operation_status("op_recovery_sent")["operation"]
+
+            self.assertEqual(recovered["status"], "UNCERTAIN")
+            self.assertEqual(
+                recovered["error"]["code"],
+                "RECOVERED_AFTER_REQUEST_SENT",
+            )
+            facade.close()
+
+    def test_operation_ledger_rejects_sensitive_fields(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        facade.register_network_route(
+            "POST",
+            "/api/accounts/add",
+            lambda body, context, execution: {"ok": True},
+        )
+
+        response = facade.dispatch(
+            "POST",
+            "/api/accounts/add",
+            {
+                "accountRef": "new-account",
+                "username": "user",
+                "password": "must-not-persist",
+            },
+            {"requestId": "add-sensitive-1"},
+        )
+
+        self.assertEqual(response.status, 400)
+        self.assertIn("sensitive field", response.body["error"])
+        self.assertEqual(facade.operations_snapshot()["count"], 0)
+        facade.close()
+
+    def test_explicit_uncertain_error_preserves_structured_evidence(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+
+        def uncertain_query(body, context, execution):
+            raise OperationUncertainError(
+                "response frame incomplete",
+                {"opcode": "0x8600"},
+            )
+
+        facade.register_network_route(
+            "GET",
+            "/api/military/intel",
+            uncertain_query,
+        )
+        accepted = facade.dispatch(
+            "GET",
+            "/api/military/intel",
+            {"accountRef": "account-a"},
+            {"requestId": "intel-uncertain-1"},
+        )
+        final = self.wait_for_operation(facade, accepted.body["operationId"])
+        self.assertEqual(final["status"], "UNCERTAIN")
+        self.assertEqual(final["error"]["details"]["opcode"], "0x8600")
+        facade.close()
+
+    def test_operation_events_use_the_independent_platform_event_port(self) -> None:
+        class CaptureEvents:
+            def __init__(self):
+                self.rows = []
+
+            def publish(self, event):
+                self.rows.append(dict(event))
+
+        events = CaptureEvents()
+        facade = CoreFacade(
+            ROOT / "shared_core",
+            ports=PlatformPorts(events=events),
+        )
+        facade.register_network_route(
+            "GET",
+            "/api/state/refresh",
+            lambda body, context, execution: {"ok": True},
+        )
+        accepted = facade.dispatch(
+            "GET",
+            "/api/state/refresh",
+            {"accountRef": "account-a"},
+            {"requestId": "events-1"},
+        )
+        self.wait_for_operation(facade, accepted.body["operationId"])
+        event_types = {row["type"] for row in events.rows}
+        self.assertIn("operation.accepted", event_types)
+        self.assertIn("operation.started", event_types)
+        self.assertIn("operation.completed", event_types)
+        facade.close()
 
     def test_simulated_network_operation_is_immediate_and_idempotent(self) -> None:
         facade = CoreFacade(ROOT / "shared_core")
@@ -156,6 +494,26 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertEqual(payload["coreHash"], expected["coreHash"])
         self.assertEqual(payload["sharedRouteCount"], 55)
         self.assertEqual(payload["version"], SERVER.APP_VERSION)
+
+    @staticmethod
+    def wait_for_operation(
+        facade: CoreFacade,
+        operation_id: str,
+        timeout: float = 2.0,
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = facade.operation_status(operation_id)
+            operation = status.get("operation") or {}
+            if operation.get("status") in {
+                "SUCCEEDED",
+                "FAILED",
+                "CANCELLED",
+                "UNCERTAIN",
+            }:
+                return operation
+            time.sleep(0.01)
+        raise AssertionError(f"operation did not finish: {operation_id}")
 
 
 if __name__ == "__main__":

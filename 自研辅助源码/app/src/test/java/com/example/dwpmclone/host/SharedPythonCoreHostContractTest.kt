@@ -33,8 +33,10 @@ class SharedPythonCoreHostContractTest {
         assertTrue(application.contains("warmUpAsync()"))
         assertTrue(host.contains("Thread(runnable, \"shared-python-warmup\")"))
         assertTrue(host.contains("Python.start(AndroidPlatform(appContext))"))
-        assertTrue(host.contains("callAttr(\"create_hosted_core\", operationStore)"))
-        assertTrue(host.contains("operations-v1.json"))
+        assertTrue(host.contains("\"create_hosted_core\""))
+        assertTrue(host.contains("platformPorts"))
+        assertTrue(host.contains("operations-v2.json"))
+        assertTrue(host.contains("\"dispatch_json\""))
     }
 
     @Test
@@ -58,6 +60,35 @@ class SharedPythonCoreHostContractTest {
         assertFalse(operationCore.contains("import socket"))
         assertFalse(operationCore.contains("import requests"))
         assertFalse(operationCore.contains("import urllib"))
+    }
+
+    @Test
+    fun phaseFiveHostPortsExposeCapabilitiesWithoutDuplicatingBusinessRules() {
+        val ports = source(
+            "app/src/main/java/com/example/dwpmclone/host/AndroidSharedCorePortBridge.kt",
+            "src/main/java/com/example/dwpmclone/host/AndroidSharedCorePortBridge.kt"
+        )
+        val facade = source(
+            "../shared_core/python/dwpm_core/facade.py",
+            "../../shared_core/python/dwpm_core/facade.py"
+        )
+        val operations = source(
+            "../shared_core/python/dwpm_core/operations.py",
+            "../../shared_core/python/dwpm_core/operations.py"
+        )
+
+        assertTrue(ports.contains("KeystoreCredentialVault"))
+        assertTrue(ports.contains("networkAvailable"))
+        assertTrue(ports.contains("NotificationManager"))
+        assertTrue(ports.contains("AlarmManager"))
+        assertTrue(ports.contains("TaskLogRepository"))
+        assertFalse(ports.contains("0x1522"))
+        assertFalse(ports.contains("SessionAwareGameProtocolClient"))
+        assertTrue(facade.contains("def dispatch("))
+        assertTrue(facade.contains("sensitive field cannot enter operation ledger"))
+        assertTrue(operations.contains("dwpm-network-"))
+        assertTrue(operations.contains("UNCERTAIN"))
+        assertTrue(operations.contains("request-already-sent"))
     }
 
     private fun source(vararg candidates: String): String {

@@ -57,6 +57,8 @@ if not SHARED_PYTHON_SOURCE_DIR.is_dir():
     raise RuntimeError(f"shared Python core is missing: {SHARED_PYTHON_SOURCE_DIR}")
 if str(SHARED_PYTHON_SOURCE_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_PYTHON_SOURCE_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from dwpm_core import CoreFacade
 from dwpm_core.account import (
@@ -299,9 +301,21 @@ from dwpm_core.protocol import (
     read_only_gamehex_to_cmd as shared_read_only_gamehex_to_cmd,
     read_utf as shared_read_utf,
 )
+from desktop_adapter.shared_core_ports import create_desktop_platform_ports
 
 
-SHARED_PYTHON_CORE = CoreFacade(ROOT.parent / "shared_core")
+SHARED_CORE_OPERATION_STORE = (
+    Path(os.environ.get("DWPM_DATA_DIR", str(ROOT / "reports")))
+    .expanduser()
+    .resolve()
+    / "shared_core"
+    / "operations-v2.json"
+)
+SHARED_PYTHON_CORE = CoreFacade(
+    ROOT.parent / "shared_core",
+    str(SHARED_CORE_OPERATION_STORE),
+    ports=create_desktop_platform_ports(SHARED_CORE_OPERATION_STORE.parents[1]),
+)
 SHARED_BEHAVIOR_CONTRACT_PATH = (
     ROOT.parent / "shared_core" / "assistant_behavior_contract.json"
 )
@@ -35633,15 +35647,21 @@ class Handler(SimpleHTTPRequestHandler):
             except (OSError, UnicodeError, ValueError) as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 400)
             return
-        if self.path == "/api/health":
+        if parsed_request.path == "/api/health":
+            core_response = SHARED_PYTHON_CORE.dispatch(
+                "GET",
+                parsed_request.path,
+                {},
+                {"source": "desktop-http"},
+            )
             self.send_json({
-                **SHARED_PYTHON_CORE.health(),
+                **core_response.body,
                 "version": APP_VERSION,
                 "sessions": len(SESSIONS),
                 "accounts": len(ACCOUNTS),
                 "tasks": len(AUTO_TASKS),
                 "time": now_ms(),
-            })
+            }, core_response.status)
             return
         if self.path.startswith("/api/diagnostics/stacks"):
             # Local-only, bounded sampler used to find hot Python worker loops

@@ -38,4 +38,41 @@ def load_route_ownership(shared_root: Path | None = None) -> Dict[str, Any]:
     keys = [(row.get("method"), row.get("path")) for row in routes]
     if len(keys) != len(set(keys)):
         raise ValueError("shared API route ownership contains duplicates")
+    owner_model = payload.get("currentOwnerModel")
+    if not isinstance(owner_model, dict):
+        raise ValueError("shared API current owner model is missing")
+    allowed = set(owner_model.get("allowed") or [])
+    expected_allowed = {"desktop-python", "android-kotlin", "shared-python"}
+    if allowed != expected_allowed:
+        raise ValueError("shared API current owner values are invalid")
+    defaults = owner_model.get("defaults")
+    if not isinstance(defaults, dict):
+        raise ValueError("shared API current owner defaults are missing")
+    overrides = owner_model.get("overrides")
+    if not isinstance(overrides, list):
+        raise ValueError("shared API current owner overrides are invalid")
+    override_by_key = {
+        (str(row.get("method") or "").upper(), str(row.get("path") or "")): row
+        for row in overrides
+        if isinstance(row, dict)
+    }
+    if len(override_by_key) != len(overrides):
+        raise ValueError("shared API current owner overrides contain duplicates")
+    route_keys = {(str(method).upper(), str(path)) for method, path in keys}
+    if not set(override_by_key).issubset(route_keys):
+        raise ValueError("shared API current owner override targets unknown route")
+    normalized_routes = []
+    for route in routes:
+        key = (str(route.get("method") or "").upper(), str(route.get("path") or ""))
+        override = override_by_key.get(key) or {}
+        desktop_owner = str(override.get("desktop") or defaults.get("desktop") or "")
+        android_owner = str(override.get("android") or defaults.get("android") or "")
+        if desktop_owner not in allowed or android_owner not in allowed:
+            raise ValueError(f"shared API route has invalid current owner: {key}")
+        normalized_routes.append({
+            **route,
+            "currentDesktopOwner": desktop_owner,
+            "currentAndroidOwner": android_owner,
+        })
+    payload["routes"] = normalized_routes
     return payload

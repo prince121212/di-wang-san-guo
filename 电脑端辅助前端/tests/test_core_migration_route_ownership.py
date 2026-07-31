@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CORE_SOURCE = ROOT / "shared_core" / "python"
+if str(CORE_SOURCE) not in sys.path:
+    sys.path.insert(0, str(CORE_SOURCE))
+
+from dwpm_core.contracts import load_route_ownership
+
+
 MATRIX_PATH = ROOT / "shared_core" / "api_route_ownership.json"
 DESKTOP_SERVER = ROOT / "电脑端辅助前端" / "server.py"
 FRONTEND_APP = ROOT / "电脑端辅助前端" / "app.js"
@@ -47,6 +55,19 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
                 self.assertIn(row.get("operationKind"), {"query", "mutation"})
             else:
                 self.assertNotIn("operationKind", row)
+
+    def test_every_route_resolves_current_owner_for_both_hosts(self) -> None:
+        normalized = load_route_ownership(ROOT / "shared_core")
+        allowed = {"desktop-python", "android-kotlin", "shared-python"}
+        for row in normalized["routes"]:
+            self.assertIn(row["currentDesktopOwner"], allowed)
+            self.assertIn(row["currentAndroidOwner"], allowed)
+        health = next(
+            row for row in normalized["routes"]
+            if (row["method"], row["path"]) == ("GET", "/api/health")
+        )
+        self.assertEqual(health["currentDesktopOwner"], "shared-python")
+        self.assertEqual(health["currentAndroidOwner"], "shared-python")
 
     def test_desktop_handler_paths_are_all_classified(self) -> None:
         source = DESKTOP_SERVER.read_text(encoding="utf-8")
