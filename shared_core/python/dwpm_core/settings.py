@@ -8,6 +8,7 @@ facts after persistence; planning itself never performs game-network I/O.
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from typing import Any, Dict
 
 from .features.dungeon import normalize_dungeon_mode
@@ -83,6 +84,48 @@ _MILITARY_FUTURE_FEATURE_CONFIG_IDS = {
     "escort": "military_future_escort",
     "treasure": "military_future_treasure",
 }
+
+
+def project_account_settings(
+    *,
+    account: Any,
+    config_dir: Any,
+    file_name: Any,
+    file_path: Any,
+    settings: Any,
+    exists: bool = True,
+) -> Dict[str, Any]:
+    """Build the one frontend settings-file view used by both hosts."""
+
+    if not isinstance(account, dict):
+        raise ValueError("设置读取缺少公开账号卡")
+    if settings is not None and not isinstance(settings, dict):
+        raise ValueError("设置快照必须是对象")
+    normalized_exists = bool(exists)
+    normalized_settings = deepcopy(settings) if isinstance(settings, dict) else {}
+    content = (
+        json.dumps(
+            normalized_settings,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        if normalized_exists
+        else ""
+    )
+    return {
+        "ok": True,
+        "account": deepcopy(account),
+        "configDir": str(config_dir or ""),
+        "files": [
+            {
+                "name": str(file_name or "account_settings.json"),
+                "path": str(file_path or config_dir or ""),
+                "exists": normalized_exists,
+                "content": content,
+            }
+        ],
+    }
 
 
 def normalize_military_future_settings(

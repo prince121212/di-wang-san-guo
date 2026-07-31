@@ -24,7 +24,7 @@ from .operations import (
     OperationExecutionContext,
 )
 from .ports import PlatformPorts
-from .settings import settings_write_plan
+from .settings import project_account_settings, settings_write_plan
 from .verification import verify_protocol_fixtures
 from .version import CORE_ID, CORE_VERSION
 
@@ -89,6 +89,7 @@ class CoreFacade:
         self._local_handlers: Dict[tuple[str, str], LocalRouteHandler] = {
             ("GET", "/api/health"): self._health_route,
             ("GET", "/api/accounts"): self._accounts_route,
+            ("GET", "/api/accounts/settings"): self._account_settings_route,
             (
                 "POST",
                 "/api/military/future/save",
@@ -820,6 +821,28 @@ class CoreFacade:
             ),
         }
 
+    def _account_settings_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account = body.get("account")
+        settings = body.get("settings")
+        if isinstance(settings, dict):
+            self._assert_no_sensitive_values(
+                settings,
+                prefix="settings",
+                destination="settings projection",
+            )
+        return project_account_settings(
+            account=account,
+            config_dir=body.get("configDir"),
+            file_name=body.get("fileName"),
+            file_path=body.get("filePath"),
+            settings=settings,
+            exists=bool(body.get("exists", True)),
+        )
+
     def _ministry_settings_write_plan_route(
         self,
         body: Dict[str, Any],
@@ -932,6 +955,7 @@ class CoreFacade:
         cls,
         value: Any,
         prefix: str = "body",
+        destination: str = "operation ledger",
     ) -> None:
         if isinstance(value, dict):
             for key, child in value.items():
@@ -940,12 +964,20 @@ class CoreFacade:
                     fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS
                 ) or normalized.endswith(SENSITIVE_KEY_SUFFIXES):
                     raise ValueError(
-                        f"sensitive field cannot enter operation ledger: {prefix}.{key}"
+                        f"sensitive field cannot enter {destination}: {prefix}.{key}"
                     )
-                cls._assert_no_sensitive_values(child, f"{prefix}.{key}")
+                cls._assert_no_sensitive_values(
+                    child,
+                    f"{prefix}.{key}",
+                    destination,
+                )
         elif isinstance(value, list):
             for index, child in enumerate(value):
-                cls._assert_no_sensitive_values(child, f"{prefix}[{index}]")
+                cls._assert_no_sensitive_values(
+                    child,
+                    f"{prefix}[{index}]",
+                    destination,
+                )
 
     @staticmethod
     def _normalize_handler_response(value: Any) -> CoreResponse:

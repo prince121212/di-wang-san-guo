@@ -93,6 +93,13 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         )
         self.assertEqual(ministry_settings["currentDesktopOwner"], "shared-python")
         self.assertEqual(ministry_settings["currentAndroidOwner"], "shared-python")
+        account_settings = next(
+            row for row in normalized["routes"]
+            if (row["method"], row["path"])
+            == ("GET", "/api/accounts/settings")
+        )
+        self.assertEqual(account_settings["currentDesktopOwner"], "shared-python")
+        self.assertEqual(account_settings["currentAndroidOwner"], "shared-python")
 
     def test_desktop_handler_paths_are_all_classified(self) -> None:
         source = DESKTOP_SERVER.read_text(encoding="utf-8")
@@ -127,6 +134,24 @@ class CoreMigrationRouteOwnershipTests(unittest.TestCase):
         self.assertIn("shared_settings_write_plan(self.path, body)", route)
         self.assertNotIn("normalize_ministry_settings(body)", route)
         self.assertNotIn("require_account_online", route)
+
+    def test_account_settings_read_uses_shared_projection_on_both_hosts(self) -> None:
+        desktop = DESKTOP_SERVER.read_text(encoding="utf-8")
+        desktop_route = desktop.split(
+            'if self.path.startswith("/api/accounts/settings"):',
+            1,
+        )[1].split('if self.path.startswith("/api/areas"):', 1)[0]
+        android = ANDROID_ROUTE_SOURCES[0].read_text(encoding="utf-8")
+        android_route = android.split(
+            "private fun accountSettings",
+            1,
+        )[1].split("private fun accountJson", 1)[0]
+
+        self.assertIn('"/api/accounts/settings"', desktop_route)
+        self.assertIn("SHARED_PYTHON_CORE.dispatch(", desktop_route)
+        self.assertIn('"/api/accounts/settings"', android_route)
+        self.assertIn("sharedPythonCore.dispatch(", android_route)
+        self.assertNotIn("selected.toString(2)", android_route)
 
     def test_android_allow_list_is_covered_and_known_gaps_are_explicit(self) -> None:
         source = "\n".join(path.read_text(encoding="utf-8") for path in ANDROID_ROUTE_SOURCES)

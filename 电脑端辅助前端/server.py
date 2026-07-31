@@ -35839,18 +35839,24 @@ class Handler(SimpleHTTPRequestHandler):
             payload = load_account_settings_payload(acc=acc)
             account_key = account_storage_key(acc=acc)
             sqlite_uri = f"sqlite://account_habits/{account_key}"
-            files = [{
-                "name": ACCOUNT_SETTINGS_FILENAME,
-                "path": sqlite_uri,
-                "exists": bool(payload),
-                "content": json.dumps(payload, ensure_ascii=False, indent=2) if payload else "",
-            }]
-            self.send_json({
-                "ok": True,
-                "account": public_account(acc),
-                "configDir": "sqlite://account_habits",
-                "files": files,
-            })
+            projected = SHARED_PYTHON_CORE.dispatch(
+                "GET",
+                "/api/accounts/settings",
+                {
+                    "account": public_account(acc),
+                    "configDir": "sqlite://account_habits",
+                    "fileName": ACCOUNT_SETTINGS_FILENAME,
+                    "filePath": sqlite_uri,
+                    "exists": bool(payload),
+                    "settings": payload or {},
+                },
+                {
+                    "requestId": f"desktop-account-settings-{now_ms()}",
+                    "source": "desktop-http",
+                    "platform": "desktop",
+                },
+            )
+            self.send_json(projected.body, projected.status)
             return
         if self.path.startswith("/api/areas"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)

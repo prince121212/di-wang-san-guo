@@ -696,16 +696,25 @@ class LocalAssistantApiController(
         val selected = JSONObject()
         val prefix = "$accountId::"
         all.keys().forEach { key -> if (key.startsWith(prefix)) selected.put(key.removePrefix(prefix), all.opt(key)) }
-        return ok(
-            request,
+        val dispatched = sharedPythonCore.dispatch(
+            "GET",
+            "/api/accounts/settings",
             JSONObject()
                 .put("account", accountJson(account))
                 .put("configDir", "手机本地存储")
-                .put("files", JSONArray().put(JSONObject()
-                    .put("name", "account-config.json")
-                    .put("path", "手机本地存储")
-                    .put("exists", true)
-                    .put("content", selected.toString(2))))
+                .put("fileName", "account-config.json")
+                .put("filePath", "手机本地存储")
+                .put("exists", true)
+                .put("settings", selected),
+            JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+                .put("platform", "android")
+        )
+        return AssistantApiResponse(
+            request.id,
+            dispatched.optInt("status", 500),
+            dispatched.optJSONObject("body") ?: JSONObject()
         )
     }
 

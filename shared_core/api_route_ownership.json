@@ -42,6 +42,12 @@
         "path": "/api/liubu/save",
         "desktop": "shared-python",
         "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/accounts/settings",
+        "desktop": "shared-python",
+        "android": "shared-python"
       }
     ]
   },

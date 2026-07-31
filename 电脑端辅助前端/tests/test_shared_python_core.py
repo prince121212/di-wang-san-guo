@@ -38,6 +38,50 @@ SPEC.loader.exec_module(SERVER)
 
 
 class SharedPythonCoreTests(unittest.TestCase):
+    def test_account_settings_projection_is_shared_deterministic_and_local(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        response = facade.dispatch(
+            "GET",
+            "/api/accounts/settings",
+            {
+                "account": {"sessionId": "202", "username": "fixture"},
+                "configDir": "local://settings",
+                "fileName": "account-config.json",
+                "filePath": "local://settings/account-config.json",
+                "exists": True,
+                "settings": {"z": 1, "a": {"enabled": True}},
+            },
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["configDir"], "local://settings")
+        self.assertEqual(len(response.body["files"]), 1)
+        self.assertEqual(
+            json.loads(response.body["files"][0]["content"]),
+            {"a": {"enabled": True}, "z": 1},
+        )
+        self.assertLess(
+            response.body["files"][0]["content"].index('"a"'),
+            response.body["files"][0]["content"].index('"z"'),
+        )
+        self.assertEqual(facade.operations_snapshot()["count"], 0)
+        facade.close()
+
+    def test_account_settings_projection_rejects_sensitive_values(self) -> None:
+        facade = CoreFacade(ROOT / "shared_core")
+        response = facade.dispatch(
+            "GET",
+            "/api/accounts/settings",
+            {
+                "account": {"sessionId": "202"},
+                "settings": {"password": "must-not-leak"},
+            },
+        )
+
+        self.assertEqual(response.status, 400)
+        self.assertNotIn("must-not-leak", json.dumps(response.body))
+        facade.close()
+
     def test_future_military_settings_write_plan_is_local_and_shared(self) -> None:
         facade = CoreFacade(ROOT / "shared_core")
         plan = facade.settings_write_plan(
@@ -411,12 +455,23 @@ class SharedPythonCoreTests(unittest.TestCase):
 
         health = facade.dispatch_local("GET", "/api/health?probe=1")
         accounts = facade.dispatch_local("GET", "/api/accounts")
-        unmigrated = facade.dispatch_local("GET", "/api/accounts/settings")
+        settings = facade.dispatch_local(
+            "GET",
+            "/api/accounts/settings",
+            {
+                "account": {"sessionId": "202"},
+                "settings": {},
+                "exists": True,
+            },
+        )
+        unmigrated = facade.dispatch_local("GET", "/api/logs/system")
 
         self.assertEqual(health.status, 200)
         self.assertTrue(health.body["ok"])
         self.assertEqual(accounts.status, 200)
         self.assertEqual(accounts.body, {"ok": True, "accounts": []})
+        self.assertEqual(settings.status, 200)
+        self.assertTrue(settings.body["ok"])
         self.assertEqual(unmigrated.status, 501)
         self.assertEqual(unmigrated.body["code"], "ROUTE_NOT_MIGRATED")
         self.assertIn("not migrated", unmigrated.body["error"])
@@ -449,12 +504,6 @@ class SharedPythonCoreTests(unittest.TestCase):
             )
             started = threading.Event()
 
-            facade.register_local_route(
-                "GET",
-                "/api/accounts/settings",
-                lambda body, context: {"ok": True, "saved": True},
-            )
-
             def slow_query(body, context, execution):
                 started.set()
                 execution.wait(0.25)
@@ -480,7 +529,14 @@ class SharedPythonCoreTests(unittest.TestCase):
             latencies = []
             for _ in range(20):
                 local_started = time.perf_counter()
-                local = facade.dispatch("GET", "/api/accounts/settings")
+                local = facade.dispatch(
+                    "GET",
+                    "/api/accounts/settings",
+                    {
+                        "account": {"sessionId": "202"},
+                        "settings": {"local": True},
+                    },
+                )
                 latencies.append((time.perf_counter() - local_started) * 1000)
                 self.assertEqual(local.status, 200)
             self.assertLess(max(latencies), 100)
