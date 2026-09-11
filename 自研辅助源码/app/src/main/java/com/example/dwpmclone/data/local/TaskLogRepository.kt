@@ -7,11 +7,41 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
+ * Who a log line was written for.
+ *
+ * Audience is knowable only at the write site: the caller knows whether it is narrating
+ * what the assistant did for its operator, or recording a trace for whoever debugs this
+ * build. It cannot be recovered downstream by inspecting the text -- the previous attempt
+ * to do that ([UserFacingTextLocalizer]) had to guess from substrings and turned
+ * "examine mineral vein" into "exa打矿 打矿ral vein".
+ *
+ * [DIAGNOSTIC] is the default on every path, so a line whose author never considered the
+ * question cannot leak into the operator's panel.
+ */
+enum class LogAudience {
+    /** A sentence the operator can act on, written in their language. */
+    USER,
+
+    /** Traces, tick counters, structured events, stack traces. */
+    DIAGNOSTIC;
+
+    companion object {
+        fun parse(raw: String?): LogAudience =
+            entries.firstOrNull { it.name.equals(raw?.trim(), ignoreCase = true) } ?: DIAGNOSTIC
+    }
+}
+
+/**
  * Bounded append-only local log store.
  *
  * SharedPreferences required a full JSON-array read/write for every line and could lose
  * concurrent UI/service writes. JSONL makes the common append path O(1); one process-wide
  * lock/cache keeps all repository instances consistent and compacts only periodically.
+ *
+ * Retention is budgeted per [LogAudience] rather than over the file as a whole. A single
+ * shared budget is not a fair one: diagnostics outnumbered user lines by roughly 80:1 in
+ * an overnight sample, so any common ring evicts the operator's history almost as fast as
+ * it is written.
  */
 class TaskLogRepository(context: Context) {
     private val appContext = context.applicationContext
@@ -21,8 +51,13 @@ class TaskLogRepository(context: Context) {
         Context.MODE_PRIVATE
     )
 
-    fun append(message: String, tag: String = "local-scheduler", accountId: Long? = null) {
-        appendEntry(message, tag, accountId, successCategory = null, successMessage = null)
+    fun append(
+        message: String,
+        tag: String = "local-scheduler",
+        accountId: Long? = null,
+        audience: LogAudience = LogAudience.DIAGNOSTIC,
+    ) {
+        appendEntry(message, tag, accountId, successCategory = null, successMessage = null, audience = audience)
     }
 
     fun appendSuccess(accountId: Long, category: String, message: String, tag: String = "success-record") {
@@ -36,7 +71,10 @@ class TaskLogRepository(context: Context) {
             tag = tag,
             accountId = accountId,
             successCategory = safeCategory,
-            successMessage = safeSuccessMessage
+            successMessage = safeSuccessMessage,
+            // A success record is already a finished sentence about something the operator
+            // asked for; it is the one class of line that is user-facing by construction.
+            audience = LogAudience.USER
         )
     }
 
@@ -45,7 +83,8 @@ class TaskLogRepository(context: Context) {
         tag: String,
         accountId: Long?,
         successCategory: String?,
-        successMessage: String?
+        successMessage: String?,
+        audience: LogAudience
     ) {
         val safeMessage = SensitiveDataRedactor.redact(message).take(MAX_MESSAGE_LENGTH)
         runCatching { Log.i(tag.take(23), safeMessage) }
@@ -60,12 +99,11 @@ class TaskLogRepository(context: Context) {
                 accountId = resolvedAccountId,
                 id = TaskLogCursorPolicy.nextId(now, cachedEntries.lastOrNull()?.id),
                 successCategory = successCategory,
-                successMessage = successMessage
+                successMessage = successMessage,
+                audience = audience
             )
             cachedEntries += entry
-            if (cachedEntries.size > MAX_LOGS) {
-                cachedEntries.subList(0, cachedEntries.size - MAX_LOGS).clear()
-            }
+            trimToAudienceBudgets()
             runCatching {
                 file.parentFile?.mkdirs()
                 file.appendText(entry.toJson().toString() + "\n", Charsets.UTF_8)
@@ -81,6 +119,18 @@ class TaskLogRepository(context: Context) {
         ensureLoaded()
         cachedEntries.takeLast(limit.coerceIn(0, MAX_LOGS)).asReversed()
     }
+
+    /** Newest-first, restricted to one audience. */
+    fun recent(limit: Int, audience: LogAudience): List<TaskLogEntry> = synchronized(STORE_LOCK) {
+        ensureLoaded()
+        cachedEntries.asReversed()
+            .asSequence()
+            .filter { it.audience == audience }
+            .take(limit.coerceIn(0, MAX_LOGS))
+            .toList()
+    }
+
+    private fun trimToAudienceBudgets() = LogRetentionPolicy.trim(cachedEntries)
 
     fun clear() {
         synchronized(STORE_LOCK) {
@@ -116,10 +166,9 @@ class TaskLogRepository(context: Context) {
             migrateLegacyEntries()
         }
         cachedEntries.sortBy { it.id }
-        if (cachedEntries.size > MAX_LOGS) {
-            cachedEntries.subList(0, cachedEntries.size - MAX_LOGS).clear()
-            rewriteFile()
-        }
+        val before = cachedEntries.size
+        trimToAudienceBudgets()
+        if (cachedEntries.size != before) rewriteFile()
     }
 
     private fun migrateLegacyEntries() {
@@ -163,7 +212,7 @@ class TaskLogRepository(context: Context) {
         private const val LEGACY_PREFS_NAME = "dwpm_clone_task_logs"
         private const val LEGACY_KEY_LOGS = "task_logs"
         private const val LOG_TAG = "TaskLogRepository"
-        private const val MAX_LOGS = 1_500
+        private val MAX_LOGS = LogRetentionPolicy.totalBudget()
         private const val COMPACTION_SLACK = 250
         private const val MAX_MESSAGE_LENGTH = 8_000
         private const val MAX_SUCCESS_CATEGORY_LENGTH = 30
@@ -178,8 +227,69 @@ data class TaskLogEntry(
     val accountId: Long? = null,
     val id: Long = 0L,
     val successCategory: String? = null,
-    val successMessage: String? = null
+    val successMessage: String? = null,
+    val audience: LogAudience = LogAudience.DIAGNOSTIC
 )
+
+/**
+ * Retention budgeted per audience.
+ *
+ * Diagnostics outran user lines by roughly 80:1 in an overnight sample, so one
+ * shared ring would let a noisy hour erase the operator's whole history. Each
+ * audience is trimmed against its own budget instead.
+ */
+internal object LogRetentionPolicy {
+    const val MAX_USER_LOGS = 600
+    const val MAX_DIAGNOSTIC_LOGS = 1_500
+
+    fun budgetFor(audience: LogAudience): Int = when (audience) {
+        LogAudience.USER -> MAX_USER_LOGS
+        LogAudience.DIAGNOSTIC -> MAX_DIAGNOSTIC_LOGS
+    }
+
+    fun totalBudget(): Int = LogAudience.entries.sumOf(::budgetFor)
+
+    /** Drops the oldest entries of each audience past that audience's budget. */
+    fun trim(entries: MutableList<TaskLogEntry>) {
+        LogAudience.entries.forEach { audience ->
+            var excess = entries.count { it.audience == audience } - budgetFor(audience)
+            if (excess <= 0) return@forEach
+            val iterator = entries.iterator()
+            while (iterator.hasNext() && excess > 0) {
+                if (iterator.next().audience == audience) {
+                    iterator.remove()
+                    excess -= 1
+                }
+            }
+        }
+    }
+}
+
+/**
+ * How a stored row that predates the audience field is classified.
+ *
+ * Such a row records no author intent, so it cannot be asked. Only a success
+ * record is provably a sentence written for the operator; everything else is
+ * assumed to be a trace, which is the direction that cannot leak.
+ */
+internal object LogAudiencePolicy {
+    fun forStoredRow(storedAudience: String?, hasSuccessCategory: Boolean): LogAudience = when {
+        storedAudience != null -> LogAudience.parse(storedAudience)
+        hasSuccessCategory -> LogAudience.USER
+        else -> LogAudience.DIAGNOSTIC
+    }
+
+    /**
+     * Audience of one log event arriving from the shared core.
+     *
+     * A structured event with no human sentence has nothing to show an operator, so
+     * it cannot claim the panel no matter what it declares. Rendering such an event
+     * as its own JSON was how route and progress telemetry got there: half the lines
+     * and 76% of the characters in an overnight sample.
+     */
+    fun forCoreEvent(message: String, declaredAudience: String?): LogAudience =
+        if (message.isBlank()) LogAudience.DIAGNOSTIC else LogAudience.parse(declaredAudience)
+}
 
 internal object TaskLogCursorPolicy {
     fun nextId(nowMillis: Long, previousId: Long?): Long =
@@ -194,6 +304,7 @@ private fun TaskLogEntry.toJson(): JSONObject = JSONObject()
     .put("accountId", accountId ?: JSONObject.NULL)
     .put("successCategory", successCategory ?: JSONObject.NULL)
     .put("successMessage", successMessage ?: JSONObject.NULL)
+    .put("audience", audience.name)
 
 private fun String.toTaskLogEntryOrNull(): TaskLogEntry? = runCatching {
     JSONObject(this).toTaskLogEntry()
@@ -201,6 +312,7 @@ private fun String.toTaskLogEntryOrNull(): TaskLogEntry? = runCatching {
 
 private fun JSONObject.toTaskLogEntry(fallbackId: Long = 0L): TaskLogEntry {
     val time = optLong("time")
+    val storedAudience = optString("audience").takeIf { has("audience") && !isNull("audience") }
     return TaskLogEntry(
         timeMillis = time,
         tag = optString("tag"),
@@ -214,7 +326,12 @@ private fun JSONObject.toTaskLogEntry(fallbackId: Long = 0L): TaskLogEntry {
         },
         successMessage = optString("successMessage").trim().takeIf {
             has("successMessage") && !isNull("successMessage") && it.isNotBlank()
-        }
+        },
+        audience = LogAudiencePolicy.forStoredRow(
+            storedAudience = storedAudience,
+            hasSuccessCategory = !isNull("successCategory") &&
+                optString("successCategory").isNotBlank()
+        )
     )
 }
 

@@ -7,11 +7,16 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.example.dwpmclone.data.account.AccountLifecycleDecision
 import com.example.dwpmclone.data.account.AccountLifecycleDecisionSource
+import com.example.dwpmclone.data.account.AccountReloginResult
+import com.example.dwpmclone.data.account.AccountReloginSource
 import com.example.dwpmclone.data.account.AccountStateTransition
 import com.example.dwpmclone.data.account.AccountStateTransitionSource
 import com.example.dwpmclone.data.account.AccountTransitionDetails
 import com.example.dwpmclone.data.account.AccountTransitionInput
+import com.example.dwpmclone.data.account.SessionHealthProbe
+import com.example.dwpmclone.data.account.SessionProbeResult
 import com.example.dwpmclone.data.local.SharedAccountStateGateway
+import com.example.dwpmclone.domain.model.GameAccount
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -21,8 +26,14 @@ import org.json.JSONObject
 class SharedPythonCoreHost private constructor(context: Context) :
     AccountLifecycleDecisionSource,
     AccountStateTransitionSource,
+    AccountReloginSource,
+    SessionHealthProbe,
     SharedAccountStateGateway {
     private val appContext = context.applicationContext
+
+    /** Context for durable Android-side hand-over records. */
+    internal val applicationContext: Context
+        get() = appContext
     private val platformPorts = AndroidSharedCorePortBridge(appContext)
     private val initializationLock = Any()
     private val warmupScheduled = AtomicBoolean(false)
@@ -69,6 +80,41 @@ class SharedPythonCoreHost private constructor(context: Context) :
         requestContext.toString()
     )
 
+    fun prepareAccountAdd(body: JSONObject): JSONObject =
+        callJson("account_add_prepare_json", body.toString())
+
+    override fun reloginAccount(accountId: Long): AccountReloginResult {
+        val result = callJson("relogin_account_json", accountId.toString())
+        check(result.optBoolean("ok", false)) {
+            result.optJSONObject("error")?.optString("message")
+                ?: "共享 Python 重新登录失败"
+        }
+        return AccountReloginResult(
+            accountId = result.getString("accountRef").toLong(),
+            message = result.optString("message")
+        )
+    }
+
+    override fun probe(account: GameAccount, fullStateRefresh: Boolean): SessionProbeResult {
+        val result = callJson(
+            "probe_account_session_json",
+            account.id.toString(),
+            fullStateRefresh
+        )
+        val reason = result.optString("reason").ifBlank { "共享 Session 探测未确认" }
+        return when (result.optString("status").lowercase()) {
+            "valid" -> {
+                val updatesJson = result.optJSONObject("updates") ?: JSONObject()
+                val updates = updatesJson.keys().asSequence().associateWith { key ->
+                    updatesJson.optString(key)
+                }
+                SessionProbeResult.Valid(updates)
+            }
+            "expired" -> SessionProbeResult.Expired(reason)
+            else -> SessionProbeResult.Unavailable(reason)
+        }
+    }
+
     override fun accountLifecycleDecision(
         accountEnabled: Boolean,
         executionOwnerActive: Boolean,
@@ -97,7 +143,10 @@ class SharedPythonCoreHost private constructor(context: Context) :
             shouldProbe = result.getBoolean("shouldProbe"),
             mayUseLiveSession = result.getBoolean("mayUseLiveSession"),
             runnable = result.getBoolean("runnable"),
-            heartbeatIntervalMillis = result.getLong("heartbeatIntervalMillis")
+            heartbeatIntervalMillis = result.getLong("heartbeatIntervalMillis"),
+            sessionValidationIntervalMillis = result.getLong(
+                "sessionValidationIntervalMillis"
+            )
         )
     }
 
@@ -187,8 +236,57 @@ class SharedPythonCoreHost private constructor(context: Context) :
         payload.toString()
     )
 
+    /**
+     * Submit one shared-Python resident recovery tick.  The foreground service
+     * owns when this method is called; Python owns pending-state decisions and
+     * all migrated resident packets. The old Kotlin scheduler is not switched over by
+     * this method alone, so callers must not invoke it for an account while the
+     * corresponding legacy task still owns dispatch.
+     */
+    fun submitAutomationRecoveryTick(
+        accountRef: String,
+        tickKey: String = "",
+        requestContext: JSONObject = JSONObject()
+    ): JSONObject = callJson(
+        "submit_automation_recovery_tick_json",
+        accountRef,
+        tickKey,
+        requestContext.toString()
+    )
+
+    fun configureResidentAutomation(
+        accountRef: String,
+        habits: JSONObject
+    ): JSONObject = callJson(
+        "configure_resident_automation_from_habits_json",
+        accountRef,
+        habits.toString()
+    )
+
+    fun emitHostAlarmError(
+        accountRef: String,
+        message: String,
+        source: String = "android-host",
+    ): JSONObject = callJson(
+        "emit_host_alarm_error_json",
+        accountRef,
+        message,
+        source,
+    )
+
+    fun acknowledgeDungeonDefeat(accountRef: String): JSONObject =
+        callJson("acknowledge_dungeon_defeat_json", accountRef)
+
     fun operationStatus(operationId: String): JSONObject =
         callJson("operation_status_json", operationId)
+
+    /**
+     * Read one operation, letting Python block until it settles or [waitMillis]
+     * elapses.  Only callers that already hold a wake lock should use this: it
+     * deliberately trades a bounded blocking read for a whole alarm wakeup.
+     */
+    fun operationStatus(operationId: String, waitMillis: Long): JSONObject =
+        callJson("operation_status_json", operationId, waitMillis)
 
     fun operationsSnapshot(): JSONObject = callJson("operations_snapshot_json")
 

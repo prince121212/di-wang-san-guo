@@ -21,7 +21,7 @@ class VerifyMigrationGoalStatusTest(unittest.TestCase):
     def test_current_worktree_reports_goal_not_final_complete(self):
         report = mod.audit(ROOT)
         self.assertFalse(report["summary"]["objectiveComplete"])
-        self.assertEqual(11, report["summary"]["totalRequirementCount"])
+        self.assertEqual(12, report["summary"]["totalRequirementCount"])
         self.assertTrue(report["summary"]["realActionNetworkAllowed"])
         self.assertTrue(report["summary"]["realActionSendReady"])
         self.assertTrue(report["summary"]["realActionScopeBrushYellow"])
@@ -30,8 +30,13 @@ class VerifyMigrationGoalStatusTest(unittest.TestCase):
         self.assertIn("liveBrushYellowSuccessEvidence", report["summary"])
         self.assertTrue(report["summary"]["serviceBrushYellowClosedLoop"])
         self.assertIn("serviceBrushYellowEvidence", report["summary"])
-        self.assertTrue(report["summary"]["directBinaryActionSenderPresent"])
-        self.assertTrue(report["summary"]["brushYellowScopeGatePresent"])
+        self.assertTrue(report["summary"]["sharedPythonActionOwnerPresent"])
+        self.assertTrue(report["summary"]["androidRawHttpHostPresent"])
+        self.assertTrue(report["summary"]["kotlinResidentFailClosed"])
+        self.assertEqual(
+            [],
+            report["summary"]["remainingKotlinBackgroundOwners"],
+        )
         names = [item["name"] for item in report["requirements"]]
         self.assertIn("优先实现刷黄闭环", names)
         login_session = next(
@@ -40,36 +45,67 @@ class VerifyMigrationGoalStatusTest(unittest.TestCase):
         )
         self.assertEqual("complete", login_session["status"])
         self.assertTrue(login_session["requiredEvidence"][
-            "app/src/main/java/com/example/dwpmclone/domain/protocol/AccountLifecyclePresentation.kt"
+            "../shared_core/python/dwpm_core/account/lifecycle.py"
         ])
         scheduler = next(item for item in report["requirements"] if item["name"] == "补齐后台调度框架")
         self.assertTrue(scheduler["requiredEvidence"]["app/src/main/java/com/example/dwpmclone/domain/scheduler/LocalSchedulerLifecycleRunner.kt"])
         self.assertTrue(scheduler["requiredEvidence"]["app/src/main/java/com/example/dwpmclone/domain/scheduler/HostingStartPolicy.kt"])
         self.assertTrue(scheduler["requiredEvidence"]["app/src/main/java/com/example/dwpmclone/domain/scheduler/RealSessionTaskPlanAdapter.kt"])
+        self.assertTrue(scheduler["requiredEvidence"][
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/TaskSchedulerCoreLifecycleTest.kt"
+        ])
+        self.assertTrue(scheduler["requiredEvidence"][
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/SharedResidentLegacyTaskFailClosedTest.kt"
+        ])
         self.assertTrue(scheduler["requiredEvidence"]["reports/service_lifecycle_entry_evidence.md"])
         self.assertTrue(scheduler["requiredEvidence"]["reports/real_session_plan_alignment_evidence.md"])
         shua_huang = next(item for item in report["requirements"] if item["name"] == "优先实现刷黄闭环")
-        self.assertEqual("complete", shua_huang["status"])
-        self.assertTrue(shua_huang["finalComplete"])
+        self.assertEqual("code_aligned_device_pending", shua_huang["status"])
+        self.assertFalse(shua_huang["finalComplete"])
         self.assertTrue(shua_huang["requiredEvidence"]["tools/check_brush_yellow_prereq.py"])
         self.assertTrue(shua_huang["requiredEvidence"]["tools/test_check_brush_yellow_prereq.py"])
         self.assertTrue(shua_huang["requiredEvidence"][
-            "app/src/main/java/com/example/dwpmclone/domain/protocol/BrushCenterRecommendationPolicy.kt"
+            "../shared_core/python/dwpm_core/local_views.py"
         ])
         daily_protocol = next(item for item in report["requirements"] if item["name"] == "接入一键日常协议")
         self.assertEqual("code_aligned_device_pending", daily_protocol["status"])
         self.assertTrue(daily_protocol["requiredEvidence"][
             "app/src/test/java/com/example/dwpmclone/data/local/DailyCompletionCycleTest.kt"
         ])
+        self.assertTrue(daily_protocol["requiredEvidence"][
+            "../电脑端辅助前端/tests/test_shared_daily_operations.py"
+        ])
         mine_search = next(item for item in report["requirements"] if item["name"] == "做地图扫描 / 找矿只读能力")
         self.assertEqual("code_aligned_device_pending", mine_search["status"])
         self.assertTrue(mine_search["requiredEvidence"][
-            "app/src/test/java/com/example/dwpmclone/domain/scheduler/LocalMapTaskLifecycleTest.kt"
+            "../shared_core/python/dwpm_core/features/targets.py"
+        ])
+        self.assertTrue(mine_search["requiredEvidence"][
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/SharedResidentLegacyTaskFailClosedTest.kt"
         ])
         action_ext = next(item for item in report["requirements"] if item["name"] == "再做出征 / 占矿等动作扩展")
         self.assertEqual("code_aligned_device_pending", action_ext["status"])
         self.assertTrue(action_ext["requiredEvidence"][
-            "app/src/test/java/com/example/dwpmclone/domain/protocol/MineRaidProtocolParityFixtureTest.kt"
+            "app/src/main/java/com/example/dwpmclone/host/SharedResidentAutomationAdapter.kt"
+        ])
+        remaining_owners = next(
+            item for item in report["requirements"]
+            if item["name"] == "收口剩余 Kotlin 后台业务所有者"
+        )
+        self.assertEqual("complete", remaining_owners["status"])
+        self.assertTrue(remaining_owners["finalComplete"])
+        self.assertNotIn("将领维护", remaining_owners["notes"])
+        self.assertNotIn("自动内政", remaining_owners["notes"])
+        self.assertNotIn("仍由 Kotlin 拥有：自动背包", remaining_owners["notes"])
+        self.assertNotIn("仍由 Kotlin 拥有：军情警报", remaining_owners["notes"])
+        self.assertTrue(remaining_owners["requiredEvidence"][
+            "../电脑端辅助前端/tests/test_shared_inventory_automation.py"
+        ])
+        self.assertTrue(remaining_owners["requiredEvidence"][
+            "../电脑端辅助前端/tests/test_shared_alarm_automation.py"
+        ])
+        self.assertTrue(remaining_owners["requiredEvidence"][
+            "app/src/test/java/com/example/dwpmclone/domain/scheduler/InventoryCleanupTaskTest.kt"
         ])
         device_regression = next(item for item in report["requirements"] if item["name"] == "整体真机回归测试")
         self.assertTrue(device_regression["requiredEvidence"]["tools/check_live_1016_session.py"])
@@ -96,14 +132,18 @@ class VerifyMigrationGoalStatusTest(unittest.TestCase):
             "app/src/test/java/com/example/dwpmclone/domain/state/AccountOperationLockRegistryTest.kt"
         ])
         incomplete_names = [item["name"] for item in report["incomplete"]]
-        self.assertNotIn("优先实现刷黄闭环", incomplete_names)
+        self.assertIn("优先实现刷黄闭环", incomplete_names)
+        self.assertNotIn("收口剩余 Kotlin 后台业务所有者", incomplete_names)
         self.assertIn("整体真机回归测试", incomplete_names)
 
     def test_markdown_contains_all_requirements(self):
         report = mod.audit(ROOT)
         md = mod.to_markdown(report)
         self.assertIn("迁移总目标状态审计", md)
-        self.assertIn("directBinaryActionSenderPresent: true", md)
+        self.assertIn("sharedPythonActionOwnerPresent: true", md)
+        self.assertIn("androidRawHttpHostPresent: true", md)
+        self.assertIn("kotlinResidentFailClosed: true", md)
+        self.assertIn("remainingKotlinBackgroundOwners:", md)
         self.assertIn("realActionSendReady: true", md)
         self.assertIn("liveBrushYellowSuccess: true", md)
         self.assertIn("serviceBrushYellowClosedLoop: true", md)

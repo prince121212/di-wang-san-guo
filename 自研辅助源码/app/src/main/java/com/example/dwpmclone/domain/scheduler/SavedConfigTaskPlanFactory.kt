@@ -277,20 +277,6 @@ object SavedConfigTaskPlanFactory {
                     requireChineseNamePrefix = false
                 )
             },
-            foodToCopper = run {
-                val enabled = general.bool(
-                    "foodToCopper",
-                    shua.bool("foodToCopper", false)
-                )
-                val requestedFloor = general.int(
-                    "copperFloorWan",
-                    shua.int("copperFloorWan", 1)
-                )
-                FoodToCopperConfig(
-                    enabled = enabled,
-                    copperFloorWan = requestedFloor.takeIf { it in setOf(1, 10, 20, 50) } ?: 1
-                )
-            },
             formations = configuredFormations,
             internalAffairs = internal?.let {
                 ConfigDefaults.internalAffairs().copy(
@@ -313,6 +299,7 @@ object SavedConfigTaskPlanFactory {
                 ConfigDefaults.dungeon().copy(
                     enabled = it.bool("enabled", it.bool("APKTOOL_RENAMED_0x7f07007a", false)),
                     dailyTimes = it.int("dailyTimes", it.int("APKTOOL_RENAMED_0x7f0700ca", 999)),
+                    fullTroops = it.bool("fullTroops", false),
                     boxPosition = it.int("boxPosition", spinnerIndex(it.string("APKTOOL_RENAMED_0x7f070067", ""))),
                     chapter = it.int("chapter", spinnerIndex(it.string("APKTOOL_RENAMED_0x7f070068", ""))),
                     stage = it.int("stage", legacyDungeonStage(it.string("APKTOOL_RENAMED_0x7f070066", ""))),
@@ -952,8 +939,24 @@ private fun JSONObject.desktopBuildingType(): BuildingType? {
     }
 }
 
+private val desktopEquipmentQualityNames = mapOf(
+    "普通" to EquipmentQuality.NORMAL,
+    "良好" to EquipmentQuality.GOOD,
+    "优秀" to EquipmentQuality.EXCELLENT,
+    "卓越" to EquipmentQuality.SUPERB,
+    "极品" to EquipmentQuality.SUPERB,
+)
+
 private fun desktopEquipmentQualities(values: JSONObject): Set<EquipmentQuality> {
     if (!values.optBoolean("discardEquipment", false)) return emptySet()
+    // The page now saves the chosen qualities as a set. When it is present it
+    // is authoritative (an empty set discards nothing); the older single
+    // ceiling keeps meaning "that quality and everything below it".
+    values.optJSONArray("discardEquipmentQualities")?.let { names ->
+        return (0 until names.length())
+            .mapNotNull { index -> desktopEquipmentQualityNames[names.optString(index).trim()] }
+            .toSet()
+    }
     return when (values.optString("maxEquipmentQuality", "良好")) {
         "普通" -> setOf(EquipmentQuality.NORMAL)
         "良好" -> setOf(EquipmentQuality.NORMAL, EquipmentQuality.GOOD)

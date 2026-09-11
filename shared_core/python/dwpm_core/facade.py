@@ -2,16 +2,235 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
+import re
+import struct
+import threading
+import urllib.parse
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .account.lifecycle import AccountLifecyclePolicy
+from .account.login import (
+    PLATFORM_LOGIN_PROFILES,
+    SharedLoginError,
+    perform_shared_login,
+)
 from .account.presentation import project_account_cards
 from .account.store import DurableAccountStore
 from .account.state_machine import reduce_account_event
 from .contracts import load_behavior_contract, load_route_ownership
+from .automation import (
+    BLOCKED_STATES as RESIDENT_BLOCKED_STATES,
+    DAILY_FEATURE_LABELS,
+    FEATURE_LABELS,
+    NARRATED_STATES,
+    NARRATION_MIN_HOLD_MILLIS,
+    RESUMED_TEMPLATE,
+    SAMPLED_STATES,
+    UNRECOGNIZED_BLOCK_RETRY_MILLIS,
+    ambiguous_preflight_reconciliation,
+    brush_recovery_decision,
+    china_clock_text,
+    china_day_key,
+    china_start_millis,
+    general_is_idle,
+    mine_garrison_decision,
+    pre_dispatch_outstanding,
+    raid_return_decision,
+    resident_due_decision,
+)
+from .features.alarm import (
+    normalize_alarm_policy,
+    plan_alarm_observation,
+    plan_error_alarm,
+)
+from .features.formation import (
+    assignment_receipt_matches_plan,
+    build_assign_troops_payload,
+    build_heal_payload,
+    build_heal_preinfo_payload,
+    build_refill_payload,
+    parse_assign_troops_response,
+    parse_heal_preinfo_response,
+    parse_heal_response,
+    parse_refill_response,
+    plan_heal_wounded,
+    plan_troop_assignment,
+    positive_game_id,
+    select_refill_generals,
+    strict_soldier_type,
+)
+from .features.generals import (
+    parse_8004_head,
+    parse_military_intel_from_a110,
+    parse_idle_army_from_8004,
+    recover_generals_from_8004,
+)
+from .features.inventory import (
+    AUTO_OPEN_ITEM_NAMES,
+    EQUIPMENT_QUALITY_NAMES,
+    equipment_quality_codes,
+    inventory_reward_log_text,
+    observe_automatic_inventory_action,
+    parse_8104_inventory,
+    plan_next_automatic_inventory_action,
+    plan_open_one_inventory,
+)
+from .features.expedition import (
+    build_dungeon_expedition_payload,
+    build_dungeon_prepare_payload,
+    build_mine_payloads,
+    build_brush_payloads_variant,
+    build_lossless_expedition_payload,
+    build_lossless_prepare_payload,
+    build_raid_expedition_payload,
+    build_raid_prepare_payload,
+    parse_dispatch_response,
+)
+from .features.dungeon import (
+    DUNGEON_MODE_CLEAR,
+    build_dungeon_battle_poll_payload,
+    build_dungeon_chest_payload,
+    dungeon_battle_defeat_confirmed,
+    dungeon_chapter_number,
+    dungeon_chest_index,
+    dungeon_stage_completed_in_catalog,
+    dungeon_stage_number,
+    first_uncompleted_dungeon_stage,
+    normalize_dungeon_mode,
+    parse_dungeon_catalog,
+    parse_dungeon_chest_response,
+    parse_dungeon_launch_response,
+    parse_dungeon_reward_state,
+    parse_dungeon_state,
+    resolve_dungeon_stage_code,
+)
+from .features.lossless import (
+    evaluate_level10_guard_lineup,
+    lossless_level_number,
+    lossless_stage_context,
+    lossless_status_phase,
+    parse_lossless_catalog,
+    parse_lossless_lineup,
+    parse_lossless_select_response,
+    parse_lossless_settlement,
+    parse_lossless_status,
+)
+from .features.mine import (
+    MARCH_SPEED_SECONDS,
+    build_march_speed_payload,
+    build_recall_payload,
+    choose_march_speed_items,
+    parse_march_speed_response,
+    parse_mine_preview,
+    parse_recall_response,
+)
+from .features.military import (
+    MILITARY_INTEL_REQUEST_PAYLOAD,
+    build_military_snapshot,
+)
+from .features.raid import build_raid_fief_list_payload, parse_raid_fief_list
+from .features.daily import (
+    build_city_lord_collect_payload,
+    build_general_visit_list_payload,
+    build_general_visit_payload,
+    build_national_city_list_payload,
+    build_national_city_status_payload,
+    build_national_collect_payload,
+    build_owned_city_list_payload,
+    build_salary_payload,
+    country_donation_limits,
+    general_visit_already_visited,
+    general_visit_has_no_candidates,
+    national_citizen_daily_skip_result,
+    normalize_general_visit_ids,
+    parse_daily_donation_receipt,
+    parse_arena_coin_claim_response,
+    parse_daily_status_utf_receipt,
+    parse_daily_diamond_box_response,
+    parse_daily_sign_in_packets,
+    parse_general_visit_page,
+    parse_general_visit_receipt,
+    parse_national_city_page,
+    parse_national_collect_status,
+    parse_owned_city_list,
+    parse_salary_receipt,
+    parse_status_message_payload,
+)
+from .features.maintenance import (
+    EXPEDITION_MIN_ENERGY,
+    apply_full_loyalty_receipt,
+    apply_general_energy_receipt,
+    build_add_loyalty_payload,
+    build_delete_all_mail_payload,
+    build_discard_inventory_payload,
+    build_use_inventory_item_payload,
+    build_use_general_item_payload,
+    build_resource_exchange_payload,
+    parse_821f_loyalty_response,
+    parse_delete_mail_response,
+    parse_discard_inventory_response,
+    parse_resource_exchange_response,
+    parse_use_general_item_response,
+    plan_general_energy_use,
+    plan_generals_full_loyalty,
+)
+from .features.internal_affairs import (
+    building_action_was_applied,
+    build_building_action_payload,
+    build_country_donation_payload,
+    build_fief_query_payload,
+    build_technology_upgrade_payload,
+    build_technology_donation_payload,
+    parse_technology_states_from_8004,
+    parse_8200_building_result,
+    parse_8246_fief_result,
+    plan_next_internal_affairs_action,
+    summarize_role_queues,
+)
+from .features.ministries import (
+    VERIFIED_MINISTRY_CROP,
+    build_hubu_batch_plant_payload,
+    build_hubu_status_query_payload,
+    ministry_planting_allowed,
+    normalize_ministry_settings,
+    parse_hubu_garden_status,
+    parse_hubu_plant_response,
+)
+from .features.targets import (
+    action_target_hex,
+    brush_scan_coordinates,
+    dedupe_targets,
+    mine_target_matches,
+    normalize_brush_levels,
+    normalize_drop_keywords,
+    normalize_mine_resource_types,
+    parse_bandit_targets,
+    parse_mine_resources,
+    target_matches_search_filter,
+)
 from .hashing import compute_core_hash
+from .host_ports import HostGameCommandError
+from .local_views import (
+    account_log_write_plan,
+    general_energy_success_record,
+    notice_dismiss_plan,
+    project_account_logs,
+    project_automation_status,
+    project_bandit_map,
+    project_mine_map,
+    project_success_records,
+    project_system_logs,
+    recommend_brush_center,
+    resident_success_record,
+    resident_success_records_from_operation_facts,
+    resident_success_records_from_public_state,
+    system_log_clear_plan,
+)
 from .models import CoreResponse
 from .operations import (
     CANCELLED,
@@ -22,9 +241,28 @@ from .operations import (
     UNCERTAIN,
     DurableOperationStore,
     OperationExecutionContext,
+    OperationDeferredError,
+    OperationKnownFailureError,
+    OperationUncertainError,
 )
 from .ports import PlatformPorts
-from .settings import project_account_settings, settings_write_plan
+from .protocol.wire import (
+    action_gamehex_to_cmd,
+    make_packet,
+    parse_response,
+    printable,
+)
+from .reference import (
+    guide_reference_payload,
+    normalize_platform_key,
+    platform_display_name,
+    project_area_catalog,
+)
+from .settings import (
+    normalize_automation_config,
+    project_account_settings,
+    settings_write_plan,
+)
 from .verification import verify_protocol_fixtures
 from .version import CORE_ID, CORE_VERSION
 
@@ -38,6 +276,86 @@ PersistedPayloadBuilder = Callable[
     [Dict[str, Any], Dict[str, Any]],
     Dict[str, Any],
 ]
+HostResponseProjector = Callable[
+    [Dict[str, Any], Dict[str, Any], Dict[str, Any]],
+    Dict[str, Any],
+]
+
+_BRUSH_HIGH_LEVEL_TROOP_ERROR_MARKER = "每个将领至少需配1000兵力"
+#: Server rejections that say the *target* is gone, as opposed to a problem
+#: with the formation (troop count, level, stamina).  Only these justify
+#: dropping the target from the local map snapshot.
+_BRUSH_TARGET_GONE_MARKERS = ("目标不存在", "不能到达", "已被消灭", "已不存在")
+
+
+def _brush_target_is_gone(message: str) -> bool:
+    text = str(message or "")
+    return any(marker in text for marker in _BRUSH_TARGET_GONE_MARKERS)
+
+
+def _host_network_lane_ready(host_bridge: Any) -> bool:
+    """Return only observable host readiness; never infer it from saved intent."""
+
+    try:
+        if not bool(host_bridge.executionOwnerActive()):
+            return False
+        if hasattr(host_bridge, "networkAvailable"):
+            return bool(host_bridge.networkAvailable())
+        return True
+    except Exception:
+        return False
+
+
+class _DirectLoginExecution:
+    """Synchronous service-recovery adapter for the shared login workflow."""
+
+    operation_id = "direct-account-relogin"
+
+    def mark_request_sent(self, metadata: Optional[Dict[str, Any]] = None) -> None:
+        return None
+
+    def publish_progress(
+        self,
+        progress: int,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        return None
+
+
+class _DurablePendingMutationExecution:
+    """Persist a feature substep immediately before its mutation boundary."""
+
+    def __init__(
+        self,
+        delegate: OperationExecutionContext,
+        before_send: Callable[[Dict[str, Any]], None],
+    ) -> None:
+        self._delegate = delegate
+        self._before_send = before_send
+        self.operation_id = delegate.operation_id
+        self.sent = False
+
+    def mark_request_sent(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        normalized = dict(metadata or {})
+        self._before_send(normalized)
+        self._delegate.mark_request_sent(normalized)
+        self.sent = True
+
+    def publish_progress(
+        self,
+        progress: int,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._delegate.publish_progress(progress, details)
+
+    def raise_if_cancelled(self) -> None:
+        self._delegate.raise_if_cancelled()
+
+    def wait(self, seconds: float) -> None:
+        self._delegate.wait(seconds)
 
 SENSITIVE_KEY_FRAGMENTS = (
     "password",
@@ -47,9 +365,106 @@ SENSITIVE_KEY_FRAGMENTS = (
 )
 SENSITIVE_KEY_SUFFIXES = ("token", "secret", "credential")
 SENSITIVE_EXACT_KEYS = frozenset(("dm", "session"))
+#: Send states whose outcome is genuinely unknown.  Only these justify holding
+#: a feature back for a human: every other value - "accepted", "not-sent",
+#: "rejected" - is a settled fact that a read-only recheck can act on.
+#: How often a same-server presence lease is renewed.
+#:
+#: A lease has to be renewed by a *clock*, at an interval well inside its
+#: expiry.  Renewal used to happen only as a side effect of a brush or mine
+#: tick, and those run minutes apart when the generals are out, so the lease
+#: expired between renewals: two accounts that were both running saw each other
+#: appear and disappear every one to two minutes.  The observed expiry was
+#: around 60-90 s, so this leaves a three-to-four-fold margin.
+CLOUD_PRESENCE_RENEW_MILLIS = 20_000
+
+#: How long a positive sighting keeps shared mode alive without confirmation.
+CLOUD_PRESENCE_GRACE_MILLIS = 90_000
+
+#: Digit order used when a scan flattens a target's troop composition.
+_COMPOSITION_ARMS = ("foot", "bow", "cavalry", "chariot")
+
+
+def _composition_from_code(value: Any) -> Optional[Dict[str, Any]]:
+    """Rebuild the per-arm counts a flattened ``compositionCode`` came from.
+
+    Returns ``None`` for anything it cannot read back exactly.  Guessing here
+    would be worse than failing the 兵种 filter: it would send a formation at a
+    target whose defence is unknown.  Counts above nine make the flat code
+    ambiguous, so those are refused rather than mis-split.
+    """
+
+    code = str(value or "").strip()
+    if len(code) != len(_COMPOSITION_ARMS) or not code.isdigit():
+        return None
+    composition: Dict[str, Any] = {
+        arm: int(digit) for arm, digit in zip(_COMPOSITION_ARMS, code)
+    }
+    composition["source"] = "8540-units"
+    return composition
+
+
+def _optional_row_index(value: Any) -> Optional[int]:
+    """Keep a config row's own index, or nothing if it was never supplied."""
+
+    if value in (None, ""):
+        return None
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return index if index >= 0 else None
+
+
+AMBIGUOUS_SEND_STATES = frozenset(("sending", "uncertain"))
+#: Send boundaries whose outcome no amount of reading can settle.  A feature
+#: with one of these outstanding is held for a human.  ``preDispatchMutationState``
+#: is deliberately not here: a heal, top-up or troop assignment re-derives its
+#: own necessity from fresh state, so each workflow settles it by observation.
+#: Features whose durable send boundary lives below the top level of their
+#: record, and which :data:`FORMAL_SEND_STATE_KEYS` therefore cannot see.
+NESTED_SEND_BOUNDARY_FEATURES = frozenset(("general", "domestic", "inventory"))
+FORMAL_SEND_STATE_KEYS = (
+    "prepareSendState",
+    "dispatchSendState",
+    "chestSendState",
+    "settlementSendState",
+    "recallSendState",
+    "sendState",
+)
 HOST_ACCOUNT_BUSY_CODE = "LOCAL_ACCOUNT_BUSY"
 HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS = 0.05
 HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS = 0.25
+AUTOMATION_RECOVERY_OPERATION_KIND = "automation:recovery-tick:v1"
+RAID_ACTION_OPERATION_KIND = "automation:raid-action:v1"
+LOSSLESS_ACTION_OPERATION_KIND = "automation:lossless-action:v1"
+DUNGEON_ACTION_OPERATION_KIND = "automation:dungeon-action:v1"
+DAILY_COMPLETION_LABELS = {
+    "autoSignIn": "自动签到",
+    "arenaCoins": "领取竞技币",
+    "autoDonate": "自动捐献",
+    "salary": "领取国家俸禄",
+    "nationalCollect": "国家征收",
+    "cityLordCollect": "城主征收",
+    "generalVisit": "名将拜访",
+}
+STATE_REFRESH_PARTS_BY_SCOPE = {
+    "all": (
+        "role",
+        "resources",
+        "generals",
+        "formations",
+        "inventory",
+        "military",
+    ),
+    "role": ("role", "resources", "generals"),
+    "role-queues": ("role", "generals", "formations", "role-queues"),
+    "generals": ("role", "generals", "formations"),
+    "army": ("generals", "formations"),
+    "status": ("role", "generals", "formations", "military"),
+    "inventory": ("inventory",),
+    "military": ("military",),
+}
 
 
 class CoreFacade:
@@ -61,13 +476,23 @@ class CoreFacade:
         operation_store_path: Optional[str] = None,
         ports: Optional[PlatformPorts] = None,
         account_store_path: Optional[str] = None,
+        operation_run_gate: Optional[Callable[[], bool]] = None,
     ) -> None:
         self._shared_root = shared_root
         self._ports = ports or PlatformPorts()
+        # Optional host capability gate.  Desktop hosts leave this unset;
+        # Android supplies the foreground-service execution lease so operations
+        # recovered during Application startup cannot run before the Service is
+        # actually in the foreground.
+        self._operation_run_gate = operation_run_gate
         self._route_contract = load_route_ownership(shared_root)
+        self._behavior_contract = load_behavior_contract(shared_root)
         self._account_lifecycle = AccountLifecyclePolicy.from_behavior_contract(
-            load_behavior_contract(shared_root)
+            self._behavior_contract
         )
+        self._account_login_locks_guard = threading.RLock()
+        self._account_login_locks: Dict[str, threading.RLock] = {}
+        self._account_identity_login_locks: Dict[str, threading.RLock] = {}
         self._route_index = {
             (str(row["method"]).upper(), str(row["path"])): dict(row)
             for row in self._route_contract["routes"]
@@ -86,9 +511,29 @@ class CoreFacade:
             now_millis=self._ports.clock.now_millis,
             event_callback=self._publish_operation_event,
         )
+        # Last resident state narrated to the operator, per (account, feature).
+        # In-memory on purpose: it exists only to suppress repeats within a run.
+        self._narrated_resident_states: Dict[
+            tuple[str, str], tuple[Optional[str], int, Optional[str]]
+        ] = {}
+        self._resident_success_history_lock = threading.RLock()
+        self._resident_success_history_cache: Dict[
+            str, list[Dict[str, Any]]
+        ] = {}
+        self._cloud_mode_lock = threading.RLock()
+        self._cloud_modes: Dict[str, Dict[str, Any]] = {}
+        self._cloud_heartbeats_inflight: set[str] = set()
+        self._cloud_directory_sync_inflight: set[str] = set()
+        self._cloud_manual_scan_cursors: Dict[str, int] = {}
+        self._automation_recovery_runner_registered = False
+        self._raid_action_runner_registered = False
+        self._lossless_action_runner_registered = False
+        self._dungeon_action_runner_registered = False
         self._local_handlers: Dict[tuple[str, str], LocalRouteHandler] = {
             ("GET", "/api/health"): self._health_route,
             ("GET", "/api/accounts"): self._accounts_route,
+            ("GET", "/api/areas"): self._areas_route,
+            ("GET", "/api/reference/guide"): self._reference_guide_route,
             ("GET", "/api/accounts/settings"): self._account_settings_route,
             (
                 "POST",
@@ -102,6 +547,52 @@ class CoreFacade:
                 "POST",
                 "/api/formations/save",
             ): self._formation_settings_write_plan_route,
+            (
+                "POST",
+                "/api/mine/save",
+            ): self._mine_settings_write_plan_route,
+            (
+                "POST",
+                "/api/settings/save",
+            ): self._scoped_settings_write_plan_route,
+            (
+                "POST",
+                "/api/raid/execute",
+            ): self._raid_settings_write_plan_route,
+            (
+                "POST",
+                "/api/lossless/execute",
+            ): self._lossless_settings_write_plan_route,
+            (
+                "POST",
+                "/api/dungeon/execute",
+            ): self._dungeon_settings_write_plan_route,
+            ("GET", "/api/logs/system"): self._system_logs_route,
+            ("GET", "/api/logs/account"): self._account_logs_route,
+            ("GET", "/api/automation/status"): self._automation_status_route,
+            ("GET", "/api/success-records"): self._success_records_route,
+            ("GET", "/api/maps/bandits"): self._bandit_map_route,
+            ("GET", "/api/maps/mines"): self._mine_map_route,
+            ("POST", "/api/logs/account"): self._account_log_write_plan_route,
+            (
+                "POST",
+                "/api/logs/system/clear",
+            ): self._system_log_clear_plan_route,
+            ("POST", "/api/notices/dismiss"): self._notice_dismiss_plan_route,
+            ("POST", "/api/accounts/stop"): self._account_stop_plan_route,
+            ("POST", "/api/accounts/delete"): self._account_delete_plan_route,
+            (
+                "POST",
+                "/api/automation/start-saved",
+            ): self._automation_start_saved_plan_route,
+            (
+                "POST",
+                "/api/automation/stop",
+            ): self._automation_stop_plan_route,
+            (
+                "POST",
+                "/api/brush/recommended-center",
+            ): self._brush_recommended_center_route,
         }
         self._network_handlers: Dict[
             tuple[str, str],
@@ -125,6 +616,10 @@ class CoreFacade:
                 row["responseClass"] == "network-operation" for row in routes
             ),
             "migratedRouteCount": len(registered),
+            "migratedRoutes": [
+                f"{method} {path}"
+                for method, path in sorted(registered)
+            ],
             "operationModel": {
                 "submission": "immediate",
                 "persistence": (
@@ -153,6 +648,7 @@ class CoreFacade:
                 "credentials": self._ports.credentials is not None,
                 "sessionSecrets": self._ports.session_secrets is not None,
                 "networkState": self._ports.network_state is not None,
+                "rawHttp": self._ports.raw_http is not None,
             },
         }
 
@@ -260,6 +756,19 @@ class CoreFacade:
         details: Optional[Dict[str, Any]] = None,
         now_millis: Optional[int] = None,
     ) -> Dict[str, Any]:
+        transition_details = dict(details or {})
+        transition_details.setdefault(
+            "probeFailurePauseThreshold",
+            int(self._account_lifecycle.probe_failure_pause_threshold),
+        )
+        transition_details.setdefault(
+            "probeFailureReloginThreshold",
+            int(self._account_lifecycle.probe_failure_relogin_threshold),
+        )
+        transition_details.setdefault(
+            "degradedProbeRetryMillis",
+            int(self._account_lifecycle.degraded_probe_retry_millis),
+        )
         return reduce_account_event(
             state,
             event,
@@ -268,7 +777,7 @@ class CoreFacade:
                 if now_millis is None
                 else int(now_millis)
             ),
-            details=details,
+            details=transition_details,
         )
 
     def account_transition_json(
@@ -372,6 +881,18164 @@ class CoreFacade:
     ) -> Dict[str, Any]:
         return settings_write_plan(route, body)
 
+    def account_add_prepare(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a credential-free account draft before the host stores its password."""
+
+        username = str(body.get("username") or "").strip()
+        server_query = str(body.get("serverQuery") or "").strip()
+        platform_key = normalize_platform_key(body.get("platform"))
+        supported = body.get("supportedPlatformKeys")
+        if supported is not None:
+            if not isinstance(supported, list):
+                raise ValueError("supportedPlatformKeys must be an array")
+            normalized_supported = {
+                normalize_platform_key(value) for value in supported
+            }
+            if platform_key not in normalized_supported:
+                raise ValueError("当前宿主尚未开放该游戏平台的登录传输")
+        if not username:
+            raise ValueError("请输入账号")
+        if len(username) > 160:
+            raise ValueError("账号过长")
+        if not bool(body.get("passwordPresent")):
+            raise ValueError("请输入密码")
+        if not server_query:
+            raise ValueError("请选择区服")
+        if len(server_query) > 160:
+            raise ValueError("区服名称过长")
+        serial = str(body.get("serial") or "0").strip()[:80] or "0"
+        existing_ref = ""
+        for record in self._accounts.snapshot()["accounts"]:
+            if (
+                str(record.get("username") or "").strip() == username
+                and str(
+                    record.get("serverName")
+                    or record.get("serverQuery")
+                    or ""
+                ).strip() == server_query
+                and normalize_platform_key(
+                    record.get("platformKey")
+                    or record.get("platform")
+                    or "sglm"
+                ) == platform_key
+            ):
+                existing_ref = str(
+                    record.get("accountRef") or record.get("id") or ""
+                ).strip()
+                break
+        account_ref = existing_ref or self._draft_account_ref(
+            platform_key,
+            username,
+            server_query,
+        )
+        display = platform_display_name(platform_key)
+        legacy_game_version = (
+            "TENCENT_CLASSIC" if platform_key == "sglm" else "OTHER"
+        )
+        legacy_channel = "QQ" if platform_key == "sglm" else "DANGLE"
+        return {
+            "ok": True,
+            "plan": {
+                "networkRequired": False,
+                "credentialAction": {
+                    "action": "save-before-network",
+                    "accountRef": account_ref,
+                },
+                "record": {
+                    "accountRef": account_ref,
+                    "id": int(account_ref),
+                    "username": username,
+                    "displayName": f"{username}@{server_query}",
+                    "serverName": server_query,
+                    "serverQuery": server_query,
+                    "platform": display,
+                    "platformKey": platform_key,
+                    "serial": serial,
+                    "gameVersion": legacy_game_version,
+                    "channel": legacy_channel,
+                    "session": None,
+                    "enabled": False,
+                    "loginState": "REAL_PROTOCOL_STOPPED",
+                    "localOnly": True,
+                },
+                "existingAccount": bool(existing_ref),
+            },
+        }
+
+    def account_add_prepare_json(self, body_json: str) -> str:
+        try:
+            body = json.loads(body_json or "{}")
+            if not isinstance(body, dict):
+                raise ValueError("account add body must be an object")
+            result = self.account_add_prepare(body)
+        except (json.JSONDecodeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": {
+                    "code": "ACCOUNT_ADD_REJECTED",
+                    "message": str(error),
+                },
+            }
+        return self._json(result)
+
+    def account_add_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("添加账号缺少本地账号引用")
+        return {"accountRef": account_ref, "mode": "add"}
+
+    def account_start_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("启动账号缺少账号引用")
+        return {"accountRef": account_ref, "mode": "start"}
+
+    def account_lifecycle_operation_result(
+        self,
+        host_response: Dict[str, Any],
+        request: Dict[str, Any],
+        _context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        fact = host_response.get("accountLifecycleFact")
+        if not isinstance(fact, dict):
+            raise ValueError("账号宿主未返回登录事实")
+        account_ref = str(fact.get("accountRef") or "").strip()
+        if not account_ref:
+            raise ValueError("账号登录事实缺少账号引用")
+        mode = str(request.get("mode") or "start")
+        status = str(fact.get("status") or "").strip().lower()
+        if status not in {"online", "checking", "stopped"}:
+            raise ValueError(f"账号登录事实状态无效：{status}")
+        return {
+            "ok": True,
+            "accountRef": account_ref,
+            "replacedAccountRef": str(
+                fact.get("replacedAccountRef") or ""
+            ),
+            "status": status,
+            "mode": mode,
+            "message": str(fact.get("message") or "账号登录已完成"),
+        }
+
+    def register_account_login_routes(self) -> None:
+        """Register the one Python-owned login workflow for both hosts."""
+
+        if self._ports.credentials is None:
+            raise TypeError("shared login requires a credential port")
+        if self._ports.session_secrets is None:
+            raise TypeError("shared login requires a Session secret port")
+        if self._ports.raw_http is None:
+            raise TypeError("shared login requires a raw HTTP port")
+        for path, builder in (
+            ("/api/accounts/add", self.account_add_operation_payload),
+            ("/api/accounts/start", self.account_start_operation_payload),
+        ):
+            self.register_network_route(
+                "POST",
+                path,
+                self._run_account_login_workflow,
+                persisted_payload_builder=builder,
+                coalesce_active=True,
+            )
+
+    def relogin_account(self, account_ref: str) -> Dict[str, Any]:
+        """Run the same login core for foreground-service Session recovery."""
+
+        try:
+            return self._run_account_login_workflow(
+                {"accountRef": str(account_ref), "mode": "start"},
+                {
+                    "source": "shared-service-relogin",
+                    "platform": "android",
+                },
+                _DirectLoginExecution(),
+            )
+        except OperationKnownFailureError as error:
+            return {
+                "ok": False,
+                "error": {
+                    "code": error.code,
+                    "message": str(error),
+                    "details": dict(error.details),
+                },
+            }
+
+    def relogin_account_json(self, account_ref: str) -> str:
+        return self._json(self.relogin_account(account_ref))
+
+    def probe_account_session(
+        self,
+        account_ref: str,
+        full_state_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """Probe one live Session using Python-owned packets and parsers.
+
+        Android supplies only Keystore secrets and byte HTTP. It must not
+        interpret 0x3110/0xa110, 0x1016/0x8004 or Session-expiry evidence.
+        """
+
+        normalized_ref = str(account_ref or "").strip()
+        account = self._accounts.get(normalized_ref)
+        if account is None:
+            return self._session_probe_result(
+                "expired",
+                "共享账号账本中不存在该账号",
+            )
+        session = account.get("session")
+        session = dict(session) if isinstance(session, dict) else {}
+        if int(session.get("sourceMode") or 0) != 1:
+            return self._session_probe_result("expired", "真实 Session 不存在")
+        context = {
+            "readOnly": True,
+            "source": "shared-session-probe",
+            "requestId": f"session-probe-{normalized_ref}",
+        }
+        now_millis = int(self._ports.clock.now_millis())
+        heartbeat_issue = ""
+
+        def brief(error: BaseException) -> str:
+            message = str(error) or error.__class__.__name__
+            return message.splitlines()[0][:500]
+
+        # A lightweight heartbeat is preferred, but it is not the source of
+        # truth for Session validity. Old game servers can stall while
+        # streaming 0xa110. In that case immediately fall back to the role
+        # state packet instead of converting one missing reply into a
+        # multi-minute account pause.
+        if not bool(full_state_refresh):
+            try:
+                heartbeat_fact = self._execute_host_game_command(
+                    normalized_ref,
+                    0x3110,
+                    b"\x01\x00",
+                    "shared-core/session-probe/heartbeat",
+                    {
+                        **context,
+                        "connectTimeoutMillis": int(
+                            self._account_lifecycle.session_probe_read_timeout_millis
+                        ),
+                        "readTimeoutMillis": int(
+                            self._account_lifecycle.session_probe_read_timeout_millis
+                        ),
+                    },
+                    mutation_sent=False,
+                )
+                rejection = self._session_rejection_reason(
+                    heartbeat_fact,
+                    request_opcode=0x3110,
+                )
+                if rejection:
+                    return self._session_probe_result("expired", rejection)
+                heartbeat_payload = self._game_packet(
+                    heartbeat_fact,
+                    0xA110,
+                )
+                if heartbeat_payload is not None:
+                    self._schedule_cloud_presence_heartbeat(normalized_ref)
+                    return self._session_probe_result(
+                        "valid",
+                        "Session 心跳有效",
+                        {
+                            "lastValidatedAt": str(now_millis),
+                            "lastHeartbeatAt": str(now_millis),
+                            "militaryIntelOpcodes": self._probe_opcode_text(
+                                heartbeat_fact
+                            ),
+                            "militaryIntelPayloadHex": (
+                                heartbeat_payload.hex()
+                            ),
+                        },
+                    )
+                heartbeat_issue = self._missing_probe_packet_message(
+                    "0x3110 未返回 0xa110",
+                    heartbeat_fact,
+                )
+            except (OperationKnownFailureError, HostGameCommandError) as error:
+                message = brief(error)
+                if self._looks_like_session_rejection(message):
+                    return self._session_probe_result("expired", message)
+                heartbeat_issue = message
+            except Exception as error:
+                message = brief(error)
+                if self._looks_like_session_rejection(message):
+                    return self._session_probe_result("expired", message)
+                heartbeat_issue = message
+
+        try:
+            public_state = session.get("publicState")
+            public_state = (
+                dict(public_state) if isinstance(public_state, dict) else {}
+            )
+            role_id = positive_game_id(
+                public_state.get("roleId")
+                or session.get("accountId")
+                or account.get("id")
+                or normalized_ref,
+                "角色 ID",
+            )
+            state_fact = self._execute_host_game_command(
+                normalized_ref,
+                0x1016,
+                struct.pack(">q", role_id),
+                "shared-core/session-probe/state",
+                {
+                    **context,
+                    "connectTimeoutMillis": int(
+                        self._account_lifecycle.session_probe_read_timeout_millis
+                    ),
+                    "readTimeoutMillis": int(
+                        self._account_lifecycle.session_state_fallback_read_timeout_millis
+                    ),
+                },
+                mutation_sent=False,
+            )
+            rejection = self._session_rejection_reason(
+                state_fact,
+                request_opcode=0x1016,
+            )
+            if rejection:
+                return self._session_probe_result("expired", rejection)
+            state_payload = self._game_packet(state_fact, 0x8004)
+            if state_payload is None:
+                return self._session_probe_result(
+                    "unavailable",
+                    self._missing_probe_packet_message(
+                        "0x1016 未返回 0x8004",
+                        state_fact,
+                    ),
+                )
+            role_state = parse_8004_head(
+                state_payload,
+                "shared-session-probe/0x1016/0x8004",
+            )
+            parse_error = str(role_state.get("parseError") or "").strip()
+            if parse_error:
+                return self._session_probe_result(
+                    "unavailable",
+                    f"0x8004 角色状态解析失败：{parse_error}",
+                )
+            if int(role_state.get("roleId") or 0) != role_id:
+                return self._session_probe_result(
+                    "expired",
+                    "0x8004 角色 ID 与当前 Session 不一致",
+                )
+            state_hex = state_payload.hex()
+            generals = recover_generals_from_8004(state_hex)
+            army = parse_idle_army_from_8004(state_hex, generals)
+            parsed_head = max(
+                0,
+                min(
+                    len(state_payload),
+                    int(role_state.get("parsedHeadByteCount") or 0),
+                ),
+            )
+            updates = self._session_probe_state_updates(
+                role_state,
+                generals,
+                army,
+                state_hex=state_hex,
+                state_tail_hex=state_payload[parsed_head:].hex(),
+                now_millis=now_millis,
+            )
+            try:
+                heartbeat_fact = self._execute_host_game_command(
+                    normalized_ref,
+                    0x3110,
+                    b"\x01\x00",
+                    "shared-core/session-probe/heartbeat-after-state",
+                    {
+                        **context,
+                        "connectTimeoutMillis": int(
+                            self._account_lifecycle.session_probe_read_timeout_millis
+                        ),
+                        "readTimeoutMillis": int(
+                            self._account_lifecycle.session_probe_read_timeout_millis
+                        ),
+                    },
+                    mutation_sent=False,
+                )
+                heartbeat_rejection = self._session_rejection_reason(
+                    heartbeat_fact,
+                    request_opcode=0x3110,
+                )
+                if heartbeat_rejection:
+                    return self._session_probe_result(
+                        "expired",
+                        heartbeat_rejection,
+                    )
+                heartbeat_payload = self._game_packet(heartbeat_fact, 0xA110)
+                if heartbeat_payload is not None:
+                    updates.update({
+                        "lastHeartbeatAt": str(now_millis),
+                        "militaryIntelOpcodes": self._probe_opcode_text(
+                            heartbeat_fact
+                        ),
+                        "militaryIntelPayloadHex": heartbeat_payload.hex(),
+                    })
+            except Exception:
+                # A valid 0x8004 is sufficient proof. The old Android probe
+                # also treated this follow-up heartbeat as optional.
+                pass
+            self._schedule_cloud_presence_heartbeat(normalized_ref)
+            return self._session_probe_result(
+                "valid",
+                (
+                    "Session 角色状态有效（心跳未确认后已即时兜底）"
+                    if heartbeat_issue
+                    else "Session 角色状态有效"
+                ),
+                updates,
+            )
+        except (OperationKnownFailureError, HostGameCommandError) as error:
+            message = brief(error)
+            if self._looks_like_session_rejection(message):
+                return self._session_probe_result("expired", message)
+            return self._session_probe_result(
+                "unavailable",
+                (
+                    f"心跳未确认：{heartbeat_issue}；角色状态兜底失败：{message}"
+                    if heartbeat_issue
+                    else message
+                ),
+            )
+        except Exception as error:
+            message = brief(error)
+            if self._looks_like_session_rejection(message):
+                return self._session_probe_result("expired", message)
+            return self._session_probe_result(
+                "unavailable",
+                (
+                    f"心跳未确认：{heartbeat_issue}；角色状态兜底失败：{message}"
+                    if heartbeat_issue
+                    else message
+                ),
+            )
+
+    def probe_account_session_json(
+        self,
+        account_ref: str,
+        full_state_refresh: bool = False,
+    ) -> str:
+        return self._json(
+            self.probe_account_session(account_ref, full_state_refresh)
+        )
+
+    @staticmethod
+    def _session_probe_result(
+        status: str,
+        reason: str,
+        updates: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        normalized = str(status or "unavailable").strip().lower()
+        if normalized not in {"valid", "expired", "unavailable"}:
+            normalized = "unavailable"
+        return {
+            "ok": normalized == "valid",
+            "status": normalized,
+            "reason": str(reason or "Session 探测未确认"),
+            "updates": {
+                str(key): str(value)
+                for key, value in dict(updates or {}).items()
+                if str(key).strip() and value is not None
+            },
+        }
+
+    @staticmethod
+    def _looks_like_session_rejection(message: str) -> bool:
+        lowered = str(message or "").lower()
+        return any(marker in lowered for marker in (
+            "0x8016",
+            "没有角色信息",
+            "沒有角色信息",
+            "会话失效",
+            "session invalid",
+            "game_command_session_missing",
+        ))
+
+    def _session_rejection_reason(
+        self,
+        fact: Dict[str, Any],
+        *,
+        request_opcode: int,
+    ) -> str:
+        packets = [
+            packet
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict)
+        ]
+        response_opcodes = {
+            int(packet.get("opcode") or 0) for packet in packets
+        }
+        if 0x8016 in response_opcodes and 0x8004 not in response_opcodes:
+            packet = next(
+                packet for packet in packets
+                if int(packet.get("opcode") or 0) == 0x8016
+            )
+            payload = packet.get("payload")
+            preview = printable(
+                bytes(payload) if isinstance(payload, (bytes, bytearray)) else b"",
+                160,
+            )
+            return (
+                "response-opcode-0x8016："
+                + (preview or "游戏服返回没有角色信息")
+            )
+        compact_payload = (
+            bytes(packets[0].get("payload") or b"") if packets else b""
+        )
+        if (
+            len(packets) == 1
+            and int(packets[0].get("opcode") or 0) == 0xFFFC
+            and compact_payload in {b"", b"\x00"}
+            and int(request_opcode) in {0x1003, 0x1004, 0x1016, 0x3110}
+        ):
+            return "captured-compact-0xfffc-login-heartbeat"
+        return ""
+
+    @staticmethod
+    def _probe_opcode_text(fact: Dict[str, Any]) -> str:
+        return ", ".join(
+            f"0x{int(packet.get('opcode') or 0):04x}"
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict) and packet.get("opcode") is not None
+        )
+
+    def _missing_probe_packet_message(
+        self,
+        prefix: str,
+        fact: Dict[str, Any],
+    ) -> str:
+        opcodes = self._probe_opcode_text(fact) or "无可解析响应包"
+        return f"{prefix}，实际={opcodes}"
+
+    @staticmethod
+    def _session_probe_state_updates(
+        role_state: Dict[str, Any],
+        generals: list[Dict[str, Any]],
+        army: list[Dict[str, Any]],
+        *,
+        state_hex: str,
+        state_tail_hex: str,
+        now_millis: int,
+    ) -> Dict[str, str]:
+        def text(key: str) -> str:
+            value = role_state.get(key)
+            return "" if value is None else str(value)
+
+        role_json = dict(role_state)
+        role_json.pop("parseError", None)
+        resource_json = {
+            key: role_state.get(key)
+            for key in (
+                "copper",
+                "food",
+                "prestige",
+                "copperPerHour",
+                "foodPerHour",
+                "populationCurrent",
+                "populationCap",
+                "resourcePointCurrent",
+                "resourcePointCap",
+            )
+        }
+        statuses = [
+            {
+                "generalId": general.get("id"),
+                "name": general.get("name"),
+                "status": general.get("status"),
+                "placeId": general.get("placeId"),
+            }
+            for general in generals
+            if isinstance(general, dict)
+        ]
+        compact = (",", ":")
+        return {
+            "roleId": text("roleId"),
+            "roleName": text("roleName"),
+            "level": text("level"),
+            "copper": text("copper"),
+            "food": text("food"),
+            "prestige": text("prestige"),
+            "populationCurrent": text("populationCurrent"),
+            "populationCap": text("populationCap"),
+            "resourcePointCurrent": text("resourcePointCurrent"),
+            "resourcePointCap": text("resourcePointCap"),
+            "officeFieldFlag": text("officeFieldFlag"),
+            "officeId": text("officeIdUnsigned"),
+            "officeIdRaw": text("officeIdRaw"),
+            "officeIdUnsigned": text("officeIdUnsigned"),
+            "officeName": text("officeName"),
+            "officialTitle": text("officeName"),
+            "state8004PayloadHex": str(state_hex),
+            "state8004TailHex": str(state_tail_hex),
+            "roleStateJson": json.dumps(
+                role_json, ensure_ascii=False, separators=compact
+            ),
+            "resourceStateJson": json.dumps(
+                resource_json, ensure_ascii=False, separators=compact
+            ),
+            "generalsJson": json.dumps(
+                generals, ensure_ascii=False, separators=compact
+            ),
+            "statusJson": json.dumps(
+                statuses, ensure_ascii=False, separators=compact
+            ),
+            "armyJson": json.dumps(
+                army, ensure_ascii=False, separators=compact
+            ),
+            "armySource": "shared-python/0x8004",
+            "armyRecordCount": str(len(army)),
+            "state8004GeneralRecordCount": str(len(generals)),
+            "generalsParserVersion": "shared-python-generals-v1",
+            "lastValidatedAt": str(int(now_millis)),
+        }
+
+    def _run_account_login_workflow(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+        execution: OperationExecutionContext,
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        # The game credential, rather than the role/area ID, is the true
+        # exclusivity boundary. Serializing only by accountRef lets two areas
+        # of the same platform account pass the duplicate check concurrently.
+        with self._account_identity_login_lock(account_ref):
+            with self._account_login_lock(account_ref):
+                return self._run_account_login_workflow_locked(
+                    body,
+                    context,
+                    execution,
+                )
+
+    def _run_account_login_workflow_locked(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+        execution: OperationExecutionContext,
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        mode = str(body.get("mode") or "start").strip().lower()
+        recovery_attempt = (
+            str(context.get("source") or "") == "shared-service-relogin"
+        )
+        if mode not in {"add", "start"}:
+            raise OperationKnownFailureError(
+                "账号登录模式无效",
+                code="ACCOUNT_LOGIN_MODE_INVALID",
+            )
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise OperationKnownFailureError(
+                "本地账号记录不存在",
+                code="ACCOUNT_RECORD_MISSING",
+            )
+        credential_port = self._ports.credentials
+        secret_port = self._ports.session_secrets
+        http_port = self._ports.raw_http
+        if credential_port is None or secret_port is None or http_port is None:
+            raise OperationKnownFailureError(
+                "当前宿主未提供完整登录端口",
+                code="ACCOUNT_LOGIN_PORT_MISSING",
+            )
+        password = credential_port.load_password(account_ref)
+        if not password:
+            raise OperationKnownFailureError(
+                "本地安全凭据仓中没有该账号密码",
+                code="ACCOUNT_CREDENTIAL_MISSING",
+            )
+        username = str(account.get("username") or "").strip()
+        server_query = str(
+            account.get("serverQuery")
+            or account.get("serverName")
+            or ""
+        ).strip()
+        platform_key = normalize_platform_key(
+            account.get("platformKey") or account.get("platform")
+        )
+        superseded_account_refs: list[str] = []
+        if mode == "start":
+            superseded_account_refs = (
+                self._reconcile_duplicate_account_start(
+                    account_ref=account_ref,
+                    username=username,
+                    platform_key=platform_key,
+                )
+            )
+        try:
+            snapshot = perform_shared_login(
+                http_port,
+                username=username,
+                password=password,
+                server_query=server_query,
+                platform=platform_key,
+                now_millis=self._ports.clock.now_millis,
+                before_first_request=lambda: execution.mark_request_sent({
+                    "path": f"/api/accounts/{mode}",
+                    "transport": "shared-raw-http-login",
+                }),
+                progress=execution.publish_progress,
+                on_area_catalog=self._schedule_cloud_directory_sync,
+            )
+            actual_ref = str(snapshot["accountRef"])
+            previous_session = account.get("session")
+            previous_session = (
+                dict(previous_session)
+                if isinstance(previous_session, dict)
+                else {}
+            )
+            if (
+                mode == "start"
+                and int(previous_session.get("sourceMode") or 0) == 1
+                and actual_ref != account_ref
+            ):
+                raise SharedLoginError(
+                    "自动重登返回了不同角色，已拒绝覆盖本地账号",
+                    code="ACCOUNT_ROLE_ID_MISMATCH",
+                )
+            final_record, runtime, session_secrets = self._shared_login_record(
+                account,
+                snapshot,
+                mode,
+            )
+            credential_port.save_password(actual_ref, password)
+            secret_port.save(actual_ref, session_secrets)
+            self._accounts.upsert(final_record)
+            self._ports.account_runtime.commit_login(
+                account_ref,
+                actual_ref,
+                runtime,
+                mode,
+            )
+            if mode == "start":
+                self._ports.account_runtime.start_hosting(actual_ref)
+            if actual_ref != account_ref:
+                self._accounts.delete(account_ref)
+                credential_port.delete(account_ref)
+                secret_port.delete(account_ref)
+            execution.publish_progress(95, {"phase": "account-login-committed"})
+            return {
+                "ok": True,
+                "accountRef": actual_ref,
+                "replacedAccountRef": (
+                    account_ref if actual_ref != account_ref else ""
+                ),
+                "status": "online" if mode == "start" else "stopped",
+                "mode": mode,
+                "message": (
+                    "真实登录成功，本地托管已启动"
+                    if mode == "start"
+                    else "真实登录和状态同步成功，账号保持未启动"
+                ),
+                "warnings": list(snapshot.get("warnings") or []) + (
+                    [
+                        "已停止同一平台账号的历史区服托管状态："
+                        + "、".join(superseded_account_refs)
+                    ]
+                    if superseded_account_refs
+                    else []
+                ),
+                "supersededAccountRefs": superseded_account_refs,
+            }
+        except OperationKnownFailureError:
+            raise
+        except SharedLoginError as error:
+            failed = dict(account)
+            failed["enabled"] = (
+                bool(account.get("enabled")) if recovery_attempt else False
+            )
+            failed["loginState"] = (
+                "REAL_PROTOCOL_STOPPED"
+                if mode == "add"
+                else (
+                    "REAL_PROTOCOL_NEED_RELOGIN"
+                    if recovery_attempt
+                    else "OFFLINE"
+                )
+            )
+            failed["lastError"] = str(error)
+            self._accounts.upsert(failed)
+            raise OperationKnownFailureError(
+                str(error),
+                code=error.code,
+            ) from error
+        except Exception as error:
+            failed = dict(account)
+            failed["enabled"] = (
+                bool(account.get("enabled")) if recovery_attempt else False
+            )
+            failed["loginState"] = (
+                "REAL_PROTOCOL_STOPPED"
+                if mode == "add"
+                else (
+                    "REAL_PROTOCOL_NEED_RELOGIN"
+                    if recovery_attempt
+                    else "OFFLINE"
+                )
+            )
+            failed["lastError"] = str(error)
+            self._accounts.upsert(failed)
+            # Login/bootstrap is retry-safe: even after passport/game login has
+            # been sent it cannot duplicate a gameplay mutation.
+            raise OperationKnownFailureError(
+                str(error) or error.__class__.__name__,
+                code="ACCOUNT_LOGIN_FAILED",
+            ) from error
+
+    def _account_login_lock(self, account_ref: str) -> threading.RLock:
+        with self._account_login_locks_guard:
+            lock = self._account_login_locks.get(str(account_ref))
+            if lock is None:
+                lock = threading.RLock()
+                self._account_login_locks[str(account_ref)] = lock
+            return lock
+
+    def _account_identity_login_lock(
+        self,
+        account_ref: str,
+    ) -> threading.RLock:
+        account = self._accounts.get(account_ref) or {}
+        username = str(account.get("username") or "").strip()
+        platform_key = normalize_platform_key(
+            account.get("platformKey") or account.get("platform")
+        )
+        identity = (
+            f"{platform_key}\x00{username}"
+            if username
+            else f"account-ref\x00{account_ref}"
+        )
+        with self._account_login_locks_guard:
+            lock = self._account_identity_login_locks.get(identity)
+            if lock is None:
+                lock = threading.RLock()
+                self._account_identity_login_locks[identity] = lock
+            return lock
+
+    def _reconcile_duplicate_account_start(
+        self,
+        *,
+        account_ref: str,
+        username: str,
+        platform_key: str,
+    ) -> list[str]:
+        """Keep real duplicate protection without trusting stale persistence.
+
+        ``enabled`` is durable user intent, not proof that a process currently
+        owns the account. A duplicate blocks only when the host confirms
+        ownership *and* the shared lifecycle confirms a usable real Session.
+        An enabled duplicate without that evidence is an orphaned/pending
+        intent. The explicit start deterministically supersedes it before the
+        first login request, so a subsequently started Android service cannot
+        recover both areas and cause the very top-login this gate prevents.
+
+        Hosts which cannot report runtime ownership return ``None`` and keep
+        the conservative legacy behaviour.
+        """
+
+        orphaned: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+        now_millis = int(self._ports.clock.now_millis())
+        for other in self._accounts.snapshot()["accounts"]:
+            other_ref = str(other.get("accountRef") or "")
+            if other_ref == account_ref or not bool(other.get("enabled")):
+                continue
+            if str(other.get("username") or "").strip() != username:
+                continue
+            if normalize_platform_key(
+                other.get("platformKey") or other.get("platform")
+            ) != platform_key:
+                continue
+
+            hosting = self._account_runtime_hosting_state(other_ref)
+            if hosting is None:
+                raise OperationKnownFailureError(
+                    "同一平台账号已有其他区服正在运行，已阻止互相顶号",
+                    code="ACCOUNT_DUPLICATE_RUNNING",
+                    details={"blockingAccountRef": other_ref},
+                )
+            session = other.get("session")
+            session = dict(session) if isinstance(session, dict) else {}
+            lifecycle = self._account_lifecycle.snapshot(
+                account_enabled=True,
+                execution_owner_active=hosting,
+                login_state=other.get("loginState"),
+                source_mode=int(session.get("sourceMode") or 0),
+                force_validation=False,
+                last_validated_at_millis=None,
+                now_millis=now_millis,
+            )
+            if bool(lifecycle["mayUseLiveSession"]):
+                raise OperationKnownFailureError(
+                    "同一平台账号已有其他区服正在运行，已阻止互相顶号",
+                    code="ACCOUNT_DUPLICATE_RUNNING",
+                    details={"blockingAccountRef": other_ref},
+                )
+
+            orphaned.append((other_ref, dict(other), session))
+
+        # Check every matching account before changing any record. This keeps
+        # the reconciliation atomic from the user's perspective when a third,
+        # genuinely live area is also present.
+        superseded: list[str] = []
+        for other_ref, other, session in orphaned:
+            stopped = dict(other)
+            stopped["enabled"] = False
+            stopped["loginState"] = "REAL_PROTOCOL_STOPPED"
+            stopped["lastError"] = ""
+            if session:
+                public_state = session.get("publicState")
+                public_state = (
+                    dict(public_state)
+                    if isinstance(public_state, dict)
+                    else {}
+                )
+                public_state["savedTasksStarted"] = "false"
+                public_state["activeResidentTaskKeys"] = ""
+                session["publicState"] = public_state
+                stopped["session"] = session
+            self._accounts.upsert(stopped)
+            superseded.append(other_ref)
+            self._ports.logs.write({
+                "event": "account.duplicate-orphan-superseded",
+                "accountRef": other_ref,
+                "replacementAccountRef": account_ref,
+                "message": (
+                    f"历史区服账号 {other_ref} 没有实时托管与可用 "
+                    f"Session 证据，已由显式启动的账号 {account_ref} 取代"
+                ),
+            })
+        return superseded
+
+    def _account_runtime_hosting_state(
+        self,
+        account_ref: str,
+    ) -> Optional[bool]:
+        checker = getattr(self._ports.account_runtime, "is_hosting", None)
+        if not callable(checker):
+            return None
+        try:
+            observed = checker(str(account_ref))
+        except Exception as error:
+            self._ports.logs.write({
+                "event": "account.runtime-hosting-check-failed",
+                "accountRef": str(account_ref),
+                "message": f"账号实时托管状态查询失败：{error}",
+            })
+            return None
+        return None if observed is None else bool(observed)
+
+    def _shared_login_record(
+        self,
+        previous: Dict[str, Any],
+        snapshot: Dict[str, Any],
+        mode: str,
+    ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, str]]:
+        role = dict(snapshot["selectedRole"])
+        state = dict(snapshot["roleState"])
+        area = dict(snapshot["area"])
+        account_ref = str(snapshot["accountRef"])
+        previous_session = previous.get("session")
+        previous_session = (
+            dict(previous_session)
+            if isinstance(previous_session, dict)
+            else {}
+        )
+        previous_public = previous_session.get("publicState")
+        previous_public = (
+            dict(previous_public)
+            if isinstance(previous_public, dict)
+            else {}
+        )
+        inventory = dict(snapshot.get("inventory") or {})
+        inventory_rows = [dict(item) for item in inventory.get("items") or []]
+        for equipment in inventory.get("equipment") or []:
+            item = dict(equipment)
+            item.setdefault("id", item.get("instanceId"))
+            item.setdefault("itemId", item.get("instanceId"))
+            item.setdefault("count", 1)
+            item.setdefault("type", "equipment")
+            inventory_rows.append(item)
+        public_state: Dict[str, Any] = {
+            "serverUrl": str(area.get("serverUrl") or ""),
+            "serverKey": str(area.get("serverKey") or ""),
+            "gameHttp": str(snapshot.get("gameHttp") or ""),
+            "roleId": account_ref,
+            "roleName": str(state.get("roleName") or role.get("roleName") or ""),
+            "level": str(state.get("level") or role.get("level") or 0),
+            "nation": str(role.get("country") or ""),
+            "title": str(role.get("title") or ""),
+            "copper": str(state.get("copper") or 0),
+            "food": str(state.get("food") or 0),
+            "prestige": str(state.get("prestige") or 0),
+            "copperPerHour": str(state.get("copperPerHour") or 0),
+            "foodPerHour": str(state.get("foodPerHour") or 0),
+            "populationCurrent": str(state.get("populationCurrent") or 0),
+            "populationCap": str(state.get("populationCap") or 0),
+            "fiefLimit": str(state.get("fiefLimit") or 0),
+            "generalLimit": str(state.get("generalLimit") or 0),
+            "resourcePointCurrent": str(state.get("resourcePointCurrent") or 0),
+            "resourcePointCap": str(state.get("resourcePointCap") or 0),
+            "officeFieldFlag": str(state.get("officeFieldFlag") or ""),
+            "officeId": str(state.get("officeIdUnsigned") or ""),
+            "officeIdRaw": str(state.get("officeIdRaw") or ""),
+            "officeIdUnsigned": str(state.get("officeIdUnsigned") or ""),
+            "officeName": str(state.get("officeName") or ""),
+            "officialTitle": str(state.get("officeName") or ""),
+            "state8004PayloadHex": str(snapshot.get("state8004PayloadHex") or ""),
+            "state8004TailHex": str(state.get("tailHex") or ""),
+            "roleStateJson": self._json(state),
+            "resourceStateJson": self._json({
+                key: state.get(key)
+                for key in (
+                    "copper", "food", "prestige", "copperPerHour",
+                    "foodPerHour", "populationCurrent", "populationCap",
+                    "resourcePointCurrent", "resourcePointCap",
+                )
+            }),
+            "generalsJson": self._json(snapshot.get("generals") or []),
+            "armyJson": self._json(snapshot.get("army") or []),
+            "armySource": "shared-login/0x8004",
+            "inventoryJson": self._json(inventory_rows),
+            "inventoryCapacity": str(inventory.get("capacity") or 0),
+            "inventorySourceOpcode": str(inventory.get("sourceOpcode") or ""),
+            "dailyActivityJson": self._json(snapshot.get("dailyActivity") or {}),
+            "ownedFiefLocationsJson": self._json(snapshot.get("ownedFiefs") or []),
+            "lastValidatedAt": str(snapshot.get("syncedAtMillis") or 0),
+            "liveStateRefreshEnabled": "true",
+            "realActionNetworkAllowed": "true",
+            "realActionSendReady": "true",
+            "realActionScopes": (
+                "brush-yellow,mine,daily,inventory,general-maintenance,"
+                "dungeon,lossless,raid,resource-conversion,internal-affairs,"
+                "ministry-plant"
+            ),
+            "inventoryLiveRefreshAllowed": "true",
+            "militaryIntelLiveGate": "true",
+            "unifiedExpeditionPreflight": "true",
+            "savedTasksStarted": str(
+                previous_public.get("savedTasksStarted") or "false"
+            ).lower(),
+            "activeResidentTaskKeys": str(
+                previous_public.get("activeResidentTaskKeys") or ""
+            ),
+        }
+        # Everything this login recomputed is already in ``public_state``;
+        # every other key is a conclusion the previous session reached.
+        #
+        # This used to be a whitelist of keys to carry over, and the direction
+        # was wrong: a durable conclusion had to be *remembered* to survive,
+        # and forgetting one is silent.  ``generalEnergyCooldownJson`` was
+        # forgotten - the "this general cannot march and the vault has no
+        # 活血丹, pause its formation for 30 minutes" verdict - so every
+        # reconnect released the pause, every released formation immediately
+        # hit the same shortage, and the pause was written again.  On a phone
+        # whose Wi-Fi cycles nightly that is a loop, not an edge case.
+        # ``brushLastRecoveryJson`` was forgotten too, and local_views reads it
+        # to recover the last 刷黄 record after a restart.
+        #
+        # Carrying everything over and letting this login's own values win is
+        # the safe direction: a stale cache is corrected by the next refresh,
+        # while a discarded conclusion is simply gone.
+        public_state = {**previous_public, **public_state}
+        record = {
+            **{
+                key: value
+                for key, value in previous.items()
+                if key not in {"accountRef", "id", "session"}
+            },
+            "accountRef": account_ref,
+            "id": int(account_ref),
+            "username": str(snapshot.get("username") or ""),
+            "displayName": str(state.get("roleName") or role.get("roleName") or ""),
+            "serverName": str(area.get("areaName") or ""),
+            "serverQuery": str(area.get("areaName") or ""),
+            "serverId": str(area.get("serverKey") or ""),
+            "platform": str(snapshot.get("platform") or ""),
+            "platformKey": str(snapshot.get("platformKey") or ""),
+            "gameVersion": (
+                "TENCENT_CLASSIC"
+                if str(snapshot.get("platformKey") or "") == "sglm"
+                else "OTHER"
+            ),
+            "channel": (
+                "QQ"
+                if str(snapshot.get("platformKey") or "") == "sglm"
+                else "DANGLE"
+            ),
+            "session": {
+                "accountId": int(account_ref),
+                "expiresAtMillis": None,
+                "publicState": public_state,
+                "sourceMode": 1,
+            },
+            "enabled": mode == "start",
+            "monarchName": str(state.get("roleName") or ""),
+            "nation": str(role.get("country") or ""),
+            "loginState": "ONLINE" if mode == "start" else "REAL_PROTOCOL_STOPPED",
+            "localOnly": False,
+            "gameAuthSignEvidence": "empty-signature-verified",
+            "lastError": "",
+        }
+        session_secrets = {
+            "dm": str(snapshot.get("dm") or ""),
+            "userId": str(snapshot.get("userId") or ""),
+            "accountWithSuffix": str(snapshot.get("accountWithSuffix") or ""),
+        }
+        runtime = {
+            "accountRef": account_ref,
+            "username": record["username"],
+            "platform": record["platform"],
+            "platformKey": record["platformKey"],
+            "gameHttp": public_state["gameHttp"],
+            "dm": int(snapshot.get("dm") or 0),
+            "userId": str(snapshot.get("userId") or ""),
+            "role": role,
+            "roleState": state,
+            "inventory": inventory,
+            "area": area,
+            "state8004PayloadHex": str(snapshot.get("state8004PayloadHex") or ""),
+            "generals": list(snapshot.get("generals") or []),
+            "army": list(snapshot.get("army") or []),
+            "dailyActivity": dict(snapshot.get("dailyActivity") or {}),
+            "ownedFiefs": list(snapshot.get("ownedFiefs") or []),
+            "createdAt": int(snapshot.get("syncedAtMillis") or 0),
+            "lastTargets": [],
+        }
+        return record, runtime, session_secrets
+
+    @staticmethod
+    def _draft_account_ref(
+        platform_key: str,
+        username: str,
+        server_query: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            f"{platform_key}\0{username}\0{server_query}".encode("utf-8")
+        ).digest()
+        # Android repositories and account gates use a positive signed Long.
+        value = int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
+        return str(value or 1)
+
+    def formation_apply_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Revalidate and minimize the durable payload for actual formation I/O."""
+
+        if str(body.get("confirm") or "") != "apply-formations":
+            raise ValueError("实际配兵需要 confirm=apply-formations")
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("实际配兵缺少账号")
+        plan = settings_write_plan(
+            "/api/formations/save",
+            {
+                "formations": body.get("formations"),
+                "formationOptions": body.get("formationOptions") or {},
+                "knownGenerals": body.get("knownGenerals") or [],
+            },
+        )
+        if not bool(plan.get("activationAllowed")):
+            reason = str(
+                (plan.get("response") or {}).get("applyReason")
+                or "当前配兵规则不可执行"
+            )
+            raise ValueError(reason)
+        response = dict(plan.get("response") or {})
+        options = dict(response.get("formationOptions") or {})
+        if bool(options.get("clearOtherGenerals")):
+            raise ValueError("一键清理其他将领必须使用独立确认操作")
+        return {
+            "accountRef": account_ref,
+            "confirm": "apply-formations",
+            "formations": list(response.get("normalizedFormations") or []),
+            "formationOptions": options,
+        }
+
+    def state_refresh_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Own scope normalization and persist only the requested refresh facts."""
+
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("状态刷新缺少账号")
+        scope = str(body.get("scope") or "all").strip().lower() or "all"
+        refresh_parts = STATE_REFRESH_PARTS_BY_SCOPE.get(scope)
+        if refresh_parts is None:
+            supported = "、".join(STATE_REFRESH_PARTS_BY_SCOPE)
+            raise ValueError(f"状态刷新 scope 无效：{scope}；可用值：{supported}")
+        return {
+            "accountRef": account_ref,
+            "scope": scope,
+            "refreshParts": list(refresh_parts),
+        }
+
+    def heartbeat_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("心跳检查缺少账号")
+        return {"accountRef": account_ref}
+
+    def heartbeat_operation_result(
+        self,
+        host_response: Dict[str, Any],
+        _request: Dict[str, Any],
+        _context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        fact = host_response.get("heartbeatFact")
+        if not isinstance(fact, dict) or not isinstance(fact.get("valid"), bool):
+            raise ValueError("心跳适配器未返回有效事实")
+        valid = bool(fact["valid"])
+        reason = str(fact.get("reason") or "").strip()
+        try:
+            checked_at = int(fact.get("checkedAtMillis") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("心跳适配器时间无效") from error
+        if checked_at <= 0:
+            raise ValueError("心跳适配器未返回检查时间")
+        return {
+            "ok": True,
+            "online": valid,
+            "message": reason or ("真实 Session 有效" if valid else "真实 Session 无效"),
+            "checkedAt": checked_at,
+        }
+
+    def military_intel_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("军情刷新缺少账号")
+        return {"accountRef": account_ref}
+
+    def _run_heartbeat_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run the one 0x3110 heartbeat parser used by both hosts."""
+
+        account_ref = str(body["accountRef"])
+        execution.publish_progress(20, {"phase": "waiting-for-game-server"})
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x3110,
+            b"\x01\x00",
+            "shared-core/heartbeat",
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            mutation_sent=False,
+        )
+        checked_at = int(self._ports.clock.now_millis())
+        rejection = self._session_rejection_reason(
+            fact,
+            request_opcode=0x3110,
+        )
+        payload = self._game_packet(fact, 0xA110)
+        if rejection or payload is None:
+            reason = rejection or self._missing_probe_packet_message(
+                "0x3110 未返回 0xa110",
+                fact,
+            )
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "lastOfflineAt": str(checked_at),
+                    "lastOfflineReason": reason,
+                },
+            )
+            return {
+                "ok": True,
+                "online": False,
+                "message": reason,
+                "checkedAt": checked_at,
+            }
+
+        public_state = self._account_public_state(account_ref)
+        generals = self._public_json_list(
+            public_state.get("generalsJson")
+        )
+        military_intel = parse_military_intel_from_a110(
+            payload,
+            generals,
+            updated_at=checked_at,
+        )
+        updates: Dict[str, Any] = {
+            "lastValidatedAt": str(checked_at),
+            "lastHeartbeatAt": str(checked_at),
+            "lastOfflineReason": "",
+            "militaryIntelJson": self._json(military_intel),
+            "militaryIntelOpcodes": self._probe_opcode_text(fact),
+            "militaryIntelPayloadHex": payload.hex(),
+        }
+        status_records = list(
+            military_intel.get("generalStatusRecords") or []
+        )
+        if status_records:
+            updates["generalsJson"] = self._json(
+                self._merge_general_evidence(
+                    generals,
+                    status_records,
+                    checked_at,
+                )
+            )
+        self._update_account_public_state(account_ref, updates)
+        self._schedule_cloud_presence_heartbeat(account_ref)
+        execution.publish_progress(90, {"phase": "persisting-result"})
+        return {
+            "ok": True,
+            "online": True,
+            "message": "在线",
+            "checkedAt": checked_at,
+            "militaryIntel": military_intel,
+        }
+
+    def _run_military_intel_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        execution.publish_progress(20, {"phase": "waiting-for-game-server"})
+        snapshot = self._refresh_military_snapshot_game(
+            account_ref,
+            execution,
+            context,
+            phase="shared-core/military/intel",
+        )
+        result = self._project_account_public_state(account_ref)
+        result["result"] = {
+            "success": True,
+            "message": "军情快照刷新完成",
+            "raw": {"actionCount": int(snapshot.get("actionCount") or 0)},
+        }
+        execution.publish_progress(90, {"phase": "persisting-result"})
+        return result
+
+    def _run_state_refresh_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Refresh selected state with Python packets, parsers and persistence."""
+
+        account_ref = str(body["accountRef"])
+        refresh_parts = {
+            str(value)
+            for value in body.get("refreshParts") or []
+            if str(value)
+        }
+        if not refresh_parts:
+            raise OperationKnownFailureError(
+                "共享核心未生成状态刷新项",
+                code="STATE_REFRESH_PARTS_MISSING",
+            )
+        public_state = self._account_public_state(account_ref)
+        state_payload: bytes | None = None
+        if refresh_parts & {"role", "resources", "generals", "formations"}:
+            execution.raise_if_cancelled()
+            execution.publish_progress(15, {"phase": "refreshing-role-state"})
+            role_id = positive_game_id(
+                public_state.get("roleId")
+                or self._account_session_account_id(account_ref),
+                "角色 ID",
+            )
+            fact = self._execute_host_game_command(
+                account_ref,
+                0x1016,
+                struct.pack(">q", role_id),
+                "shared-core/state/role",
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                mutation_sent=False,
+            )
+            rejection = self._session_rejection_reason(
+                fact,
+                request_opcode=0x1016,
+            )
+            if rejection:
+                raise OperationKnownFailureError(
+                    rejection,
+                    code="STATE_REFRESH_SESSION_REJECTED",
+                )
+            payload = self._game_packet(fact, 0x8004)
+            if payload is None:
+                raise OperationKnownFailureError(
+                    "状态刷新未收到 0x8004 回执",
+                    code="STATE_REFRESH_RESPONSE_MISSING",
+                )
+            state_payload = payload
+            role_state = parse_8004_head(
+                payload,
+                "shared-core/state/0x1016/0x8004",
+            )
+            parse_error = str(role_state.get("parseError") or "").strip()
+            if parse_error:
+                raise OperationKnownFailureError(
+                    f"0x8004 角色状态解析失败：{parse_error}",
+                    code="STATE_REFRESH_RESPONSE_INVALID",
+                )
+            state_hex = payload.hex()
+            generals = recover_generals_from_8004(state_hex)
+            army = parse_idle_army_from_8004(state_hex, generals)
+            role_state["idleArmy"] = army
+            parsed_head = max(
+                0,
+                min(
+                    len(payload),
+                    int(role_state.get("parsedHeadByteCount") or 0),
+                ),
+            )
+            self._update_account_public_state(
+                account_ref,
+                self._session_probe_state_updates(
+                    role_state,
+                    generals,
+                    army,
+                    state_hex=state_hex,
+                    state_tail_hex=payload[parsed_head:].hex(),
+                    now_millis=int(self._ports.clock.now_millis()),
+                ),
+            )
+            public_state = self._account_public_state(account_ref)
+
+        if "role-queues" in refresh_parts:
+            execution.raise_if_cancelled()
+            execution.publish_progress(42, {"phase": "refreshing-role-queues"})
+            if state_payload is None:
+                raise OperationKnownFailureError(
+                    "角色队列刷新缺少本轮 0x8004 状态快照",
+                    code="ROLE_QUEUE_STATE_MISSING",
+                )
+            try:
+                technologies = parse_technology_states_from_8004(
+                    state_payload
+                )
+            except Exception as error:
+                raise OperationKnownFailureError(
+                    f"角色队列科技状态解析失败：{error}",
+                    code="ROLE_QUEUE_TECHNOLOGY_STATE_INVALID",
+                ) from error
+
+            role_name = str(
+                (self._public_json_object(
+                    public_state.get("roleStateJson")
+                )).get("roleName")
+                or public_state.get("roleName")
+                or ""
+            ).strip()
+            if not role_name:
+                raise OperationKnownFailureError(
+                    "角色队列刷新缺少当前角色名，无法读取本人全部封地",
+                    code="ROLE_QUEUE_ROLE_NAME_MISSING",
+                )
+            fief_list = self._run_raid_fiefs_game_workflow(
+                execution,
+                {"accountRef": account_ref, "playerName": role_name},
+                {**context, "readOnly": True},
+            )
+            fief_ids: list[int] = []
+            for row in fief_list.get("fiefs") or []:
+                try:
+                    fief_id = int((row or {}).get("targetId") or 0)
+                except (AttributeError, TypeError, ValueError):
+                    fief_id = 0
+                if fief_id > 0 and fief_id not in fief_ids:
+                    fief_ids.append(fief_id)
+            if not fief_ids:
+                raise OperationKnownFailureError(
+                    "角色队列刷新未读取到本人封地",
+                    code="ROLE_QUEUE_FIEFS_MISSING",
+                )
+            fief_states: list[Dict[str, Any]] = []
+            for fief_id in fief_ids:
+                execution.raise_if_cancelled()
+                fact = self._execute_host_game_command(
+                    account_ref,
+                    0x1246,
+                    build_fief_query_payload(fief_id),
+                    f"shared-core/state/role-queues/{fief_id}",
+                    {
+                        **context,
+                        "operationId": execution.operation_id,
+                        "readOnly": True,
+                    },
+                    mutation_sent=False,
+                )
+                payload = self._game_packet(fact, 0x8246)
+                if payload is None:
+                    raise OperationKnownFailureError(
+                        f"角色队列读取封地 {fief_id} 未收到 0x8246 回执",
+                        code="ROLE_QUEUE_FIEF_RESPONSE_MISSING",
+                    )
+                try:
+                    fief_states.append(
+                        parse_8246_fief_result(payload, fief_id)
+                    )
+                except Exception as error:
+                    raise OperationKnownFailureError(
+                        f"角色队列解析封地 {fief_id} 失败：{error}",
+                        code="ROLE_QUEUE_FIEF_STATE_INVALID",
+                    ) from error
+            queue_summary = summarize_role_queues(
+                fief_states,
+                technologies,
+                updated_at=int(self._ports.clock.now_millis()),
+            )
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "technologyStatesJson": self._json(technologies),
+                    "roleQueueSummaryJson": self._json(queue_summary),
+                },
+            )
+
+        if "inventory" in refresh_parts:
+            execution.raise_if_cancelled()
+            execution.publish_progress(45, {"phase": "refreshing-inventory"})
+            inventory = self._fresh_inventory_state(
+                account_ref,
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                phase="shared-core/state/inventory",
+            )
+            self._update_account_public_state(
+                account_ref,
+                self._inventory_public_state_updates(inventory),
+            )
+
+        if "military" in refresh_parts:
+            execution.raise_if_cancelled()
+            execution.publish_progress(70, {"phase": "refreshing-military"})
+            self._refresh_military_snapshot_game(
+                account_ref,
+                execution,
+                context,
+                phase="shared-core/state/military",
+            )
+
+        execution.publish_progress(90, {"phase": "persisting-result"})
+        return self._project_account_public_state(account_ref)
+
+    def general_visit_candidates_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("名将拜访候选查询缺少账号")
+        return {"accountRef": account_ref}
+
+    def general_visit_candidates_operation_result(
+        self,
+        host_response: Dict[str, Any],
+        _request: Dict[str, Any],
+        _context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compatibility projection for non-Android hosts without raw commands."""
+        fact = host_response.get("visitCandidatesFact")
+        if not isinstance(fact, dict):
+            raise ValueError("名将拜访适配器未返回候选事实")
+        raw_candidates = fact.get("candidates")
+        if not isinstance(raw_candidates, list):
+            raise ValueError("名将候选事实必须是数组")
+        candidates = []
+        for index, raw in enumerate(raw_candidates):
+            if not isinstance(raw, dict):
+                raise ValueError(f"第 {index + 1} 个名将候选事实不是对象")
+            try:
+                candidate_id = int(raw.get("id") or 0)
+                level = int(raw.get("level") or 0)
+                captive_state = int(raw.get("captiveState") or 0)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"第 {index + 1} 个名将候选数值无效") from error
+            if candidate_id <= 0:
+                raise ValueError(f"第 {index + 1} 个名将候选缺少有效 ID")
+            raw_detail = raw.get("raw")
+            candidates.append({
+                "id": candidate_id,
+                "name": str(raw.get("name") or candidate_id),
+                "level": level,
+                "fiefName": str(raw.get("fiefName") or ""),
+                "cityName": str(raw.get("cityName") or ""),
+                "captiveState": captive_state,
+                "ownerName": str(raw.get("ownerName") or ""),
+                "loyalty": raw.get("loyalty"),
+                "growth": raw.get("growth"),
+                "available": captive_state == 0,
+                "raw": dict(raw_detail) if isinstance(raw_detail, dict) else {},
+            })
+        try:
+            updated_at = int(fact.get("checkedAtMillis") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("名将候选检查时间无效") from error
+        if updated_at <= 0:
+            raise ValueError("名将候选缺少检查时间")
+        return {
+            "ok": True,
+            "generals": candidates,
+            "candidates": candidates,
+            "completed": bool(fact.get("completed")),
+            "alreadyVisited": bool(fact.get("alreadyVisited")),
+            "noTarget": bool(fact.get("noTarget")),
+            "skipped": bool(fact.get("skipped")),
+            "skipReason": str(fact.get("skipReason") or ""),
+            "statusText": str(fact.get("statusText") or ""),
+            "message": str(fact.get("message") or ""),
+            "updatedAt": updated_at,
+        }
+
+    def raid_fiefs_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("掠夺封地查询缺少账号")
+        player_name = str(body.get("playerName") or "").strip()
+        if not player_name:
+            raise ValueError("请填写要掠夺的玩家名称")
+        if len(player_name) > 80:
+            raise ValueError("掠夺目标玩家名称过长")
+        return {"accountRef": account_ref, "playerName": player_name}
+
+    def raid_fiefs_operation_result(
+        self,
+        host_response: Dict[str, Any],
+        request: Dict[str, Any],
+        _context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        fact = host_response.get("raidFiefsFact")
+        if not isinstance(fact, dict) or not isinstance(fact.get("fiefs"), list):
+            raise ValueError("掠夺封地适配器未返回列表事实")
+        rows = []
+        for index, raw in enumerate(fact["fiefs"]):
+            if not isinstance(raw, dict):
+                raise ValueError(f"第 {index + 1} 条掠夺封地事实不是对象")
+            try:
+                target_id = int(raw.get("targetId") or 0)
+                row_index = int(raw.get("index") or index + 1)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"第 {index + 1} 条掠夺封地数值无效") from error
+            if target_id <= 0:
+                raise ValueError(f"第 {index + 1} 条掠夺封地缺少有效 ID")
+            name = str(raw.get("name") or raw.get("fiefName") or "").strip()
+            rows.append({
+                "index": row_index,
+                "targetId": target_id,
+                "cityName": str(raw.get("cityName") or ""),
+                "name": name,
+                "fiefName": name,
+                "serialByte": raw.get("serialByte"),
+                "mapFlag": raw.get("mapFlag"),
+                "x": raw.get("x"),
+                "y": raw.get("y"),
+            })
+        try:
+            updated_at = int(fact.get("checkedAtMillis") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("掠夺封地查询时间无效") from error
+        if updated_at <= 0:
+            raise ValueError("掠夺封地查询缺少检查时间")
+        player_name = str(request.get("playerName") or "").strip()
+        return {
+            "ok": True,
+            "fiefs": rows,
+            "rows": rows,
+            "playerName": player_name,
+            "queriedPlayerName": player_name,
+            "updatedAt": updated_at,
+        }
+
+    def _run_raid_fiefs_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        player_name = str(body["playerName"])
+        contract = self._behavior_contract["raid"]
+        request_opcode = self._contract_opcode(contract, "fiefQueryOpcode")
+        response_opcode = self._contract_opcode(
+            contract, "fiefQueryResponseOpcode"
+        )
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            build_raid_fief_list_payload(player_name),
+            f"shared-core/raid/fiefs/{player_name}",
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            mutation_sent=False,
+        )
+        payload = self._game_packet(fact, response_opcode)
+        if payload is None:
+            raise OperationKnownFailureError(
+                f"查询掠夺目标封地未收到 0x{response_opcode:04x} 回执",
+                code="RAID_FIEFS_RESPONSE_MISSING",
+            )
+        parsed = parse_raid_fief_list(payload)
+        if parsed.get("parseError"):
+            raise OperationKnownFailureError(
+                f"掠夺目标封地解析失败：{parsed['parseError']}",
+                code="RAID_FIEFS_RESPONSE_INVALID",
+            )
+        result = self.raid_fiefs_operation_result(
+            {
+                "raidFiefsFact": {
+                    "fiefs": list(parsed.get("fiefs") or []),
+                    "checkedAtMillis": int(self._ports.clock.now_millis()),
+                }
+            },
+            body,
+            context,
+        )
+        result["ownedFiefCacheUpdated"] = self._remember_owned_fiefs_if_self(
+            account_ref,
+            player_name,
+            result.get("fiefs") or [],
+        )
+        return result
+
+    def _remember_owned_fiefs_if_self(
+        self,
+        account_ref: str,
+        player_name: str,
+        fiefs: list[Dict[str, Any]],
+    ) -> bool:
+        """Persist only a self-query; enemy raid lookups must never poison the cache."""
+
+        public_state = self._account_public_state(account_ref)
+        role_state = self._public_json_object(public_state.get("roleStateJson"))
+        own_name = str(
+            public_state.get("roleName") or role_state.get("roleName") or ""
+        ).strip()
+        if not own_name or own_name.casefold() != str(player_name).strip().casefold():
+            return False
+        normalized = list(self._owned_fief_location_map(fiefs).values())
+        self._update_account_public_state(
+            account_ref,
+            {"ownedFiefLocationsJson": self._json(normalized)},
+        )
+        return True
+
+    def unassign_all_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("一键卸兵缺少账号")
+        if str(body.get("confirm") or "") != "unassign-all-troops":
+            raise ValueError("一键卸兵需要 confirm=unassign-all-troops")
+        return {
+            "accountRef": account_ref,
+            "confirm": "unassign-all-troops",
+        }
+
+    def brush_search_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("找黄缺少账号")
+        world = self._behavior_contract["mapSearch"]["world"]
+
+        def coordinate(name: str, nested: str) -> int:
+            raw = body.get(name)
+            if raw in (None, "") and isinstance(body.get("start"), dict):
+                raw = body["start"].get(nested)
+            try:
+                value = int(raw or 0)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"找黄{name}坐标无效") from error
+            minimum = int(world[f"{nested}Min"])
+            maximum = int(world[f"{nested}Max"])
+            if not minimum <= value <= maximum:
+                raise ValueError(
+                    f"找黄{nested.upper()}坐标必须在 {minimum}..{maximum} 之间"
+                )
+            return value
+
+        raw_kind = str(body.get("targetKind") or "山贼").strip()
+        target_kind = "黄巾" if "黄巾" in raw_kind or "黃巾" in raw_kind else "山贼"
+        levels = normalize_brush_levels(body.get("levels"), body.get("level"))
+        drops = normalize_drop_keywords(body.get("drop"), body.get("drops"))
+        raw_filter = body.get("compositionFilter")
+        raw_filter = raw_filter if isinstance(raw_filter, dict) else body
+        composition_filter: Dict[str, Any] = {}
+        for key in ("maxFoot", "maxBow", "maxCavalry", "maxChariot"):
+            if key not in raw_filter or raw_filter.get(key) in (None, ""):
+                continue
+            try:
+                value = int(raw_filter[key])
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"找黄兵种上限 {key} 无效") from error
+            if not 0 <= value <= 9:
+                raise ValueError(f"找黄兵种上限 {key} 必须在 0..9 之间")
+            composition_filter[key] = value
+        if "requireFoot" in raw_filter:
+            composition_filter["requireFoot"] = bool(raw_filter.get("requireFoot"))
+        search_contract = self._behavior_contract["mapSearch"]
+        try:
+            scan_limit = int(
+                body.get("scanLimit")
+                or search_contract["nearbyRequestLimit"]
+            )
+            max_distance = int(body.get("maxDistance") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("找黄扫描数量或距离无效") from error
+        scan_limit = max(
+            1,
+            min(scan_limit, int(search_contract["fullRequestLimit"])),
+        )
+        if max_distance < 0:
+            raise ValueError("找黄最大距离不能小于 0")
+        return {
+            "accountRef": account_ref,
+            "startX": coordinate("startX", "x"),
+            "startY": coordinate("startY", "y"),
+            "targetKind": target_kind,
+            "levels": levels,
+            "drops": drops,
+            "compositionFilter": composition_filter,
+            "maxDistance": max_distance,
+            "scanLimit": scan_limit,
+        }
+
+    def _run_brush_search_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        start_x = int(body["startX"])
+        start_y = int(body["startY"])
+        all_coordinates = brush_scan_coordinates(
+            start_x,
+            start_y,
+            int(body["scanLimit"]),
+        )
+        try:
+            scan_offset = int(body.get("scanOffset") or 0)
+        except (TypeError, ValueError):
+            scan_offset = 0
+        if not 0 <= scan_offset < len(all_coordinates):
+            scan_offset = 0
+        raw_batch_size = body.get("scanBatchSize")
+        if raw_batch_size in (None, ""):
+            scan_batch_size = len(all_coordinates) - scan_offset
+        else:
+            try:
+                scan_batch_size = int(raw_batch_size)
+            except (TypeError, ValueError):
+                scan_batch_size = len(all_coordinates) - scan_offset
+        scan_batch_size = max(
+            1,
+            min(scan_batch_size, len(all_coordinates) - scan_offset),
+        )
+        coordinates = all_coordinates[
+            scan_offset:scan_offset + scan_batch_size
+        ]
+        raw_override = body.get("_scanCoordinatesOverride")
+        if isinstance(raw_override, list):
+            allowed = set(coordinates)
+            override: list[tuple[int, int]] = []
+            for value in raw_override:
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                coordinate = (int(value[0]), int(value[1]))
+                if coordinate in allowed and coordinate not in override:
+                    override.append(coordinate)
+            coordinates = override
+        stop_on_first_match = body.get("stopOnFirstMatch") is True
+        include_observation_targets = (
+            body.get("includeScanObservationTargets") is True
+        )
+        contract = self._behavior_contract["mapSearch"]
+        opcode = self._contract_opcode(contract, "banditRequestOpcode")
+        expected_opcode = self._contract_opcode(
+            contract,
+            "banditResponseOpcode",
+        )
+        transport_context = {
+            "readTimeoutMillis": int(
+                contract["readOnlyRequestTimeoutMillis"]
+            ),
+            "transportMaxAttempts": int(
+                contract["readOnlyTransportMaxAttempts"]
+            ),
+            "transportPaceJitterMillis": int(
+                contract["interRequestJitterMillis"]
+            ),
+            "transportRetryBaseDelayMillis": int(
+                contract["readOnlyRetryBaseDelayMillis"]
+            ),
+            "transportRetryJitterMillis": int(
+                contract["readOnlyRetryJitterMillis"]
+            ),
+        }
+        discovered = []
+        scan_results: list[Dict[str, Any]] = []
+
+        def matches(target: Dict[str, Any]) -> bool:
+            return (
+                target_matches_search_filter(
+                    target,
+                    str(body["targetKind"]),
+                    body.get("levels") or [],
+                    list(body.get("drops") or []),
+                    dict(body.get("compositionFilter") or {}),
+                )
+                and (
+                    int(body.get("maxDistance") or 0) <= 0
+                    or abs(int(target.get("x") or 0) - start_x)
+                    + abs(int(target.get("y") or 0) - start_y)
+                    <= int(body["maxDistance"])
+                )
+            )
+
+        overall_indexes = {
+            coordinate: index + 1
+            for index, coordinate in enumerate(all_coordinates)
+        }
+        total = max(1, len(coordinates))
+        for index, (x, y) in enumerate(coordinates):
+            execution.raise_if_cancelled()
+            execution.publish_progress(
+                5 + int(index * 80 / total),
+                {
+                    "phase": "scanning-bandit-map",
+                    "requestIndex": index + 1,
+                    "requestCount": len(coordinates),
+                    "scanOffset": scan_offset,
+                    "overallRequestIndex": int(
+                        overall_indexes.get((x, y), scan_offset + index + 1)
+                    ),
+                    "overallRequestCount": len(all_coordinates),
+                    "x": x,
+                    "y": y,
+                },
+            )
+            fact = self._execute_host_game_command(
+                account_ref,
+                opcode,
+                struct.pack(">HH", int(x), int(y)),
+                f"shared-core/brush/search/{x},{y}",
+                {
+                    **context,
+                    **transport_context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                    "transportPaceBeforeMillis": (
+                        int(contract["interRequestDelayMillis"])
+                        if index > 0
+                        else 0
+                    ),
+                },
+                mutation_sent=False,
+            )
+            payload = self._game_packet(fact, expected_opcode)
+            if payload is None:
+                raise OperationKnownFailureError(
+                    f"找黄请求({x},{y})未收到 0x{expected_opcode:04x} 响应",
+                    code="BRUSH_SEARCH_RESPONSE_MISSING",
+                )
+            if len(payload) < 5:
+                raise OperationKnownFailureError(
+                    f"找黄请求({x},{y})响应过短：{len(payload)}",
+                    code="BRUSH_SEARCH_RESPONSE_INVALID",
+                )
+            parsed_targets = parse_bandit_targets(payload)
+            for target in parsed_targets:
+                target["scanCoord"] = [int(x), int(y)]
+            discovered.extend(parsed_targets)
+            matched_count = sum(1 for target in parsed_targets if matches(target))
+            scan_result: Dict[str, Any] = {
+                "scanCoord": [int(x), int(y)],
+                "targetCount": len(parsed_targets),
+                "matchedCount": matched_count,
+            }
+            if include_observation_targets:
+                # This is deliberately an observation boundary, not a map
+                # lookup.  A future map adapter can consume the per-coordinate
+                # facts without making brush dispatch depend on map freshness.
+                scan_result["targets"] = [
+                    dict(target) for target in parsed_targets
+                ]
+            scan_results.append(scan_result)
+            if stop_on_first_match and matched_count > 0:
+                break
+
+        targets = [
+            target
+            for target in dedupe_targets(discovered)
+            if matches(target)
+        ]
+        targets.sort(
+            key=lambda target: (
+                (int(target.get("x") or 0) - start_x) ** 2
+                + (int(target.get("y") or 0) - start_y) ** 2,
+                int(target.get("y") or 0),
+                int(target.get("x") or 0),
+                int(target.get("id") or 0),
+            )
+        )
+        updated_at = self._ports.clock.now_millis()
+        cache_warning = self._save_map_snapshot(
+            account_ref=account_ref,
+            kind="BANDIT",
+            fingerprint=(
+                f"{start_x},{start_y}|"
+                f"{'HUANG_JIN' if body['targetKind'] == '黄巾' else 'SHAN_ZEI'}"
+            ),
+            targets=targets,
+            scanned_at_millis=updated_at,
+        )
+        result: Dict[str, Any] = {
+            "ok": True,
+            "targets": targets,
+            "points": targets,
+            "count": len(targets),
+            "updatedAt": updated_at,
+            "scanOffset": scan_offset,
+            "scanLimit": len(all_coordinates),
+            "scanBatchSize": scan_batch_size,
+            "scannedCount": len(scan_results),
+            "nextScanOffset": (
+                0
+                if scan_offset + len(scan_results) >= len(all_coordinates)
+                else scan_offset + len(scan_results)
+            ),
+            "scanWrapped": (
+                scan_offset + len(scan_results) >= len(all_coordinates)
+            ),
+            "scannedCoordinates": [
+                list(row["scanCoord"]) for row in scan_results
+            ],
+            "scanResults": scan_results,
+        }
+        if cache_warning:
+            result["cacheWarning"] = cache_warning
+        return result
+
+    def mine_search_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize the complete mine-search request before it is persisted."""
+
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("找矿缺少账号")
+        source = body.get("settings")
+        source = source if isinstance(source, dict) else body
+        world = self._behavior_contract["mapSearch"]["world"]
+
+        def coordinate(name: str, nested: str) -> int:
+            raw = source.get(name)
+            if raw in (None, "") and isinstance(source.get("start"), dict):
+                raw = source["start"].get(nested)
+            try:
+                value = int(raw or 0)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"找矿{nested.upper()}坐标无效") from error
+            minimum = int(world[f"{nested}Min"])
+            maximum = int(world[f"{nested}Max"])
+            if not minimum <= value <= maximum:
+                raise ValueError(
+                    f"找矿{nested.upper()}坐标必须在 {minimum}..{maximum} 之间"
+                )
+            return value
+
+        scope = str(
+            source.get("scope")
+            or source.get("searchScope")
+            or self._behavior_contract["mine"].get("defaultSearchScope", "附近")
+        ).strip() or "附近"
+        allowed_scopes = set(
+            self._behavior_contract["mine"].get(
+                "allowedSearchScopes", ["定点", "附近", "全国"]
+            )
+        )
+        if scope not in allowed_scopes:
+            raise ValueError(f"找矿范围无效：{scope}")
+        start_x = coordinate("centerX", "x")
+        start_y = coordinate("centerY", "y")
+
+        raw_types = (
+            source.get("resourceTypes")
+            if source.get("resourceTypes") not in (None, "")
+            else source.get("selectedMineTypes")
+        )
+        if raw_types in (None, ""):
+            raw_types = source.get("mineTypes")
+        if raw_types in (None, ""):
+            raw_types = source.get("resourceType")
+        resource_types = normalize_mine_resource_types(raw_types)
+        if not resource_types:
+            # Match the Android typed adapter's verified default.
+            resource_types = ["GOLD"]
+
+        raw_levels = source.get("levels")
+        if raw_levels in (None, ""):
+            raw_levels = source.get("selectedLevels")
+        if raw_levels in (None, ""):
+            raw_levels = source.get("level")
+        levels = normalize_brush_levels(raw_levels)
+
+        if scope == "定点":
+            # A row may provide its own coordinates while the shared UI uses
+            # centerX/centerY for nearby/nationwide searches.
+            start_x = coordinate("x", "x") if source.get("x") not in (None, "") else start_x
+            start_y = coordinate("y", "y") if source.get("y") not in (None, "") else start_y
+            scan_limit = 1
+        elif scope == "全国":
+            scan_limit = int(self._behavior_contract["mapSearch"]["fullRequestLimit"])
+        else:
+            scan_limit = int(self._behavior_contract["mapSearch"]["nearbyRequestLimit"])
+        try:
+            requested_limit = int(source.get("scanLimit") or scan_limit)
+        except (TypeError, ValueError) as error:
+            raise ValueError("找矿扫描数量无效") from error
+        scan_limit = max(1, min(requested_limit, int(self._behavior_contract["mapSearch"]["fullRequestLimit"])))
+        if scope == "定点":
+            scan_limit = 1
+        return {
+            "accountRef": account_ref,
+            "startX": start_x,
+            "startY": start_y,
+            "scope": scope,
+            "resourceTypes": resource_types,
+            "levels": levels,
+            "onlyEmpty": bool(
+                source.get("onlyEmpty", source.get("onlyEmptyMine", False))
+            ),
+            "onlyDefended": bool(
+                source.get("onlyDefended", source.get("onlyDefendedMine", False))
+            ),
+            "scanLimit": scan_limit,
+        }
+
+    def _run_mine_search_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        start_x = int(body["startX"])
+        start_y = int(body["startY"])
+        scope = str(body["scope"])
+        if scope == "定点":
+            coordinates = [(start_x, start_y)]
+        else:
+            coordinates = brush_scan_coordinates(
+                start_x,
+                start_y,
+                int(body["scanLimit"]),
+            )
+        raw_override = body.get("_scanCoordinatesOverride")
+        if isinstance(raw_override, list):
+            allowed = set(coordinates)
+            override: list[tuple[int, int]] = []
+            for value in raw_override:
+                if not isinstance(value, (list, tuple)) or len(value) < 2:
+                    continue
+                coordinate = (int(value[0]), int(value[1]))
+                if coordinate in allowed and coordinate not in override:
+                    override.append(coordinate)
+            coordinates = override
+        include_observation_targets = (
+            body.get("includeScanObservationTargets") is True
+        )
+        contract = self._behavior_contract["mine"]
+        map_contract = self._behavior_contract["mapSearch"]
+        transport_context = {
+            "readTimeoutMillis": int(
+                map_contract["readOnlyRequestTimeoutMillis"]
+            ),
+            "transportMaxAttempts": int(
+                map_contract["readOnlyTransportMaxAttempts"]
+            ),
+            "transportPaceJitterMillis": int(
+                map_contract["interRequestJitterMillis"]
+            ),
+            "transportRetryBaseDelayMillis": int(
+                map_contract["readOnlyRetryBaseDelayMillis"]
+            ),
+            "transportRetryJitterMillis": int(
+                map_contract["readOnlyRetryJitterMillis"]
+            ),
+        }
+        opcode = self._contract_opcode(contract, "searchRequestOpcode")
+        expected_opcode = self._contract_opcode(contract, "searchResponseOpcode")
+        discovered: list[Dict[str, Any]] = []
+        scan_results: list[Dict[str, Any]] = []
+        total = max(1, len(coordinates))
+        for index, (x, y) in enumerate(coordinates):
+            execution.raise_if_cancelled()
+            execution.publish_progress(
+                5 + int(index * 80 / total),
+                {
+                    "phase": "scanning-mine-map",
+                    "requestIndex": index + 1,
+                    "requestCount": len(coordinates),
+                    "x": x,
+                    "y": y,
+                },
+            )
+            fact = self._execute_host_game_command(
+                account_ref,
+                opcode,
+                struct.pack(">HH", int(x), int(y)),
+                f"shared-core/mine/search/{x},{y}",
+                {
+                    **context,
+                    **transport_context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                    "transportPaceBeforeMillis": (
+                        int(map_contract["interRequestDelayMillis"])
+                        if index > 0
+                        else 0
+                    ),
+                },
+                mutation_sent=False,
+            )
+            payload = self._game_packet(fact, expected_opcode)
+            if payload is None:
+                raise OperationKnownFailureError(
+                    f"找矿请求({x},{y})未收到 0x{expected_opcode:04x} 响应",
+                    code="MINE_SEARCH_RESPONSE_MISSING",
+                )
+            try:
+                targets = parse_mine_resources(payload)
+            except ValueError as error:
+                raise OperationKnownFailureError(
+                    f"找矿请求({x},{y})响应解析失败：{error}",
+                    code="MINE_SEARCH_RESPONSE_INVALID",
+                ) from error
+            for target in targets:
+                target["scanCoord"] = [x, y]
+            discovered.extend(targets)
+            scan_result: Dict[str, Any] = {
+                "scanCoord": [int(x), int(y)],
+                "targetCount": len(targets),
+            }
+            if include_observation_targets:
+                scan_result["targets"] = [dict(target) for target in targets]
+            scan_results.append(scan_result)
+
+        filtered = [
+            target
+            for target in dedupe_targets(discovered)
+            if mine_target_matches(
+                target,
+                resource_types=list(body.get("resourceTypes") or []),
+                levels=list(body.get("levels") or []),
+                only_empty=bool(body.get("onlyEmpty")),
+                only_defended=bool(body.get("onlyDefended")),
+                exact_x=start_x if scope == "定点" else None,
+                exact_y=start_y if scope == "定点" else None,
+            )
+        ]
+        filtered.sort(
+            key=lambda target: (
+                (int(target.get("x") or 0) - start_x) ** 2
+                + (int(target.get("y") or 0) - start_y) ** 2,
+                -int(target.get("level") or 0),
+                int(target.get("y") or 0),
+                int(target.get("x") or 0),
+                int(target.get("id") or 0),
+            )
+        )
+        # Match MineSearchResult's stable enum fields while retaining the wire
+        # display labels for the shared map projection.
+        targets: list[Dict[str, Any]] = []
+        for target in filtered:
+            normalized = dict(target)
+            mine_type = str(target.get("mineType") or "").strip()
+            normalized["mineType"] = mine_type
+            normalized["kind"] = mine_type or target.get("kind") or ""
+            normalized["type"] = normalized["kind"]
+            normalized["reserve"] = target.get("amountA")
+            normalized["defenseCount"] = int(target.get("defenderCount") or 0)
+            targets.append(normalized)
+
+        updated_at = self._ports.clock.now_millis()
+        fingerprint = (
+            f"{start_x},{start_y}|{','.join(sorted(body.get('resourceTypes') or []))}|"
+            f"{','.join(str(value) for value in sorted(body.get('levels') or []))}|"
+            f"{scope}|{str(bool(body.get('onlyEmpty'))).lower()}|"
+            f"{str(bool(body.get('onlyDefended'))).lower()}"
+        )
+        cache_warning = self._save_map_snapshot(
+            account_ref=account_ref,
+            kind="MINE",
+            fingerprint=fingerprint,
+            targets=targets,
+            scanned_at_millis=updated_at,
+        )
+        result: Dict[str, Any] = {
+            "ok": True,
+            "mines": targets,
+            "points": targets,
+            "targets": targets,
+            "count": len(targets),
+            "updatedAt": updated_at,
+            "scope": scope,
+            "resourceTypes": list(body.get("resourceTypes") or []),
+            "levels": list(body.get("levels") or []),
+            "scannedCount": len(scan_results),
+            "scannedCoordinates": [
+                list(value["scanCoord"]) for value in scan_results
+            ],
+            "scanResults": scan_results,
+        }
+        if cache_warning:
+            result["cacheWarning"] = cache_warning
+        return result
+
+    def hubu_query_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("读取户部种植状态缺少账号")
+        return {"accountRef": account_ref}
+
+    def hubu_plant_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("批量种菜缺少账号")
+        if str(body.get("confirm") or "") != "hubu-batch-plant":
+            raise ValueError("真实批量种菜需要 confirm=hubu-batch-plant")
+        settings = normalize_ministry_settings(body)
+        if not ministry_planting_allowed(settings):
+            raise ValueError("当前作物或种植开关未通过共享六部协议门禁")
+        return {
+            "accountRef": account_ref,
+            "confirm": "hubu-batch-plant",
+            "crop": VERIFIED_MINISTRY_CROP,
+        }
+
+    def _run_hubu_status_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        contract = self._behavior_contract["sixMinistries"]
+        request_opcode = self._contract_opcode(contract, "statusRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "statusResponseOpcode")
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            build_hubu_status_query_payload(),
+            "shared-core/ministry/hubu/status",
+            {**context, "operationId": execution.operation_id, "readOnly": True},
+            mutation_sent=False,
+        )
+        payload = self._game_packet(fact, response_opcode)
+        if payload is None:
+            raise OperationKnownFailureError(
+                f"户部菜地未收到 0x{response_opcode:04x} 响应",
+                code="MINISTRY_STATUS_RESPONSE_MISSING",
+            )
+        try:
+            status = parse_hubu_garden_status(payload)
+        except Exception as error:
+            raise OperationKnownFailureError(
+                f"户部菜地状态解析失败：{error}",
+                code="MINISTRY_STATUS_RESPONSE_INVALID",
+            ) from error
+        return {
+            "ok": True,
+            "success": True,
+            "http": int(fact.get("httpCode") or 0),
+            "responseBytes": int(fact.get("responseBytes") or len(payload)),
+            "packets": [
+                {
+                    "opcode": f"0x{int(packet.get('opcode') or 0):04x}",
+                    "payloadHex": (
+                        bytes(packet.get("payload") or b"").hex()
+                        if isinstance(packet.get("payload"), (bytes, bytearray))
+                        else str(packet.get("payloadHex") or "")
+                    ),
+                }
+                for packet in fact.get("packets") or []
+                if isinstance(packet, dict)
+            ],
+            "payloadHexes": [payload.hex()],
+            "garden": status,
+        }
+
+    def _run_hubu_plant_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        contract = self._behavior_contract["sixMinistries"]
+        status_request_opcode = self._contract_opcode(
+            contract, "statusRequestOpcode"
+        )
+        status_response_opcode = self._contract_opcode(
+            contract, "statusResponseOpcode"
+        )
+        plant_request_opcode = self._contract_opcode(
+            contract, "plantRequestOpcode"
+        )
+        plant_response_opcode = self._contract_opcode(
+            contract, "plantResponseOpcode"
+        )
+
+        def query_status(phase: str, *, mutation_sent: bool) -> Dict[str, Any]:
+            fact = self._execute_host_game_command(
+                account_ref,
+                status_request_opcode,
+                build_hubu_status_query_payload(),
+                phase,
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                mutation_sent=mutation_sent,
+            )
+            payload = self._game_packet(fact, status_response_opcode)
+            if payload is None:
+                message = f"户部菜地未收到 0x{status_response_opcode:04x} 响应"
+                if mutation_sent:
+                    raise OperationUncertainError(message)
+                raise OperationKnownFailureError(
+                    message,
+                    code="MINISTRY_STATUS_RESPONSE_MISSING",
+                )
+            try:
+                status = parse_hubu_garden_status(payload)
+            except Exception as error:
+                if mutation_sent:
+                    raise OperationUncertainError(
+                        f"户部菜地状态解析失败：{error}"
+                    ) from error
+                raise OperationKnownFailureError(
+                    f"户部菜地状态解析失败：{error}",
+                    code="MINISTRY_STATUS_RESPONSE_INVALID",
+                ) from error
+            return {"fact": fact, "payload": payload, "status": status}
+
+        pending_field = "ministryPendingPlantJson"
+        existing_pending = self._automation_pending_record(
+            account_ref, pending_field
+        )
+        if existing_pending:
+            observed = query_status(
+                "shared-core/ministry/hubu/status-recovery",
+                mutation_sent=True,
+            )
+            observed_status = dict(observed["status"])
+            occupied_before = int(
+                existing_pending.get("occupiedBefore") or 0
+            )
+            occupied_now = int(observed_status.get("occupiedCount") or 0)
+            if occupied_now > occupied_before:
+                self._update_account_public_state(
+                    account_ref, {pending_field: "{}"}
+                )
+                return {
+                    "ok": True,
+                    "success": True,
+                    "message": "已通过菜地状态确认此前种菜请求完成",
+                    "result": {
+                        "success": True,
+                        "message": (
+                            "已通过菜地状态确认此前种菜请求完成，菜地"
+                            f"{occupied_now}/{observed_status.get('plotCount')}"
+                        ),
+                        "raw": {
+                            "phase": "plant-recovered",
+                            "crop": str(
+                                existing_pending.get("crop")
+                                or VERIFIED_MINISTRY_CROP
+                            ),
+                            "occupiedBefore": occupied_before,
+                            "occupiedAfter": occupied_now,
+                        },
+                    },
+                }
+            existing_pending.update({
+                "sendState": "uncertain",
+                "lastObservedAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "lastObservedOccupiedCount": occupied_now,
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, existing_pending
+            )
+            raise OperationKnownFailureError(
+                "此前种菜请求已越过发送边界，但菜地状态仍无法确认；"
+                "禁止自动重发，请稍后再次只读核对",
+                code="MINISTRY_PLANT_PENDING_UNRESOLVED",
+                details={
+                    "pending": existing_pending,
+                    "garden": observed_status,
+                },
+            )
+
+        before = query_status(
+            "shared-core/ministry/hubu/status-before",
+            mutation_sent=False,
+        )
+        before_status = before["status"]
+        if int(before_status.get("emptyCount") or 0) <= 0:
+            return {
+                "ok": True,
+                "success": True,
+                "message": "六部菜地已满，暂不发送种菜请求",
+                "result": {
+                    "success": True,
+                    "message": "六部菜地已满，暂不发送种菜请求",
+                    "raw": {"phase": "garden-full", **before_status},
+                },
+            }
+
+        execution.raise_if_cancelled()
+        pending = self._save_automation_pending_record(
+            account_ref,
+            pending_field,
+            {
+                "sendState": "sending",
+                "createdAtMillis": int(self._ports.clock.now_millis()),
+                "occupiedBefore": int(
+                    before_status.get("occupiedCount") or 0
+                ),
+                "plotCount": int(before_status.get("plotCount") or 0),
+                "crop": str(body.get("crop") or VERIFIED_MINISTRY_CROP),
+            },
+        )
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "ministry-hubu-plant",
+            "opcode": f"0x{plant_request_opcode:04x}",
+        })
+        try:
+            fact = self._execute_host_game_command(
+                account_ref,
+                plant_request_opcode,
+                build_hubu_batch_plant_payload(
+                    str(body.get("crop") or VERIFIED_MINISTRY_CROP)
+                ),
+                "shared-core/ministry/hubu/plant",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+            payload = self._required_game_packet(
+                fact,
+                plant_response_opcode,
+                uncertain_message=(
+                    f"种菜请求已发送，但未收到 "
+                    f"0x{plant_response_opcode:04x} 回执"
+                ),
+            )
+            receipt = parse_hubu_plant_response(payload)
+            if receipt.get("status") is None:
+                raise OperationUncertainError(
+                    "种菜请求已发送，但回执无法确认",
+                    {"receipt": receipt},
+                )
+            if not bool(receipt.get("success")):
+                raise OperationKnownFailureError(
+                    str(receipt.get("message") or "服务器拒绝批量种菜"),
+                    code="MINISTRY_PLANT_REJECTED",
+                    details={"receipt": receipt},
+                )
+            pending.update({
+                "sendState": "accepted",
+                "acceptedAtMillis": int(self._ports.clock.now_millis()),
+                "receipt": receipt,
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, pending
+            )
+            after = query_status(
+                "shared-core/ministry/hubu/status-after",
+                mutation_sent=True,
+            )
+            after_status = after["status"]
+            if int(after_status.get("occupiedCount") or 0) != int(
+                before_status.get("occupiedCount") or 0
+            ) + 1:
+                raise OperationUncertainError(
+                    "服务器返回种菜成功，但菜地状态未确认增加",
+                    {"before": before_status, "after": after_status},
+                )
+        except OperationKnownFailureError as error:
+            if error.code == "MINISTRY_PLANT_REJECTED":
+                self._update_account_public_state(
+                    account_ref, {pending_field: "{}"}
+                )
+                raise
+            pending.update({
+                "sendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, pending
+            )
+            raise OperationUncertainError(
+                f"种菜请求已越过发送边界：{error}"
+            ) from error
+        except OperationUncertainError:
+            pending.update({
+                "sendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, pending
+            )
+            raise
+        except Exception as error:
+            pending.update({
+                "sendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, pending
+            )
+            raise OperationUncertainError(
+                f"种菜请求已越过发送边界：{error}"
+            ) from error
+        self._update_account_public_state(account_ref, {pending_field: "{}"})
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": (
+                    f"已种植{VERIFIED_MINISTRY_CROP}，菜地"
+                    f"{after_status.get('occupiedCount')}/{after_status.get('plotCount')}"
+                ),
+                "raw": {
+                    "phase": "planted",
+                    "crop": VERIFIED_MINISTRY_CROP,
+                    "cropId": 1,
+                    "occupiedBefore": before_status.get("occupiedCount"),
+                    "occupiedAfter": after_status.get("occupiedCount"),
+                    "receipt": receipt,
+                },
+            },
+        }
+
+    def daily_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("日常操作缺少账号")
+        return {"accountRef": account_ref}
+
+    def daily_completion_workflow(
+        self,
+        key: str,
+        workflow: Callable[
+            [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
+            Dict[str, Any],
+        ],
+    ) -> Callable[
+        [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
+        Dict[str, Any],
+    ]:
+        """Wrap one-time daily work with the shared completion decision.
+
+        Hosts only persist counters.  Python owns whether a result is terminal:
+        confirmed success, normalized duplicate and an explicit not-applicable
+        result complete the cycle; partial, failed and uncertain operations do
+        not.  Custom donation deliberately does not use this wrapper because a
+        user-selected subset cannot prove that all automatic donations ran.
+        """
+
+        completion_key = str(key or "").strip()
+        if completion_key not in DAILY_COMPLETION_LABELS:
+            raise ValueError(f"未知每日完成项：{completion_key}")
+        if not callable(workflow):
+            raise TypeError("每日完成工作流必须可调用")
+
+        def completed_workflow(
+            execution: OperationExecutionContext,
+            body: Dict[str, Any],
+            context: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            account_ref = self._account_ref(body, context)
+            if not account_ref:
+                raise ValueError("日常操作缺少账号")
+            cycle_at_millis = int(self._ports.clock.now_millis())
+            existing = max(
+                0,
+                int(
+                    self._ports.daily_completions.count(
+                        account_ref,
+                        completion_key,
+                        cycle_at_millis,
+                    )
+                ),
+            )
+            label = DAILY_COMPLETION_LABELS[completion_key]
+            if existing > 0:
+                return {
+                    "ok": True,
+                    "alreadyCompleted": True,
+                    "completionCount": existing,
+                    "result": {
+                        "success": True,
+                        "completed": True,
+                        "alreadyCompleted": True,
+                        "message": f"今日已经完成{label}",
+                    },
+                }
+
+            response = self._object(
+                workflow(execution, dict(body), dict(context)),
+                "daily workflow response",
+            )
+            result = response.get("result")
+            result = dict(result) if isinstance(result, dict) else {}
+            confirmed = bool(
+                response.get("ok") is not False
+                and result.get("success") is True
+                and result.get("completed") is not False
+                and result.get("partialSuccess") is not True
+            )
+            if not confirmed:
+                return response
+
+            total = max(
+                0,
+                int(
+                    self._ports.daily_completions.add(
+                        account_ref,
+                        completion_key,
+                        1,
+                        cycle_at_millis,
+                    )
+                ),
+            )
+            result["completed"] = True
+            result["completionCount"] = total
+            response["result"] = result
+            response["alreadyCompleted"] = False
+            response["completionCount"] = total
+            return response
+
+        completed_workflow.__name__ = (
+            f"daily_completion_{completion_key}_{getattr(workflow, '__name__', 'workflow')}"
+        )
+        return completed_workflow
+
+    def daily_custom_donate_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        payload = self.daily_operation_payload(body, context)
+
+        def amount(name: str) -> int:
+            try:
+                return max(0, int(body.get(name) or 0))
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"自定义捐献{name}数量无效") from error
+
+        payload.update({
+            "copper": amount("copper"),
+            "food": amount("food"),
+        })
+        return payload
+
+    def daily_general_visit_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        payload = self.daily_operation_payload(body, context)
+        selected = normalize_general_visit_ids(
+            body.get("generalVisitGeneralIds")
+            if body.get("generalVisitGeneralIds") is not None
+            else body.get("generalIds")
+        )
+        payload["generalVisitGeneralIds"] = selected
+        return payload
+
+    def domestic_query_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("内政查询缺少账号")
+        return {"accountRef": account_ref}
+
+    def domestic_action_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("内政操作缺少账号")
+        if str(body.get("confirm") or "") != "auto-domestic":
+            raise ValueError("自动内政单项操作需要 confirm=auto-domestic")
+        action = str(body.get("action") or "").strip()
+        if action not in {"building", "technology"}:
+            raise ValueError("未知自动内政单项操作")
+        try:
+            fief_id = int(body.get("fiefId") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("封地 ID 无效") from error
+        if fief_id <= 0:
+            raise ValueError("封地 ID 无效")
+        payload: Dict[str, Any] = {
+            "accountRef": account_ref,
+            "confirm": "auto-domestic",
+            "action": action,
+            "fiefId": fief_id,
+        }
+        if action == "building":
+            for name in ("slot", "buildingType"):
+                try:
+                    value = int(body.get(name))
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"内政{name}无效") from error
+                if value < 0:
+                    raise ValueError(f"内政{name}无效")
+                payload[name] = value
+        else:
+            for name, minimum in (("academySlot", 0), ("technologyId", 0), ("targetLevel", 1)):
+                try:
+                    value = int(body.get(name))
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"内政{name}无效") from error
+                if value < minimum:
+                    raise ValueError(f"内政{name}无效")
+                payload[name] = value
+        return payload
+
+    @staticmethod
+    def _dispatch_target_payload(raw: Any, *, action_name: str) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise ValueError(f"未指定{action_name}目标")
+        try:
+            target_id = int(raw.get("id") or raw.get("targetId") or 0)
+            x = int(raw.get("x"))
+            y = int(raw.get("y"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{action_name}目标缺少有效 ID 或坐标") from error
+        if target_id <= 0:
+            raise ValueError(f"{action_name}目标 ID 无效")
+        return {
+            "id": target_id,
+            "targetId": target_id,
+            "idHex": str(raw.get("idHex") or "").strip(),
+            "x": x,
+            "y": y,
+            "type": str(raw.get("type") or raw.get("kind") or "").strip(),
+            "kind": str(raw.get("kind") or raw.get("type") or "").strip(),
+            "name": str(raw.get("name") or raw.get("type") or "").strip(),
+            "source": str(raw.get("source") or ""),
+            "rawRecord": str(raw.get("rawRecord") or ""),
+            "playerOccupied": bool(raw.get("playerOccupied")),
+            "ownerName": str(raw.get("ownerName") or ""),
+            "level": raw.get("level"),
+            "mineType": str(raw.get("mineType") or raw.get("type") or ""),
+        }
+
+    def brush_execute_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("刷黄出征缺少账号")
+        if str(body.get("confirm") or "") != "brush-yellow":
+            raise ValueError("真实刷黄出征需要 confirm=brush-yellow")
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        ids = []
+        for value in raw_ids:
+            if value in (None, ""):
+                continue
+            gid = positive_game_id(value, "将领 ID")
+            if gid not in ids:
+                ids.append(gid)
+        target = self._dispatch_target_payload(
+            body.get("target"), action_name="刷黄"
+        )
+        settings = body.get("hostSettings")
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        return {
+            "accountRef": account_ref,
+            "confirm": "brush-yellow",
+            "generalIds": [str(value) for value in ids],
+            "target": target,
+            "hostSettings": dict(settings) if isinstance(settings, dict) else {},
+        }
+
+    def raid_action_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize one real raid action without mixing it with settings save."""
+
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("真实掠夺缺少账号")
+        if str(body.get("confirm") or "") != "raid":
+            raise ValueError("真实掠夺需要 confirm=raid")
+        player_name = str(body.get("playerName") or "").strip()
+        if not player_name:
+            raise ValueError("真实掠夺缺少玩家名称")
+        if len(player_name) > 80:
+            raise ValueError("掠夺目标玩家名称过长")
+        try:
+            fief_index = int(body.get("fiefIndex") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("掠夺封地序号无效") from error
+        if fief_index <= 0:
+            raise ValueError("掠夺封地序号必须从 1 开始")
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        ids: list[int] = []
+        for value in raw_ids:
+            if value in (None, ""):
+                continue
+            general_id = positive_game_id(value, "将领 ID")
+            if general_id not in ids:
+                ids.append(general_id)
+        maximum = int(
+            self._behavior_contract["raid"]["maximumGeneralsPerFormation"]
+        )
+        if not ids:
+            raise ValueError("掠夺至少需要选择 1 名出征将领")
+        if len(ids) > maximum:
+            raise ValueError(f"掠夺一次最多选择{maximum}名将领")
+        settings = body.get("hostSettings")
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        return {
+            "accountRef": account_ref,
+            "confirm": "raid",
+            "playerName": player_name,
+            "fiefIndex": fief_index,
+            "generalIds": [str(value) for value in ids],
+            "fullTroops": bool(
+                body.get(
+                    "fullTroops",
+                    self._behavior_contract["raid"]["fullTroopsDefault"],
+                )
+            ),
+            "fullLoyalty": bool(
+                body.get(
+                    "fullLoyalty",
+                    self._behavior_contract["raid"]["fullLoyaltyDefault"],
+                )
+            ),
+            "hostSettings": settings,
+        }
+
+    def lossless_action_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize one resident lossless tick using the saved desktop row."""
+
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("真实无损缺少账号")
+        if str(body.get("confirm") or "") != "lossless":
+            raise ValueError("真实无损需要 confirm=lossless")
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        general_ids: list[int] = []
+        for value in raw_ids:
+            if value in (None, ""):
+                continue
+            general_id = positive_game_id(value, "将领 ID")
+            if general_id not in general_ids:
+                general_ids.append(general_id)
+        contract = dict(self._behavior_contract["lossless"])
+        maximum = int(contract["maximumGeneralsPerFormation"])
+        if not general_ids:
+            raise ValueError("无损至少需要选择 1 名出征将领")
+        if len(general_ids) > maximum:
+            raise ValueError(f"无损一次最多选择{maximum}名将领")
+        try:
+            level = lossless_level_number(
+                body.get("level", contract["maximumLevel"])
+            )
+        except RuntimeError as error:
+            raise ValueError(str(error)) from error
+        guard = dict(contract["level10Guard"])
+        try:
+            maximum_rerolls = int(
+                body.get("maxLineupRerolls")
+                or guard["defaultMaxRerolls"]
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("无损阵容最大刷新次数无效") from error
+        maximum_rerolls = max(
+            1,
+            min(maximum_rerolls, int(guard["maximumMaxRerolls"])),
+        )
+        try:
+            daily_limit = int(
+                body.get("dailyLimit") or contract["serverDailyLimit"]
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("无损每日次数无效") from error
+        daily_limit = max(
+            1,
+            min(daily_limit, int(contract["serverDailyLimit"])),
+        )
+        settings = body.get("hostSettings")
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        return {
+            "accountRef": account_ref,
+            "confirm": "lossless",
+            "generalIds": [str(value) for value in general_ids],
+            "level": int(level),
+            "fullTroops": bool(
+                body.get("fullTroops", contract["fullTroopsDefault"])
+            ),
+            "dailyLimit": daily_limit,
+            "maxLineupRerolls": maximum_rerolls,
+            "hostSettings": settings,
+        }
+
+    def dungeon_action_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize one resident dungeon tick from either platform host."""
+
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("真实副本缺少账号")
+        if str(body.get("confirm") or "") != "dungeon":
+            raise ValueError("真实副本需要 confirm=dungeon")
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        general_ids: list[int] = []
+        for value in raw_ids:
+            if value in (None, ""):
+                continue
+            general_id = positive_game_id(value, "将领 ID")
+            if general_id not in general_ids:
+                general_ids.append(general_id)
+        contract = dict(self._behavior_contract["dungeon"])
+        maximum = int(contract["maximumGeneralsPerFormation"])
+        if not general_ids:
+            raise ValueError("副本至少需要选择 1 名出征将领")
+        if len(general_ids) > maximum:
+            raise ValueError(f"副本一次最多选择{maximum}名将领")
+        mode = normalize_dungeon_mode(body.get("mode"))
+        chapter_value = body.get("chapter")
+        if chapter_value is None:
+            chapter_value = body.get("chapterName", 0)
+        stage_value = body.get("stage", 1)
+        try:
+            chapter = dungeon_chapter_number(chapter_value)
+            stage = dungeon_stage_number(stage_value, chapter)
+            chest = dungeon_chest_index(
+                body.get("chest")
+                if body.get("chest") is not None
+                else body.get("chestName", "右")
+            )
+        except RuntimeError as error:
+            if mode != DUNGEON_MODE_CLEAR:
+                raise ValueError(str(error)) from error
+            chapter, stage = 0, 1
+            try:
+                chest = dungeon_chest_index(body.get("chest", "右"))
+            except RuntimeError as chest_error:
+                raise ValueError(str(chest_error)) from chest_error
+        settings = body.get("hostSettings")
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        try:
+            daily_times = max(1, int(body.get("dailyTimes") or 999))
+        except (TypeError, ValueError) as error:
+            raise ValueError("副本每日次数无效") from error
+        return {
+            "accountRef": account_ref,
+            "confirm": "dungeon",
+            "generalIds": [str(value) for value in general_ids],
+            "mode": mode,
+            "chapter": int(chapter),
+            "chapterName": str(
+                body.get("chapterName") or f"第{int(chapter) + 1}章"
+            ),
+            "stage": int(stage),
+            "chest": int(chest),
+            "chestName": list(contract["chestNames"])[int(chest)],
+            "fullTroops": bool(body.get("fullTroops", False)),
+            "openChest": bool(body.get("openChest", True)),
+            "dailyTimes": daily_times,
+            "hostSettings": settings,
+        }
+
+    def mine_execute_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("打矿出征缺少账号")
+        if str(body.get("confirm") or "") != "mine":
+            raise ValueError("真实打矿需要 confirm=mine")
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        ids = []
+        for value in raw_ids:
+            if value in (None, ""):
+                continue
+            gid = positive_game_id(value, "将领 ID")
+            if gid not in ids:
+                ids.append(gid)
+        target = self._dispatch_target_payload(
+            body.get("target"), action_name="打矿"
+        )
+        try:
+            max_march = int(body.get("maxMarchMinutes") or 45)
+        except (TypeError, ValueError) as error:
+            raise ValueError("最大行军时间无效") from error
+        if max_march not in {45, 60, 90}:
+            max_march = 45
+        settings = body.get("hostSettings")
+        settings = dict(settings) if isinstance(settings, dict) else {}
+        return {
+            "accountRef": account_ref,
+            "confirm": "mine",
+            "generalIds": [str(value) for value in ids],
+            "target": target,
+            "sourceRowIndex": _optional_row_index(body.get("sourceRowIndex")),
+            "maxMarchMinutes": max_march,
+            "fullLoyalty": bool(body.get("fullLoyalty", True)),
+            "waitForSettlement": bool(body.get("waitForSettlement", False)),
+            "speedEnabled": bool(
+                body.get("speedEnabled", settings.get("speedEnabled", False))
+            ),
+            "withdrawDefense": bool(
+                body.get(
+                    "withdrawDefense",
+                    settings.get("withdrawDefense", False),
+                )
+            ),
+            "hostSettings": settings,
+        }
+
+    def _daily_account_session_snapshot(
+        self,
+        account_ref: str,
+    ) -> Dict[str, Any]:
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise RuntimeError("日常任务账号不存在")
+        stored_session = account.get("session")
+        stored_session = (
+            dict(stored_session)
+            if isinstance(stored_session, dict)
+            else {}
+        )
+        public_state = stored_session.get("publicState")
+        public_state = (
+            dict(public_state)
+            if isinstance(public_state, dict)
+            else {}
+        )
+        role_state: Dict[str, Any] = dict(public_state)
+        raw_role_state = public_state.get("roleStateJson")
+        if isinstance(raw_role_state, dict):
+            role_state.update(raw_role_state)
+        elif isinstance(raw_role_state, str) and raw_role_state.strip():
+            try:
+                parsed = json.loads(raw_role_state)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                role_state.update(parsed)
+        return {
+            **stored_session,
+            "role": dict(role_state),
+            "roleState": dict(role_state),
+            "publicState": public_state,
+        }
+
+    def _daily_donation_action(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        resource: str,
+        amount: int,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        contract = self._behavior_contract["daily"]["actions"]["donate"]
+        if resource == "technology":
+            opcode = self._contract_opcode(contract, "technologyRequestOpcode")
+            response_opcode = self._contract_opcode(
+                contract, "technologyResponseOpcode"
+            )
+            payload = build_technology_donation_payload(amount)
+        else:
+            opcode = self._contract_opcode(contract, "resourceRequestOpcode")
+            response_opcode = self._contract_opcode(
+                contract, "resourceResponseOpcode"
+            )
+            payload = build_country_donation_payload(**{resource: amount})
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "daily-donate",
+            "resource": resource,
+            "opcode": f"0x{opcode:04x}",
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            opcode,
+            payload,
+            f"shared-core/daily/donate/{resource}",
+            context,
+            mutation_sent=True,
+        )
+        response = self._game_packet(fact, response_opcode)
+        if response is None:
+            raise OperationUncertainError(
+                f"捐献{resource}请求已发送，但未收到 "
+                f"0x{response_opcode:04x} 回执"
+            )
+        if not response:
+            raise OperationUncertainError(
+                f"捐献{resource}请求已发送，但服务器回执为空"
+            )
+        return {
+            **parse_daily_donation_receipt(response, resource, amount),
+            "opcode": f"0x{opcode:04x}/0x{response_opcode:04x}",
+            "payloadHex": payload.hex(),
+            "packets": self._fact_packets(fact),
+        }
+
+    def _run_daily_donate_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        session = self._daily_account_session_snapshot(account_ref)
+        limits = country_donation_limits(session)
+        donate_contract = self._behavior_contract["daily"]["actions"]["donate"]
+        limits["technology"] = (
+            int(limits["level"])
+            * int(donate_contract["technologyPerLevel"])
+        )
+        specs = (
+            ("copper", int(limits["copper"])),
+            ("food", int(limits["food"])),
+            ("technology", int(limits["technology"])),
+        )
+        execution.raise_if_cancelled()
+        actions = [
+            self._daily_donation_action(
+                execution,
+                account_ref,
+                resource,
+                amount,
+                context,
+            )
+            for resource, amount in specs
+        ]
+        success_count = sum(bool(action.get("success")) for action in actions)
+        labels = {"copper": "铜钱", "food": "粮食", "technology": "科技积分"}
+        summary = "、".join(
+            f"{labels[str(action['resource'])]}"
+            f"{'成功' if action.get('success') else '失败'}"
+            for action in actions
+        )
+        result = {
+            "success": success_count == len(specs),
+            "partialSuccess": 0 < success_count < len(specs),
+            "completed": success_count == len(specs),
+            "attemptedCount": len(actions),
+            "successCount": success_count,
+            "failureCount": len(actions) - success_count,
+            "message": f"自动捐献完成：{summary}",
+            "limits": limits,
+            "actions": actions,
+        }
+        if not result["success"]:
+            raise OperationKnownFailureError(
+                str(result["message"]),
+                code="DAILY_DONATE_REJECTED",
+                details={"result": result},
+            )
+        return {"ok": True, "result": result}
+
+    def _run_daily_custom_donate_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        session = self._daily_account_session_snapshot(account_ref)
+        limits = country_donation_limits(session)
+        role_state = session.get("roleState")
+        role_state = role_state if isinstance(role_state, dict) else {}
+        available = {
+            "copper": max(0, int(role_state.get("copper") or 0)),
+            "food": max(0, int(role_state.get("food") or 0)),
+        }
+        specs = []
+        for resource in ("copper", "food"):
+            amount = min(
+                max(0, int(body.get(resource) or 0)),
+                available[resource],
+                int(limits[resource]),
+            )
+            if amount > 0:
+                specs.append((resource, amount))
+        if not specs:
+            raise OperationKnownFailureError(
+                "没有可执行的捐献：请检查自定义数量和当前资源",
+                code="DAILY_CUSTOM_DONATE_EMPTY",
+                details={"limits": limits, "available": available},
+            )
+        execution.raise_if_cancelled()
+        actions = [
+            self._daily_donation_action(
+                execution,
+                account_ref,
+                resource,
+                amount,
+                context,
+            )
+            for resource, amount in specs
+        ]
+        success = all(bool(action.get("success")) for action in actions)
+        result = {
+            "success": success,
+            "completed": success,
+            "message": (
+                "自定义国家捐献完成："
+                + "、".join(
+                    f"{action['amount']}"
+                    f"{'粮食' if action['resource'] == 'food' else '铜钱'}"
+                    for action in actions
+                )
+                if success
+                else "自定义国家捐献未获得全部成功回执"
+            ),
+            "actions": actions,
+            "limits": limits,
+            "available": available,
+        }
+        if not success:
+            raise OperationKnownFailureError(
+                str(result["message"]),
+                code="DAILY_CUSTOM_DONATE_REJECTED",
+                details={"result": result},
+            )
+        return {"ok": True, "result": result}
+
+    def _daily_command_fact(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        opcode: int,
+        payload: bytes,
+        phase: str,
+        context: Dict[str, Any],
+        *,
+        mutation_sent: bool,
+    ) -> Dict[str, Any]:
+        return self._execute_host_game_command(
+            account_ref,
+            int(opcode),
+            bytes(payload),
+            phase,
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=mutation_sent,
+        )
+
+    @staticmethod
+    def _fact_packets(fact: Dict[str, Any]) -> list[Dict[str, Any]]:
+        return [
+            {
+                "opcode": int(packet.get("opcode") or 0),
+                "payloadHex": bytes(packet.get("payload") or b"").hex(),
+            }
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict)
+        ]
+
+    @staticmethod
+    def _dungeon_fact_packets(fact: Dict[str, Any]) -> list[Dict[str, Any]]:
+        return [
+            {
+                "opcode": int(packet.get("opcode") or 0),
+                "payloadHex": bytes(packet.get("payload") or b"").hex(),
+                "textPreview": printable(
+                    bytes(packet.get("payload") or b""), 1200
+                ),
+            }
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict)
+        ]
+
+    def _run_dungeon_read_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        *,
+        request_key: str,
+        response_key: str,
+        parser: Callable[[bytes], Dict[str, Any]],
+        label: str,
+        phase: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        contract = dict(self._behavior_contract["dungeon"])
+        request_opcode = self._contract_opcode(contract, request_key)
+        response_opcode = self._contract_opcode(contract, response_key)
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            b"",
+            phase,
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            mutation_sent=False,
+        )
+        response = self._game_packet(fact, response_opcode)
+        if response is None:
+            raise OperationKnownFailureError(
+                f"{label}未收到 0x{response_opcode:04x}",
+                code="DUNGEON_READ_RESPONSE_MISSING",
+                details={"packets": self._dungeon_fact_packets(fact)},
+            )
+        parsed = parser(response)
+        if parsed.get("parseError"):
+            raise OperationKnownFailureError(
+                f"{label}解析失败：{parsed['parseError']}",
+                code="DUNGEON_READ_PARSE_FAILED",
+                details={"response": parsed},
+            )
+        return {
+            **parsed,
+            "http": int(fact.get("httpCode") or 0),
+            "opcode": f"0x{request_opcode:04x}/0x{response_opcode:04x}",
+            "packets": self._dungeon_fact_packets(fact),
+            "updatedAt": int(self._ports.clock.now_millis()),
+        }
+
+    def _run_dungeon_status_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        status = self._run_dungeon_read_game_workflow(
+            execution,
+            account_ref,
+            request_key="stateRequestOpcode",
+            response_key="stateResponseOpcode",
+            parser=parse_dungeon_state,
+            label="读取副本状态",
+            phase="shared-core/dungeon/state",
+            context=context,
+        )
+        self._update_account_public_state(
+            account_ref, {"dungeonLastStatusJson": self._json(status)}
+        )
+        return status
+
+    def _run_dungeon_catalog_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._run_dungeon_read_game_workflow(
+            execution,
+            account_ref,
+            request_key="catalogRequestOpcode",
+            response_key="catalogResponseOpcode",
+            parser=parse_dungeon_catalog,
+            label="读取副本目录",
+            phase="shared-core/dungeon/catalog",
+            context=context,
+        )
+
+    def _run_dungeon_reward_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._run_dungeon_read_game_workflow(
+            execution,
+            account_ref,
+            request_key="rewardRequestOpcode",
+            response_key="rewardResponseOpcode",
+            parser=parse_dungeon_reward_state,
+            label="读取副本奖励状态",
+            phase="shared-core/dungeon/reward",
+            context=context,
+        )
+
+    def _run_dungeon_chest_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        chest: int,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        contract = dict(self._behavior_contract["dungeon"])
+        request_opcode = self._contract_opcode(contract, "chestRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "chestResponseOpcode")
+        payload = build_dungeon_chest_payload(chest)
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "dungeon-chest",
+            "chest": int(chest),
+            "opcode": f"0x{request_opcode:04x}",
+        })
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            payload,
+            "shared-core/dungeon/chest",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        response = self._game_packet(fact, response_opcode)
+        if response is None:
+            raise OperationUncertainError(
+                f"副本开箱请求已发送，但未收到 0x{response_opcode:04x} 回执"
+            )
+        receipt = parse_dungeon_chest_response(response)
+        if receipt.get("parseError") or receipt.get("status") is None:
+            raise OperationUncertainError(
+                "副本开箱回执无法确认", {"receipt": receipt}
+            )
+        return {
+            **receipt,
+            "chestIndex": int(chest),
+            "chestName": list(contract["chestNames"])[int(chest)],
+            "requestPayloadHex": payload.hex(),
+            "packets": self._dungeon_fact_packets(fact),
+            "updatedAt": int(self._ports.clock.now_millis()),
+        }
+
+    @staticmethod
+    def _dungeon_defeat_evidence(
+        pending: Dict[str, Any],
+        reward: Dict[str, Any] | None = None,
+        chest: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return {
+            "defeatConfirmed": bool(pending.get("defeatConfirmed")),
+            "rewardState": dict(reward or {}),
+            "chestResult": dict(chest or {}),
+            "battlePoll": {
+                "polls": list(pending.get("battlePolls") or [])
+            },
+        }
+
+    def _run_dungeon_recovery_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        execution.publish_progress(12, {"phase": "dungeon-recovery-state"})
+        status = self._run_dungeon_status_game_workflow(
+            execution, account_ref, context
+        )
+        now_millis = int(self._ports.clock.now_millis())
+        contract = dict(self._behavior_contract["dungeon"])
+        schedule = dict(contract["schedule"])
+        updated = dict(pending)
+        updated["lastStatus"] = status
+        updated["lastObservedAtMillis"] = now_millis
+
+        dispatch_state = str(updated.get("dispatchSendState") or "")
+        if dispatch_state in {"sending", "uncertain"}:
+            updated.update({
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "status": status,
+                "message": (
+                    "副本正式出征曾越过发送边界但回执未确认；"
+                    "仅完成只读状态核对，禁止自动重发"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        pre_dispatch_state = str(
+            updated.get("preDispatchMutationState") or ""
+        )
+        prepare_state = str(updated.get("prepareSendState") or "")
+        phase = str(status.get("phase") or "unknown")
+        if self._operator_reconcile_requested(context, "dungeon"):
+            chest_state = str(updated.get("chestSendState") or "")
+            if (
+                dispatch_state != "not-sent"
+                or prepare_state != "not-sent"
+                or chest_state not in {"", "not-sent"}
+            ):
+                raise OperationKnownFailureError(
+                    "副本旧账本无法人工结清：预出征、正式出征或开箱"
+                    "存在已发送/不确定证据",
+                    code="DUNGEON_OPERATOR_RECONCILE_SEND_BOUNDARY",
+                    details={
+                        "prepareSendState": prepare_state,
+                        "dispatchSendState": dispatch_state,
+                        "chestSendState": chest_state,
+                    },
+                )
+            if phase != "idle" or bool(status.get("active")):
+                raise OperationKnownFailureError(
+                    "副本旧账本无法人工结清：最新只读状态不是空闲",
+                    code="DUNGEON_OPERATOR_RECONCILE_STATUS",
+                    details={"status": status},
+                )
+            evidence = self._operator_reconciliation_formation_evidence(
+                account_ref,
+                updated,
+                context,
+                feature="dungeon",
+            )
+            archived = {
+                **updated,
+                "requiresAttention": False,
+                "reconciledAtMillis": now_millis,
+                "reconciliationReason": (
+                    "operator-confirmed-no-formal-dispatch-and-idle"
+                ),
+                "reconciliationEvidence": evidence,
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "dungeonPendingRunJson": "{}",
+                    "dungeonLastReconciliationJson": self._json(archived),
+                },
+            )
+            return {
+                "feature": "dungeon",
+                "state": "reconciled",
+                "success": True,
+                "requiresAttention": False,
+                "status": status,
+                "message": (
+                    "副本旧前置账本已按最新空闲状态安全归档；"
+                    "未重发治疗、加体、配兵、预出征、正式出征或开箱"
+                ),
+                "nextWakeAtMillis": now_millis,
+            }
+        chest_state = str(updated.get("chestSendState") or "")
+        pre_dispatch_error = str(
+            updated.get("preDispatchMutationError")
+            or updated.get("preDispatchError")
+            or ""
+        )
+        # A *failed* pre-dispatch mutation has a known outcome: it did not take
+        # effect.  Grouping it with "sending"/"uncertain" below would treat a
+        # settled fact as an ambiguity.  Combined with the send states proving
+        # no prepare, dispatch or chest request left, and the game itself
+        # reporting no battle in progress, nothing irreversible happened and
+        # the record is safe to discard and retry.  Gating this on a list of
+        # recoverable error codes instead is what stranded a real account: the
+        # code it actually failed with was not on the list, so the record
+        # survived for four days and kept 副本 out of both scheduling paths.
+        # ``pending`` belongs here too, and is the most obvious case of all: it
+        # is the *initial* state, meaning the mutation never even began.  A
+        # real account's 副本 sat blocked with ``preDispatchMutationCount = 0``
+        # and every send state ``not-sent`` - provably nothing had happened -
+        # while the pending record it held starved 刷黄 for twenty minutes and
+        # 将领维护 for sixteen.  What matters is the evidence that nothing was
+        # sent, not which of the non-sending states the record happens to be
+        # sitting in.
+        nothing_was_sent = (
+            prepare_state == "not-sent"
+            and dispatch_state == "not-sent"
+            and chest_state in {"", "not-sent"}
+            and not pre_dispatch_outstanding(updated)
+        )
+        if (
+            nothing_was_sent
+            and phase == "idle"
+            and not bool(status.get("active"))
+        ):
+            retry_at = now_millis + int(
+                schedule.get("resourceRetryMillis", 300_000)
+            )
+            archived = {
+                **updated,
+                "requiresAttention": False,
+                "deferredAtMillis": now_millis,
+                "retryAtMillis": retry_at,
+                "recoveryResolution": "pre-dispatch-failed-nothing-sent",
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "dungeonPendingRunJson": "{}",
+                    "dungeonLastDeferredJson": self._json(archived),
+                },
+            )
+            return {
+                "feature": "dungeon",
+                "state": "waiting-resources",
+                "success": True,
+                "requiresAttention": False,
+                "errorCode": str(
+                    updated.get("preDispatchErrorCode") or ""
+                ) or "EXPEDITION_PRE_DISPATCH_FAILED",
+                "status": status,
+                "message": (
+                    f"{pre_dispatch_error or '副本出征前置检查未通过'}；"
+                    "本轮副本已跳过，5分钟后重新检查，期间继续执行其他任务"
+                ),
+                "nextWakeAtMillis": retry_at,
+                "_pendingReleased": True,
+            }
+        if dispatch_state != "accepted" and (
+            pre_dispatch_state in {
+                "pending",
+                "sending",
+                "uncertain",
+                "failed",
+                "accepted",
+            }
+            or prepare_state in {"sending", "uncertain", "accepted"}
+        ):
+            # An interrupted preflight mutation is an unknown *outcome*, not an
+            # unanswerable question.  Nothing formal was sent, and every
+            # preflight step re-reads the world before deciding to act - a heal
+            # with no wounded, a top-up above threshold and an assignment that
+            # already matches all send nothing - so once the generals are idle
+            # again the next attempt simply re-derives what is needed.  刷黄 has
+            # resolved it this way for a while; 副本 had no such path, so one
+            # request interrupted by an app update isolated it indefinitely.
+            if (
+                pre_dispatch_state in AMBIGUOUS_SEND_STATES
+                and not bool(status.get("active"))
+            ):
+                _hex, fresh_generals, _army = self._fresh_formation_state(
+                    account_ref,
+                    context,
+                    read_only=True,
+                )
+                decision = ambiguous_preflight_reconciliation(
+                    updated,
+                    fresh_generals,
+                    formal_send_states=(
+                        "prepareSendState",
+                        "dispatchSendState",
+                        "chestSendState",
+                    ),
+                    now_millis=now_millis,
+                    poll_millis=int(
+                        schedule.get("postDispatchPollMillis") or 30_000
+                    ),
+                    retry_millis=int(
+                        schedule.get("transientRetryMillis") or 10_000
+                    ),
+                )
+                if decision["action"] == "wait":
+                    waiting = {
+                        **updated,
+                        "requiresAttention": False,
+                        "lastObservedAtMillis": now_millis,
+                        "lastDecision": "wait-uncertain-preflight",
+                        "lastDecisionReason": str(decision["reason"]),
+                        "nextPollAtMillis": int(decision["nextWakeAtMillis"]),
+                    }
+                    self._save_automation_pending_record(
+                        account_ref, "dungeonPendingRunJson", waiting
+                    )
+                    return {
+                        "feature": "dungeon",
+                        "state": "waiting",
+                        "success": True,
+                        "requiresAttention": False,
+                        "status": status,
+                        "message": f"副本前置回执未确认：{decision['reason']}",
+                        "nextWakeAtMillis": int(decision["nextWakeAtMillis"]),
+                    }
+                if decision["action"] == "reconcile":
+                    archived = {
+                        **updated,
+                        "requiresAttention": False,
+                        "reconciledAtMillis": now_millis,
+                        "reconciliationReason": str(decision["reason"]),
+                    }
+                    self._update_account_public_state(
+                        account_ref,
+                        {
+                            "dungeonPendingRunJson": "{}",
+                            "dungeonLastReconciliationJson": self._json(
+                                archived
+                            ),
+                        },
+                    )
+                    return {
+                        "feature": "dungeon",
+                        "state": "reconciled",
+                        "success": True,
+                        "requiresAttention": False,
+                        "status": status,
+                        "message": (
+                            "副本旧不确定前置账本已按最新回闲状态归档；"
+                            "未重发治疗、加体、配兵或出征"
+                        ),
+                        "nextWakeAtMillis": int(decision["nextWakeAtMillis"]),
+                        "_pendingReleased": True,
+                    }
+            updated.update({
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "status": status,
+                "message": (
+                    "副本前置操作已开始，但尚无正式出征成功证据；"
+                    "禁止自动重做治疗、加体、配兵或补兵"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        if chest_state in {"sending", "uncertain", "rejected"}:
+            updated.update({
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "status": status,
+                "message": (
+                    "副本开箱已越过发送边界且没有成功证据，"
+                    "禁止自动重复开箱"
+                ),
+                "nextWakeAtMillis": None,
+            }
+
+        if phase == "fighting":
+            battle_id = int(
+                status.get("battleId") or updated.get("battleId") or 0
+            )
+            # A dungeon battle takes ~105s on real hardware with about a second
+            # of variance, so watching it every two seconds spends roughly 24
+            # round trips per round to learn something that is not knowable yet.
+            # Completion is read from the 0x1938 status call above; the extra
+            # 0x1702 battle poll only ever fed defeat detection, and defeat is
+            # equally visible in the settlement and chest evidence that
+            # _dungeon_defeat_evidence already inspects.
+            battle_poll_evidence_required = bool(
+                schedule.get("battlePollEvidenceRequired")
+            )
+            if battle_id > 0:
+                updated["battleId"] = battle_id
+            if battle_id > 0 and battle_poll_evidence_required:
+                first_poll = int(updated.get("battlePollCount") or 0) == 0
+                poll_payload = build_dungeon_battle_poll_payload(
+                    first_poll, battle_id
+                )
+                poll_opcode = self._contract_opcode(
+                    contract, "battlePollRequestOpcode"
+                )
+                poll_response_opcode = self._contract_opcode(
+                    contract, "battlePollResponseOpcode"
+                )
+                poll_fact = self._execute_host_game_command(
+                    account_ref,
+                    poll_opcode,
+                    poll_payload,
+                    "shared-core/dungeon/battle-poll",
+                    {
+                        **context,
+                        "operationId": execution.operation_id,
+                        "readOnly": True,
+                    },
+                    mutation_sent=False,
+                )
+                poll_response = self._game_packet(
+                    poll_fact, poll_response_opcode
+                )
+                poll_row = {
+                    "phase": 2 if first_poll else 1,
+                    "payloadHex": poll_payload.hex(),
+                    "packets": self._dungeon_fact_packets(poll_fact),
+                    "responseText": printable(poll_response or b"", 1200),
+                    "polledAtMillis": now_millis,
+                }
+                polls = list(updated.get("battlePolls") or [])
+                polls.append(poll_row)
+                updated["battlePolls"] = polls[-20:]
+                updated["battlePollCount"] = int(
+                    updated.get("battlePollCount") or 0
+                ) + 1
+                if dungeon_battle_defeat_confirmed(
+                    self._dungeon_defeat_evidence(updated)
+                ):
+                    updated["defeatConfirmed"] = True
+            launched_at = int(
+                updated.get("dispatchAcceptedAtMillis")
+                or updated.get("createdAtMillis")
+                or now_millis
+            )
+            if now_millis - launched_at > int(schedule["battleTimeoutMillis"]):
+                updated.update({
+                    "blockedAtMillis": now_millis,
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", updated
+                )
+                return {
+                    "feature": "dungeon",
+                    "state": "blocked",
+                    "success": False,
+                    "requiresAttention": True,
+                    "status": status,
+                    "message": "副本战斗跟踪超过8分钟，已停止自动动作",
+                    "nextWakeAtMillis": None,
+                }
+            # Nothing is knowable before the battle can physically be over, so
+            # stay quiet until then and let other features use the lane; after
+            # that, re-read at the ordinary poll interval.
+            quiet_until = launched_at + int(
+                schedule.get("battleQuietMillis") or 0
+            )
+            next_poll_at = max(
+                quiet_until,
+                now_millis + int(schedule["battlePollMillis"]),
+            )
+            updated["nextPollAtMillis"] = next_poll_at
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "fighting",
+                "success": True,
+                "status": status,
+                "battleId": battle_id or None,
+                "stage": updated.get("stageRef") or {},
+                "message": "副本战斗进行中",
+                "nextWakeAtMillis": next_poll_at,
+            }
+        if phase in {"error", "unknown"}:
+            updated.update({
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "status": status,
+                "message": "副本状态未知，已保留账本并停止自动动作",
+                "nextWakeAtMillis": None,
+            }
+
+        launched_at = int(
+            updated.get("dispatchAcceptedAtMillis")
+            or updated.get("createdAtMillis")
+            or now_millis
+        )
+        minimum_observation = min(
+            8_000, int(schedule["postLaunchPollMillis"])
+        )
+        if (
+            not bool(updated.get("observedExistingSettlement"))
+            and now_millis - launched_at < minimum_observation
+        ):
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "fighting",
+                "success": True,
+                "status": status,
+                "stage": updated.get("stageRef") or {},
+                "message": "副本已启动，等待首个可靠战斗状态窗口",
+                "nextWakeAtMillis": launched_at + int(
+                    schedule["postLaunchPollMillis"]
+                ),
+            }
+
+        state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            {**context, "operationId": execution.operation_id},
+            read_only=True,
+        )
+        self._persist_automation_general_snapshot(
+            account_ref, state_hex, generals, army
+        )
+        expected_ids = {
+            int(value)
+            for value in updated.get("generalIds") or []
+            if int(value) > 0
+        }
+        observed = {
+            int(row.get("id") or 0): row
+            for row in generals
+            if isinstance(row, dict) and int(row.get("id") or 0) > 0
+        }
+        all_idle = bool(expected_ids) and expected_ids.issubset(observed) and all(
+            general_is_idle(observed[general_id])
+            for general_id in expected_ids
+        )
+        if not all_idle:
+            if now_millis - launched_at > int(schedule["battleTimeoutMillis"]):
+                updated.update({
+                    "blockedAtMillis": now_millis,
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", updated
+                )
+                return {
+                    "feature": "dungeon",
+                    "state": "blocked",
+                    "success": False,
+                    "requiresAttention": True,
+                    "status": status,
+                    "message": "等待副本将领回闲超过8分钟，已停止自动动作",
+                    "nextWakeAtMillis": None,
+                }
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+            return {
+                "feature": "dungeon",
+                "state": "waiting-generals",
+                "success": True,
+                "status": status,
+                "stage": updated.get("stageRef") or {},
+                "message": "副本状态已离开战斗，等待出征将领全部回闲",
+                "nextWakeAtMillis": now_millis + int(
+                    schedule["battlePollMillis"]
+                ),
+            }
+
+        reward = self._run_dungeon_reward_game_workflow(
+            execution, account_ref, context
+        )
+        updated["rewardState"] = reward
+        chest_receipt = (
+            dict(updated.get("chestReceipt") or {})
+            if chest_state == "accepted"
+            else {}
+        )
+        if bool(updated.get("openChest", True)) and not chest_receipt:
+            def before_chest(metadata: Dict[str, Any]) -> None:
+                updated.update({
+                    "chestSendState": "sending",
+                    "chestSendingAtMillis": int(
+                        self._ports.clock.now_millis()
+                    ),
+                    "chestRequestMetadata": dict(metadata),
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", updated
+                )
+
+            durable = _DurablePendingMutationExecution(execution, before_chest)
+            try:
+                chest_receipt = self._run_dungeon_chest_game_workflow(
+                    durable,
+                    account_ref,
+                    int(updated.get("chest") or 0),
+                    context,
+                )
+            except OperationKnownFailureError as error:
+                updated.update({
+                    "chestSendState": (
+                        "rejected" if durable.sent else "failed-before-send"
+                    ),
+                    "chestError": str(error),
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", updated
+                )
+                raise
+            except Exception as error:
+                if durable.sent:
+                    updated.update({
+                        "chestSendState": "uncertain",
+                        "chestError": str(error),
+                        "requiresAttention": True,
+                    })
+                    self._save_automation_pending_record(
+                        account_ref, "dungeonPendingRunJson", updated
+                    )
+                raise
+            if not bool(chest_receipt.get("success")):
+                updated.update({
+                    "chestSendState": "rejected",
+                    "chestReceipt": chest_receipt,
+                    "requiresAttention": True,
+                    "blockedAtMillis": int(self._ports.clock.now_millis()),
+                })
+                defeat = dungeon_battle_defeat_confirmed(
+                    self._dungeon_defeat_evidence(
+                        updated, reward, chest_receipt
+                    )
+                )
+                updated["defeatConfirmed"] = defeat
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", updated
+                )
+                return {
+                    "feature": "dungeon",
+                    "state": "defeat-paused" if defeat else "blocked",
+                    "success": False,
+                    "requiresAttention": True,
+                    "defeatConfirmed": defeat,
+                    "status": status,
+                    "stage": updated.get("stageRef") or {},
+                    "chestResult": chest_receipt,
+                    "message": (
+                        "打通副本检测到明确战败，已暂停"
+                        if defeat
+                        else "副本开箱被游戏服拒绝，已停止自动动作"
+                    ),
+                    "nextWakeAtMillis": None,
+                }
+            updated.update({
+                "chestSendState": "accepted",
+                "chestAcceptedAtMillis": int(self._ports.clock.now_millis()),
+                "chestReceipt": chest_receipt,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", updated
+            )
+
+        mode = str(updated.get("mode") or "loop")
+        stage_ref = dict(updated.get("stageRef") or {})
+        if (
+            mode == DUNGEON_MODE_CLEAR
+            and not bool(updated.get("observedExistingSettlement"))
+        ):
+            catalog = self._run_dungeon_catalog_game_workflow(
+                execution, account_ref, context
+            )
+            completed = dungeon_stage_completed_in_catalog(catalog, stage_ref)
+            updated["completionCatalog"] = catalog
+            updated["stageCompleted"] = completed
+            attempts = int(updated.get("stageConfirmationAttempts") or 0) + 1
+            updated["stageConfirmationAttempts"] = attempts
+            if completed is not True:
+                defeat = dungeon_battle_defeat_confirmed(
+                    self._dungeon_defeat_evidence(
+                        updated, reward, chest_receipt
+                    )
+                )
+                if defeat:
+                    updated.update({
+                        "defeatConfirmed": True,
+                        "requiresAttention": True,
+                        "blockedAtMillis": now_millis,
+                    })
+                    self._save_automation_pending_record(
+                        account_ref, "dungeonPendingRunJson", updated
+                    )
+                    return {
+                        "feature": "dungeon",
+                        "state": "defeat-paused",
+                        "success": False,
+                        "requiresAttention": True,
+                        "defeatConfirmed": True,
+                        "status": status,
+                        "stage": stage_ref,
+                        "chestResult": chest_receipt,
+                        "message": "打通副本检测到明确战败，已暂停",
+                        "nextWakeAtMillis": None,
+                    }
+                if attempts < 3:
+                    self._save_automation_pending_record(
+                        account_ref, "dungeonPendingRunJson", updated
+                    )
+                    return {
+                        "feature": "dungeon",
+                        "state": "clear-confirming",
+                        "success": True,
+                        "status": status,
+                        "stage": stage_ref,
+                        "chestResult": chest_receipt,
+                        "message": "副本战斗与开箱已完成，等待目录确认通关",
+                        "nextWakeAtMillis": now_millis + int(
+                            schedule["postCompletionMillis"]
+                        ),
+                    }
+                updated.update({
+                    "requiresAttention": True,
+                    "blockedAtMillis": now_millis,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", updated
+                )
+                return {
+                    "feature": "dungeon",
+                    "state": "clear-unconfirmed",
+                    "success": False,
+                    "requiresAttention": True,
+                    "status": status,
+                    "stage": stage_ref,
+                    "chestResult": chest_receipt,
+                    "message": "副本目录连续3次未确认本关通关，已暂停避免重复出征",
+                    "nextWakeAtMillis": None,
+                }
+
+        completed_at = int(self._ports.clock.now_millis())
+        completion_state = (
+            "settlement-recovered"
+            if bool(updated.get("observedExistingSettlement"))
+            else "chest-opened"
+        )
+        result_record = {
+            "completedAtMillis": completed_at,
+            "state": completion_state,
+            "battleId": updated.get("battleId"),
+            "generalIds": sorted(expected_ids),
+            "stage": stage_ref,
+            "rewardState": reward,
+            "chestResult": chest_receipt,
+            "stageCompleted": updated.get("stageCompleted"),
+        }
+        # Persist the configured daily counter before clearing the recovery
+        # ledger. Reapplying the same completion is idempotent by token, so a
+        # process restart cannot lose or double-count a finished dungeon run.
+        self._apply_resident_result_state(
+            account_ref,
+            {
+                "feature": "dungeon",
+                "state": completion_state,
+                "success": True,
+                "battleId": updated.get("battleId"),
+                "message": "副本完成并已确认结算",
+                "nextWakeAtMillis": completed_at + int(
+                    schedule["postCompletionMillis"]
+                ),
+            },
+            dict(updated.get("residentContext") or {}),
+            from_pending=True,
+        )
+        self._update_account_public_state(
+            account_ref,
+            {
+                "dungeonPendingRunJson": "{}",
+                "dungeonLastResultJson": self._json(result_record),
+            },
+        )
+        return {
+            "feature": "dungeon",
+            "state": completion_state,
+            "success": True,
+            "status": status,
+            "battleId": updated.get("battleId"),
+            "stage": stage_ref,
+            "chapter": stage_ref.get("chapter"),
+            "stageNumber": stage_ref.get("stage"),
+            "rewardState": reward,
+            "chestResult": chest_receipt,
+            "stageCompleted": updated.get("stageCompleted"),
+            "message": (
+                "上一场副本待领取宝箱已补开"
+                if completion_state == "settlement-recovered"
+                else f"副本完成，{updated.get('chestName') or '宝'}箱已开启"
+            ),
+            "nextWakeAtMillis": completed_at + int(
+                schedule["postCompletionMillis"]
+            ),
+        }
+
+    def _run_dungeon_action_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run one desktop-equivalent non-blocking dungeon state-machine tick."""
+
+        account_ref = str(body["accountRef"])
+        existing = self._automation_pending_record(
+            account_ref, "dungeonPendingRunJson"
+        )
+        if existing:
+            result = self._run_dungeon_recovery_game_workflow(
+                execution, account_ref, existing, context
+            )
+            return {"ok": True, "result": result}
+
+        execution.publish_progress(5, {"phase": "dungeon-status"})
+        status = self._run_dungeon_status_game_workflow(
+            execution, account_ref, context
+        )
+        now_millis = int(self._ports.clock.now_millis())
+        contract = dict(self._behavior_contract["dungeon"])
+        schedule = dict(contract["schedule"])
+        status_phase = str(status.get("phase") or "unknown")
+        if status_phase in {"fighting", "pending_settlement", "settlement"}:
+            observed = {
+                "generalIds": [int(value) for value in body["generalIds"]],
+                "mode": str(body["mode"]),
+                "chapter": int(body["chapter"]),
+                "stage": int(body["stage"]),
+                "stageRef": {
+                    "chapter": int(body["chapter"]),
+                    "chapterName": str(body["chapterName"]),
+                    "stage": int(body["stage"]),
+                },
+                "chest": int(body["chest"]),
+                "chestName": str(body["chestName"]),
+                "openChest": bool(body["openChest"]),
+                "createdAtMillis": now_millis,
+                "dispatchSendState": "accepted",
+                "dispatchAcceptedAtMillis": now_millis,
+                "battleId": int(status.get("battleId") or 0),
+                "observedExistingBattle": status_phase == "fighting",
+                "observedExistingSettlement": status_phase != "fighting",
+                "residentContext": dict(body.get("residentContext") or {}),
+            }
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", observed
+            )
+            if status_phase == "fighting":
+                return {
+                    "ok": True,
+                    "result": {
+                        "feature": "dungeon",
+                        "state": "fighting",
+                        "success": True,
+                        "status": status,
+                        "battleId": observed["battleId"] or None,
+                        "stage": observed["stageRef"],
+                        "message": "检测到已有副本战斗，已接管后续跟踪",
+                        "nextWakeAtMillis": now_millis + int(
+                            schedule["battlePollMillis"]
+                        ),
+                    },
+                }
+            result = self._run_dungeon_recovery_game_workflow(
+                execution, account_ref, observed, context
+            )
+            return {"ok": True, "result": result}
+        if status_phase != "idle":
+            raise OperationKnownFailureError(
+                "副本状态未知，不能出征",
+                code="DUNGEON_STATUS_NOT_IDLE",
+                details={"status": status},
+            )
+
+        execution.publish_progress(12, {"phase": "dungeon-catalog"})
+        catalog = self._run_dungeon_catalog_game_workflow(
+            execution, account_ref, context
+        )
+        mode = str(body["mode"])
+        if mode == DUNGEON_MODE_CLEAR:
+            stage_ref = first_uncompleted_dungeon_stage(catalog)
+            if stage_ref is None:
+                return {
+                    "ok": True,
+                    "result": {
+                        "feature": "dungeon",
+                        "state": "all-clear",
+                        "success": True,
+                        "completedAll": True,
+                        "catalog": catalog,
+                        "message": (
+                            "所有可单人挑战的副本关卡均已通关"
+                            "（各章最后一关为多人副本）"
+                        ),
+                        "nextWakeAtMillis": now_millis + int(
+                            schedule["dailyDonePollMillis"]
+                        ),
+                    },
+                }
+            stage_ref = dict(stage_ref)
+            if not bool(stage_ref.get("available", True)):
+                return {
+                    "ok": True,
+                    "result": {
+                        "feature": "dungeon",
+                        "state": "waiting-unlock",
+                        "success": True,
+                        "stage": stage_ref,
+                        "catalog": catalog,
+                        "message": (
+                            f"当前首个未通关关卡为{stage_ref['chapterName']}"
+                            f"第{stage_ref['stage']}关，尚未解锁"
+                        ),
+                        "nextWakeAtMillis": now_millis + int(
+                            schedule["waitingUnlockMillis"]
+                        ),
+                    },
+                }
+            chapter = int(stage_ref["chapter"])
+            stage = int(stage_ref["stage"])
+            stage_code = int(stage_ref["stageCode"])
+        else:
+            chapter = int(body["chapter"])
+            stage = int(body["stage"])
+            final_stage = len(
+                dict(contract["staticStageCodes"]).get(str(chapter), [])
+            )
+            if final_stage and stage >= final_stage:
+                raise OperationKnownFailureError(
+                    f"{body['chapterName']}第{stage}关是本章最后一关（多人副本），"
+                    "单人无法挑战",
+                    code="DUNGEON_MULTIPLAYER_FINAL_UNSUPPORTED",
+                )
+            try:
+                stage_code = resolve_dungeon_stage_code(
+                    catalog, chapter, stage
+                )
+            except RuntimeError as error:
+                raise OperationKnownFailureError(
+                    str(error),
+                    code="DUNGEON_STAGE_RESOLUTION_FAILED",
+                ) from error
+            stage_ref = {
+                "chapter": chapter,
+                "chapterName": str(body["chapterName"]),
+                "stage": stage,
+                "stageCode": stage_code,
+                "available": True,
+            }
+
+        pending = {
+            "generalIds": [int(value) for value in body["generalIds"]],
+            "mode": mode,
+            "chapter": chapter,
+            "stage": stage,
+            "stageCode": stage_code,
+            "stageRef": stage_ref,
+            "chest": int(body["chest"]),
+            "chestName": str(body["chestName"]),
+            "openChest": bool(body["openChest"]),
+            "createdAtMillis": now_millis,
+            "preDispatchMutationState": "pending",
+            "preDispatchMutationCount": 0,
+            "prepareSendState": "not-sent",
+            "dispatchSendState": "not-sent",
+            "chestSendState": "not-sent",
+            "residentContext": dict(body.get("residentContext") or {}),
+        }
+        self._save_automation_pending_record(
+            account_ref, "dungeonPendingRunJson", pending
+        )
+        mutation_count = 0
+
+        def before_pre_dispatch_mutation(metadata: Dict[str, Any]) -> None:
+            nonlocal mutation_count
+            mutation_count += 1
+            pending.update({
+                "preDispatchMutationState": "sending",
+                "preDispatchMutationCount": mutation_count,
+                "preDispatchMutationSendingAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "preDispatchMutationMetadata": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", pending
+            )
+
+        durable = _DurablePendingMutationExecution(
+            execution, before_pre_dispatch_mutation
+        )
+        try:
+            execution.publish_progress(20, {"phase": "dungeon-preflight"})
+            selected, preflight = self._run_expedition_preflight(
+                durable,
+                account_ref,
+                body,
+                context,
+                action_name="副本",
+                restore_saved_formation=True,
+            )
+            refill_result: Dict[str, Any] | None = None
+            if bool(body.get("fullTroops")):
+                refill_result = self._run_troop_refill_game_workflow(
+                    durable,
+                    {
+                        "accountRef": account_ref,
+                        "confirm": "batch-refill",
+                        "generalIds": list(body["generalIds"]),
+                    },
+                    context,
+                ).get("result")
+                _state_hex, refreshed, _army = self._fresh_formation_state(
+                    account_ref,
+                    {**context, "operationId": execution.operation_id},
+                    read_only=True,
+                )
+                by_id = {
+                    int(row.get("id") or 0): dict(row)
+                    for row in refreshed
+                    if isinstance(row, dict) and int(row.get("id") or 0) > 0
+                }
+                selected = [by_id[int(value)] for value in body["generalIds"]]
+            general_hexes = [
+                str(row.get("idHex") or f"{int(row['id']):016x}")
+                for row in selected
+            ]
+            prepare_payload = build_dungeon_prepare_payload(
+                general_hexes, stage_code
+            )
+            dispatch_payload = build_dungeon_expedition_payload(
+                general_hexes, stage_code
+            )
+        except OperationKnownFailureError as error:
+            if error.code == "EXPEDITION_ENERGY_ITEM_UNAVAILABLE":
+                deferred_at = int(self._ports.clock.now_millis())
+                retry_at, retry_note = self._resource_shortage_retry(
+                    deferred_at,
+                    int(schedule.get("resourceRetryMillis", 300_000)),
+                    error,
+                )
+                pending.update({
+                    "preDispatchMutationState": "failed",
+                    "preDispatchMutationError": str(error),
+                    "preDispatchErrorCode": error.code,
+                    "requiresAttention": False,
+                    "deferredAtMillis": deferred_at,
+                    "retryAtMillis": retry_at,
+                    "recoveryResolution": "retryable-resource-shortage",
+                })
+                self._update_account_public_state(
+                    account_ref,
+                    {
+                        "dungeonPendingRunJson": "{}",
+                        "dungeonLastDeferredJson": self._json(pending),
+                    },
+                )
+                return {
+                    "ok": True,
+                    "result": {
+                        "feature": "dungeon",
+                        "state": "waiting-resources",
+                        "success": True,
+                        "requiresAttention": False,
+                        "errorCode": error.code,
+                        "status": status,
+                        "catalog": catalog,
+                        "stage": stage_ref,
+                        "message": (
+                            f"{error}；本轮副本已跳过，{retry_note}，"
+                            "期间继续执行其他任务"
+                        ),
+                        "nextWakeAtMillis": retry_at,
+                    },
+                }
+            if durable.sent:
+                pending.update({
+                    "preDispatchMutationState": "failed",
+                    "preDispatchMutationError": str(error),
+                    "preDispatchErrorCode": error.code,
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"dungeonPendingRunJson": "{}"}
+                )
+            raise
+        except Exception as error:
+            if durable.sent:
+                pending.update({
+                    "preDispatchMutationState": "uncertain",
+                    "preDispatchMutationError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "dungeonPendingRunJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"dungeonPendingRunJson": "{}"}
+                )
+            raise
+
+        pending.update({
+            "generalIds": [int(row["id"]) for row in selected],
+            "preDispatchMutationState": "accepted",
+            "preDispatchMutationAcceptedAtMillis": int(
+                self._ports.clock.now_millis()
+            ),
+            "prepareSendState": "sending",
+            "prepareSendingAtMillis": int(self._ports.clock.now_millis()),
+        })
+        prepare_opcode = self._contract_opcode(contract, "prepareOpcode")
+        prepare_response_opcode = self._contract_opcode(
+            contract, "prepareResponseOpcode"
+        )
+        dispatch_opcode = self._contract_opcode(contract, "dispatchOpcode")
+        dispatch_response_opcode = self._contract_opcode(
+            contract, "dispatchResponseOpcode"
+        )
+        self._save_automation_pending_record(
+            account_ref, "dungeonPendingRunJson", pending
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "dungeon-dispatch",
+            "phase": "prepare",
+            "opcode": f"0x{prepare_opcode:04x}",
+        })
+        try:
+            prepare_fact = self._execute_host_game_command(
+                account_ref,
+                prepare_opcode,
+                prepare_payload,
+                "shared-core/dungeon/prepare",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+        except Exception as error:
+            pending.update({
+                "prepareSendState": "uncertain",
+                "prepareError": str(error),
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", pending
+            )
+            raise OperationUncertainError(
+                "副本预出征请求越过发送边界后异常，禁止自动重发",
+                {"error": str(error)},
+            ) from error
+        if self._game_packet(prepare_fact, prepare_response_opcode) is None:
+            self._update_account_public_state(
+                account_ref, {"dungeonPendingRunJson": "{}"}
+            )
+            raise OperationKnownFailureError(
+                f"副本预出征未收到 0x{prepare_response_opcode:04x} 确认，"
+                "已禁止发送正式出征",
+                code="DUNGEON_PREPARE_RESPONSE_MISSING",
+                details={"packets": self._dungeon_fact_packets(prepare_fact)},
+            )
+        pending.update({
+            "prepareSendState": "accepted",
+            "dispatchSendState": "sending",
+            "dispatchSendingAtMillis": int(self._ports.clock.now_millis()),
+        })
+        self._save_automation_pending_record(
+            account_ref, "dungeonPendingRunJson", pending
+        )
+        execution.publish_progress(80, {"phase": "dungeon-dispatch"})
+        try:
+            dispatch_fact = self._execute_host_game_command(
+                account_ref,
+                dispatch_opcode,
+                dispatch_payload,
+                "shared-core/dungeon/dispatch",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+        except Exception as error:
+            pending.update({
+                "dispatchSendState": "uncertain",
+                "dispatchError": str(error),
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", pending
+            )
+            raise OperationUncertainError(
+                "副本正式出征请求越过发送边界后异常，禁止自动重发",
+                {"error": str(error)},
+            ) from error
+        response = self._game_packet(dispatch_fact, dispatch_response_opcode)
+        if response is None:
+            pending.update({
+                "dispatchSendState": "uncertain",
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", pending
+            )
+            raise OperationUncertainError(
+                f"副本正式出征已发送，但未收到 0x{dispatch_response_opcode:04x} 回执"
+            )
+        receipt = parse_dungeon_launch_response(response)
+        if not bool(receipt.get("success")):
+            if bool(receipt.get("explicitFailure")):
+                self._update_account_public_state(
+                    account_ref, {"dungeonPendingRunJson": "{}"}
+                )
+                raise OperationKnownFailureError(
+                    str(receipt.get("message") or "服务器拒绝副本正式出征"),
+                    code="DUNGEON_DISPATCH_REJECTED",
+                    details={"receipt": receipt},
+                )
+            pending.update({
+                "dispatchSendState": "uncertain",
+                "dispatchReceipt": receipt,
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "dungeonPendingRunJson", pending
+            )
+            raise OperationUncertainError(
+                "副本正式出征回执无法确认", {"receipt": receipt}
+            )
+        accepted_at = int(self._ports.clock.now_millis())
+        battle_id = int(receipt.get("battleId") or 0)
+        pending.update({
+            "dispatchSendState": "accepted",
+            "dispatchAcceptedAtMillis": accepted_at,
+            "battleId": battle_id,
+            "dispatchReceipt": receipt,
+        })
+        self._save_automation_pending_record(
+            account_ref, "dungeonPendingRunJson", pending
+        )
+        return {
+            "ok": True,
+            "result": {
+                "feature": "dungeon",
+                "state": "fighting",
+                "success": True,
+                "dispatchAccepted": True,
+                "battleId": battle_id or None,
+                "status": status,
+                "catalog": catalog,
+                "stage": stage_ref,
+                "chapter": chapter,
+                "stageNumber": stage,
+                "generals": selected,
+                "preflight": preflight,
+                "refill": refill_result,
+                "receipt": receipt,
+                "payloads": {
+                    "prepareOpcode": f"0x{prepare_opcode:04x}",
+                    "preparePayloadHex": prepare_payload.hex(),
+                    "expeditionOpcode": f"0x{dispatch_opcode:04x}",
+                    "expeditionPayloadHex": dispatch_payload.hex(),
+                },
+                "message": (
+                    str(receipt.get("message") or "副本出征已确认")
+                ),
+                "nextWakeAtMillis": accepted_at + int(
+                    schedule["postLaunchPollMillis"]
+                ),
+            },
+        }
+
+    def _run_lossless_read_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        *,
+        request_key: str,
+        response_key: str,
+        parser: Callable[[bytes], Dict[str, Any]],
+        label: str,
+        phase: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        contract = dict(self._behavior_contract["lossless"])
+        request_opcode = self._contract_opcode(contract, request_key)
+        response_opcode = self._contract_opcode(contract, response_key)
+        payload = bytes.fromhex(str(contract["queryPayloadHex"]))
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            payload,
+            phase,
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            mutation_sent=False,
+        )
+        response = self._game_packet(fact, response_opcode)
+        if response is None:
+            raise OperationKnownFailureError(
+                f"{label}未收到 0x{response_opcode:04x}",
+                code="LOSSLESS_READ_RESPONSE_MISSING",
+                details={"packets": self._fact_packets(fact)},
+            )
+        parsed = parser(response)
+        if parsed.get("parseError"):
+            raise OperationKnownFailureError(
+                f"{label}解析失败：{parsed['parseError']}",
+                code="LOSSLESS_READ_PARSE_FAILED",
+                details={"response": parsed},
+            )
+        return {
+            **parsed,
+            "http": int(fact.get("httpCode") or 0),
+            "opcode": f"0x{request_opcode:04x}/0x{response_opcode:04x}",
+            "packets": self._fact_packets(fact),
+            "updatedAt": int(self._ports.clock.now_millis()),
+        }
+
+    def _run_lossless_status_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        status = self._run_lossless_read_game_workflow(
+            execution,
+            account_ref,
+            request_key="statusRequestOpcode",
+            response_key="statusResponseOpcode",
+            parser=parse_lossless_status,
+            label="读取无损状态",
+            phase="shared-core/lossless/status",
+            context=context,
+        )
+        self._update_account_public_state(
+            account_ref,
+            {"losslessLastStatusJson": self._json(status)},
+        )
+        return status
+
+    def _run_lossless_catalog_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._run_lossless_read_game_workflow(
+            execution,
+            account_ref,
+            request_key="catalogRequestOpcode",
+            response_key="catalogResponseOpcode",
+            parser=parse_lossless_catalog,
+            label="读取无损关卡目录",
+            phase="shared-core/lossless/catalog",
+            context=context,
+        )
+
+    def _run_lossless_lineup_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._run_lossless_read_game_workflow(
+            execution,
+            account_ref,
+            request_key="lineupRequestOpcode",
+            response_key="lineupResponseOpcode",
+            parser=parse_lossless_lineup,
+            label="读取无损敌军阵容",
+            phase="shared-core/lossless/lineup",
+            context=context,
+        )
+
+    def _run_lossless_select_level_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        level: int,
+        context: Dict[str, Any],
+        *,
+        phase: str,
+    ) -> Dict[str, Any]:
+        contract = dict(self._behavior_contract["lossless"])
+        request_opcode = self._contract_opcode(contract, "selectRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "selectResponseOpcode")
+        payload = struct.pack(">i", lossless_level_number(level))
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "lossless-select-level",
+            "level": int(level),
+            "opcode": f"0x{request_opcode:04x}",
+        })
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            payload,
+            phase,
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        response = self._game_packet(fact, response_opcode)
+        if response is None:
+            raise OperationUncertainError(
+                f"选择{level}级无损请求已发送，但未收到 "
+                f"0x{response_opcode:04x} 回执"
+            )
+        parsed = parse_lossless_select_response(response)
+        if parsed.get("parseError") or parsed.get("status") is None:
+            raise OperationUncertainError(
+                f"选择{level}级无损回执无法确认",
+                {"receipt": parsed},
+            )
+        if not bool(parsed.get("success")):
+            raise OperationKnownFailureError(
+                str(parsed.get("message") or f"服务器拒绝选择{level}级无损"),
+                code="LOSSLESS_SELECT_REJECTED",
+                details={"receipt": parsed},
+            )
+        if int(parsed.get("selectedLevel") or 0) != int(level):
+            raise OperationKnownFailureError(
+                f"游戏服确认的无损等级不是{level}级",
+                code="LOSSLESS_SELECT_LEVEL_MISMATCH",
+                details={"receipt": parsed},
+            )
+        return {
+            **parsed,
+            "requestPayloadHex": payload.hex(),
+            "packets": self._fact_packets(fact),
+            "updatedAt": int(self._ports.clock.now_millis()),
+        }
+
+    def _run_lossless_settlement_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Preserve the desktop 0x1902 + 0x1904 single-packet settlement."""
+
+        contract = dict(self._behavior_contract["lossless"])
+        settlement_opcode = self._contract_opcode(
+            contract, "settlementRequestOpcode"
+        )
+        settlement_response_opcode = self._contract_opcode(
+            contract, "settlementResponseOpcode"
+        )
+        catalog_opcode = self._contract_opcode(contract, "catalogRequestOpcode")
+        catalog_response_opcode = self._contract_opcode(
+            contract, "catalogResponseOpcode"
+        )
+        payload = bytes.fromhex(str(contract["queryPayloadHex"]))
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "lossless-settlement",
+            "opcodes": [
+                f"0x{settlement_opcode:04x}",
+                f"0x{catalog_opcode:04x}",
+            ],
+        })
+        fact = self._execute_host_game_command_batch(
+            account_ref,
+            [
+                (settlement_opcode, payload),
+                (catalog_opcode, payload),
+            ],
+            "shared-core/lossless/settlement",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        settlement_payload = self._game_packet(
+            fact, settlement_response_opcode
+        )
+        if settlement_payload is None:
+            raise OperationUncertainError(
+                "无损结算请求已发送，但未收到 "
+                f"0x{settlement_response_opcode:04x} 回执"
+            )
+        settlement = parse_lossless_settlement(settlement_payload)
+        if settlement.get("parseError") or settlement.get("status") is None:
+            raise OperationUncertainError(
+                "无损结算回执无法确认",
+                {"settlement": settlement},
+            )
+        if not bool(settlement.get("success")):
+            raise OperationKnownFailureError(
+                str(settlement.get("message") or "服务器拒绝无损结算"),
+                code="LOSSLESS_SETTLEMENT_REJECTED",
+                details={"settlement": settlement},
+            )
+        catalog_payload = self._game_packet(fact, catalog_response_opcode)
+        catalog = (
+            parse_lossless_catalog(catalog_payload)
+            if catalog_payload is not None
+            else {"parseError": f"未返回 0x{catalog_response_opcode:04x}"}
+        )
+        return {
+            **settlement,
+            "catalog": catalog,
+            "packets": self._fact_packets(fact),
+            "updatedAt": int(self._ports.clock.now_millis()),
+        }
+
+    @staticmethod
+    def _next_china_midnight_millis(now_millis: int) -> int:
+        day_millis = 86_400_000
+        china_offset = 8 * 60 * 60 * 1000
+        return (
+            ((int(now_millis) + china_offset) // day_millis + 1)
+            * day_millis
+            - china_offset
+        )
+
+    def _run_lossless_recovery_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        execution.publish_progress(12, {"phase": "lossless-recovery-status"})
+        status = self._run_lossless_status_game_workflow(
+            execution, account_ref, context
+        )
+        now_millis = int(self._ports.clock.now_millis())
+        schedule = dict(self._behavior_contract["lossless"]["schedule"])
+        updated = dict(pending)
+        updated["lastStatus"] = status
+        updated["lastObservedAtMillis"] = now_millis
+        phase = lossless_status_phase(status)
+        dispatch_state = str(updated.get("dispatchSendState") or "")
+        if (
+            dispatch_state in {"sending", "uncertain"}
+            and phase in {"settlement", "fighting"}
+        ):
+            updated.update({
+                "dispatchSendState": "accepted",
+                "dispatchAcceptedAtMillis": now_millis,
+                "dispatchAcceptedByStatus": True,
+                "dispatchAcceptedStatusPhase": phase,
+            })
+            dispatch_state = "accepted"
+        if dispatch_state in {"sending", "uncertain"}:
+            updated["blockedAtMillis"] = now_millis
+            updated["requiresAttention"] = True
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", updated
+            )
+            return {
+                "feature": "lossless",
+                "state": "blocked",
+                "requiresAttention": True,
+                "status": status,
+                "message": (
+                    "无损正式出征曾越过发送边界但回执未确认；"
+                    "仅完成只读状态核对，禁止自动重发"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        pre_dispatch_state = str(
+            updated.get("preDispatchMutationState") or ""
+        )
+        prepare_state = str(updated.get("prepareSendState") or "")
+        settlement_state = str(
+            updated.get("settlementSendState") or ""
+        )
+        if self._operator_reconcile_requested(context, "lossless"):
+            if (
+                dispatch_state != "not-sent"
+                or prepare_state != "not-sent"
+                or settlement_state not in {"", "not-sent"}
+            ):
+                raise OperationKnownFailureError(
+                    "无损旧账本无法人工结清：预出征、正式出征或结算"
+                    "存在已发送/不确定证据",
+                    code="LOSSLESS_OPERATOR_RECONCILE_SEND_BOUNDARY",
+                    details={
+                        "prepareSendState": prepare_state,
+                        "dispatchSendState": dispatch_state,
+                        "settlementSendState": settlement_state,
+                    },
+                )
+            if phase != "ready" or not bool(status.get("dispatchable")):
+                raise OperationKnownFailureError(
+                    "无损旧账本无法人工结清：最新只读状态不是可出征",
+                    code="LOSSLESS_OPERATOR_RECONCILE_STATUS",
+                    details={"status": status},
+                )
+            evidence = self._operator_reconciliation_formation_evidence(
+                account_ref,
+                updated,
+                context,
+                feature="lossless",
+            )
+            archived = {
+                **updated,
+                "requiresAttention": False,
+                "reconciledAtMillis": now_millis,
+                "reconciliationReason": (
+                    "operator-confirmed-no-formal-dispatch-and-ready"
+                ),
+                "reconciliationEvidence": evidence,
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "losslessPendingBattleJson": "{}",
+                    "losslessLastReconciliationJson": self._json(archived),
+                },
+            )
+            return {
+                "feature": "lossless",
+                "state": "reconciled",
+                "success": True,
+                "requiresAttention": False,
+                "status": status,
+                "message": (
+                    "无损旧前置账本已按最新可出征状态安全归档；"
+                    "未重发治疗、加体、配兵、补兵、选关、预出征或正式出征"
+                ),
+                "nextWakeAtMillis": now_millis,
+            }
+        pre_dispatch_error = str(
+            updated.get("preDispatchMutationError")
+            or updated.get("preDispatchError")
+            or ""
+        )
+        retryable_resource_shortage = (
+            str(updated.get("preDispatchErrorCode") or "")
+            == "EXPEDITION_ENERGY_ITEM_UNAVAILABLE"
+            or "宝库没有活血丹" in pre_dispatch_error
+        )
+        if (
+            retryable_resource_shortage
+            and pre_dispatch_state == "failed"
+            and phase == "ready"
+            and bool(status.get("dispatchable"))
+            and prepare_state == "not-sent"
+            and dispatch_state == "not-sent"
+            and settlement_state in {"", "not-sent"}
+        ):
+            retry_at = now_millis + int(
+                schedule.get("resourceRetryMillis", 300_000)
+            )
+            archived = {
+                **updated,
+                "requiresAttention": False,
+                "deferredAtMillis": now_millis,
+                "retryAtMillis": retry_at,
+                "recoveryResolution": "retryable-resource-shortage",
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "losslessPendingBattleJson": "{}",
+                    "losslessLastDeferredJson": self._json(archived),
+                },
+            )
+            return {
+                "feature": "lossless",
+                "state": "waiting-resources",
+                "success": True,
+                "requiresAttention": False,
+                "errorCode": "EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                "status": status,
+                "message": (
+                    f"{pre_dispatch_error or '无损将领体力不足且没有活血丹'}；"
+                    "本轮无损已跳过，5分钟后重新检查，期间继续执行其他任务"
+                ),
+                "nextWakeAtMillis": retry_at,
+                "_pendingReleased": True,
+            }
+        if (
+            phase == "ready"
+            and bool(status.get("dispatchable"))
+            and dispatch_state == "not-sent"
+            and settlement_state in {"", "not-sent"}
+        ):
+            archived = {
+                **updated,
+                "requiresAttention": False,
+                "recoveredAtMillis": now_millis,
+                "recoveryResolution": (
+                    "latest-status-ready-formal-dispatch-not-sent"
+                ),
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "losslessPendingBattleJson": "{}",
+                    "losslessLastRecoveryJson": self._json(archived),
+                },
+            )
+            return {
+                "feature": "lossless",
+                "state": "recovered-ready",
+                "success": True,
+                "requiresAttention": False,
+                "status": status,
+                "message": (
+                    "最新游戏状态已确认无损可出征，且旧账本中的正式出征"
+                    "明确未发送；网络故障遗留的前置账本已安全归档"
+                ),
+                "nextWakeAtMillis": now_millis,
+                "_pendingReleased": True,
+            }
+        if (
+            phase not in {"settlement", "fighting"}
+            and dispatch_state != "accepted"
+            and (
+                # One shared, evidence-based answer; see
+                # pre_dispatch_outstanding.  ``failed`` stays blocking here
+                # only because 无损 has no archive-and-retry branch yet, unlike
+                # 副本; that is feature policy beside the send-boundary fact.
+                pre_dispatch_outstanding(updated)
+                or pre_dispatch_state == "failed"
+                or prepare_state in {"sending", "uncertain", "accepted"}
+            )
+        ):
+            updated["blockedAtMillis"] = now_millis
+            updated["requiresAttention"] = True
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", updated
+            )
+            return {
+                "feature": "lossless",
+                "state": "blocked",
+                "requiresAttention": True,
+                "status": status,
+                "message": (
+                    "无损前置操作已开始，但尚无正式出征成功证据；"
+                    "仅完成只读状态核对，禁止自动重做治疗、加体、"
+                    "配兵、补兵或选关"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        if (
+            phase == "settlement"
+            and settlement_state in {"sending", "uncertain"}
+        ):
+            updated["blockedAtMillis"] = now_millis
+            updated["requiresAttention"] = True
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", updated
+            )
+            return {
+                "feature": "lossless",
+                "state": "blocked",
+                "requiresAttention": True,
+                "status": status,
+                "message": (
+                    "无损结算请求曾越过发送边界但回执未确认；"
+                    "禁止自动重复结算"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        if phase == "settlement":
+            def before_settlement(metadata: Dict[str, Any]) -> None:
+                updated.update({
+                    "settlementSendState": "sending",
+                    "settlementSendingAtMillis": int(
+                        self._ports.clock.now_millis()
+                    ),
+                    "settlementRequestMetadata": dict(metadata),
+                })
+                self._save_automation_pending_record(
+                    account_ref, "losslessPendingBattleJson", updated
+                )
+
+            durable = _DurablePendingMutationExecution(
+                execution, before_settlement
+            )
+            try:
+                settlement = self._run_lossless_settlement_game_workflow(
+                    durable, account_ref, context
+                )
+            except OperationKnownFailureError as error:
+                updated.update({
+                    "settlementSendState": "rejected",
+                    "settlementError": str(error),
+                })
+                self._save_automation_pending_record(
+                    account_ref, "losslessPendingBattleJson", updated
+                )
+                raise
+            except Exception as error:
+                if durable.sent:
+                    updated.update({
+                        "settlementSendState": "uncertain",
+                        "settlementError": str(error),
+                    })
+                    self._save_automation_pending_record(
+                        account_ref, "losslessPendingBattleJson", updated
+                    )
+                raise
+            completed_at = int(self._ports.clock.now_millis())
+            result_record = {
+                "completedAtMillis": completed_at,
+                "battleId": settlement.get("battleId")
+                or updated.get("battleId"),
+                "generalIds": updated.get("generalIds") or [],
+                "stage": updated.get("stage") or {},
+                "settlement": settlement,
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "losslessPendingBattleJson": "{}",
+                    "losslessLastResultJson": self._json(result_record),
+                },
+            )
+            return {
+                "feature": "lossless",
+                "state": "settled",
+                "success": True,
+                "status": status,
+                "settlement": settlement,
+                "message": str(
+                    settlement.get("message") or "无损战斗已完成结算"
+                ),
+                "nextWakeAtMillis": completed_at + int(
+                    schedule["settlementRecheckMillis"]
+                ),
+            }
+        if phase == "fighting":
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", updated
+            )
+            return {
+                "feature": "lossless",
+                "state": "fighting",
+                "status": status,
+                "message": "无损战斗进行中",
+                "nextWakeAtMillis": now_millis + int(
+                    schedule["fightingPollMillis"]
+                ),
+            }
+        if phase in {"cooldown", "daily_done", "ready"}:
+            _state_hex, generals, _army = self._fresh_formation_state(
+                account_ref,
+                {**context, "operationId": execution.operation_id},
+                read_only=True,
+            )
+            expected_ids = {
+                int(value)
+                for value in updated.get("generalIds") or []
+                if int(value) > 0
+            }
+            observed = {
+                int(row.get("id") or 0): row
+                for row in generals
+                if isinstance(row, dict) and int(row.get("id") or 0) > 0
+            }
+            all_idle = bool(expected_ids) and expected_ids.issubset(observed) and all(
+                general_is_idle(observed[general_id])
+                for general_id in expected_ids
+            )
+            if all_idle:
+                completed_at = int(self._ports.clock.now_millis())
+                self._update_account_public_state(
+                    account_ref,
+                    {
+                        "losslessPendingBattleJson": "{}",
+                        "losslessLastResultJson": self._json({
+                            "completedAtMillis": completed_at,
+                            "battleId": updated.get("battleId"),
+                            "generalIds": sorted(expected_ids),
+                            "stage": updated.get("stage") or {},
+                            "status": status,
+                            "settlement": None,
+                        }),
+                    },
+                )
+                return {
+                    "feature": "lossless",
+                    "state": "completed",
+                    "success": True,
+                    "status": status,
+                    "message": "无损战斗已结束且出征将领全部回闲",
+                    "nextWakeAtMillis": completed_at + int(
+                        schedule["settlementRecheckMillis"]
+                    ),
+                }
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", updated
+            )
+            return {
+                "feature": "lossless",
+                "state": "waiting-generals",
+                "status": status,
+                "message": "无损状态已离开战斗，等待出征将领全部回闲",
+                "nextWakeAtMillis": now_millis + int(
+                    schedule["postDispatchPollMillis"]
+                ),
+            }
+        updated["blockedAtMillis"] = now_millis
+        updated["requiresAttention"] = True
+        self._save_automation_pending_record(
+            account_ref, "losslessPendingBattleJson", updated
+        )
+        return {
+            "feature": "lossless",
+            "state": "blocked",
+            "requiresAttention": True,
+            "status": status,
+            "message": "无损状态未知，已停止自动动作并保留账本",
+            "nextWakeAtMillis": None,
+        }
+
+    def _run_lossless_action_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run one desktop-equivalent lossless state-machine tick."""
+
+        account_ref = str(body["accountRef"])
+        existing = self._automation_pending_record(
+            account_ref, "losslessPendingBattleJson"
+        )
+        if existing:
+            result = self._run_lossless_recovery_game_workflow(
+                execution, account_ref, existing, context
+            )
+            return {"ok": True, "result": result}
+
+        execution.publish_progress(5, {"phase": "lossless-status"})
+        status = self._run_lossless_status_game_workflow(
+            execution, account_ref, context
+        )
+        phase = lossless_status_phase(status)
+        now_millis = int(self._ports.clock.now_millis())
+        schedule = dict(self._behavior_contract["lossless"]["schedule"])
+        if phase == "settlement":
+            pending = {
+                "generalIds": [int(value) for value in body["generalIds"]],
+                "level": int(body["level"]),
+                "createdAtMillis": now_millis,
+                "dispatchSendState": "accepted",
+                "observedExistingSettlement": True,
+                "residentContext": dict(body.get("residentContext") or {}),
+            }
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", pending
+            )
+            result = self._run_lossless_recovery_game_workflow(
+                execution, account_ref, pending, context
+            )
+            return {"ok": True, "result": result}
+        if phase == "daily_done":
+            return {
+                "ok": True,
+                "result": {
+                    "feature": "lossless",
+                    "state": "daily_done",
+                    "status": status,
+                    "message": "今日无损次数已用完",
+                    "nextWakeAtMillis": self._next_china_midnight_millis(
+                        now_millis
+                    ),
+                },
+            }
+        if phase == "cooldown":
+            cooldown = max(
+                int(schedule["cooldownPollMinMillis"]),
+                min(
+                    int(status.get("cooldownMs") or 0),
+                    int(schedule["cooldownPollMaxMillis"]),
+                ),
+            )
+            return {
+                "ok": True,
+                "result": {
+                    "feature": "lossless",
+                    "state": "cooldown",
+                    "status": status,
+                    "message": f"无损冷却中，约{cooldown // 1000}秒后复查",
+                    "nextWakeAtMillis": now_millis + cooldown,
+                },
+            }
+        if phase == "fighting":
+            return {
+                "ok": True,
+                "result": {
+                    "feature": "lossless",
+                    "state": "fighting",
+                    "status": status,
+                    "message": "检测到已有无损战斗，等待状态变化",
+                    "nextWakeAtMillis": now_millis + int(
+                        schedule["fightingPollMillis"]
+                    ),
+                },
+            }
+        configured_daily_limit = max(
+            1,
+            min(
+                int(body.get("dailyLimit") or self._behavior_contract[
+                    "lossless"
+                ]["serverDailyLimit"]),
+                int(self._behavior_contract["lossless"]["serverDailyLimit"]),
+            ),
+        )
+        if int(status.get("usedAttempts") or 0) >= configured_daily_limit:
+            return {
+                "ok": True,
+                "result": {
+                    "feature": "lossless",
+                    "state": "configured-daily-limit",
+                    "status": status,
+                    "message": (
+                        f"今日无损已达到配置上限{configured_daily_limit}次"
+                    ),
+                    "nextWakeAtMillis": self._next_china_midnight_millis(
+                        now_millis
+                    ),
+                },
+            }
+        if phase != "ready":
+            raise OperationKnownFailureError(
+                "无损状态未知，不能出征",
+                code="LOSSLESS_STATUS_NOT_READY",
+                details={"status": status},
+            )
+
+        level = int(body["level"])
+        pending = {
+            "generalIds": [int(value) for value in body["generalIds"]],
+            "level": level,
+            "createdAtMillis": now_millis,
+            "preDispatchMutationState": "pending",
+            "preDispatchMutationCount": 0,
+            "prepareSendState": "not-sent",
+            "dispatchSendState": "not-sent",
+            "residentContext": dict(body.get("residentContext") or {}),
+        }
+        self._save_automation_pending_record(
+            account_ref, "losslessPendingBattleJson", pending
+        )
+
+        mutation_count = 0
+
+        def before_pre_dispatch_mutation(metadata: Dict[str, Any]) -> None:
+            nonlocal mutation_count
+            mutation_count += 1
+            pending.update({
+                "preDispatchMutationState": "sending",
+                "preDispatchMutationCount": mutation_count,
+                "preDispatchMutationSendingAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "preDispatchMutationMetadata": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", pending
+            )
+
+        durable = _DurablePendingMutationExecution(
+            execution, before_pre_dispatch_mutation
+        )
+        try:
+            execution.publish_progress(20, {"phase": "lossless-preflight"})
+            selected, preflight = self._run_expedition_preflight(
+                durable,
+                account_ref,
+                body,
+                context,
+                action_name="无损",
+                restore_saved_formation=True,
+            )
+            refill_result: Dict[str, Any] | None = None
+            if bool(body.get("fullTroops")):
+                refill_result = self._run_troop_refill_game_workflow(
+                    durable,
+                    {
+                        "accountRef": account_ref,
+                        "confirm": "batch-refill",
+                        "generalIds": list(body["generalIds"]),
+                    },
+                    context,
+                ).get("result")
+                _state_hex, refreshed, _army = self._fresh_formation_state(
+                    account_ref,
+                    {**context, "operationId": execution.operation_id},
+                    read_only=True,
+                )
+                by_id = {
+                    int(row.get("id") or 0): dict(row)
+                    for row in refreshed
+                    if isinstance(row, dict) and int(row.get("id") or 0) > 0
+                }
+                selected = [by_id[int(value)] for value in body["generalIds"]]
+
+            execution.publish_progress(38, {"phase": "lossless-catalog"})
+            catalog = self._run_lossless_catalog_game_workflow(
+                durable, account_ref, context
+            )
+            if int(status.get("selectedLevel") or 0) != level:
+                selected_level = self._run_lossless_select_level_game_workflow(
+                    durable,
+                    account_ref,
+                    level,
+                    context,
+                    phase="shared-core/lossless/select-level",
+                )
+                status = {**status, **{
+                    "selectedLevel": selected_level.get("selectedLevel"),
+                    "stageId": selected_level.get("stageId"),
+                    "stageIdHex": selected_level.get("stageIdHex"),
+                }}
+            lineup = self._run_lossless_lineup_game_workflow(
+                durable, account_ref, context
+            )
+            guard = dict(self._behavior_contract["lossless"]["level10Guard"])
+            is_guard = (
+                level == int(guard["level"])
+                and int(lineup.get("stageId") or 0) == int(guard["stageId"])
+                and str(lineup.get("stageName") or "")
+                == str(guard["stageName"])
+            )
+            if is_guard:
+                maximum_rerolls = int(body["maxLineupRerolls"])
+                for attempt in range(maximum_rerolls + 1):
+                    verdict = evaluate_level10_guard_lineup(lineup)
+                    verdict.update({
+                        "required": True,
+                        "attempt": attempt + 1,
+                        "rerolls": attempt,
+                    })
+                    lineup["screening"] = verdict
+                    if bool(verdict.get("qualified")):
+                        break
+                    if attempt >= maximum_rerolls:
+                        raise OperationKnownFailureError(
+                            f"连续筛选{maximum_rerolls + 1}次仍未找到"
+                            "符合条件的10级卫兵阵容",
+                            code="LOSSLESS_REROLL_LIMIT_REACHED",
+                            details={"screening": verdict},
+                        )
+                    minimum_wait = (
+                        int(guard["rerollDelayMinMillis"]) / 1000.0
+                    )
+                    maximum_wait = (
+                        int(guard["rerollDelayMaxMillis"]) / 1000.0
+                    )
+                    alternate_level = int(guard["alternateLevel"])
+                    durable.wait(random.uniform(minimum_wait, maximum_wait))
+                    self._run_lossless_select_level_game_workflow(
+                        durable,
+                        account_ref,
+                        alternate_level,
+                        context,
+                        phase="shared-core/lossless/reroll-away",
+                    )
+                    durable.wait(random.uniform(minimum_wait, maximum_wait))
+                    self._run_lossless_select_level_game_workflow(
+                        durable,
+                        account_ref,
+                        level,
+                        context,
+                        phase="shared-core/lossless/reroll-return",
+                    )
+                    durable.wait(random.uniform(minimum_wait, maximum_wait))
+                    lineup = self._run_lossless_lineup_game_workflow(
+                        durable, account_ref, context
+                    )
+            else:
+                lineup["screening"] = {
+                    "required": False,
+                    "qualified": True,
+                    "reason": "仅10级卫兵需要筛选阵容",
+                    "rerolls": 0,
+                }
+            stage = lossless_stage_context(status, catalog, lineup)
+            public_state = self._account_public_state(account_ref)
+            try:
+                role_id = positive_game_id(
+                    public_state.get("roleId") or account_ref,
+                    "角色 ID",
+                )
+            except ValueError as error:
+                raise OperationKnownFailureError(
+                    "无损出征缺少当前角色 ID",
+                    code="LOSSLESS_ROLE_ID_MISSING",
+                ) from error
+            general_hexes = [
+                str(row.get("idHex") or f"{int(row['id']):016x}")
+                for row in selected
+            ]
+            prepare_payload = build_lossless_prepare_payload(
+                general_hexes, role_id
+            )
+            dispatch_payload = build_lossless_expedition_payload(
+                general_hexes, role_id
+            )
+        except OperationKnownFailureError as error:
+            if error.code == "EXPEDITION_ENERGY_ITEM_UNAVAILABLE":
+                deferred_at = int(self._ports.clock.now_millis())
+                retry_at, retry_note = self._resource_shortage_retry(
+                    deferred_at,
+                    int(schedule.get("resourceRetryMillis", 300_000)),
+                    error,
+                )
+                pending.update({
+                    "preDispatchMutationState": "failed",
+                    "preDispatchMutationError": str(error),
+                    "preDispatchErrorCode": error.code,
+                    "requiresAttention": False,
+                    "deferredAtMillis": deferred_at,
+                    "retryAtMillis": retry_at,
+                    "recoveryResolution": "retryable-resource-shortage",
+                })
+                self._update_account_public_state(
+                    account_ref,
+                    {
+                        "losslessPendingBattleJson": "{}",
+                        "losslessLastDeferredJson": self._json(pending),
+                    },
+                )
+                return {
+                    "ok": True,
+                    "result": {
+                        "feature": "lossless",
+                        "state": "waiting-resources",
+                        "success": True,
+                        "requiresAttention": False,
+                        "errorCode": error.code,
+                        "status": status,
+                        "message": (
+                            f"{error}；本轮无损已跳过，{retry_note}，"
+                            "期间继续执行其他任务"
+                        ),
+                        "nextWakeAtMillis": retry_at,
+                    },
+                }
+            if durable.sent:
+                pending.update({
+                    "preDispatchMutationState": "failed",
+                    "preDispatchMutationError": str(error),
+                    "preDispatchErrorCode": error.code,
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "losslessPendingBattleJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"losslessPendingBattleJson": "{}"}
+                )
+            raise
+        except Exception as error:
+            if durable.sent:
+                pending.update({
+                    "preDispatchMutationState": "uncertain",
+                    "preDispatchMutationError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "losslessPendingBattleJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"losslessPendingBattleJson": "{}"}
+                )
+            raise
+
+        pending.update({
+            "generalIds": [int(row["id"]) for row in selected],
+            "stage": stage,
+            "preDispatchMutationState": "accepted",
+            "preDispatchMutationAcceptedAtMillis": int(
+                self._ports.clock.now_millis()
+            ),
+            "prepareSendState": "sending",
+            "prepareSendingAtMillis": int(self._ports.clock.now_millis()),
+        })
+        contract = dict(self._behavior_contract["lossless"])
+        prepare_opcode = self._contract_opcode(contract, "prepareOpcode")
+        prepare_response_opcode = self._contract_opcode(
+            contract, "prepareResponseOpcode"
+        )
+        dispatch_opcode = self._contract_opcode(contract, "dispatchOpcode")
+        dispatch_response_opcode = self._contract_opcode(
+            contract, "dispatchResponseOpcode"
+        )
+        self._save_automation_pending_record(
+            account_ref, "losslessPendingBattleJson", pending
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "lossless-dispatch",
+            "phase": "prepare",
+            "opcode": f"0x{prepare_opcode:04x}",
+        })
+        try:
+            prepare_fact = self._execute_host_game_command(
+                account_ref,
+                prepare_opcode,
+                prepare_payload,
+                "shared-core/lossless/prepare",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+        except Exception as error:
+            pending.update({
+                "prepareSendState": "uncertain",
+                "prepareError": str(error),
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", pending
+            )
+            raise OperationUncertainError(
+                "无损预出征请求越过发送边界后异常，禁止自动重发",
+                {"error": str(error)},
+            ) from error
+        if self._game_packet(prepare_fact, prepare_response_opcode) is None:
+            self._update_account_public_state(
+                account_ref, {"losslessPendingBattleJson": "{}"}
+            )
+            raise OperationKnownFailureError(
+                f"无损预出征未收到 0x{prepare_response_opcode:04x} 确认，"
+                "已禁止发送正式出征",
+                code="LOSSLESS_PREPARE_RESPONSE_MISSING",
+                details={"packets": self._fact_packets(prepare_fact)},
+            )
+        pending.update({
+            "prepareSendState": "accepted",
+            "dispatchSendState": "sending",
+            "dispatchSendingAtMillis": int(self._ports.clock.now_millis()),
+        })
+        self._save_automation_pending_record(
+            account_ref, "losslessPendingBattleJson", pending
+        )
+        execution.publish_progress(80, {"phase": "lossless-dispatch"})
+        try:
+            dispatch_fact = self._execute_host_game_command(
+                account_ref,
+                dispatch_opcode,
+                dispatch_payload,
+                "shared-core/lossless/dispatch",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+        except Exception as error:
+            pending.update({
+                "dispatchSendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                "dispatchError": str(error),
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", pending
+            )
+            raise OperationUncertainError(
+                "无损正式出征请求越过发送边界后异常，禁止自动重发",
+                {"error": str(error)},
+            ) from error
+        response = self._game_packet(dispatch_fact, dispatch_response_opcode)
+        if response is None:
+            pending.update({
+                "dispatchSendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", pending
+            )
+            raise OperationUncertainError(
+                "无损正式出征已发送，但未收到 "
+                f"0x{dispatch_response_opcode:04x} 回执"
+            )
+        receipt = parse_dispatch_response(response)
+        if receipt.get("status") is None or receipt.get("parseError"):
+            pending.update({
+                "dispatchSendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, "losslessPendingBattleJson", pending
+            )
+            raise OperationUncertainError(
+                "无损正式出征回执无法确认", {"receipt": receipt}
+            )
+        battle_id = int(receipt.get("battleId") or 0)
+        success = bool(receipt.get("success"))
+        if bool(contract.get("dispatchSuccessRequiresPositiveBattleId", True)):
+            success = success and battle_id > 0
+        if not success:
+            self._update_account_public_state(
+                account_ref, {"losslessPendingBattleJson": "{}"}
+            )
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器拒绝无损正式出征"),
+                code="LOSSLESS_DISPATCH_REJECTED",
+                details={"receipt": receipt},
+            )
+        accepted_at = int(self._ports.clock.now_millis())
+        pending.update({
+            "dispatchSendState": "accepted",
+            "battleId": battle_id,
+            "acceptedAtMillis": accepted_at,
+            "dispatchAtMillis": accepted_at,
+        })
+        self._save_automation_pending_record(
+            account_ref, "losslessPendingBattleJson", pending
+        )
+        return {
+            "ok": True,
+            "result": {
+                "feature": "lossless",
+                "state": "fighting",
+                "success": True,
+                "dispatchAccepted": True,
+                "settlementPending": True,
+                "successBattleId": battle_id,
+                "battleId": battle_id,
+                "status": status,
+                "catalog": catalog,
+                "lineup": lineup,
+                "stage": stage,
+                "generals": selected,
+                "preflight": preflight,
+                "refill": refill_result,
+                "receipt": receipt,
+                "payloads": {
+                    "prepareOpcode": f"0x{prepare_opcode:04x}",
+                    "preparePayloadHex": prepare_payload.hex(),
+                    "expeditionOpcode": f"0x{dispatch_opcode:04x}",
+                    "expeditionPayloadHex": dispatch_payload.hex(),
+                },
+                "message": f"无损出征已确认：battleId={battle_id}",
+                "nextWakeAtMillis": accepted_at + int(
+                    schedule["postDispatchPollMillis"]
+                ),
+            },
+        }
+
+    def _run_raid_execute_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run one real raid with the desktop request and receipt semantics."""
+
+        account_ref = str(body["accountRef"])
+        player_name = str(body["playerName"])
+        fief_index = int(body["fiefIndex"])
+        execution.publish_progress(8, {"phase": "raid-querying-fiefs"})
+        fief_result = self._run_raid_fiefs_game_workflow(
+            execution,
+            {"accountRef": account_ref, "playerName": player_name},
+            context,
+        )
+        fiefs = [
+            dict(row)
+            for row in fief_result.get("fiefs") or []
+            if isinstance(row, dict)
+        ]
+        if not 1 <= fief_index <= len(fiefs):
+            raise OperationKnownFailureError(
+                f"{player_name} 当前只解析到 {len(fiefs)} 个封地，"
+                f"无法选择第 {fief_index} 个",
+                code="RAID_FIEF_INDEX_OUT_OF_RANGE",
+                details={"fiefCount": len(fiefs), "fiefIndex": fief_index},
+            )
+        target = dict(fiefs[fief_index - 1])
+        target_id = positive_game_id(target.get("targetId"), "掠夺封地 ID")
+        requested_ids = [
+            positive_game_id(value, "将领 ID")
+            for value in body.get("generalIds") or []
+            if value not in (None, "")
+        ]
+        pending = {
+            "generalIds": requested_ids,
+            "playerName": player_name,
+            "fiefIndex": fief_index,
+            "targetId": target_id,
+            "target": target,
+            "createdAtMillis": int(self._ports.clock.now_millis()),
+            "dispatchAtMillis": 0,
+            "preDispatchMutationState": "pending",
+            "sendState": "not-started",
+            "residentContext": dict(body.get("residentContext") or {}),
+        }
+        self._save_automation_pending_record(
+            account_ref, "raidPendingReturnJson", pending
+        )
+
+        def before_preflight(metadata: Dict[str, Any]) -> None:
+            pending.update({
+                "preDispatchMutationState": "sending",
+                "preDispatchMutationAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "preDispatchRequestMetadata": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "raidPendingReturnJson", pending
+            )
+
+        durable = _DurablePendingMutationExecution(
+            execution, before_preflight
+        )
+        execution.publish_progress(20, {"phase": "raid-preflight"})
+        try:
+            selected, preflight = self._run_expedition_preflight(
+                durable,
+                account_ref,
+                body,
+                context,
+                action_name="掠夺",
+                require_full_loyalty=bool(body.get("fullLoyalty", False)),
+                restore_saved_formation=bool(body.get("fullTroops", True)),
+            )
+        except OperationKnownFailureError as error:
+            if durable.sent:
+                pending.update({
+                    "preDispatchMutationState": "failed",
+                    "preDispatchError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "raidPendingReturnJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"raidPendingReturnJson": "{}"}
+                )
+            raise
+        except Exception as error:
+            if durable.sent:
+                pending.update({
+                    "preDispatchMutationState": "uncertain",
+                    "preDispatchError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "raidPendingReturnJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"raidPendingReturnJson": "{}"}
+                )
+            raise
+        pending.update({
+            "generalIds": [int(row["id"]) for row in selected],
+            "preDispatchMutationState": "accepted",
+            "preDispatchAcceptedAtMillis": int(
+                self._ports.clock.now_millis()
+            ),
+        })
+        self._save_automation_pending_record(
+            account_ref, "raidPendingReturnJson", pending
+        )
+        general_hexes = [
+            str(row.get("idHex") or f"{int(row['id']):016x}")
+            for row in selected
+        ]
+        prepare_payload = build_raid_prepare_payload(general_hexes, target_id)
+        dispatch_payload = build_raid_expedition_payload(general_hexes, target_id)
+        contract = dict(self._behavior_contract["raid"])
+        prepare_opcode = self._contract_opcode(contract, "prepareOpcode")
+        prepare_response_opcode = self._contract_opcode(
+            contract, "prepareResponseOpcode"
+        )
+        dispatch_opcode = self._contract_opcode(contract, "dispatchOpcode")
+        dispatch_response_opcode = self._contract_opcode(
+            contract, "dispatchResponseOpcode"
+        )
+        pending.update({
+            "sendState": "sending",
+            "dispatchAtMillis": int(self._ports.clock.now_millis()),
+        })
+        self._save_automation_pending_record(
+            account_ref, "raidPendingReturnJson", pending
+        )
+        action_results: list[Dict[str, Any]] = []
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "raid-execute",
+            "phase": "prepare",
+            "opcode": f"0x{prepare_opcode:04x}",
+        })
+        prepare_fact = self._execute_host_game_command(
+            account_ref,
+            prepare_opcode,
+            prepare_payload,
+            "shared-core/raid/execute/prepare",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        action_results.append({
+            "phase": "prepare",
+            "opcode": f"0x{prepare_opcode:04x}",
+            "payloadHex": prepare_payload.hex(),
+            "packets": self._fact_packets(prepare_fact),
+        })
+        if self._game_packet(prepare_fact, prepare_response_opcode) is None:
+            self._update_account_public_state(
+                account_ref,
+                {"raidPendingReturnJson": "{}"},
+            )
+            raise OperationKnownFailureError(
+                f"掠夺预出征未收到 0x{prepare_response_opcode:04x} 确认，"
+                "已禁止发送正式出征",
+                code="RAID_PREPARE_RESPONSE_MISSING",
+                details={"actionResults": action_results},
+            )
+
+        execution.publish_progress(65, {"phase": "raid-dispatch"})
+        dispatch_fact = self._execute_host_game_command(
+            account_ref,
+            dispatch_opcode,
+            dispatch_payload,
+            "shared-core/raid/execute/dispatch",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        action_results.append({
+            "phase": "dispatch",
+            "opcode": f"0x{dispatch_opcode:04x}",
+            "payloadHex": dispatch_payload.hex(),
+            "packets": self._fact_packets(dispatch_fact),
+        })
+        response = self._game_packet(dispatch_fact, dispatch_response_opcode)
+        if response is None:
+            pending["sendState"] = "uncertain"
+            pending["uncertainAtMillis"] = int(self._ports.clock.now_millis())
+            self._update_account_public_state(
+                account_ref,
+                {"raidPendingReturnJson": self._json(pending)},
+            )
+            raise OperationUncertainError(
+                f"掠夺正式出征已发送，但未收到 "
+                f"0x{dispatch_response_opcode:04x} 回执"
+            )
+        receipt = parse_dispatch_response(response)
+        success = bool(receipt.get("success"))
+        battle_id = int(receipt.get("battleId") or 0)
+        if bool(contract.get("dispatchSuccessRequiresPositiveBattleId", True)):
+            success = success and battle_id > 0
+        if not success:
+            self._update_account_public_state(
+                account_ref,
+                {"raidPendingReturnJson": "{}"},
+            )
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "0x8522 未确认掠夺出征成功"),
+                code="RAID_DISPATCH_REJECTED",
+                details={
+                    "receipt": receipt,
+                    "actionResults": action_results,
+                },
+            )
+        accepted_at = int(self._ports.clock.now_millis())
+        pending.update({
+            "sendState": "accepted",
+            "battleId": battle_id,
+            "acceptedAtMillis": accepted_at,
+            "dispatchAtMillis": accepted_at,
+        })
+        self._update_account_public_state(
+            account_ref,
+            {"raidPendingReturnJson": self._json(pending)},
+        )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "settlementPending": True,
+                "successBattleId": battle_id,
+                "message": (
+                    f"掠夺出征已确认：{player_name} 第{fief_index}个封地，"
+                    f"battleId={battle_id}"
+                ),
+                "playerName": player_name,
+                "fiefIndex": fief_index,
+                "target": target,
+                "generals": selected,
+                "preflight": preflight,
+                "payloads": {
+                    "prepareOpcode": f"0x{prepare_opcode:04x}",
+                    "preparePayloadHex": prepare_payload.hex(),
+                    "dispatchOpcode": f"0x{dispatch_opcode:04x}",
+                    "dispatchPayloadHex": dispatch_payload.hex(),
+                },
+                "receipt": receipt,
+                "actionResults": action_results,
+            },
+        }
+
+    def _run_brush_execute_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        target = dict(body["target"])
+        now_millis = int(self._ports.clock.now_millis())
+        host_settings = self._expedition_host_settings(body)
+        host_config = (
+            dict(host_settings.get("config"))
+            if isinstance(host_settings.get("config"), dict)
+            else {}
+        )
+
+        def recovery_setting(name: str, default: Any) -> Any:
+            if name in body:
+                return body.get(name)
+            if name in host_settings:
+                return host_settings.get(name)
+            if name in host_config:
+                return host_config.get(name)
+            return default
+
+        requested_ids = [
+            positive_game_id(value, "将领 ID")
+            for value in body.get("generalIds") or []
+            if value not in (None, "")
+        ]
+        pending_recovery = {
+            "generalIds": requested_ids,
+            "generalFacts": [],
+            "formationId": requested_ids[0] if requested_ids else None,
+            "targetId": int(target.get("id") or target.get("targetId") or 0),
+            "targetX": int(target.get("x") or 0),
+            "targetY": int(target.get("y") or 0),
+            "target": target,
+            "createdAtMillis": now_millis,
+            "preDispatchMutationState": "pending",
+            "sendState": "not-started",
+            "formations": [],
+            "healWounded": bool(
+                recovery_setting("healWounded", True)
+            ),
+            "foodToCopper": bool(
+                recovery_setting("foodToCopper", False)
+            ),
+            "copperFloorWan": int(
+                recovery_setting("copperFloorWan", 1) or 1
+            ),
+            "deleteMailForSpeed": bool(
+                recovery_setting("deleteMailForSpeed", False)
+            ),
+        }
+        self._update_account_public_state(
+            account_ref,
+            {"brushPendingRecoveryJson": self._json(pending_recovery)},
+        )
+
+        def before_preflight(metadata: Dict[str, Any]) -> None:
+            pending_recovery.update({
+                "preDispatchMutationState": "sending",
+                "preDispatchMutationAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "preDispatchRequestMetadata": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "brushPendingRecoveryJson", pending_recovery
+            )
+
+        preflight_execution = _DurablePendingMutationExecution(
+            execution, before_preflight
+        )
+        try:
+            selected, preflight = self._run_expedition_preflight(
+                preflight_execution,
+                account_ref,
+                body,
+                context,
+                action_name="刷黄",
+                require_role_level=30,
+                require_full_loyalty=False,
+            )
+        except OperationKnownFailureError as error:
+            pending_recovery.update({
+                "preDispatchMutationState": (
+                    "failed" if preflight_execution.sent
+                    else "failed-before-send"
+                ),
+                "preDispatchError": str(error),
+                "preDispatchErrorCode": error.code,
+                "preDispatchFailedAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "requiresAttention": False,
+            })
+            # OperationKnownFailureError means the server outcome is
+            # definitive. The formal expedition is still not-started, so this
+            # record is audit history rather than an ambiguous active ledger.
+            # Keeping it active would permanently block every later brush tick
+            # after an ordinary readiness failure such as low energy.
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "brushPendingRecoveryJson": "{}",
+                    "brushLastPreDispatchFailureJson": self._json(
+                        pending_recovery
+                    ),
+                },
+            )
+            raise
+        except Exception as error:
+            if preflight_execution.sent:
+                pending_recovery.update({
+                    "preDispatchMutationState": "uncertain",
+                    "preDispatchError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "brushPendingRecoveryJson", pending_recovery
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"brushPendingRecoveryJson": "{}"}
+                )
+            raise
+
+        pending_recovery.update({
+            "generalIds": [int(row["id"]) for row in selected],
+            "generalFacts": [
+                {
+                    "id": int(row["id"]),
+                    "name": str(row.get("name") or row["id"]),
+                    "fiefId": int(
+                        row.get("fiefId")
+                        or row.get("placeID")
+                        or row.get("placeId")
+                        or 0
+                    ),
+                }
+                for row in selected
+            ],
+            "formationId": int(selected[0]["id"]),
+            "formations": [
+                {
+                    **rule,
+                    "generalId": str(row["id"]),
+                    "generalIds": [str(row["id"])],
+                }
+                for row in selected
+                for rule in [
+                    self._expedition_formation_rule(body, int(row["id"]))
+                ]
+                if isinstance(rule, dict)
+            ],
+            "preDispatchMutationState": "accepted",
+            "preDispatchAcceptedAtMillis": int(
+                self._ports.clock.now_millis()
+            ),
+        })
+        self._save_automation_pending_record(
+            account_ref, "brushPendingRecoveryJson", pending_recovery
+        )
+        target_hex = action_target_hex(target)
+        general_hexes = [
+            str(row.get("idHex") or f"{int(row['id']):016x}")
+            for row in selected
+        ]
+        variant = build_brush_payloads_variant(
+            general_hexes,
+            target_hex,
+            variant=0,
+        )
+
+        def before_dispatch(metadata: Dict[str, Any]) -> None:
+            pending_recovery.update({
+                "sendState": "sending",
+                "sendingAtMillis": int(self._ports.clock.now_millis()),
+                "dispatchRequestMetadata": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "brushPendingRecoveryJson", pending_recovery
+            )
+
+        dispatch_execution = _DurablePendingMutationExecution(
+            execution, before_dispatch
+        )
+        action_results: list[Dict[str, Any]] = []
+        dispatch_receipt: Dict[str, Any] | None = None
+        try:
+            for phase, game_hex in (
+                ("prepare", variant["prepare"]),
+                ("expedition", variant["expedition"]),
+            ):
+                declared, opcode, payload = action_gamehex_to_cmd(game_hex)
+                if phase == "prepare":
+                    dispatch_execution.raise_if_cancelled()
+                    dispatch_execution.mark_request_sent({
+                        "transport": "android-raw-game-command",
+                        "feature": "brush-execute",
+                        "phase": phase,
+                        "opcode": f"0x{opcode:04x}",
+                    })
+                fact = self._daily_command_fact(
+                    dispatch_execution,
+                    account_ref,
+                    opcode,
+                    payload,
+                    f"shared-core/brush/execute/{phase}",
+                    context,
+                    mutation_sent=True,
+                )
+                packets = self._fact_packets(fact)
+                row = {
+                    "phase": phase,
+                    "declared": declared,
+                    "opcode": f"0x{opcode:04x}",
+                    "payloadHex": payload.hex(),
+                    "packets": packets,
+                }
+                action_results.append(row)
+                if phase == "expedition":
+                    response = self._game_packet(
+                        fact,
+                        int(self._behavior_contract["expedition"]["dispatchResponseOpcode"], 0),
+                    )
+                    if response is None:
+                        raise OperationUncertainError(
+                            "刷黄正式出征请求已发送，但未收到 0x8522 回执"
+                        )
+                    dispatch_receipt = parse_dispatch_response(response)
+        except OperationKnownFailureError as error:
+            pending_recovery.update({
+                "sendState": "failed",
+                "dispatchError": str(error),
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "brushPendingRecoveryJson", pending_recovery
+            )
+            raise
+        except Exception as error:
+            if dispatch_execution.sent:
+                pending_recovery.update({
+                    "sendState": "uncertain",
+                    "dispatchError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "brushPendingRecoveryJson", pending_recovery
+                )
+            raise
+        success = bool(dispatch_receipt and dispatch_receipt.get("success"))
+        battle_id = int((dispatch_receipt or {}).get("battleId") or 0)
+        message = str((dispatch_receipt or {}).get("message") or "")
+        if not success:
+            self._update_account_public_state(
+                account_ref,
+                {"brushPendingRecoveryJson": "{}"},
+            )
+            raise OperationKnownFailureError(
+                message or "0x8522 未确认刷黄出征成功",
+                code="BRUSH_DISPATCH_REJECTED",
+                details={
+                    "receipt": dispatch_receipt or {},
+                    "actionResults": action_results,
+                },
+            )
+        pending_recovery.update({
+            "sendState": "accepted",
+            "battleId": battle_id or None,
+            "acceptedAtMillis": int(self._ports.clock.now_millis()),
+        })
+        self._update_account_public_state(
+            account_ref,
+            {"brushPendingRecoveryJson": self._json(pending_recovery)},
+        )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "settlementPending": True,
+                "counted": False,
+                "successBattleId": battle_id or None,
+                "battleText": message or f"刷黄出征已确认：battleId={battle_id}",
+                "target": target,
+                "targetHex": target_hex,
+                "generals": selected,
+                "preflight": preflight,
+                "payloads": {
+                    "prepareGameHex": variant["prepare"],
+                    "dispatchGameHex": variant["expedition"],
+                },
+                "actionResults": action_results,
+            },
+        }
+
+    def _run_mine_execute_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        target = dict(body["target"])
+        if bool(target.get("playerOccupied")):
+            raise OperationKnownFailureError(
+                f"矿点已由玩家{target.get('ownerName') or '未知玩家'}占领，禁止攻击",
+                code="MINE_PLAYER_OCCUPIED",
+            )
+        session = self._daily_account_session_snapshot(account_ref)
+        role_state = session.get("roleState")
+        role_state = role_state if isinstance(role_state, dict) else {}
+        current = int(role_state.get("resourcePointCurrent") or 0)
+        capacity = int(role_state.get("resourcePointCap") or 0)
+        if capacity > 0 and current >= capacity:
+            raise OperationKnownFailureError(
+                f"资源点数量已满({current}/{capacity})，无法继续打矿",
+                code="MINE_RESOURCE_CAPACITY_FULL",
+            )
+        try:
+            resource_id = int(target.get("id") or target.get("targetId") or 0)
+        except (TypeError, ValueError) as error:
+            raise OperationKnownFailureError(
+                "矿点 ID 无效", code="MINE_TARGET_INVALID"
+            ) from error
+        requested_ids = [
+            positive_game_id(value, "将领 ID")
+            for value in body.get("generalIds") or []
+            if value not in (None, "")
+        ]
+        pending_garrison = {
+            "battleId": 0,
+            "mineId": resource_id,
+            "generalIds": requested_ids,
+            "x": int(target.get("x") or 0),
+            "y": int(target.get("y") or 0),
+            "targetName": str(
+                target.get("mineType")
+                or target.get("name")
+                or target.get("type")
+                or ""
+            ),
+            "target": target,
+            # The garrison/recall half finishes minutes after the configured
+            # tick that chose this row has returned, so the row identity has
+            # to travel with the record or the 撤回 line cannot say 编队几.
+            "sourceRowIndex": body.get("sourceRowIndex"),
+            "createdAtMillis": int(self._ports.clock.now_millis()),
+            "dispatchAtMillis": 0,
+            "preDispatchMutationState": "pending",
+            "dispatchSendState": "not-started",
+            "recallRequestedAtMillis": 0,
+            "speedEnabled": bool(body.get("speedEnabled", False)),
+            "withdrawDefense": bool(body.get("withdrawDefense", False)),
+        }
+        self._update_account_public_state(
+            account_ref,
+            {"minePendingGarrisonJson": self._json(pending_garrison)},
+        )
+
+        def before_preflight(metadata: Dict[str, Any]) -> None:
+            pending_garrison.update({
+                "preDispatchMutationState": "sending",
+                "preDispatchMutationAtMillis": int(
+                    self._ports.clock.now_millis()
+                ),
+                "preDispatchRequestMetadata": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "minePendingGarrisonJson", pending_garrison
+            )
+
+        preflight_execution = _DurablePendingMutationExecution(
+            execution, before_preflight
+        )
+        try:
+            selected, preflight = self._run_expedition_preflight(
+                preflight_execution,
+                account_ref,
+                body,
+                context,
+                action_name="打矿",
+                require_full_loyalty=bool(body.get("fullLoyalty", True)),
+            )
+        except OperationKnownFailureError as error:
+            if preflight_execution.sent:
+                pending_garrison.update({
+                    "preDispatchMutationState": "failed",
+                    "preDispatchError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "minePendingGarrisonJson", pending_garrison
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"minePendingGarrisonJson": "{}"}
+                )
+            raise
+        except Exception as error:
+            if preflight_execution.sent:
+                pending_garrison.update({
+                    "preDispatchMutationState": "uncertain",
+                    "preDispatchError": str(error),
+                    "requiresAttention": True,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "minePendingGarrisonJson", pending_garrison
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"minePendingGarrisonJson": "{}"}
+                )
+            raise
+        pending_garrison.update({
+            "generalIds": [int(row["id"]) for row in selected],
+            "preDispatchMutationState": "accepted",
+            "preDispatchAcceptedAtMillis": int(
+                self._ports.clock.now_millis()
+            ),
+        })
+        self._save_automation_pending_record(
+            account_ref, "minePendingGarrisonJson", pending_garrison
+        )
+        general_hexes = [
+            str(row.get("idHex") or f"{int(row['id']):016x}")
+            for row in selected
+        ]
+        prepare_payload, expedition_payload = build_mine_payloads(
+            general_hexes,
+            resource_id,
+        )
+        contract = self._behavior_contract["mine"]
+        prepare_opcode = int(str(contract["prepareOpcode"]), 0)
+        prepare_response_opcode = int(str(contract["prepareResponseOpcode"]), 0)
+        dispatch_opcode = int(str(contract["dispatchOpcode"]), 0)
+        dispatch_response_opcode = int(str(contract["dispatchResponseOpcode"]), 0)
+        pending_garrison.update({
+            "dispatchSendState": "sending",
+            "dispatchSendingAtMillis": int(self._ports.clock.now_millis()),
+            "dispatchRequestMetadata": {
+                "transport": "android-raw-game-command",
+                "feature": "mine-execute",
+                "phase": "prepare",
+                "opcode": f"0x{prepare_opcode:04x}",
+            },
+        })
+        self._save_automation_pending_record(
+            account_ref, "minePendingGarrisonJson", pending_garrison
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "mine-execute",
+            "phase": "prepare",
+            "opcode": f"0x{prepare_opcode:04x}",
+        })
+        prepare_fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            prepare_opcode,
+            prepare_payload,
+            "shared-core/mine/execute/prepare",
+            context,
+            mutation_sent=True,
+        )
+        prepare_response = self._game_packet(prepare_fact, prepare_response_opcode)
+        if prepare_response is None:
+            pending_garrison.update({
+                "dispatchSendState": "uncertain",
+                "dispatchError": "未收到 0x8520 回执",
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "minePendingGarrisonJson", pending_garrison
+            )
+            raise OperationUncertainError(
+                "打矿预出征请求已发送，但未收到 0x8520 回执"
+            )
+        preview = parse_mine_preview(prepare_response)
+        if not preview.get("valid"):
+            pending_garrison.update({
+                "dispatchSendState": "rejected-before-dispatch",
+                "dispatchError": str(preview.get("error") or "预出征回执无效"),
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "minePendingGarrisonJson", pending_garrison
+            )
+            raise OperationKnownFailureError(
+                str(preview.get("error") or "打矿预出征回执无效，已禁止正式出征"),
+                code="MINE_PREVIEW_INVALID",
+                details={"preview": preview},
+            )
+        if (
+            int(preview.get("x") or 0) != int(target.get("x") or 0)
+            or int(preview.get("y") or 0) != int(target.get("y") or 0)
+        ):
+            pending_garrison.update({
+                "dispatchSendState": "rejected-before-dispatch",
+                "dispatchError": "预出征坐标与目标不一致",
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "minePendingGarrisonJson", pending_garrison
+            )
+            raise OperationKnownFailureError(
+                f"打矿预览坐标({preview.get('x')},{preview.get('y')})"
+                f"与目标({target.get('x')},{target.get('y')})不一致",
+                code="MINE_PREVIEW_TARGET_MISMATCH",
+            )
+        max_march = int(body.get("maxMarchMinutes") or 45)
+        if int(preview.get("marchSeconds") or 0) > max_march * 60:
+            pending_garrison.update({
+                "dispatchSendState": "rejected-before-dispatch",
+                "dispatchError": "行军时间超过配置上限",
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "minePendingGarrisonJson", pending_garrison
+            )
+            raise OperationKnownFailureError(
+                f"预计到达目标需要{round(int(preview.get('marchSeconds') or 0) / 60, 1)}分钟，"
+                f"超过设定的{max_march}分钟",
+                code="MINE_MARCH_TIME_OVER_LIMIT",
+            )
+        dispatch_fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            dispatch_opcode,
+            expedition_payload,
+            "shared-core/mine/execute/expedition",
+            context,
+            mutation_sent=True,
+        )
+        dispatch_response = self._game_packet(dispatch_fact, dispatch_response_opcode)
+        if dispatch_response is None:
+            pending_garrison.update({
+                "dispatchSendState": "uncertain",
+                "dispatchError": "未收到 0x8522 回执",
+                "requiresAttention": True,
+            })
+            self._save_automation_pending_record(
+                account_ref, "minePendingGarrisonJson", pending_garrison
+            )
+            raise OperationUncertainError(
+                "打矿正式出征请求已发送，但未收到 0x8522 回执"
+            )
+        receipt = parse_dispatch_response(dispatch_response)
+        if not receipt.get("success"):
+            self._update_account_public_state(
+                account_ref, {"minePendingGarrisonJson": "{}"}
+            )
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "0x8522 未确认打矿出征成功"),
+                code="MINE_DISPATCH_REJECTED",
+                details={"receipt": receipt},
+            )
+        battle_id = int(receipt.get("battleId") or 0)
+        pending_garrison.update({
+            "battleId": battle_id,
+            "mineId": resource_id,
+            "generalIds": [int(row["id"]) for row in selected],
+            "x": int(target.get("x") or 0),
+            "y": int(target.get("y") or 0),
+            "targetName": str(
+                target.get("mineType")
+                or target.get("name")
+                or target.get("type")
+                or ""
+            ),
+            "target": target,
+            "dispatchAtMillis": int(self._ports.clock.now_millis()),
+            "dispatchSendState": "accepted",
+            "dispatchAcceptedAtMillis": int(self._ports.clock.now_millis()),
+            "marchSeconds": int(preview.get("marchSeconds") or 0),
+            "recallRequestedAtMillis": 0,
+            "speedEnabled": bool(body.get("speedEnabled", False)),
+            "withdrawDefense": bool(body.get("withdrawDefense", False)),
+        })
+        self._update_account_public_state(
+            account_ref,
+            {"minePendingGarrisonJson": self._json(pending_garrison)},
+        )
+        speed_result: Dict[str, Any] | None = None
+        if bool(pending_garrison.get("speedEnabled")):
+            try:
+                speed_result = self._run_mine_speed_game_workflow(
+                    execution,
+                    account_ref,
+                    pending_garrison,
+                    context,
+                )
+                pending_garrison["speedState"] = (
+                    "completed"
+                    if bool(speed_result.get("success"))
+                    else "failed"
+                )
+                pending_garrison["speedResult"] = speed_result
+            except Exception as error:
+                # Dispatch is already server-confirmed. A speed-item failure must
+                # not erase that fact or trigger another expedition. Persist the
+                # ambiguity and continue with the garrison/recall state machine.
+                pending_garrison["speedState"] = "uncertain"
+                pending_garrison["speedResult"] = {
+                    "success": False,
+                    "uncertain": True,
+                    "message": str(error) or error.__class__.__name__,
+                }
+                speed_result = dict(pending_garrison["speedResult"])
+            pending_garrison["speedUpdatedAtMillis"] = int(
+                self._ports.clock.now_millis()
+            )
+            self._update_account_public_state(
+                account_ref,
+                {"minePendingGarrisonJson": self._json(pending_garrison)},
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "dispatchAccepted": True,
+                "settlementPending": True,
+                "successBattleId": battle_id,
+                "target": target,
+                "generals": selected,
+                "preview": preview,
+                "preflight": preflight,
+                "payloads": {
+                    "prepareOpcode": f"0x{prepare_opcode:04x}",
+                    "preparePayloadHex": prepare_payload.hex(),
+                    "expeditionOpcode": f"0x{dispatch_opcode:04x}",
+                    "expeditionPayloadHex": expedition_payload.hex(),
+                },
+                "receipt": receipt,
+                "message": f"打矿出征已确认：battleId={battle_id}",
+                "speed": speed_result,
+            },
+        }
+
+    def _run_mine_speed_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        battle_id = positive_game_id(pending.get("battleId"), "战斗 ID")
+        elapsed_seconds = max(
+            0,
+            (
+                int(self._ports.clock.now_millis())
+                - int(pending.get("dispatchAtMillis") or 0)
+            ) // 1000,
+        )
+        remaining_seconds = max(
+            0,
+            int(pending.get("marchSeconds") or 0) - elapsed_seconds,
+        )
+        inventory = self._fresh_inventory_state(
+            account_ref,
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            phase="shared-core/mine/speed/inventory",
+        )
+        choices = choose_march_speed_items(
+            remaining_seconds,
+            [
+                dict(item)
+                for item in inventory.get("items") or []
+                if isinstance(item, dict)
+            ],
+        )
+        if not choices:
+            return {
+                "success": True,
+                "skipped": True,
+                "battleId": battle_id,
+                "estimatedRemainingSeconds": remaining_seconds,
+                "message": (
+                    "行军时间已无需加速或背包没有可用行军符"
+                ),
+                "actions": [],
+            }
+        contract = self._behavior_contract["mine"]["speed"]
+        request_opcode = self._contract_opcode(contract, "requestOpcode")
+        response_opcode = self._contract_opcode(contract, "responseOpcode")
+        estimated = remaining_seconds
+        actions = []
+        for index, item_id in enumerate(choices):
+            if estimated <= int(contract["stopBelowSeconds"]):
+                break
+            execution.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "mine-speed",
+                "battleId": str(battle_id),
+                "itemId": str(item_id),
+                "itemIndex": index,
+                "opcode": f"0x{request_opcode:04x}",
+            })
+            fact = self._execute_host_game_command(
+                account_ref,
+                request_opcode,
+                build_march_speed_payload(battle_id, item_id),
+                f"shared-core/mine/speed/{battle_id}/{item_id}",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+            payload = self._game_packet(fact, response_opcode)
+            if payload is None:
+                raise OperationUncertainError(
+                    f"行军符#{item_id}请求已发送，但未收到 "
+                    f"0x{response_opcode:04x} 回执"
+                )
+            receipt = parse_march_speed_response(payload)
+            actions.append({
+                "itemId": int(item_id),
+                "receipt": receipt,
+                "packets": self._fact_packets(fact),
+            })
+            if bool(receipt.get("finished")):
+                return {
+                    "success": True,
+                    "battleId": battle_id,
+                    "estimatedRemainingSeconds": 0,
+                    "message": str(receipt.get("message") or "行军已经结束"),
+                    "actions": actions,
+                }
+            if not bool(receipt.get("success")):
+                return {
+                    "success": False,
+                    "battleId": battle_id,
+                    "estimatedRemainingSeconds": estimated,
+                    "message": str(receipt.get("message") or "行军加速失败"),
+                    "actions": actions,
+                }
+            estimated = max(
+                0,
+                estimated - int(MARCH_SPEED_SECONDS[int(item_id)]),
+            )
+        return {
+            "success": True,
+            "battleId": battle_id,
+            "estimatedRemainingSeconds": estimated,
+            "message": f"智能加速完成，预计剩余{estimated}秒",
+            "actions": actions,
+        }
+
+    def _automation_pending_record(
+        self,
+        account_ref: str,
+        field: str,
+    ) -> Dict[str, Any]:
+        return self._public_json_object(
+            self._account_public_state(account_ref).get(field)
+        )
+
+    @staticmethod
+    def _pending_record_advanced(
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+    ) -> bool:
+        """Whether a tick left anything new in the ledger.
+
+        Timestamps move on every tick whether or not anything happened, so
+        they are exactly what must be ignored when asking "did this get
+        anywhere".  Everything else is the workflow's own record of progress.
+        """
+
+        noise = {
+            "updatedAtMillis",
+            "lastObservedAtMillis",
+            "lastErrorAtMillis",
+            "nextPollAtMillis",
+            "blockedAtMillis",
+        }
+        return {
+            key: value
+            for key, value in (before or {}).items()
+            if key not in noise
+        } != {
+            key: value
+            for key, value in (after or {}).items()
+            if key not in noise
+        }
+
+    def _bind_pending_lane_deadline(
+        self,
+        account_ref: str,
+        field: str,
+        record: Dict[str, Any],
+        result: Dict[str, Any],
+        before: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Hold a pending workflow to the next-wake time it just published.
+
+        Owning the account lane is the strongest claim a feature can make, and
+        it was granted by default: ``pending_ready`` treats a record with no
+        ``nextPollAtMillis`` as due right now, so a pending workflow kept the
+        lane on *every* tick unless it remembered to publish that field.  The
+        features that remembered (副本/刷黄/背包整理) behaved; the ones that did
+        not (打矿/掠夺, and 刷黄's uncertain-heal branch) silently monopolised
+        the account.  One 打矿 garrison loop is 675s of marching plus 驻守/撤防/
+        回闲, and it took every tick of that: 副本 and 刷黄 went 40 and 104
+        minutes past their own deadlines while 打矿 merely watched a march, and
+        打矿 outnumbered every other feature 112 ticks to 33 in the ledger.
+
+        Nothing about that is feature-specific, so the remedy is not another
+        per-workflow line to forget.  A workflow that returns a *future*
+        ``nextWakeAtMillis`` has already stated it needs nothing until then;
+        recording that statement here makes it binding instead of advisory,
+        and does so once for every present and future pending feature.
+
+        An explicit deadline is never shortened - 副本 deliberately stays quiet
+        for the length of a battle, which is longer than its poll interval.
+
+        A *missing* deadline is the same statement in its strongest form: the
+        workflow stopped and wants a human.  That conclusion was returned to
+        the caller and never written down, so the next tick could not know it
+        and simply re-entered the branch that had just refused to act.  打矿
+        hit this within minutes of the lane fix landing - a 撤防 receipt that
+        did not confirm its battle id is unresolvable by reading, yet the
+        record looked ordinary, so the same refusal was recomputed every two
+        seconds.  Recording it lets the isolation ``pending_ready`` already
+        implements do its job, and surfaces the feature as needing attention
+        instead of as busy.
+        """
+
+        now_millis = int(self._ports.clock.now_millis())
+        declared = result.get("nextWakeAtMillis")
+        if declared is None:
+            if not bool(result.get("requiresAttention")):
+                return record
+            # "This may be re-examined" is not "this should be re-examined
+            # twice a second".  ``safe_read_only_recovery_probe`` lets a stale
+            # attention flag be rechecked - conclusions do expire - but it
+            # hands the lane straight back, so a stopped feature won a tick,
+            # recomputed the same refusal and stopped again, forever.  副本
+            # reaches exactly that shape when it halts as ``clear-unconfirmed``
+            # while its dispatch is a settled ``accepted``.
+            #
+            # Needing a human is not by itself proof of a spin, though, and it
+            # cannot be used as one: a multi-step round says exactly the same
+            # thing about one step while still advancing the next.  将领维护
+            # reports a rejected 加体 for one general and goes on to the other
+            # two, writing ``requiresAttention`` each time; backing off there
+            # would freeze a round that was busy converging.
+            #
+            # What actually separates the two is whether the ledger moved.  A
+            # round that advanced wrote something down - one more general
+            # settled, one more step recorded - while a spin leaves the record
+            # byte-identical apart from its timestamps.  So that is the test.
+            updated = {**record, "requiresAttention": True}
+            if not self._pending_record_advanced(before, record):
+                try:
+                    current_poll = int(record.get("nextPollAtMillis") or 0)
+                except (TypeError, ValueError):
+                    current_poll = 0
+                if current_poll <= now_millis:
+                    updated["nextPollAtMillis"] = (
+                        now_millis + UNRECOGNIZED_BLOCK_RETRY_MILLIS
+                    )
+            if updated == record:
+                return record
+            return self._save_automation_pending_record(
+                account_ref,
+                field,
+                updated,
+            )
+        try:
+            deadline = int(declared)
+            current = int(record.get("nextPollAtMillis") or 0)
+        except (TypeError, ValueError):
+            return record
+        if deadline <= now_millis:
+            return record
+        if current >= deadline:
+            return record
+        return self._save_automation_pending_record(
+            account_ref,
+            field,
+            {**record, "nextPollAtMillis": deadline},
+        )
+
+    def _save_automation_pending_record(
+        self,
+        account_ref: str,
+        field: str,
+        pending: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized = dict(pending)
+        normalized["updatedAtMillis"] = int(self._ports.clock.now_millis())
+        self._update_account_public_state(
+            account_ref,
+            {field: self._json(normalized)},
+        )
+        return normalized
+
+    # -- general energy cooldown ("缺活血丹且体力不足以出征") ------------------
+    #
+    # A general that cannot march and cannot be topped up is not a fault to
+    # adjudicate; stamina regenerates on its own.  The energy step records the
+    # general here, and every formation that contains it simply waits out the
+    # pause.  Other formations, other generals and every other feature go on.
+
+    def _energy_shortage_pause_millis(self) -> int:
+        try:
+            value = int(
+                self._behavior_contract["scheduler"].get(
+                    "energyShortageFormationPauseMillis", 1_800_000
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            value = 1_800_000
+        return max(60_000, value)
+
+    def _general_energy_cooldowns(
+        self,
+        account_ref: str,
+        now_millis: int,
+    ) -> Dict[int, Dict[str, Any]]:
+        """Return the unexpired per-general pauses recorded by the energy step."""
+
+        # The ledger is the only source of a pause.  An account or session
+        # that is not in the store therefore has none; this read must not turn
+        # a missing record into a failed preflight.
+        account = self._accounts.get(str(account_ref))
+        session = account.get("session") if isinstance(account, dict) else None
+        public = session.get("publicState") if isinstance(session, dict) else None
+        raw = self._public_json_object(
+            public.get("generalEnergyCooldownJson")
+            if isinstance(public, dict)
+            else None
+        )
+        active: Dict[int, Dict[str, Any]] = {}
+        for key, value in raw.items():
+            entry = self._public_json_object(value)
+            try:
+                general_id = int(key)
+                until = int(entry.get("untilMillis") or 0)
+            except (TypeError, ValueError):
+                continue
+            if general_id > 0 and until > int(now_millis):
+                active[general_id] = entry
+        return active
+
+    def _record_general_energy_cooldown(
+        self,
+        account_ref: str,
+        general: Dict[str, Any],
+        *,
+        action_name: str,
+        message: str,
+        now_millis: int,
+    ) -> Dict[str, Any]:
+        general_id = int(general.get("id") or 0)
+        until = int(now_millis) + self._energy_shortage_pause_millis()
+        entry = {
+            "untilMillis": until,
+            "recordedAtMillis": int(now_millis),
+            "generalName": str(general.get("name") or general_id),
+            "energy": general.get("tili", general.get("energy")),
+            "source": str(action_name),
+            "message": str(message),
+        }
+        # Reading through the accessor drops expired rows, so the ledger can
+        # never grow past the number of generals that were ever short.
+        active = self._general_energy_cooldowns(account_ref, now_millis)
+        active[general_id] = entry
+        self._update_account_public_state(
+            account_ref,
+            {
+                "generalEnergyCooldownJson": self._json(
+                    {str(key): value for key, value in active.items()}
+                ),
+            },
+        )
+        return entry
+
+    def _general_energy_cooldown_block(
+        self,
+        account_ref: str,
+        general_ids: Any,
+        now_millis: int,
+    ) -> Dict[str, Any] | None:
+        """Describe the pause covering any of ``general_ids``, or ``None``."""
+
+        wanted: list[int] = []
+        for value in general_ids or []:
+            try:
+                general_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if general_id > 0 and general_id not in wanted:
+                wanted.append(general_id)
+        if not wanted:
+            return None
+        active = self._general_energy_cooldowns(account_ref, now_millis)
+        hits = [(gid, active[gid]) for gid in wanted if gid in active]
+        if not hits:
+            return None
+        until = max(int(entry["untilMillis"]) for _gid, entry in hits)
+        names = "、".join(
+            str(entry.get("generalName") or gid) for gid, entry in hits
+        )
+        return {
+            "untilMillis": until,
+            "generalIds": [gid for gid, _entry in hits],
+            "generalNames": names,
+            "message": (
+                f"将领{names}体力不足以出征且宝库没有活血丹，"
+                f"所在编队已暂停至{china_clock_text(until)}"
+            ),
+        }
+
+    def _lift_recovered_energy_cooldowns(
+        self,
+        account_ref: str,
+        generals_by_id: Dict[int, Dict[str, Any]],
+        state: Dict[str, Any],
+        now_millis: int,
+    ) -> list[Dict[str, Any]]:
+        """Drop pauses whose general can march again; wake what waited on them.
+
+        The pause window is a guess at how long natural regeneration takes.
+        A user who hands the general a 活血丹 has made that guess wrong, and
+        the maintenance round is already holding a fresh reading of every
+        general, so this is where the guess gets corrected for free.  Features
+        that went to sleep exactly until the pause deadline are woken here as
+        well; otherwise the lift would only take effect at the deadline anyway.
+        """
+
+        active = self._general_energy_cooldowns(account_ref, now_millis)
+        if not active:
+            return []
+        lifted: list[Dict[str, Any]] = []
+        for general_id, entry in list(active.items()):
+            general = generals_by_id.get(general_id)
+            if general is None or not bool(general.get("energyReliable")):
+                continue
+            try:
+                energy = int(
+                    general.get("tili")
+                    if general.get("tili") is not None
+                    else general.get("energy")
+                )
+            except (TypeError, ValueError):
+                continue
+            if energy <= EXPEDITION_MIN_ENERGY:
+                continue
+            active.pop(general_id)
+            lifted.append({
+                "generalId": general_id,
+                "generalName": str(
+                    general.get("name") or entry.get("generalName") or general_id
+                ),
+                "energy": energy,
+                "untilMillis": int(entry.get("untilMillis") or 0),
+            })
+        if not lifted:
+            return []
+        self._update_account_public_state(
+            account_ref,
+            {
+                "generalEnergyCooldownJson": self._json(
+                    {str(key): value for key, value in active.items()}
+                ),
+            },
+        )
+        deadlines = {int(row["untilMillis"]) for row in lifted}
+        for feature in ("brush", "dungeon", "lossless", "raid", "mine"):
+            feature_state = state.get(feature)
+            if not isinstance(feature_state, dict):
+                continue
+            try:
+                next_wake = int(feature_state.get("nextWakeAtMillis") or 0)
+            except (TypeError, ValueError):
+                continue
+            if next_wake in deadlines:
+                feature_state["nextWakeAtMillis"] = int(now_millis)
+        names = "、".join(
+            f"{row['generalName']}(体力{row['energy']})" for row in lifted
+        )
+        self._write_user_log(
+            account_ref,
+            f"将领维护检查到{names}已恢复到出征下限以上，提前解除所在编队的体力暂停",
+        )
+        return lifted
+
+    @staticmethod
+    def _resource_shortage_retry(
+        now_millis: int,
+        default_retry_millis: int,
+        error: OperationKnownFailureError,
+    ) -> tuple[int, str]:
+        """Pick when a resource-shortage defer should be re-examined.
+
+        The energy step attaches ``retryAtMillis`` when it paused a formation;
+        a shortage without one keeps the feature's own short poll.
+        """
+
+        retry_at = int(now_millis) + max(0, int(default_retry_millis))
+        try:
+            hinted = int(dict(error.details).get("retryAtMillis") or 0)
+        except (TypeError, ValueError):
+            hinted = 0
+        if hinted > retry_at:
+            return hinted, f"将于{china_clock_text(hinted)}重新检查"
+        minutes = max(1, round((retry_at - int(now_millis)) / 60_000))
+        return retry_at, f"{minutes}分钟后重新检查"
+
+    @staticmethod
+    def _operator_reconcile_requested(
+        context: Dict[str, Any],
+        feature: str,
+    ) -> bool:
+        """Require a one-shot host confirmation for ambiguous-ledger repair.
+
+        Ordinary recovery ticks never carry this field and therefore retain
+        the existing fail-closed behavior.  The desktop maintenance endpoint
+        validates its own confirmation token before it can set this context.
+        """
+
+        raw = context.get("operatorReconcileFeatures")
+        if not isinstance(raw, list):
+            return False
+
+        def canonical(value: Any) -> str:
+            name = str(value or "").strip()
+            return "brush" if name == "brushYellow" else name
+
+        # This used to be a four-entry alias table, which silently limited the
+        # operator's only escape hatch to 副本/无损/刷黄: asking to reconcile
+        # 打矿 mapped to "" and matched nothing, so a 打矿 ledger that reached
+        # an attention hold had no exit at all and had to be cleared by hand.
+        #
+        # Naming any feature here is now honest about what this function
+        # decides, which is only "did the operator ask for this one".  Whether
+        # a feature *can* be reconciled is decided where it matters - each
+        # workflow's own send-boundary and idle-state checks - and only 副本,
+        # 无损 and 刷黄 have written those yet.  A feature without them simply
+        # never consults this, exactly as before; the difference is that adding
+        # them is now the whole change.
+        requested = {canonical(value) for value in raw if str(value or "").strip()}
+        name = canonical(feature)
+        return bool(name) and name in requested
+
+    def _operator_reconciliation_formation_evidence(
+        self,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        feature: str,
+        fresh_state: tuple[
+            str, list[Dict[str, Any]], list[Dict[str, Any]]
+        ] | None = None,
+    ) -> Dict[str, Any]:
+        """Prove all ledger generals are idle and match saved troops exactly."""
+
+        if fresh_state is None:
+            fresh_state = self._fresh_formation_state(
+                account_ref,
+                {**context, "readOnly": True},
+                read_only=True,
+            )
+        state_hex, generals, _army = fresh_state
+        selected_ids: list[int] = []
+        for raw_id in pending.get("generalIds") or []:
+            try:
+                general_id = positive_game_id(raw_id, "将领 ID")
+            except ValueError as error:
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：{error}",
+                    code="OPERATOR_RECONCILE_GENERAL_INVALID",
+                ) from error
+            if general_id not in selected_ids:
+                selected_ids.append(general_id)
+        if not selected_ids:
+            raise OperationKnownFailureError(
+                "人工结清旧账本失败：账本没有出征将领",
+                code="OPERATOR_RECONCILE_GENERALS_EMPTY",
+            )
+
+        public = self._account_public_state(account_ref)
+        configs = self._public_json_object(
+            public.get("residentAutomationConfigJson")
+        )
+        rules = [
+            dict(row)
+            for row in configs.get("formations") or []
+            if isinstance(row, dict) and row.get("enabled", True) is not False
+        ]
+        rule_source = "resident-config"
+        if not rules:
+            # A frozen preflight snapshot is an acceptable fallback for old
+            # brush ledgers created before the resident config was persisted.
+            rules = [
+                dict(row)
+                for row in pending.get("formations") or []
+                if isinstance(row, dict)
+                and row.get("enabled", True) is not False
+            ]
+            rule_source = "pending-ledger"
+        if not rules:
+            raise OperationKnownFailureError(
+                "人工结清旧账本失败：没有可核对的保存配兵规则",
+                code="OPERATOR_RECONCILE_FORMATIONS_EMPTY",
+            )
+
+        generals_by_id = {
+            int(row.get("id") or 0): dict(row)
+            for row in generals
+            if isinstance(row, dict) and int(row.get("id") or 0) > 0
+        }
+        observed: list[Dict[str, Any]] = []
+        for general_id in selected_ids:
+            general = generals_by_id.get(general_id)
+            if general is None:
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：最新状态未找到将领{general_id}",
+                    code="OPERATOR_RECONCILE_GENERAL_MISSING",
+                    details={"generalId": general_id, "feature": feature},
+                )
+            if not general_is_idle(general):
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：将领"
+                    f"{general.get('name') or general_id}尚未回闲",
+                    code="OPERATOR_RECONCILE_GENERAL_BUSY",
+                    details={"generalId": general_id, "feature": feature},
+                )
+            try:
+                energy = int(general.get("tili"))
+            except (TypeError, ValueError):
+                energy = -1
+            if not bool(general.get("energyReliable")) or energy <= 20:
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：将领"
+                    f"{general.get('name') or general_id}体力不足或不可确认",
+                    code="OPERATOR_RECONCILE_ENERGY_UNRELIABLE",
+                    details={"generalId": general_id, "feature": feature},
+                )
+
+            matches: list[Dict[str, Any]] = []
+            for rule in rules:
+                raw_ids = rule.get("generalIds")
+                raw_ids = (
+                    list(raw_ids)
+                    if isinstance(raw_ids, list)
+                    else [rule.get("generalId")]
+                )
+                try:
+                    if any(
+                        int(value) == general_id
+                        for value in raw_ids
+                        if value not in (None, "")
+                    ):
+                        matches.append(rule)
+                except (TypeError, ValueError):
+                    continue
+            if len(matches) != 1:
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：将领{general_id}的保存配兵规则"
+                    f"数量为{len(matches)}，必须恰好一条",
+                    code="OPERATOR_RECONCILE_FORMATION_AMBIGUOUS",
+                    details={
+                        "generalId": general_id,
+                        "feature": feature,
+                        "matchCount": len(matches),
+                        "ruleSource": rule_source,
+                    },
+                )
+            rule = matches[0]
+            soldier_value = (
+                rule.get("soldierTypeCode")
+                if rule.get("soldierTypeCode") is not None
+                else rule.get("soldierType")
+                or rule.get("soldierTypeName")
+            )
+            try:
+                expected_code, expected_name = strict_soldier_type(
+                    soldier_value
+                )
+                expected_count = int(
+                    rule.get("soldierCount")
+                    if rule.get("soldierCount") is not None
+                    else rule.get("count")
+                )
+                current_code = int(general.get("soldierTypeCode"))
+                current_count = int(
+                    general.get("currentSoldierCount")
+                    if general.get("currentSoldierCount") is not None
+                    else general.get("soldierCount")
+                )
+            except (TypeError, ValueError) as error:
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：将领{general_id}配兵数据无效",
+                    code="OPERATOR_RECONCILE_FORMATION_INVALID",
+                    details={"generalId": general_id, "feature": feature},
+                ) from error
+            if expected_count <= 0 or current_count <= 0:
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：将领{general_id}没有可靠兵力",
+                    code="OPERATOR_RECONCILE_TROOPS_EMPTY",
+                    details={"generalId": general_id, "feature": feature},
+                )
+            if (
+                current_code != expected_code
+                or current_count != expected_count
+            ):
+                raise OperationKnownFailureError(
+                    f"人工结清旧账本失败：将领"
+                    f"{general.get('name') or general_id}当前配兵与保存规则不一致",
+                    code="OPERATOR_RECONCILE_FORMATION_MISMATCH",
+                    details={
+                        "generalId": general_id,
+                        "feature": feature,
+                        "expectedSoldierTypeCode": expected_code,
+                        "expectedSoldierCount": expected_count,
+                        "currentSoldierTypeCode": current_code,
+                        "currentSoldierCount": current_count,
+                    },
+                )
+            observed.append({
+                "generalId": general_id,
+                "generalName": str(general.get("name") or general_id),
+                "status": general.get("status"),
+                "statusText": str(
+                    general.get("statusText")
+                    or general.get("displayStatus")
+                    or ""
+                ),
+                "energy": energy,
+                "energyReliable": True,
+                "soldierType": expected_name,
+                "soldierTypeCode": current_code,
+                "soldierCount": current_count,
+            })
+        return {
+            "observedAtMillis": int(self._ports.clock.now_millis()),
+            "feature": feature,
+            "ruleSource": rule_source,
+            "configUpdatedAtMillis": configs.get("updatedAtMillis"),
+            "stateFingerprint": hashlib.sha256(
+                bytes.fromhex(state_hex)
+            ).hexdigest(),
+            "generals": observed,
+        }
+
+    def configure_resident_automation_from_habits(
+        self,
+        account_ref: str,
+        habits: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize host storage into one durable shared resident plan."""
+
+        normalized_ref = str(account_ref or "").strip()
+        if not normalized_ref:
+            raise ValueError("同步常驻任务配置缺少账号")
+        source = dict(habits) if isinstance(habits, dict) else {}
+        public = self._account_public_state(normalized_ref)
+        known_generals = self._public_json_list(public.get("generalsJson"))
+
+        raw_formations = source.get("formations")
+        raw_formations = (
+            list(raw_formations) if isinstance(raw_formations, list) else []
+        )
+        if raw_formations:
+            formation_plan = settings_write_plan(
+                "/api/formations/save",
+                {
+                    "formations": raw_formations,
+                    "knownGenerals": known_generals,
+                },
+            )
+            formations = list(
+                (formation_plan.get("response") or {}).get(
+                    "normalizedFormations"
+                ) or []
+            )
+        else:
+            formations = []
+
+        raw_common = source.get("config")
+        raw_common = (
+            dict(raw_common) if isinstance(raw_common, dict) else {}
+        )
+        if not raw_common or not (
+            isinstance(raw_common.get("brush"), dict)
+            or isinstance(raw_common.get("rows"), list)
+        ):
+            raw_common["autoStart"] = False
+        common = normalize_automation_config(
+            raw_common,
+            session_id=normalized_ref,
+            known_generals=known_generals,
+            saved_formations=formations,
+        )
+
+        raw_mine = source.get("mine")
+        raw_mine = dict(raw_mine) if isinstance(raw_mine, dict) else {}
+        if isinstance(raw_mine.get("rows"), list):
+            mine_plan = settings_write_plan(
+                "/api/mine/save",
+                {
+                    "settings": raw_mine,
+                    "knownGenerals": known_generals,
+                },
+            )
+            mine_response = dict(mine_plan.get("response") or {})
+            mine = {
+                "enabled": bool(mine_plan.get("activationAllowed")),
+                "settings": dict(mine_response.get("settings") or {}),
+                "rows": list(mine_response.get("executionRows") or []),
+            }
+        else:
+            mine = {"enabled": False, "settings": {}, "rows": []}
+
+        raw_raid = source.get("raid")
+        raw_raid = dict(raw_raid) if isinstance(raw_raid, dict) else {}
+        raid_rows = raw_raid.get("rows")
+        raid_rows = list(raid_rows) if isinstance(raid_rows, list) else []
+        raid_requested = bool(
+            raw_raid.get(
+                "enabled",
+                raw_raid.get("auto_loot_enabled", bool(raid_rows)),
+            )
+        ) and any(
+            isinstance(row, dict) and row.get("enabled", True) is not False
+            for row in raid_rows
+        )
+        if raid_requested and raid_rows:
+            raid_plan = settings_write_plan(
+                "/api/raid/execute",
+                {
+                    **raw_raid,
+                    "confirm": "raid",
+                    "rows": raid_rows,
+                    "knownGenerals": known_generals,
+                },
+            )
+            raid_response = dict(raid_plan.get("response") or {})
+            raid = {
+                "enabled": bool(raid_plan.get("activationAllowed")),
+                "settings": dict(raid_response.get("settings") or {}),
+                "rows": list(raid_response.get("executionRows") or []),
+            }
+        else:
+            raid = {"enabled": False, "settings": {}, "rows": []}
+
+        raw_future = source.get("militaryFuture")
+        raw_future = (
+            dict(raw_future) if isinstance(raw_future, dict) else {}
+        )
+        raw_lossless = raw_future.get("lossless")
+        raw_lossless = (
+            dict(raw_lossless) if isinstance(raw_lossless, dict) else {}
+        )
+        lossless_requested = bool(
+            raw_lossless.get("enabled", bool(raw_lossless.get("rows")))
+        )
+        if lossless_requested:
+            lossless_plan = settings_write_plan(
+                "/api/lossless/execute",
+                {
+                    "confirm": "lossless",
+                    "settings": raw_lossless,
+                    "knownGenerals": known_generals,
+                },
+            )
+            lossless_response = dict(lossless_plan.get("response") or {})
+            lossless = {
+                "enabled": bool(lossless_plan.get("activationAllowed")),
+                "settings": dict(lossless_response.get("settings") or {}),
+                "rows": list(lossless_response.get("executionRows") or []),
+            }
+        else:
+            lossless = {"enabled": False, "settings": {}, "rows": []}
+
+        raw_dungeon = raw_future.get("dungeon")
+        raw_dungeon = (
+            dict(raw_dungeon) if isinstance(raw_dungeon, dict) else {}
+        )
+        pause = raw_dungeon.get("pausedAfterDefeat")
+        paused_after_defeat = bool(
+            isinstance(pause, dict) and pause.get("paused") is True
+        )
+        dungeon_requested = bool(
+            raw_dungeon.get("enabled", bool(raw_dungeon.get("rows")))
+        ) and not paused_after_defeat
+        if dungeon_requested:
+            dungeon_plan = settings_write_plan(
+                "/api/dungeon/execute",
+                {
+                    **raw_dungeon,
+                    "confirm": "dungeon",
+                    "rows": list(raw_dungeon.get("rows") or []),
+                    "knownGenerals": known_generals,
+                },
+            )
+            dungeon_response = dict(dungeon_plan.get("response") or {})
+            dungeon = {
+                "enabled": bool(dungeon_plan.get("activationAllowed")),
+                "settings": dict(dungeon_response.get("settings") or {}),
+                "rows": list(dungeon_response.get("executionRows") or []),
+            }
+        else:
+            dungeon = {
+                "enabled": False,
+                "settings": {
+                    "pausedAfterDefeat": dict(pause)
+                    if isinstance(pause, dict)
+                    else {},
+                },
+                "rows": [],
+            }
+
+        raw_general_value = source.get("general")
+        raw_general = (
+            dict(raw_general_value)
+            if isinstance(raw_general_value, dict)
+            else {}
+        )
+        general_keys = {
+            "autoHeal", "healWounded", "autoEnergy", "minEnergy",
+            "energyThreshold", "keepFullLoyalty", "autoRescue",
+        }
+        general_present = isinstance(raw_general_value, dict) or any(
+            key in raw_common for key in general_keys
+        )
+        if not raw_general and general_present:
+            raw_general = dict(raw_common)
+
+        def general_flag(*names: str, default: bool = False) -> bool:
+            raw: Any = default
+            for name in names:
+                if name in raw_general:
+                    raw = raw_general.get(name)
+                    break
+            if isinstance(raw, str):
+                return raw.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(raw)
+
+        auto_heal = general_flag(
+            "autoHeal", "healWounded", default=True
+        )
+        auto_energy = general_flag("autoEnergy", default=True)
+        keep_full_loyalty = general_flag(
+            "keepFullLoyalty", "fullLoyalty", default=False
+        )
+        auto_rescue_requested = general_flag("autoRescue", default=False)
+        try:
+            minimum_energy = int(
+                raw_general.get(
+                    "minEnergy",
+                    raw_general.get("energyThreshold", 20),
+                )
+            )
+        except (TypeError, ValueError):
+            minimum_energy = 20
+        try:
+            copper_floor_wan = int(raw_general.get("copperFloorWan") or 1)
+        except (TypeError, ValueError):
+            copper_floor_wan = 1
+        if copper_floor_wan not in {1, 10, 20, 50}:
+            copper_floor_wan = 1
+        general = {
+            "enabled": bool(general_present) and (
+                auto_heal or auto_energy or keep_full_loyalty
+            ),
+            "autoHeal": auto_heal,
+            "autoEnergy": auto_energy,
+            "minEnergy": max(20, min(100, minimum_energy)),
+            "keepFullLoyalty": keep_full_loyalty,
+            # Rescue has no fully verified shared packet/receipt pair.  Keep
+            # the request visible for diagnostics but never activate it.
+            "autoRescue": False,
+            "unsupportedAutoRescueRequested": auto_rescue_requested,
+            "foodToCopper": general_flag("foodToCopper", default=False),
+            "copperFloorWan": copper_floor_wan,
+        }
+
+        raw_domestic = raw_common.get("domestic")
+        raw_domestic = (
+            dict(raw_domestic) if isinstance(raw_domestic, dict) else {}
+        )
+        technology_ids: list[int] = []
+        for value in raw_domestic.get("technologyIds") or []:
+            try:
+                technology_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= technology_id <= 21 and technology_id not in technology_ids:
+                technology_ids.append(technology_id)
+        if not technology_ids and raw_domestic.get("technologyId") is not None:
+            try:
+                technology_id = int(raw_domestic["technologyId"])
+            except (TypeError, ValueError):
+                technology_id = -1
+            if 0 <= technology_id <= 21:
+                technology_ids.append(technology_id)
+        domestic = {
+            "enabled": bool(raw_domestic.get("enabled")),
+            "upgradeBuildings": bool(
+                raw_domestic.get("upgradeBuildings", True)
+            ),
+            "upgradeLowestFirst": bool(
+                raw_domestic.get("upgradeLowestFirst", True)
+            ),
+            "emptyBuildingType": int(
+                raw_domestic.get("emptyBuildingType") or 1
+            ),
+            "buildingPriority": list(
+                raw_domestic.get("buildingPriority") or []
+            ),
+            "upgradeTechnology": bool(
+                raw_domestic.get("upgradeTechnology")
+            ),
+            "technologyIds": technology_ids,
+            "foodToCopper": general_flag("foodToCopper", default=False),
+            "copperFloorWan": copper_floor_wan,
+        }
+        domestic["active"] = bool(
+            domestic["enabled"] or domestic["upgradeTechnology"]
+        )
+
+        raw_ministry = source.get("ministry")
+        raw_ministry = (
+            dict(raw_ministry) if isinstance(raw_ministry, dict) else {}
+        )
+        ministry_settings = normalize_ministry_settings(raw_ministry)
+        ministry = {
+            "enabled": bool(raw_ministry)
+            and ministry_planting_allowed(ministry_settings),
+            "settings": ministry_settings,
+        }
+        raw_inventory = dict(raw_common)
+        if isinstance(source.get("inventory"), dict):
+            raw_inventory.update(dict(source["inventory"]))
+
+        def inventory_names(value: Any) -> list[str]:
+            raw = value if isinstance(value, list) else re.split(
+                r"[,，;；|]+", str(value or "")
+            )
+            return list(dict.fromkeys(
+                str(name or "").strip()
+                for name in raw
+                if str(name or "").strip()
+            ))
+
+        auto_open_names = [
+            name
+            for name in inventory_names(
+                raw_inventory.get("autoOpenItemNames")
+            )
+            if name in AUTO_OPEN_ITEM_NAMES
+        ]
+        discard_item_names = inventory_names(
+            raw_inventory.get("discardItemNames")
+            or raw_inventory.get("discardItems")
+        )
+        quality_name = str(
+            raw_inventory.get("maxEquipmentQuality") or "良好"
+        )
+        quality_code = (
+            EQUIPMENT_QUALITY_NAMES.index(quality_name)
+            if quality_name in EQUIPMENT_QUALITY_NAMES
+            else 1
+        )
+        # The page now offers the qualities as a set.  A record that predates
+        # the set only carries the ceiling, which by definition meant "this
+        # quality and everything below it", so the derived set is exactly what
+        # that record has always done.  A present-but-empty set means the user
+        # cleared every box and nothing is discarded.
+        raw_qualities = raw_inventory.get("discardEquipmentQualities")
+        if isinstance(raw_qualities, (list, tuple, set, str)) and not (
+            isinstance(raw_qualities, str) and not raw_qualities.strip()
+        ):
+            quality_codes = equipment_quality_codes(raw_qualities)
+        else:
+            quality_codes = list(range(quality_code + 1))
+        if quality_codes:
+            quality_code = max(quality_codes)
+        try:
+            equipment_level = int(
+                raw_inventory.get("maxEquipmentLevel") or 20
+            )
+        except (TypeError, ValueError):
+            equipment_level = 20
+        clean_inventory = bool(raw_inventory.get("cleanInventory"))
+        auto_open_enabled = bool(
+            raw_inventory.get("autoOpenEnabled")
+        ) and bool(auto_open_names)
+        inventory = {
+            "enabled": bool(
+                auto_open_enabled
+                or (
+                    clean_inventory
+                    and (
+                        discard_item_names
+                        or bool(raw_inventory.get("discardEquipment"))
+                    )
+                )
+            ),
+            "autoOpenEnabled": auto_open_enabled,
+            "autoOpenItemNames": auto_open_names,
+            "cleanInventory": clean_inventory,
+            "discardItemNames": discard_item_names,
+            "discardEquipment": bool(
+                raw_inventory.get("discardEquipment")
+            ),
+            "maxEquipmentQuality": EQUIPMENT_QUALITY_NAMES[quality_code],
+            "maxEquipmentQualityCode": quality_code,
+            "discardEquipmentQualities": [
+                EQUIPMENT_QUALITY_NAMES[code] for code in quality_codes
+            ],
+            "discardEquipmentQualityCodes": list(quality_codes),
+            "maxEquipmentLevel": max(1, min(equipment_level, 100)),
+            "maxActionsPerCycle": int(
+                self._behavior_contract["scheduler"][
+                    "inventoryMaxActionsPerCycle"
+                ]
+            ),
+            "maxOpenPerCycle": int(
+                self._behavior_contract["scheduler"][
+                    "inventoryMaxOpenPerCycle"
+                ]
+            ),
+        }
+        raw_alarm_value = raw_common.get("alarm")
+        if not isinstance(raw_alarm_value, dict):
+            raw_alarm_value = source.get("alarm")
+        alarm_present = isinstance(raw_alarm_value, dict)
+        raw_alarm = dict(raw_alarm_value) if alarm_present else {
+            "incomingEnabled": False,
+            "militaryEnabled": False,
+            "errorEnabled": False,
+        }
+        alarm = normalize_alarm_policy(raw_alarm)
+        daily_tasks = dict(common.get("dailyTasks") or {})
+        daily = {
+            "enabledKeys": [
+                str(feature["key"])
+                for feature in self._behavior_contract["daily"]["features"]
+                if bool(daily_tasks.get(str(feature["key"])))
+            ],
+            "generalVisitGeneralIds": list(
+                common.get("generalVisitGeneralIds") or []
+            ),
+        }
+
+        candidate = {
+            "schemaVersion": 2,
+            "common": common,
+            "formations": formations,
+            "mine": mine,
+            "raid": raid,
+            "lossless": lossless,
+            "dungeon": dungeon,
+            "general": general,
+            "domestic": domestic,
+            "ministry": ministry,
+            "inventory": inventory,
+            "alarm": alarm,
+            "daily": daily,
+        }
+        existing = self._public_json_object(
+            public.get("residentAutomationConfigJson")
+        )
+        comparable_existing = dict(existing)
+        comparable_existing.pop("updatedAtMillis", None)
+        changed = comparable_existing != candidate
+        if changed:
+            now_millis = int(self._ports.clock.now_millis())
+            candidate["updatedAtMillis"] = now_millis
+            state = self._public_json_object(
+                public.get("residentAutomationStateJson")
+            )
+            previous_common = dict(existing.get("common") or {})
+            previous_mine = dict(existing.get("mine") or {})
+            formations_changed = existing.get("formations") != formations
+            if previous_common != common:
+                brush_state = dict(state.get("brush") or {})
+                brush_state.pop("blockedReason", None)
+                brush_state["nextWakeAtMillis"] = now_millis
+                state["brush"] = brush_state
+            if previous_mine != mine or formations_changed:
+                mine_state = dict(state.get("mine") or {})
+                mine_state.pop("blockedReason", None)
+                mine_state["nextWakeAtMillis"] = now_millis
+                state["mine"] = mine_state
+            for feature, feature_config in (
+                ("raid", raid),
+                ("lossless", lossless),
+                ("dungeon", dungeon),
+                ("general", general),
+                ("domestic", domestic),
+                ("ministry", ministry),
+                ("inventory", inventory),
+                ("alarm", alarm),
+                ("daily", daily),
+            ):
+                if dict(existing.get(feature) or {}) != feature_config or formations_changed:
+                    feature_state = dict(state.get(feature) or {})
+                    feature_state.pop("blockedReason", None)
+                    feature_state["nextWakeAtMillis"] = now_millis
+                    state[feature] = feature_state
+            self._update_account_public_state(
+                normalized_ref,
+                {
+                    "residentAutomationConfigJson": self._json(candidate),
+                    "residentAutomationStateJson": self._json(state),
+                },
+            )
+        else:
+            candidate = existing
+        brush = dict((candidate.get("common") or {}).get("brush") or {})
+        return {
+            "ok": True,
+            "changed": changed,
+            "accountRef": normalized_ref,
+            "brushEnabled": bool(
+                (candidate.get("common") or {}).get("autoStart")
+                and brush.get("rules")
+            ),
+            "mineEnabled": bool((candidate.get("mine") or {}).get("enabled")),
+            "raidEnabled": bool((candidate.get("raid") or {}).get("enabled")),
+            "losslessEnabled": bool(
+                (candidate.get("lossless") or {}).get("enabled")
+            ),
+            "dungeonEnabled": bool(
+                (candidate.get("dungeon") or {}).get("enabled")
+            ),
+            "generalEnabled": bool(
+                (candidate.get("general") or {}).get("enabled")
+            ),
+            "domesticEnabled": bool(
+                (candidate.get("domestic") or {}).get("active")
+            ),
+            "ministryEnabled": bool(
+                (candidate.get("ministry") or {}).get("enabled")
+            ),
+            "inventoryEnabled": bool(
+                (candidate.get("inventory") or {}).get("enabled")
+            ),
+            "alarmEnabled": bool(
+                (candidate.get("alarm") or {}).get("enabled")
+            ),
+            "dailyEnabledKeys": list(
+                (candidate.get("daily") or {}).get("enabledKeys") or []
+            ),
+        }
+
+    def configure_resident_automation_from_habits_json(
+        self,
+        account_ref: str,
+        habits_json: str,
+    ) -> str:
+        habits = json.loads(habits_json or "{}")
+        if not isinstance(habits, dict):
+            raise ValueError("常驻任务配置必须是对象")
+        return self._json(
+            self.configure_resident_automation_from_habits(
+                account_ref,
+                habits,
+            )
+        )
+
+    def set_resident_automation_activation(
+        self,
+        account_ref: str,
+        started: bool,
+        active_keys: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+        normalized_ref = str(account_ref or "").strip()
+        if not normalized_ref:
+            raise ValueError("常驻任务启停缺少账号")
+        if active_keys is None and started:
+            public = self._account_public_state(normalized_ref)
+            config = self._public_json_object(
+                public.get("residentAutomationConfigJson")
+            )
+            common = dict(config.get("common") or {})
+            brush = dict(common.get("brush") or {})
+            mine = dict(config.get("mine") or {})
+            keys = []
+            if bool(common.get("autoStart")) and brush.get("rules"):
+                keys.append("brushYellow")
+            if bool(mine.get("enabled")) and mine.get("rows"):
+                keys.append("mine")
+            for feature in ("raid", "lossless", "dungeon"):
+                resident = dict(config.get(feature) or {})
+                if bool(resident.get("enabled")) and resident.get("rows"):
+                    keys.append(feature)
+            if bool((config.get("general") or {}).get("enabled")):
+                keys.append("general")
+            if bool((config.get("domestic") or {}).get("active")):
+                keys.append("domestic")
+            if bool((config.get("ministry") or {}).get("enabled")):
+                keys.append("ministry")
+            if bool((config.get("inventory") or {}).get("enabled")):
+                keys.append("inventory")
+            if bool((config.get("alarm") or {}).get("enabled")):
+                keys.append("alarm")
+        else:
+            keys = list(dict.fromkeys(
+                str(value).strip()
+                for value in active_keys or []
+                if str(value or "").strip()
+            ))
+        now_millis = int(self._ports.clock.now_millis())
+        self._update_account_public_state(
+            normalized_ref,
+            {
+                "savedTasksStarted": str(bool(started)).lower(),
+                "savedTasksStartedAt": str(now_millis) if started else "",
+                "activeResidentTaskKeys": ",".join(sorted(keys)) if started else "",
+            },
+        )
+        return {
+            "ok": True,
+            "accountRef": normalized_ref,
+            "started": bool(started),
+            "activeKeys": sorted(keys) if started else [],
+        }
+
+    def set_resident_automation_activation_json(
+        self,
+        account_ref: str,
+        started: bool,
+        active_keys_json: str = "null",
+    ) -> str:
+        raw = json.loads(active_keys_json or "null")
+        if raw is not None and not isinstance(raw, list):
+            raise ValueError("常驻任务 activeKeys 必须是数组")
+        return self._json(
+            self.set_resident_automation_activation(
+                account_ref,
+                bool(started),
+                raw,
+            )
+        )
+
+    def _persist_automation_general_snapshot(
+        self,
+        account_ref: str,
+        state_hex: str,
+        generals: list[Dict[str, Any]],
+        army: list[Dict[str, Any]],
+    ) -> None:
+        """Mirror a fresh recovery read without making persistence a new parser."""
+
+        try:
+            payload = bytes.fromhex(str(state_hex))
+            role_state = parse_8004_head(
+                payload,
+                "shared-core/automation/0x1016/0x8004",
+            )
+            if str(role_state.get("parseError") or "").strip():
+                return
+            parsed_head = max(
+                0,
+                min(
+                    len(payload),
+                    int(role_state.get("parsedHeadByteCount") or 0),
+                ),
+            )
+            updates = self._session_probe_state_updates(
+                role_state,
+                generals,
+                army,
+                state_hex=str(state_hex),
+                state_tail_hex=payload[parsed_head:].hex(),
+                now_millis=int(self._ports.clock.now_millis()),
+            )
+            self._update_account_public_state(account_ref, updates)
+        except Exception as error:
+            # The same freshly parsed general rows remain authoritative for this
+            # tick.  Failing to mirror a display snapshot must not manufacture a
+            # second network request or alter the recovery decision.
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-automation",
+                "accountRef": str(account_ref),
+                "message": f"恢复状态快照镜像失败：{error}",
+            })
+
+    @staticmethod
+    def _automation_result_message(value: Dict[str, Any]) -> str:
+        nested = value.get("result")
+        nested = dict(nested) if isinstance(nested, dict) else {}
+        return str(
+            nested.get("message")
+            or value.get("message")
+            or "服务器已确认"
+        )
+
+    def _run_durable_brush_recovery_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        section: str,
+        step_key: str,
+        action: Callable[[Any], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Run one idempotent maintenance step with a durable send boundary."""
+
+        progress = self._public_json_object(
+            pending.get("recoveryProgress")
+        )
+        section_rows = self._public_json_object(progress.get(section))
+        previous = self._public_json_object(section_rows.get(step_key))
+        previous_state = str(previous.get("state") or "")
+        if previous_state == "completed":
+            return {
+                "success": True,
+                "skipped": "already-completed",
+                "message": str(previous.get("message") or "已完成"),
+            }
+        if previous_state in {"sending", "uncertain", "rejected"}:
+            raise OperationKnownFailureError(
+                f"刷黄战后步骤 {section}/{step_key} 曾越过发送边界，"
+                "当前禁止自动重放",
+                code="BRUSH_RECOVERY_STEP_REQUIRES_REVIEW",
+                details={"step": previous},
+            )
+
+        def save_step(value: Dict[str, Any]) -> None:
+            section_rows[step_key] = dict(value)
+            progress[section] = dict(section_rows)
+            pending["recoveryProgress"] = dict(progress)
+            self._save_automation_pending_record(
+                account_ref,
+                "brushPendingRecoveryJson",
+                pending,
+            )
+
+        preparing = {
+            "state": "preparing",
+            "updatedAtMillis": int(self._ports.clock.now_millis()),
+        }
+        save_step(preparing)
+
+        def before_send(metadata: Dict[str, Any]) -> None:
+            save_step({
+                "state": "sending",
+                "sentAtMillis": int(self._ports.clock.now_millis()),
+                "request": dict(metadata),
+            })
+
+        wrapped = _DurablePendingMutationExecution(execution, before_send)
+        try:
+            result = action(wrapped)
+        except OperationKnownFailureError as error:
+            save_step({
+                "state": "rejected" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+                "code": str(error.code),
+            })
+            raise
+        except OperationUncertainError as error:
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+            })
+            raise
+        except Exception as error:
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error) or error.__class__.__name__,
+            })
+            if wrapped.sent:
+                raise OperationUncertainError(
+                    f"刷黄战后步骤 {section}/{step_key} 发包后异常：{error}",
+                    {"exceptionType": error.__class__.__name__},
+                ) from error
+            raise
+        completed = {
+            "state": "completed",
+            "completedAtMillis": int(self._ports.clock.now_millis()),
+            "message": self._automation_result_message(result),
+            "requestSent": bool(wrapped.sent),
+        }
+        save_step(completed)
+        return dict(result)
+
+    def _read_brush_heal_preinfo(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        fief_id: int,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Read the latest heal-all estimate without crossing a mutation boundary."""
+
+        execution.raise_if_cancelled()
+        execution.publish_progress(45, {"phase": "brush-recovery-heal-reconcile"})
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x1231,
+            build_heal_preinfo_payload(fief_id, -1, -1),
+            "shared-core/brush/recovery/heal-pre-info",
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            mutation_sent=False,
+        )
+        payload = self._game_packet(fact, 0x8231)
+        if payload is None:
+            raise OperationKnownFailureError(
+                "刷黄战后治疗对账未收到 0x8231 回执",
+                code="BRUSH_RECOVERY_HEAL_RECONCILE_MISSING",
+                details={"fiefId": int(fief_id)},
+            )
+        estimate = parse_heal_preinfo_response(payload)
+        if not bool(estimate.get("success")):
+            raise OperationKnownFailureError(
+                str(estimate.get("message") or "刷黄战后治疗对账解析失败"),
+                code="BRUSH_RECOVERY_HEAL_RECONCILE_REJECTED",
+                details={"fiefId": int(fief_id), "estimate": estimate},
+            )
+        return estimate
+
+    def _reconcile_uncertain_brush_heal_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        step_key: str,
+        fief_id: int,
+        action: Callable[[Any], Dict[str, Any]],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        """Archive an old uncertain heal, then converge from a fresh read.
+
+        The original 0x1230 request is never replayed.  A read-only heal-all
+        estimate decides whether the latest server state is already healthy. If
+        wounded soldiers remain, a distinct maintenance attempt is created and
+        guarded by its own durable send boundary.
+        """
+
+        progress = self._public_json_object(pending.get("recoveryProgress"))
+        heal_rows = self._public_json_object(progress.get("healByFief"))
+        previous = self._public_json_object(heal_rows.get(step_key))
+        previous_state = str(previous.get("state") or "")
+        if previous_state not in {
+            "sending", "uncertain", "archived-uncertain",
+        }:
+            return None
+
+        reconciliation = self._public_json_object(previous.get("reconciliation"))
+        current_attempt = self._public_json_object(
+            reconciliation.get("maintenanceAttempt")
+        )
+
+        def save_reconciliation(value: Dict[str, Any]) -> None:
+            archived = dict(previous)
+            archived["state"] = "archived-uncertain"
+            archived["archivedAtMillis"] = int(self._ports.clock.now_millis())
+            archived["reconciliation"] = dict(value)
+            heal_rows[step_key] = archived
+            progress["healByFief"] = dict(heal_rows)
+            pending["recoveryProgress"] = dict(progress)
+            self._save_automation_pending_record(
+                account_ref,
+                "brushPendingRecoveryJson",
+                pending,
+            )
+
+        if (
+            str(reconciliation.get("state") or "") == "completed"
+            and not current_attempt
+        ):
+            return {
+                "success": True,
+                "skipped": "reconciled-latest-state",
+                "message": str(
+                    reconciliation.get("message")
+                    or "刷黄战后旧治疗已按最新状态结清"
+                ),
+                "reconciliation": dict(reconciliation),
+            }
+        if str(current_attempt.get("state") or "") == "completed":
+            return {
+                "success": True,
+                "skipped": "reconciled-maintenance-completed",
+                "message": str(
+                    current_attempt.get("message")
+                    or "刷黄战后新维护治疗已完成"
+                ),
+            }
+        if str(current_attempt.get("state") or "") in {
+            "sending", "uncertain", "rejected",
+        }:
+            raise OperationKnownFailureError(
+                f"刷黄战后新维护步骤 healByFief/{step_key} "
+                "曾越过发送边界，当前禁止自动重放",
+                code="BRUSH_RECOVERY_MAINTENANCE_REQUIRES_REVIEW",
+                details={
+                    "feature": "brushYellow",
+                    "step": current_attempt,
+                    "fiefId": int(fief_id),
+                },
+            )
+
+        estimate = self._read_brush_heal_preinfo(
+            execution,
+            account_ref,
+            fief_id,
+            context,
+        )
+        try:
+            copper_cost = int(estimate.get("copperCost") or 0)
+            gold_cost = int(estimate.get("goldCost") or 0)
+        except (TypeError, ValueError) as error:
+            raise OperationKnownFailureError(
+                "刷黄战后治疗对账返回了无效费用",
+                code="BRUSH_RECOVERY_HEAL_RECONCILE_INVALID",
+                details={"fiefId": int(fief_id), "estimate": estimate},
+            ) from error
+        observed_at = int(self._ports.clock.now_millis())
+        reconciliation.update({
+            "state": "observed",
+            "observedAtMillis": observed_at,
+            "fiefId": int(fief_id),
+            "estimate": dict(estimate),
+            "oldRequestReplayed": False,
+        })
+        if copper_cost <= 0 and gold_cost <= 0:
+            reconciliation.update({
+                "state": "completed",
+                "completedAtMillis": observed_at,
+                "resolution": "latest-estimate-no-wounded",
+                "message": "最新治疗预估确认当前无伤兵",
+            })
+            save_reconciliation(reconciliation)
+            return {
+                "success": True,
+                "skipped": "latest-state-no-wounded",
+                "message": reconciliation["message"],
+                "reconciliation": dict(reconciliation),
+            }
+
+        attempt = {
+            "state": "preparing",
+            "createdAtMillis": observed_at,
+            "reason": "latest-estimate-requires-heal",
+            "estimate": dict(estimate),
+            "oldRequestReplayed": False,
+        }
+        reconciliation["maintenanceAttempt"] = dict(attempt)
+        save_reconciliation(reconciliation)
+
+        def before_send(metadata: Dict[str, Any]) -> None:
+            attempt.update({
+                "state": "sending",
+                "sentAtMillis": int(self._ports.clock.now_millis()),
+                "request": dict(metadata),
+            })
+            reconciliation["maintenanceAttempt"] = dict(attempt)
+            save_reconciliation(reconciliation)
+
+        wrapped = _DurablePendingMutationExecution(execution, before_send)
+        try:
+            result = action(wrapped)
+        except OperationKnownFailureError as error:
+            attempt.update({
+                "state": "rejected" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+                "code": str(error.code),
+            })
+            reconciliation["maintenanceAttempt"] = dict(attempt)
+            save_reconciliation(reconciliation)
+            raise
+        except OperationUncertainError as error:
+            attempt.update({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+            })
+            reconciliation["maintenanceAttempt"] = dict(attempt)
+            save_reconciliation(reconciliation)
+            raise
+        except Exception as error:
+            attempt.update({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error) or error.__class__.__name__,
+            })
+            reconciliation["maintenanceAttempt"] = dict(attempt)
+            save_reconciliation(reconciliation)
+            if wrapped.sent:
+                raise OperationUncertainError(
+                    f"刷黄战后新维护步骤 healByFief/{step_key} "
+                    f"发包后异常：{error}",
+                    {"exceptionType": error.__class__.__name__},
+                ) from error
+            raise
+
+        attempt.update({
+            "state": "completed",
+            "completedAtMillis": int(self._ports.clock.now_millis()),
+            "message": self._automation_result_message(result),
+            "requestSent": bool(wrapped.sent),
+        })
+        reconciliation.update({
+            "state": "completed",
+            "completedAtMillis": int(self._ports.clock.now_millis()),
+            "resolution": "fresh-maintenance-completed",
+            "maintenanceAttempt": dict(attempt),
+        })
+        save_reconciliation(reconciliation)
+        return dict(result)
+
+    def _run_brush_delete_mail_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "brush-recovery-delete-mail",
+            "opcode": "0x1116",
+        })
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x1116,
+            build_delete_all_mail_payload(),
+            "shared-core/brush/recovery/delete-mail",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        payload = self._required_game_packet(
+            fact,
+            0x8116,
+            uncertain_message="邮件清理请求已发送，但未收到 0x8116 回执",
+        )
+        receipt = parse_delete_mail_response(payload)
+        if not bool(receipt.get("success")):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器拒绝清理邮件"),
+                code="BRUSH_RECOVERY_DELETE_MAIL_REJECTED",
+                details={"receipt": receipt},
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": str(receipt.get("message") or "邮件清理完成"),
+                "raw": receipt,
+            },
+        }
+
+    def _brush_recovery_formation_rows(
+        self,
+        account_ref: str,
+        pending: Dict[str, Any],
+        selected_ids: list[int],
+    ) -> list[Dict[str, Any]]:
+        """Resolve one exact saved rule per general before any recovery mutation.
+
+        Early shared-core builds persisted an accepted brush expedition without
+        copying its formation rules into the recovery ledger.  Those ledgers
+        cannot be replayed, but the user's current durable formation config is
+        still a safe restore target when it covers every exact pending general.
+        Backfill and freeze that snapshot before healing or troop assignment.
+        """
+
+        source_rows = [
+            dict(row)
+            for row in pending.get("formations") or []
+            if isinstance(row, dict)
+        ]
+        source = "pending-ledger"
+        source_config_updated_at: int | None = None
+        if not source_rows:
+            public = self._account_public_state(account_ref)
+            configs = self._public_json_object(
+                public.get("residentAutomationConfigJson")
+            )
+            source_rows = [
+                dict(row)
+                for row in configs.get("formations") or []
+                if isinstance(row, dict)
+                and row.get("enabled", True) is not False
+            ]
+            source = "resident-config-legacy-backfill"
+            try:
+                source_config_updated_at = int(
+                    configs.get("updatedAtMillis") or 0
+                ) or None
+            except (TypeError, ValueError):
+                source_config_updated_at = None
+
+        normalized: list[Dict[str, Any]] = []
+        for general_id in selected_ids:
+            matches: list[Dict[str, Any]] = []
+            for row in source_rows:
+                raw_ids = row.get("generalIds")
+                raw_ids = (
+                    list(raw_ids)
+                    if isinstance(raw_ids, list)
+                    else [row.get("generalId")]
+                )
+                try:
+                    matched = any(
+                        int(value) == int(general_id)
+                        for value in raw_ids
+                        if value not in (None, "")
+                    )
+                except (TypeError, ValueError):
+                    matched = False
+                if matched:
+                    matches.append(row)
+            if len(matches) != 1:
+                reason = "没有" if not matches else "存在多条"
+                raise OperationKnownFailureError(
+                    f"刷黄恢复{reason}将领{general_id}的唯一保存配兵规则",
+                    code="BRUSH_RECOVERY_FORMATION_MISSING",
+                    details={
+                        "generalId": general_id,
+                        "matchCount": len(matches),
+                        "source": source,
+                    },
+                )
+            rule = dict(matches[0])
+            try:
+                soldier_count = int(
+                    rule.get("soldierCount") or rule.get("count") or 0
+                )
+                _soldier_code, soldier_name = strict_soldier_type(
+                    rule.get("soldierType")
+                    or rule.get("soldierTypeName")
+                )
+            except (TypeError, ValueError) as error:
+                raise OperationKnownFailureError(
+                    f"刷黄恢复中将领{general_id}的保存配兵规则无效：{error}",
+                    code="BRUSH_RECOVERY_FORMATION_INVALID",
+                    details={"generalId": general_id, "source": source},
+                ) from error
+            if soldier_count <= 0:
+                raise OperationKnownFailureError(
+                    f"刷黄恢复中将领{general_id}的保存配兵数量无效",
+                    code="BRUSH_RECOVERY_FORMATION_INVALID",
+                    details={"generalId": general_id, "source": source},
+                )
+            normalized.append({
+                **rule,
+                "generalId": str(general_id),
+                "generalIds": [str(general_id)],
+                "soldierType": soldier_name,
+                "soldierCount": soldier_count,
+            })
+
+        if source == "resident-config-legacy-backfill":
+            now_millis = int(self._ports.clock.now_millis())
+            canonical = json.dumps(
+                normalized,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            pending.update({
+                "formations": normalized,
+                "formationRuleSource": source,
+                "formationRuleBackfilledAtMillis": now_millis,
+                "formationRuleSourceConfigUpdatedAtMillis": (
+                    source_config_updated_at
+                ),
+                "formationRuleHash": hashlib.sha256(
+                    canonical.encode("utf-8")
+                ).hexdigest(),
+            })
+            self._save_automation_pending_record(
+                account_ref,
+                "brushPendingRecoveryJson",
+                pending,
+            )
+        return normalized
+
+    def _run_brush_recovery_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        execution.publish_progress(10, {"phase": "brush-recovery-state"})
+        now_millis = int(self._ports.clock.now_millis())
+        schedule = dict(self._behavior_contract["brushYellow"]["schedule"])
+        send_state = str(pending.get("sendState") or "")
+        pre_dispatch_state = str(
+            pending.get("preDispatchMutationState") or ""
+        )
+        pre_dispatch_metadata = pending.get("preDispatchRequestMetadata")
+        pre_dispatch_ambiguous = pre_dispatch_state in {
+            "sending", "uncertain"
+        }
+        dispatch_ambiguous = send_state in {"sending", "uncertain"}
+        pending_without_send_metadata = (
+            pre_dispatch_state in {"", "pending"}
+            and not isinstance(pre_dispatch_metadata, dict)
+        )
+        pre_dispatch_definitive = (
+            pre_dispatch_state
+            in {"failed", "failed-before-send", "accepted", "rejected"}
+            or pending_without_send_metadata
+        )
+        dispatch_definitive_without_success = send_state in {
+            "", "not-started", "not-sent", "failed", "rejected"
+        }
+        if (
+            not pre_dispatch_ambiguous
+            and not dispatch_ambiguous
+            and pre_dispatch_definitive
+            and dispatch_definitive_without_success
+        ):
+            resolved = {
+                **pending,
+                "requiresAttention": False,
+                "resolvedAtMillis": now_millis,
+                "recoveryResolution": (
+                    "known-pre-dispatch-failure"
+                    if pre_dispatch_state
+                    in {"failed", "failed-before-send", "rejected"}
+                    else "definitive-no-dispatch"
+                ),
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "brushPendingRecoveryJson": "{}",
+                    "brushLastPreDispatchFailureJson": self._json(resolved),
+                },
+            )
+            retry_at = now_millis + int(
+                schedule.get("transientRetryMillis", 10_000)
+            )
+            return {
+                "feature": "brushYellow",
+                "state": "retry",
+                "success": False,
+                "requiresAttention": False,
+                "errorCode": str(
+                    pending.get("preDispatchErrorCode")
+                    or "BRUSH_PRE_DISPATCH_RESULT_RECONCILED"
+                ),
+                "message": (
+                    "刷黄前置操作已有明确结果，正式出征未成功发送；"
+                    "旧账本已安全结清，将按最新状态重新检查"
+                ),
+                "nextWakeAtMillis": retry_at,
+            }
+        state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            {**context, "operationId": execution.operation_id},
+            read_only=True,
+        )
+        self._persist_automation_general_snapshot(
+            account_ref,
+            state_hex,
+            generals,
+            army,
+        )
+        if self._operator_reconcile_requested(context, "brush"):
+            if pre_dispatch_state != "accepted" or send_state not in {
+                "sending", "uncertain"
+            }:
+                raise OperationKnownFailureError(
+                    "刷黄旧账本无法人工结清：前置操作未确认完成，"
+                    "或预出征/正式出征没有不确定发送记录",
+                    code="BRUSH_OPERATOR_RECONCILE_BOUNDARY",
+                    details={
+                        "preDispatchMutationState": pre_dispatch_state,
+                        "sendState": send_state,
+                    },
+                )
+            try:
+                boundary_at = int(
+                    pending.get("sendingAtMillis")
+                    or pending.get("createdAtMillis")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                boundary_at = 0
+            grace_millis = max(
+                300_000,
+                int(schedule.get("settlementRecheckGraceMillis") or 0),
+            )
+            age_millis = max(0, now_millis - boundary_at)
+            if boundary_at <= 0 or age_millis < grace_millis:
+                raise OperationKnownFailureError(
+                    "刷黄旧账本无法人工结清：不确定请求尚未经过安全观察期",
+                    code="BRUSH_OPERATOR_RECONCILE_GRACE",
+                    details={
+                        "boundaryAtMillis": boundary_at,
+                        "ageMillis": age_millis,
+                        "requiredAgeMillis": grace_millis,
+                    },
+                )
+            evidence = self._operator_reconciliation_formation_evidence(
+                account_ref,
+                pending,
+                context,
+                feature="brush",
+                fresh_state=(state_hex, generals, army),
+            )
+            metadata = pending.get("dispatchRequestMetadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            archived = {
+                **pending,
+                "requiresAttention": False,
+                "reconciledAtMillis": now_millis,
+                "reconciliationReason": (
+                    "operator-confirmed-aged-uncertain-dispatch-and-all-idle"
+                ),
+                "reconciliationEvidence": {
+                    **evidence,
+                    "boundaryAgeMillis": age_millis,
+                    "lastRequestPhase": str(metadata.get("phase") or ""),
+                    "lastRequestOpcode": str(metadata.get("opcode") or ""),
+                },
+            }
+            public = self._account_public_state(account_ref)
+            resident_state = self._public_json_object(
+                public.get("residentAutomationStateJson")
+            )
+            brush_state = dict(resident_state.get("brush") or {})
+            brush_state.update({
+                "skipHealOnce": True,
+                "skipHealReason": "operator-reconciled-uncertain-dispatch",
+                "nextWakeAtMillis": now_millis
+                + int(schedule.get("transientRetryMillis") or 10_000),
+            })
+            resident_state["brush"] = brush_state
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "brushPendingRecoveryJson": "{}",
+                    "brushLastReconciliationJson": self._json(archived),
+                    "residentAutomationStateJson": self._json(
+                        resident_state
+                    ),
+                },
+            )
+            return {
+                "feature": "brushYellow",
+                "state": "reconciled",
+                "success": True,
+                "requiresAttention": False,
+                "message": (
+                    "刷黄旧不确定账本已在安全观察期后按最新回闲状态归档；"
+                    "未重发旧治疗、配兵、预出征或正式出征，下一轮仅跳过治疗一次"
+                ),
+                "nextWakeAtMillis": brush_state["nextWakeAtMillis"],
+            }
+        pre_dispatch_feature = str(
+            pre_dispatch_metadata.get("feature")
+            if isinstance(pre_dispatch_metadata, dict)
+            else ""
+        )
+        if (
+            pre_dispatch_ambiguous
+            and not dispatch_ambiguous
+            and dispatch_definitive_without_success
+            and pre_dispatch_feature == "troop-heal"
+        ):
+            # The treatment request may have succeeded, but formal expedition
+            # never started. Never replay treatment. Once every selected
+            # general is present and explicitly idle in a fresh 0x8004 state,
+            # archive the ambiguous preflight and let the next attempt skip
+            # treatment exactly until one dispatch is confirmed. Formation and
+            # energy checks still run against fresh state before that dispatch.
+            selected_ids = [
+                int(value)
+                for value in pending.get("generalIds") or []
+                if int(value) > 0
+            ]
+            generals_by_id = {
+                int(row.get("id") or 0): dict(row)
+                for row in generals
+                if isinstance(row, dict) and int(row.get("id") or 0) > 0
+            }
+            missing_ids = [
+                general_id
+                for general_id in selected_ids
+                if general_id not in generals_by_id
+            ]
+            if selected_ids and not missing_ids:
+                busy_ids = [
+                    general_id
+                    for general_id in selected_ids
+                    if not general_is_idle(generals_by_id[general_id])
+                ]
+                if busy_ids:
+                    poll = max(
+                        1_000,
+                        int(
+                            schedule.get("postDispatchPollMillis")
+                            or 30_000
+                        ),
+                    )
+                    waiting = {
+                        **pending,
+                        "requiresAttention": False,
+                        "lastObservedAtMillis": now_millis,
+                        "lastDecision": "wait-uncertain-heal-busy",
+                        "lastDecisionReason": (
+                            "刷黄前置治疗回执未确认，等待将领回闲后结清"
+                        ),
+                    }
+                    self._save_automation_pending_record(
+                        account_ref,
+                        "brushPendingRecoveryJson",
+                        waiting,
+                    )
+                    return {
+                        "feature": "brushYellow",
+                        "state": "waiting",
+                        "success": False,
+                        "requiresAttention": False,
+                        "message": waiting["lastDecisionReason"],
+                        "nextWakeAtMillis": now_millis + poll,
+                    }
+
+                retry_at = now_millis + int(
+                    schedule.get("transientRetryMillis", 10_000)
+                )
+                archived = {
+                    **pending,
+                    "requiresAttention": False,
+                    "resolvedAtMillis": now_millis,
+                    "recoveryResolution": (
+                        "uncertain-heal-not-replayed-skip-next"
+                    ),
+                    "freshGeneralStates": [
+                        {
+                            "id": general_id,
+                            "status": generals_by_id[general_id].get("status"),
+                            "statusText": str(
+                                generals_by_id[general_id].get("statusText")
+                                or generals_by_id[general_id].get(
+                                    "displayStatus"
+                                )
+                                or ""
+                            ),
+                        }
+                        for general_id in selected_ids
+                    ],
+                }
+                public = self._account_public_state(account_ref)
+                resident_state = self._public_json_object(
+                    public.get("residentAutomationStateJson")
+                )
+                brush_state = dict(resident_state.get("brush") or {})
+                brush_state.update({
+                    "skipHealOnce": True,
+                    "skipHealReason": "uncertain-pre-dispatch-heal",
+                    "nextWakeAtMillis": retry_at,
+                })
+                resident_state["brush"] = brush_state
+                self._update_account_public_state(
+                    account_ref,
+                    {
+                        "brushPendingRecoveryJson": "{}",
+                        "brushLastPreDispatchFailureJson": self._json(
+                            archived
+                        ),
+                        "residentAutomationStateJson": self._json(
+                            resident_state
+                        ),
+                    },
+                )
+                return {
+                    "feature": "brushYellow",
+                    "state": "retry",
+                    "success": False,
+                    "requiresAttention": False,
+                    "errorCode": (
+                        "BRUSH_PREFLIGHT_HEAL_UNCERTAIN_RECONCILED"
+                    ),
+                    "message": (
+                        "刷黄前置治疗回执未确认；已禁止重发治疗，"
+                        "并将在下一次出征跳过治疗一次"
+                    ),
+                    "nextWakeAtMillis": retry_at,
+                }
+        if send_state != "accepted" and (
+            send_state in {"not-started", "sending", "uncertain", "failed"}
+            # One shared, evidence-based answer; see pre_dispatch_outstanding.
+            # ``failed`` stays blocking *here* only because these three
+            # recovery paths have no archive-and-retry branch yet, unlike 副本.
+            # It is a per-feature policy sitting beside the send-boundary fact,
+            # not part of it.
+            or pre_dispatch_outstanding(pending)
+            or pre_dispatch_state == "failed"
+        ):
+            blocked = {
+                **pending,
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+                "lastObservedAtMillis": now_millis,
+            }
+            self._save_automation_pending_record(
+                account_ref,
+                "brushPendingRecoveryJson",
+                blocked,
+            )
+            return {
+                "feature": "brushYellow",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "message": (
+                    "刷黄前置操作或正式出征已越过发送边界，但没有"
+                    "出征成功证据；只完成状态核对，禁止自动重做"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        decision = brush_recovery_decision(
+            pending,
+            generals,
+            now_millis=now_millis,
+            schedule=schedule,
+        )
+        updated = dict(decision.get("pending") or pending)
+        updated["lastDecision"] = str(decision.get("action") or "")
+        updated["lastDecisionReason"] = str(decision.get("reason") or "")
+        updated["lastObservedAtMillis"] = now_millis
+
+        if decision.get("action") == "wait":
+            # Waiting for generals to march home holds nothing in flight, so
+            # declare when this record next needs looking at and let other
+            # features own the lane until then.
+            updated["nextPollAtMillis"] = int(decision["nextWakeAtMillis"])
+            self._save_automation_pending_record(
+                account_ref,
+                "brushPendingRecoveryJson",
+                updated,
+            )
+            return {
+                "feature": "brushYellow",
+                "state": "waiting",
+                "message": str(decision.get("reason") or "等待刷黄将领回闲"),
+                "nextWakeAtMillis": int(decision["nextWakeAtMillis"]),
+            }
+        if decision.get("action") == "stop":
+            updated["blockedAtMillis"] = now_millis
+            self._save_automation_pending_record(
+                account_ref,
+                "brushPendingRecoveryJson",
+                updated,
+            )
+            return {
+                "feature": "brushYellow",
+                "state": "blocked",
+                "requiresAttention": True,
+                "message": str(decision.get("reason") or "刷黄恢复已安全停止"),
+                "nextWakeAtMillis": None,
+            }
+        if decision.get("action") != "maintain":
+            raise OperationKnownFailureError(
+                "刷黄恢复 reducer 返回未知动作",
+                code="BRUSH_RECOVERY_DECISION_INVALID",
+                details={"decision": decision},
+            )
+
+        self._save_automation_pending_record(
+            account_ref,
+            "brushPendingRecoveryJson",
+            updated,
+        )
+        by_id = {
+            int(row.get("id") or 0): dict(row)
+            for row in generals
+            if isinstance(row, dict) and int(row.get("id") or 0) > 0
+        }
+        selected_ids = [
+            int(value)
+            for value in updated.get("generalIds") or []
+            if int(value) > 0
+        ]
+        formation_rows = self._brush_recovery_formation_rows(
+            account_ref,
+            updated,
+            selected_ids,
+        )
+        updated["formations"] = formation_rows
+        self._save_automation_pending_record(
+            account_ref,
+            "brushPendingRecoveryJson",
+            updated,
+        )
+        maintenance_results: list[Dict[str, Any]] = []
+
+        if bool(updated.get("healWounded", True)):
+            representatives: Dict[int, Dict[str, Any]] = {}
+            for general_id in selected_ids:
+                general = by_id.get(general_id) or {}
+                fief_id = int(
+                    general.get("fiefId")
+                    or general.get("placeID")
+                    or general.get("placeId")
+                    or next(
+                        (
+                            row.get("fiefId")
+                            for row in updated.get("generalFacts") or []
+                            if isinstance(row, dict)
+                            and int(row.get("id") or 0) == general_id
+                        ),
+                        0,
+                    )
+                    or 0
+                )
+                if fief_id <= 0:
+                    raise OperationKnownFailureError(
+                        f"刷黄战后治疗无法确认将领{general_id}所在封地",
+                        code="BRUSH_RECOVERY_FIEF_MISSING",
+                    )
+                representatives.setdefault(fief_id, general or {"id": general_id})
+            for fief_id, general in representatives.items():
+                step_key = str(fief_id)
+                heal_action = (
+                    lambda step_execution, general=general, fief_id=fief_id: (
+                        self._run_troop_heal_game_workflow(
+                            step_execution,
+                            {
+                                "accountRef": account_ref,
+                                "confirm": "heal-wounded",
+                                "generalId": str(general.get("id") or 0),
+                                "fiefId": str(fief_id),
+                                "healAllIfCountUnknown": True,
+                                "foodToCopper": bool(
+                                    updated.get("foodToCopper", False)
+                                ),
+                                "copperFloorWan": int(
+                                    updated.get("copperFloorWan") or 1
+                                ),
+                            },
+                            context,
+                        )
+                    )
+                )
+                result = self._reconcile_uncertain_brush_heal_step(
+                    execution,
+                    account_ref,
+                    updated,
+                    step_key,
+                    fief_id,
+                    heal_action,
+                    context,
+                )
+                if result is None:
+                    result = self._run_durable_brush_recovery_step(
+                        execution,
+                        account_ref,
+                        updated,
+                        "healByFief",
+                        step_key,
+                        heal_action,
+                    )
+                maintenance_results.append({
+                    "step": "heal",
+                    "fiefId": fief_id,
+                    "result": result,
+                })
+
+        for index, rule in enumerate(formation_rows):
+            general_id = int(
+                rule.get("generalId")
+                or next(iter(rule.get("generalIds") or []), 0)
+                or 0
+            )
+            if general_id not in selected_ids:
+                continue
+            soldier_count = int(
+                rule.get("soldierCount") or rule.get("count") or 0
+            )
+            if soldier_count <= 0:
+                raise OperationKnownFailureError(
+                    f"刷黄战后配兵规则缺少将领{general_id}的有效兵力",
+                    code="BRUSH_RECOVERY_FORMATION_INVALID",
+                )
+            result = self._run_durable_brush_recovery_step(
+                execution,
+                account_ref,
+                updated,
+                "formationByGeneral",
+                str(general_id),
+                lambda step_execution, rule=rule, general_id=general_id, soldier_count=soldier_count: (
+                    self._run_troop_assign_game_workflow(
+                        step_execution,
+                        {
+                            "accountRef": account_ref,
+                            "confirm": "assign-troops",
+                            "generalId": str(general_id),
+                            "soldierType": str(
+                                rule.get("soldierType")
+                                or rule.get("soldierTypeName")
+                                or "轻骑兵"
+                            ),
+                            "soldierCount": soldier_count,
+                            "group": int(rule.get("group") or 0),
+                        },
+                        context,
+                    )
+                ),
+            )
+            maintenance_results.append({
+                "step": "formation",
+                "rowIndex": index,
+                "generalId": general_id,
+                "result": result,
+            })
+
+        if bool(updated.get("deleteMailForSpeed", False)):
+            result = self._run_durable_brush_recovery_step(
+                execution,
+                account_ref,
+                updated,
+                "mail",
+                "delete-all",
+                lambda step_execution: self._run_brush_delete_mail_game_workflow(
+                    step_execution,
+                    account_ref,
+                    context,
+                ),
+            )
+            maintenance_results.append({"step": "delete-mail", "result": result})
+
+        completed_at = int(self._ports.clock.now_millis())
+        self._update_account_public_state(
+            account_ref,
+            {
+                "brushPendingRecoveryJson": "{}",
+                "brushLastRecoveryJson": self._json({
+                    "completedAtMillis": completed_at,
+                    "generalIds": selected_ids,
+                    "battleId": updated.get("battleId"),
+                    "target": updated.get("target") or {},
+                    "steps": len(maintenance_results),
+                    "recoveryProgress": updated.get("recoveryProgress") or {},
+                }),
+            },
+        )
+        return {
+            "feature": "brushYellow",
+            "state": "completed",
+            "message": "刷黄将领已回闲，战后治疗和保存配兵已恢复",
+            "maintenance": maintenance_results,
+            "nextWakeAtMillis": completed_at + int(
+                schedule.get("postReturnMaintenanceDelayMillis") or 1_000
+            ),
+        }
+
+    @staticmethod
+    def _mine_occupation_failure_text(
+        pending: Dict[str, Any],
+        target: Dict[str, Any],
+        battle_id: int,
+    ) -> str:
+        """Say a lost mine round in the words both 提示 pages look for.
+
+        Neither host has a "this feature failed" channel: the 角色-提示 page is
+        derived from user log text, matching the feature name against "失败/
+        异常/中止/暂停/未完成" and clearing on "完成/成功".  So the notice is
+        not something to be raised separately - it is this sentence, and the
+        next successful round's 撤回 line ("占领成功…") clears it on its own.
+        """
+
+        row_index = pending.get("sourceRowIndex")
+        try:
+            formation = f"编队{int(row_index) + 1}" if row_index is not None else ""
+        except (TypeError, ValueError):
+            formation = ""
+        name = str(
+            target.get("name")
+            or target.get("kind")
+            or target.get("mineType")
+            or "目标资源点"
+        ).strip()
+        x = target.get("x")
+        y = target.get("y")
+        where = f"{name}({x}，{y})" if x is not None and y is not None else name
+        head = f"打矿：{formation} " if formation else "打矿："
+        tail = f"（battleId={battle_id}）" if battle_id > 0 else ""
+        return f"{head}占领失败，将领已自行返回 > {where}{tail}"
+
+    @staticmethod
+    def _mine_completion_message(outcome: str, reason: str) -> str:
+        """Name how a mine round ended, in the operator's own vocabulary.
+
+        The reducer's ``reason`` describes the *mechanism* ("撤防后将领已全部
+        回闲"), which is the right thing to keep for diagnosis but answers a
+        question the operator did not ask.  What they want to know is whether
+        the point was taken and whether the generals are back.
+
+        "失败" is load-bearing rather than decorative: both hosts derive the
+        提示 page from user log text, so this word is what turns a lost round
+        into a notice instead of one more quiet line.
+        """
+
+        if outcome == "recalled":
+            return "占领成功，已撤回编队全部将领"
+        if outcome == "garrisoned":
+            return "占领成功，按配置保留驻守"
+        if outcome == "failed":
+            return "占领失败，将领已自行返回"
+        return reason
+
+    def _run_mine_garrison_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        execution.publish_progress(10, {"phase": "mine-garrison-military"})
+        snapshot = self._refresh_military_snapshot_game(
+            account_ref,
+            execution,
+            context,
+            phase="shared-core/mine/garrison/military",
+        )
+        execution.publish_progress(35, {"phase": "mine-garrison-generals"})
+        state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            {**context, "operationId": execution.operation_id},
+            read_only=True,
+        )
+        self._persist_automation_general_snapshot(
+            account_ref,
+            state_hex,
+            generals,
+            army,
+        )
+        now_millis = int(self._ports.clock.now_millis())
+        schedule = dict(self._behavior_contract["mine"]["schedule"])
+        dispatch_state = str(pending.get("dispatchSendState") or "")
+        pre_dispatch_state = str(
+            pending.get("preDispatchMutationState") or ""
+        )
+        if dispatch_state != "accepted" and (
+            dispatch_state
+            in {
+                "not-started",
+                "sending",
+                "uncertain",
+                "rejected-before-dispatch",
+                "failed",
+            }
+            # One shared, evidence-based answer; see pre_dispatch_outstanding.
+            # ``failed`` stays blocking *here* only because these three
+            # recovery paths have no archive-and-retry branch yet, unlike 副本.
+            # It is a per-feature policy sitting beside the send-boundary fact,
+            # not part of it.
+            or pre_dispatch_outstanding(pending)
+            or pre_dispatch_state == "failed"
+        ):
+            blocked = {
+                **pending,
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+                "lastObservedAtMillis": now_millis,
+            }
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                blocked,
+            )
+            return {
+                "feature": "mine",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "message": (
+                    "打矿前置操作或正式出征已越过发送边界，但没有"
+                    "出征成功证据；只完成军情/将领核对，禁止自动重做"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        decision = mine_garrison_decision(
+            pending,
+            snapshot,
+            generals,
+            now_millis=now_millis,
+            schedule=schedule,
+        )
+        # The reducer folds each 军情 observation onto the record as it sees
+        # it, so what it returns is the record - taking a fresh copy of the
+        # pre-decision one would throw away the very evidence the closing tick
+        # needs to say whether the mine was taken.
+        updated = dict(decision.get("pending") or pending)
+        updated["lastDecision"] = str(decision.get("action") or "")
+        updated["lastDecisionReason"] = str(decision.get("reason") or "")
+        updated["lastObservedAtMillis"] = now_millis
+
+        action = str(decision.get("action") or "")
+        if action == "wait":
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                updated,
+            )
+            return {
+                "feature": "mine",
+                "state": "waiting",
+                "message": str(decision.get("reason") or "等待打矿驻守状态"),
+                "nextWakeAtMillis": int(decision["nextWakeAtMillis"]),
+            }
+        if action == "stop":
+            updated["blockedAtMillis"] = now_millis
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                updated,
+            )
+            return {
+                "feature": "mine",
+                "state": "blocked",
+                "requiresAttention": True,
+                "message": str(decision.get("reason") or "打矿闭环已安全停止"),
+                "nextWakeAtMillis": None,
+            }
+        if action == "complete":
+            completed_at = int(self._ports.clock.now_millis())
+            outcome = str(decision.get("outcome") or "unknown")
+            target = updated.get("target")
+            target = target if isinstance(target, dict) else {}
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "minePendingGarrisonJson": "{}",
+                    "mineLastGarrisonJson": self._json({
+                        "completedAtMillis": completed_at,
+                        "battleId": updated.get("battleId"),
+                        "generalIds": updated.get("generalIds") or [],
+                        "outcome": outcome,
+                        "target": deepcopy(target),
+                        "sourceRowIndex": updated.get("sourceRowIndex"),
+                        "message": str(decision.get("reason") or "打矿闭环完成"),
+                    }),
+                },
+            )
+            # 撤回 is the half of 打矿 the operator actually has to trust: the
+            # generals are only free for the next round once they are home,
+            # and until now the whole 驻守/撤防/回闲 half produced no record at
+            # all - the panel showed an expedition and then silence.  A lost
+            # round is the rarer, more urgent fact, and it is reported as a
+            # failure so the 角色-提示 page raises it instead of burying it in
+            # a success list nobody reads for bad news.
+            if outcome == "failed":
+                self._write_user_log(
+                    account_ref,
+                    self._mine_occupation_failure_text(
+                        updated, target, int(updated.get("battleId") or 0)
+                    ),
+                )
+            return {
+                "feature": "mine",
+                "state": "completed",
+                "success": outcome != "failed",
+                "occupationOutcome": outcome,
+                "recallCompleted": outcome == "recalled",
+                "occupationFailed": outcome == "failed",
+                "battleId": updated.get("battleId"),
+                "target": deepcopy(target),
+                "sourceRowIndex": updated.get("sourceRowIndex"),
+                "message": self._mine_completion_message(
+                    outcome,
+                    str(decision.get("reason") or "打矿闭环完成"),
+                ),
+                "nextWakeAtMillis": completed_at + int(
+                    schedule.get("postCycleSleepMillis") or 30_000
+                ),
+            }
+        if action != "recall":
+            raise OperationKnownFailureError(
+                "打矿恢复 reducer 返回未知动作",
+                code="MINE_GARRISON_DECISION_INVALID",
+                details={"decision": decision},
+            )
+
+        battle_id = positive_game_id(updated.get("battleId"), "战斗 ID")
+        updated["recallSendState"] = "preparing"
+        updated["recallPreparingAtMillis"] = now_millis
+        self._save_automation_pending_record(
+            account_ref,
+            "minePendingGarrisonJson",
+            updated,
+        )
+
+        def before_send(metadata: Dict[str, Any]) -> None:
+            updated["recallSendState"] = "sending"
+            updated["recallSendingAtMillis"] = int(
+                self._ports.clock.now_millis()
+            )
+            updated["recallRequest"] = dict(metadata)
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                updated,
+            )
+
+        wrapped = _DurablePendingMutationExecution(execution, before_send)
+        try:
+            contract = dict(self._behavior_contract["mine"]["withdraw"])
+            request_opcode = self._contract_opcode(contract, "requestOpcode")
+            response_opcode = self._contract_opcode(contract, "responseOpcode")
+            wrapped.raise_if_cancelled()
+            wrapped.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "mine-recall",
+                "battleId": str(battle_id),
+                "opcode": f"0x{request_opcode:04x}",
+            })
+            fact = self._execute_host_game_command(
+                account_ref,
+                request_opcode,
+                build_recall_payload(battle_id),
+                f"shared-core/mine/recall/{battle_id}",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+            payload = self._game_packet(fact, response_opcode)
+            if payload is None:
+                raise OperationUncertainError(
+                    f"撤防请求已发送，但未收到 0x{response_opcode:04x} 回执"
+                )
+            receipt = parse_recall_response(payload, battle_id)
+            if not bool(receipt.get("success")):
+                # The receipt to a 撤防 carries an entire 军情 snapshot, and
+                # the 【返回】 event in it reports an id that is not the
+                # dispatch's - 41604347 went out, 41605271 came back, and one
+                # real account stopped here every single round while its
+                # generals had in fact already left the mine.  An exact match
+                # therefore confirms, but its absence proves nothing.
+                #
+                # What it cannot be is an ambiguous mutation: the request named
+                # one exact battle, so at most that one withdrawal happened.
+                # So the request is recorded as sent-but-unread and the verdict
+                # is taken from the generals on the next observation - a
+                # general only ever leaves 防 because a withdrawal landed.
+                # The evidence is kept beside it so the next mismatch can be
+                # diagnosed rather than re-guessed.
+                unconfirmed_at = int(self._ports.clock.now_millis())
+                updated.update({
+                    "recallSendState": "sent-unconfirmed",
+                    "recallExpectedBattleId": int(battle_id),
+                    "recallRejectedReceipt": {
+                        key: deepcopy(receipt[key])
+                        for key in (
+                            "battleId",
+                            "battleIdHex",
+                            "battleIdSource",
+                            "message",
+                            "militaryPayloadBytes",
+                            "rawHex",
+                        )
+                        if key in receipt
+                    },
+                    "recallError": "",
+                })
+                self._save_automation_pending_record(
+                    account_ref,
+                    "minePendingGarrisonJson",
+                    updated,
+                )
+                return {
+                    "feature": "mine",
+                    "state": "waiting-return",
+                    "message": (
+                        "撤防请求已发送，回执未自证 battleId，"
+                        "改按将领是否离开驻防确认"
+                    ),
+                    "nextWakeAtMillis": unconfirmed_at + int(
+                        schedule.get("garrisonPollMillis") or 10_000
+                    ),
+                }
+        except OperationKnownFailureError as error:
+            updated["recallSendState"] = (
+                "rejected" if wrapped.sent else "failed-before-send"
+            )
+            updated["recallError"] = str(error)
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                updated,
+            )
+            raise
+        except OperationUncertainError as error:
+            updated["recallSendState"] = (
+                "uncertain" if wrapped.sent else "failed-before-send"
+            )
+            updated["recallError"] = str(error)
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                updated,
+            )
+            raise
+        except Exception as error:
+            updated["recallSendState"] = (
+                "uncertain" if wrapped.sent else "failed-before-send"
+            )
+            updated["recallError"] = str(error) or error.__class__.__name__
+            self._save_automation_pending_record(
+                account_ref,
+                "minePendingGarrisonJson",
+                updated,
+            )
+            if wrapped.sent:
+                raise OperationUncertainError(
+                    f"撤防请求发包后异常：{error}",
+                    {"exceptionType": error.__class__.__name__},
+                ) from error
+            raise
+
+        accepted_at = int(self._ports.clock.now_millis())
+        updated.update({
+            "recallSendState": "accepted",
+            "recallRequestedAtMillis": accepted_at,
+            "recallAcceptedAtMillis": accepted_at,
+            "recallReceipt": receipt,
+            "recallError": "",
+        })
+        self._save_automation_pending_record(
+            account_ref,
+            "minePendingGarrisonJson",
+            updated,
+        )
+        return {
+            "feature": "mine",
+            "state": "waiting-return",
+            "message": str(receipt.get("message") or "撤防请求已受理"),
+            "recall": receipt,
+            "nextWakeAtMillis": accepted_at + int(
+                schedule.get("garrisonPollMillis") or 10_000
+            ),
+        }
+
+    def _run_raid_return_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        execution.publish_progress(15, {"phase": "raid-return-generals"})
+        state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            {**context, "operationId": execution.operation_id},
+            read_only=True,
+        )
+        self._persist_automation_general_snapshot(
+            account_ref,
+            state_hex,
+            generals,
+            army,
+        )
+        now_millis = int(self._ports.clock.now_millis())
+        schedule = dict(self._behavior_contract["raid"])
+        send_state = str(pending.get("sendState") or "")
+        pre_dispatch_state = str(
+            pending.get("preDispatchMutationState") or ""
+        )
+        if send_state != "accepted" and (
+            send_state in {"not-started", "sending", "uncertain", "failed"}
+            # One shared, evidence-based answer; see pre_dispatch_outstanding.
+            # ``failed`` stays blocking *here* only because these three
+            # recovery paths have no archive-and-retry branch yet, unlike 副本.
+            # It is a per-feature policy sitting beside the send-boundary fact,
+            # not part of it.
+            or pre_dispatch_outstanding(pending)
+            or pre_dispatch_state == "failed"
+        ):
+            blocked = {
+                **pending,
+                "blockedAtMillis": now_millis,
+                "requiresAttention": True,
+                "lastObservedAtMillis": now_millis,
+            }
+            self._save_automation_pending_record(
+                account_ref, "raidPendingReturnJson", blocked
+            )
+            return {
+                "feature": "raid",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "message": (
+                    "掠夺前置操作或正式出征已越过发送边界，但没有"
+                    "出征成功证据；只完成状态核对，禁止自动重做"
+                ),
+                "nextWakeAtMillis": None,
+            }
+        decision = raid_return_decision(
+            pending,
+            generals,
+            now_millis=now_millis,
+            schedule=schedule,
+        )
+        updated = dict(decision.get("pending") or pending)
+        updated["lastDecision"] = str(decision.get("action") or "")
+        updated["lastDecisionReason"] = str(decision.get("reason") or "")
+        updated["lastObservedAtMillis"] = now_millis
+        action = str(decision.get("action") or "")
+        if action == "wait":
+            self._save_automation_pending_record(
+                account_ref,
+                "raidPendingReturnJson",
+                updated,
+            )
+            return {
+                "feature": "raid",
+                "state": "waiting",
+                "message": str(decision.get("reason") or "等待掠夺将领回闲"),
+                "nextWakeAtMillis": int(decision["nextWakeAtMillis"]),
+            }
+        if action == "stop":
+            updated["blockedAtMillis"] = now_millis
+            self._save_automation_pending_record(
+                account_ref,
+                "raidPendingReturnJson",
+                updated,
+            )
+            return {
+                "feature": "raid",
+                "state": "blocked",
+                "requiresAttention": True,
+                "message": str(decision.get("reason") or "掠夺回闲确认已停止"),
+                "nextWakeAtMillis": None,
+            }
+        if action != "complete":
+            raise OperationKnownFailureError(
+                "掠夺回闲 reducer 返回未知动作",
+                code="RAID_RETURN_DECISION_INVALID",
+                details={"decision": decision},
+            )
+        completed_at = int(self._ports.clock.now_millis())
+        self._update_account_public_state(
+            account_ref,
+            {
+                "raidPendingReturnJson": "{}",
+                "raidLastReturnJson": self._json({
+                    "completedAtMillis": completed_at,
+                    "battleId": updated.get("battleId"),
+                    "generalIds": updated.get("generalIds") or [],
+                    "playerName": updated.get("playerName"),
+                    "targetId": updated.get("targetId"),
+                }),
+            },
+        )
+        return {
+            "feature": "raid",
+            "state": "completed",
+            "message": str(decision.get("reason") or "掠夺将领已全部回闲"),
+            "nextWakeAtMillis": completed_at + int(
+                schedule.get("postDispatchPollMillis") or 60_000
+            ),
+        }
+
+    @staticmethod
+    def _resident_started_and_keys(
+        public_state: Dict[str, Any],
+    ) -> tuple[bool, set[str]]:
+        raw_started = public_state.get("savedTasksStarted")
+        started = (
+            raw_started is True
+            or str(raw_started or "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        raw_keys = public_state.get("activeResidentTaskKeys")
+        if isinstance(raw_keys, list):
+            keys = {
+                str(value).strip()
+                for value in raw_keys
+                if str(value or "").strip()
+            }
+        else:
+            keys = {
+                value.strip()
+                for value in str(raw_keys or "").split(",")
+                if value.strip()
+            }
+        return started, keys
+
+    def _save_resident_automation_state(
+        self,
+        account_ref: str,
+        state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized = dict(state)
+        normalized["updatedAtMillis"] = int(self._ports.clock.now_millis())
+        self._update_account_public_state(
+            account_ref,
+            {"residentAutomationStateJson": self._json(normalized)},
+        )
+        self._narrate_resident_blocks(account_ref, normalized)
+        return normalized
+
+    def _narrate_resident_blocks(
+        self,
+        account_ref: str,
+        state: Dict[str, Any],
+    ) -> None:
+        """Tell the operator when a feature stops working, and when it resumes.
+
+        Every resident write funnels through here, so a level-triggered line would
+        repeat on every tick; what the operator needs is the edge. A state is only
+        announced once, and a sampled state (see ``SAMPLED_STATES``) only after it
+        has actually persisted, so re-scanning cannot narrate a flap.
+
+        The bookkeeping is in memory only: it exists to suppress repeats within a
+        run, and a restart re-announcing a still-broken feature is the safe
+        direction to be wrong in.
+        """
+
+        now_millis = int(self._ports.clock.now_millis())
+        # 日常 is not one feature with one state - it is seven independently
+        # scheduled tasks whose states live one level down, under their own
+        # keys.  The top-level loop found no ``lastState`` there and no label
+        # for "daily", so a daily task that stopped itself for a whole cycle
+        # ("此前日常请求回执不明，当前周期禁止自动重放") said nothing at all:
+        # 签到/领币/俸禄 simply did not happen and the log stayed silent.
+        # Flattening them here lets each say its own name.
+        narratable: list[tuple[str, str, Dict[str, Any]]] = []
+        for feature, feature_state in state.items():
+            if not isinstance(feature_state, dict):
+                continue
+            if feature == "daily":
+                for daily_key, daily_state in feature_state.items():
+                    if not isinstance(daily_state, dict):
+                        continue
+                    daily_label = DAILY_FEATURE_LABELS.get(str(daily_key))
+                    if daily_label is not None:
+                        narratable.append(
+                            (f"daily:{daily_key}", daily_label, daily_state)
+                        )
+                continue
+            label = FEATURE_LABELS.get(feature)
+            if label is not None:
+                narratable.append((feature, label, feature_state))
+
+        for feature, label, feature_state in narratable:
+            last_state = str(feature_state.get("lastState") or "").strip()
+            key = (str(account_ref), feature)
+            seen_state, seen_at, announced = self._narrated_resident_states.get(
+                key, (None, now_millis, None)
+            )
+            if seen_state != last_state:
+                seen_state, seen_at = last_state, now_millis
+            self._narrated_resident_states[key] = (seen_state, seen_at, announced)
+            if announced == last_state:
+                continue
+            if (
+                last_state in SAMPLED_STATES
+                and now_millis - seen_at < NARRATION_MIN_HOLD_MILLIS
+            ):
+                continue
+            template = NARRATED_STATES.get(last_state)
+            if template is not None:
+                reason = str(feature_state.get("lastMessage") or "").strip()
+                line = template.format(label=label, reason=reason)
+                # A template that wanted a reason but got none reads as a dangling
+                # colon; drop the empty tail rather than show "刷黄已暂停：".
+                self._write_user_log(account_ref, line.rstrip("：").rstrip())
+            elif announced in NARRATED_STATES:
+                self._write_user_log(
+                    account_ref, RESUMED_TEMPLATE.format(label=label)
+                )
+            else:
+                # Nothing to say about this state, and nothing outstanding to
+                # resolve; leave the last announcement standing.
+                continue
+            self._narrated_resident_states[key] = (
+                last_state,
+                seen_at,
+                last_state,
+            )
+
+    @staticmethod
+    def _brush_scan_rule_key(
+        rule: Dict[str, Any],
+        fallback_index: int,
+    ) -> str:
+        """Return a stable identity for one configured brush assignment."""
+
+        try:
+            source_row_index = max(
+                0,
+                int(rule.get("sourceRowIndex", fallback_index)),
+            )
+        except (TypeError, ValueError):
+            source_row_index = max(0, int(fallback_index))
+        general_ids = [
+            str(value).strip()
+            for value in rule.get("generalIds") or []
+            if str(value or "").strip()
+        ]
+        return (
+            f"row:{source_row_index}|generals:"
+            + (",".join(dict.fromkeys(general_ids)) or "-")
+        )
+
+    @staticmethod
+    def _brush_rule_general_ids(rule: Dict[str, Any]) -> list[int]:
+        """Return every general a brush rule would send, across its shapes.
+
+        Older rules carry ``generalId``/``generalIds`` at the top; normalized
+        rules also list each ``formations[]`` row.  A stamina pause must cover
+        the rule if *any* of them is the paused general.
+        """
+
+        found: list[int] = []
+
+        def collect(value: Any) -> None:
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if item in (None, ""):
+                    continue
+                try:
+                    general_id = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if general_id > 0 and general_id not in found:
+                    found.append(general_id)
+
+        collect(rule.get("generalIds"))
+        collect(rule.get("generalId"))
+        for formation in rule.get("formations") or []:
+            if isinstance(formation, dict):
+                collect(formation.get("generalIds"))
+                collect(formation.get("generalId"))
+        return found
+
+    def _brush_scan_fingerprint(
+        self,
+        search_body: Dict[str, Any],
+    ) -> str:
+        """Reset only the scan whose spatial/filter meaning has changed."""
+
+        canonical = self._json({
+            "startX": int(search_body["startX"]),
+            "startY": int(search_body["startY"]),
+            "scanLimit": int(search_body["scanLimit"]),
+            "targetKind": str(search_body["targetKind"]),
+            "levels": list(search_body.get("levels") or []),
+            "drops": list(search_body.get("drops") or []),
+            "compositionFilter": dict(
+                search_body.get("compositionFilter") or {}
+            ),
+            "maxDistance": int(search_body.get("maxDistance") or 0),
+        })
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _run_configured_brush_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        common = dict(configs.get("common") or {})
+        brush = dict(common.get("brush") or {})
+        rules = [
+            dict(row)
+            for row in brush.get("rules") or []
+            if isinstance(row, dict) and row.get("enabled") is True
+        ]
+        if not rules:
+            raise OperationKnownFailureError(
+                "共享刷黄配置没有可执行规则",
+                code="SHARED_BRUSH_RULE_MISSING",
+            )
+        brush_state = dict(state.get("brush") or {})
+        skip_heal_once = bool(brush_state.get("skipHealOnce"))
+        cursor = max(0, int(brush_state.get("cursor") or 0))
+        rule_index = cursor % len(rules)
+        # A rule whose generals are paused for stamina is skipped, not waited
+        # on: the other formation still has bandits to hit.  The cursor keeps
+        # rotating from the rule actually used, so a paused rule cannot pin
+        # the round-robin on itself either.  Only when every rule is paused
+        # does 刷黄 sleep, and then exactly until the earliest pause ends.
+        paused_rules: Dict[int, Dict[str, Any]] = {}
+        for index, row in enumerate(rules):
+            block = self._general_energy_cooldown_block(
+                account_ref,
+                self._brush_rule_general_ids(row),
+                int(self._ports.clock.now_millis()),
+            )
+            if block is not None:
+                paused_rules[index] = block
+        if paused_rules and len(paused_rules) == len(rules):
+            earliest = min(
+                int(block["untilMillis"]) for block in paused_rules.values()
+            )
+            first_block = paused_rules[rule_index]
+            raise OperationKnownFailureError(
+                f"刷黄{first_block['message']}",
+                code="EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                details={
+                    "retryableResourceShortage": True,
+                    "resource": "活血丹",
+                    "retryAtMillis": earliest,
+                    "formationPaused": True,
+                    "sourceRowIndex": max(
+                        0, int(rules[rule_index].get("sourceRowIndex") or 0)
+                    ),
+                },
+            )
+        for offset in range(len(rules)):
+            candidate = (cursor + offset) % len(rules)
+            if candidate not in paused_rules:
+                rule_index = candidate
+                break
+        cursor = rule_index
+        rule = rules[rule_index]
+        rule_keys = [
+            self._brush_scan_rule_key(row, index)
+            for index, row in enumerate(rules)
+        ]
+        scan_rule_key = rule_keys[rule_index]
+        try:
+            source_row_index = max(0, int(rule.get("sourceRowIndex") or 0))
+        except (TypeError, ValueError):
+            source_row_index = 0
+        try:
+            formation_source_row_index = max(
+                0, int(rule.get("formationSourceRowIndex"))
+            )
+        except (TypeError, ValueError):
+            formations = [
+                row for row in rule.get("formations") or []
+                if isinstance(row, dict)
+            ]
+            try:
+                formation_source_row_index = max(
+                    0, int((formations[0] if formations else {}).get(
+                        "sourceRowIndex", source_row_index
+                    ))
+                )
+            except (TypeError, ValueError):
+                formation_source_row_index = source_row_index
+        # formationSourceRowIndex points at the shared troop-formation table.
+        # formationNumber is the user-facing row on the brush page; mixing the
+        # two made brush rows 1/2 appear as formations 3/4.
+        formation_number = source_row_index + 1
+        general_troops = []
+        for formation in rule.get("formations") or []:
+            if not isinstance(formation, dict):
+                continue
+            general_id = str(formation.get("generalId") or "").strip()
+            snapshots = (
+                formation.get("generalNameSnapshots")
+                if isinstance(formation.get("generalNameSnapshots"), dict)
+                else {}
+            )
+            try:
+                soldier_count = max(0, int(formation.get("soldierCount") or 0))
+            except (TypeError, ValueError):
+                soldier_count = 0
+            general_troops.append({
+                "generalId": general_id,
+                "generalName": str(snapshots.get(general_id) or "").strip(),
+                "soldierCount": soldier_count,
+            })
+        search_body = self.brush_search_operation_payload(
+            {
+                "accountRef": account_ref,
+                "startX": int(brush.get("startX") or 0),
+                "startY": int(brush.get("startY") or 0),
+                "targetKind": str(brush.get("targetKind") or "山贼"),
+                "levels": list(rule.get("levels") or []),
+                "drops": list(rule.get("drops") or []),
+                "compositionFilter": dict(
+                    rule.get("compositionFilter") or {}
+                ),
+                "scanLimit": int(brush.get("scanLimit") or 80),
+            },
+            context,
+        )
+        scan_fingerprint = self._brush_scan_fingerprint(search_body)
+        raw_scan_cursors = brush_state.get("scanCursorsByRule")
+        raw_scan_cursors = (
+            raw_scan_cursors
+            if isinstance(raw_scan_cursors, dict)
+            else {}
+        )
+        active_rule_keys = set(rule_keys)
+        scan_cursors = {
+            str(key): dict(value)
+            for key, value in raw_scan_cursors.items()
+            if str(key) in active_rule_keys and isinstance(value, dict)
+        }
+        rule_scan_state = dict(scan_cursors.get(scan_rule_key) or {})
+        try:
+            scan_offset = int(rule_scan_state.get("nextScanOffset") or 0)
+        except (TypeError, ValueError):
+            scan_offset = 0
+        scan_limit = int(search_body["scanLimit"])
+        if (
+            str(rule_scan_state.get("fingerprint") or "")
+            != scan_fingerprint
+            or not 0 <= scan_offset < scan_limit
+        ):
+            scan_offset = 0
+        cloud_mode = self._cloud_presence_mode(account_ref)
+        if str(cloud_mode.get("mode") or "") == "CLOUD_UNAVAILABLE":
+            raise OperationKnownFailureError(
+                "共享地图连接暂不可用，本轮刷黄已安全延后",
+                code="CLOUD_SHARED_DATA_UNAVAILABLE",
+            )
+        cloud_shared = str(cloud_mode.get("mode") or "") == "CLOUD_SHARED"
+        search_body.update({
+            "scanOffset": scan_offset,
+            "scanBatchSize": min(
+                scan_limit,
+                int(
+                    self._behavior_contract["mapSearch"][
+                        "preparationBatchSize"
+                    ]
+                ),
+            ),
+            "stopOnFirstMatch": True,
+        })
+        if cloud_shared:
+            search_body["scanBatchSize"] = min(
+                20, int(search_body["scanBatchSize"])
+            )
+
+        def matches_cloud_target(target: Dict[str, Any]) -> bool:
+            return (
+                target_matches_search_filter(
+                    target,
+                    str(search_body["targetKind"]),
+                    search_body.get("levels") or [],
+                    list(search_body.get("drops") or []),
+                    dict(search_body.get("compositionFilter") or {}),
+                )
+                and (
+                    int(search_body.get("maxDistance") or 0) <= 0
+                    or abs(int(target.get("x") or 0) - int(search_body["startX"]))
+                    + abs(int(target.get("y") or 0) - int(search_body["startY"]))
+                    <= int(search_body["maxDistance"])
+                )
+            )
+
+        execution.publish_progress(5, {"phase": "resident-brush-search"})
+        # Known targets come from two stores of the same kind of evidence, so
+        # they are unioned rather than chosen between.  Selecting exclusively
+        # made entering shared mode a *loss*: an account with 215 usable cached
+        # bandits stopped reading them the moment a peer came online, and the
+        # cloud answered with nothing, so it went back to sweeping five
+        # coordinates per tick.  Conflict avoidance does not depend on this
+        # choice - in shared mode every candidate must still win a cloud
+        # reservation before a single packet is dispatched - so a wider
+        # candidate set cannot cause two accounts to collide.
+        cached_targets = [
+            target
+            for target in self._load_map_snapshot_targets(
+                account_ref=account_ref,
+                kind="BANDIT",
+                fingerprint=(
+                    f"{int(search_body['startX'])},"
+                    f"{int(search_body['startY'])}|"
+                    f"{'HUANG_JIN' if search_body['targetKind'] == '黄巾' else 'SHAN_ZEI'}"
+                ),
+                ttl_millis=int(
+                    self._behavior_contract["mapSearch"][
+                        "targetCacheTtlMillis"
+                    ]
+                ),
+            )
+            if matches_cloud_target(target)
+        ]
+        cloud_targets: list[Dict[str, Any]] = []
+        if cloud_shared:
+            # Only the shared pool may supply candidates while a peer is
+            # online, because only the shared pool can arbitrate them.  A
+            # target that exists solely in this account's own cache cannot be
+            # reserved - the Worker has never heard of it - and offering it
+            # anyway consumed the whole round on a reservation that could never
+            # succeed: both accounts stopped dispatching 刷黄 entirely for 35
+            # minutes.  With no shared candidate the code falls through to the
+            # ordinary scan, exactly as it did before.
+            cloud_targets = [
+                target
+                for target in self._cloud_query_map_targets(
+                    account_ref, "bandit"
+                )
+                if matches_cloud_target(target)
+            ]
+        else:
+            cloud_targets = list(cached_targets)
+        cloud_targets = dedupe_targets(cloud_targets)
+        cloud_targets.sort(key=lambda target: (
+            (int(target.get("x") or 0) - int(search_body["startX"])) ** 2
+            + (int(target.get("y") or 0) - int(search_body["startY"])) ** 2,
+            int(target.get("y") or 0),
+            int(target.get("x") or 0),
+            int(target.get("id") or 0),
+        ))
+
+        if cloud_targets:
+            searched = {
+                "ok": True,
+                "targets": cloud_targets,
+                "points": cloud_targets,
+                "count": len(cloud_targets),
+                "updatedAt": int(self._ports.clock.now_millis()),
+                "cloudSharedMap": cloud_shared,
+                "localSnapshotMap": not cloud_shared,
+            }
+        elif cloud_shared:
+            all_coordinates = brush_scan_coordinates(
+                int(search_body["startX"]),
+                int(search_body["startY"]),
+                int(search_body["scanLimit"]),
+            )
+            batch_size = int(search_body["scanBatchSize"])
+            proposed = all_coordinates[scan_offset:scan_offset + batch_size]
+            claims = self._cloud_claim_map_scans(
+                account_ref, "bandit", proposed
+            )
+            claim_tokens = {
+                (int(value["x"]), int(value["y"])): str(value["leaseToken"])
+                for value in claims
+            }
+            claimed_coordinates = [
+                coordinate for coordinate in proposed
+                if coordinate in claim_tokens
+            ]
+            cloud_search_body = {
+                **search_body,
+                "_scanCoordinatesOverride": [
+                    list(value) for value in claimed_coordinates
+                ],
+                "includeScanObservationTargets": True,
+            }
+            try:
+                if claimed_coordinates:
+                    searched = self._run_brush_search_game_workflow(
+                        execution, cloud_search_body, context
+                    )
+                    scan_results = [
+                        dict(value)
+                        for value in searched.get("scanResults") or []
+                        if isinstance(value, dict)
+                    ]
+                    self._cloud_publish_map_observations(
+                        account_ref,
+                        "bandit",
+                        scan_results,
+                        claim_tokens,
+                    )
+                    scanned_coordinates = {
+                        (int(value["scanCoord"][0]), int(value["scanCoord"][1]))
+                        for value in scan_results
+                        if isinstance(value.get("scanCoord"), (list, tuple))
+                        and len(value["scanCoord"]) >= 2
+                    }
+                else:
+                    searched = {
+                        "ok": True,
+                        "targets": [],
+                        "points": [],
+                        "count": 0,
+                        "updatedAt": int(self._ports.clock.now_millis()),
+                        "scanResults": [],
+                        "scannedCoordinates": [],
+                        "scannedCount": 0,
+                    }
+                    scanned_coordinates = set()
+            except Exception:
+                self._cloud_release_map_scans(
+                    account_ref,
+                    "bandit",
+                    list(claim_tokens.values()),
+                )
+                raise
+            self._cloud_release_map_scans(
+                account_ref,
+                "bandit",
+                [
+                    token for coordinate, token in claim_tokens.items()
+                    if coordinate not in scanned_coordinates
+                ],
+            )
+            if scanned_coordinates:
+                positions = [
+                    index for index, coordinate in enumerate(proposed)
+                    if coordinate in scanned_coordinates
+                ]
+                advanced = max(positions) + 1 if positions else len(proposed)
+            else:
+                # Every omitted coordinate was either fresh or leased by
+                # another actor, so advancing cannot duplicate a scan.
+                advanced = len(proposed)
+            next_offset = scan_offset + advanced
+            wrapped = next_offset >= len(all_coordinates)
+            searched.update({
+                "scanOffset": scan_offset,
+                "scanLimit": len(all_coordinates),
+                "scanBatchSize": len(proposed),
+                "nextScanOffset": 0 if wrapped else next_offset,
+                "scanWrapped": wrapped,
+                "cloudSharedMap": True,
+            })
+        else:
+            # Exact pre-cloud behavior: one actor scans the same local batch
+            # and writes only its existing per-device snapshot.
+            searched = self._run_brush_search_game_workflow(
+                execution, search_body, context
+            )
+        targets = [
+            dict(row)
+            for row in searched.get("targets") or []
+            if isinstance(row, dict)
+        ]
+        schedule = dict(self._behavior_contract["brushYellow"]["schedule"])
+        now_millis = int(self._ports.clock.now_millis())
+        scan_metadata = {
+            key: searched[key]
+            for key in (
+                "scanOffset",
+                "scanLimit",
+                "scanBatchSize",
+                "scannedCount",
+                "nextScanOffset",
+                "scanWrapped",
+                "scannedCoordinates",
+                "scanResults",
+            )
+            if key in searched
+        }
+        scan_metadata["scanRuleKey"] = scan_rule_key
+        scan_progress_available = "nextScanOffset" in searched
+        if scan_progress_available:
+            try:
+                next_scan_offset = int(searched["nextScanOffset"])
+            except (TypeError, ValueError):
+                next_scan_offset = 0
+            if not 0 <= next_scan_offset < scan_limit:
+                next_scan_offset = 0
+            scanned_count = max(0, int(searched.get("scannedCount") or 0))
+            scan_wrapped = bool(searched.get("scanWrapped"))
+            scan_cursors[scan_rule_key] = {
+                "fingerprint": scan_fingerprint,
+                "nextScanOffset": next_scan_offset,
+                "lastScanOffset": int(searched.get("scanOffset") or 0),
+                "lastScannedCount": scanned_count,
+                "lastScanWrapped": scan_wrapped,
+                "updatedAtMillis": now_millis,
+            }
+            brush_state["scanCursorsByRule"] = scan_cursors
+            brush_state["lastScanBatch"] = {
+                "ruleKey": scan_rule_key,
+                "sourceRowIndex": source_row_index,
+                "scanOffset": int(searched.get("scanOffset") or 0),
+                "scannedCount": scanned_count,
+                "nextScanOffset": next_scan_offset,
+                "scanWrapped": scan_wrapped,
+                "matchedCount": len(targets),
+                "scannedAtMillis": now_millis,
+            }
+            # Persist read-only progress before any treatment/troop/dispatch
+            # mutation.  A stale target or process restart must continue after
+            # the coordinates already observed instead of restarting at zero.
+            state["brush"] = brush_state
+            self._save_resident_automation_state(account_ref, state)
+        if not targets:
+            batch_continues = (
+                scan_progress_available
+                and not bool(searched.get("scanWrapped"))
+            )
+            retry_delay = int(
+                schedule[
+                    "mapPreparationIdlePauseMillis"
+                    if batch_continues
+                    else "targetUnavailableRetryMillis"
+                ]
+            )
+            if scan_progress_available:
+                scanned_count = max(
+                    0, int(searched.get("scannedCount") or 0)
+                )
+                if batch_continues:
+                    # Name where the candidates came from and how many there
+                    # were.  Two same-server accounts ran on different map
+                    # sources with a hundredfold difference in cached targets,
+                    # and the miss message looked identical in both cases.
+                    source_note = (
+                        f"（共享池{len(cloud_targets)}个候选）"
+                        if cloud_shared
+                        else f"（本地缓存{len(cached_targets)}个候选）"
+                    )
+                    last_message = (
+                        f"刷黄编队{formation_number}{source_note}本批扫描"
+                        f"{scanned_count}个坐标未命中，稍后从第"
+                        f"{int(searched.get('nextScanOffset') or 0) + 1}个坐标续扫"
+                    )
+                else:
+                    last_message = (
+                        f"刷黄编队{formation_number}已完成"
+                        f"{int(searched.get('scanLimit') or scan_limit)}个坐标一轮扫描，"
+                        "没有匹配目标"
+                    )
+            else:
+                last_message = "本轮没有匹配的山贼/黄巾目标"
+            brush_state.update({
+                "cursor": (cursor + 1) % len(rules),
+                "nextWakeAtMillis": now_millis + retry_delay,
+                "lastState": "no-targets",
+                "lastMessage": last_message,
+            })
+            state["brush"] = brush_state
+            self._save_resident_automation_state(account_ref, state)
+            return {
+                "feature": "brush",
+                "state": "no-targets",
+                "success": True,
+                "message": brush_state["lastMessage"],
+                "sourceRowIndex": source_row_index,
+                "formationSourceRowIndex": formation_source_row_index,
+                "formationNumber": formation_number,
+                "nextWakeAtMillis": brush_state["nextWakeAtMillis"],
+                **scan_metadata,
+            }
+        execution_host_settings: Dict[str, Any] = {
+            "formations": list(configs.get("formations") or []),
+            "config": common,
+        }
+        if skip_heal_once:
+            execution_host_settings["healWounded"] = False
+        selected_target = dict(targets[0])
+        reservation_token = ""
+        if cloud_shared:
+            for candidate in targets:
+                token = self._cloud_reserve_map_target(
+                    account_ref, "bandit", candidate
+                )
+                if token:
+                    selected_target = dict(candidate)
+                    reservation_token = token
+                    selected_target["_cloudReservationToken"] = token
+                    selected_target["_cloudMapKind"] = "bandit"
+                    break
+            if not reservation_token:
+                retry_delay = int(schedule["targetUnavailableRetryMillis"])
+                brush_state.update({
+                    "cursor": (cursor + 1) % len(rules),
+                    "nextWakeAtMillis": now_millis + retry_delay,
+                    "lastState": "no-targets",
+                    # Name the candidate count: this message read as a normal
+                    # peer collision while the real cause was that none of the
+                    # candidates could ever be reserved, which is what let 35
+                    # minutes of zero dispatches look routine.
+                    "lastMessage": (
+                        f"共享地图{len(targets)}个匹配目标均未能领取"
+                        "（同区服其他账号已占用），稍后重试"
+                    ),
+                })
+                state["brush"] = brush_state
+                self._save_resident_automation_state(account_ref, state)
+                return {
+                    "feature": "brush",
+                    "state": "no-targets",
+                    "success": True,
+                    "message": brush_state["lastMessage"],
+                    "sourceRowIndex": source_row_index,
+                    "formationSourceRowIndex": formation_source_row_index,
+                    "formationNumber": formation_number,
+                    "nextWakeAtMillis": brush_state["nextWakeAtMillis"],
+                    **scan_metadata,
+                }
+        try:
+            execute_body = self.brush_execute_operation_payload(
+                {
+                    "accountRef": account_ref,
+                    "confirm": "brush-yellow",
+                    "generalIds": list(rule.get("generalIds") or []),
+                    "target": selected_target,
+                    "hostSettings": execution_host_settings,
+                },
+                context,
+            )
+        except Exception as error:
+            if reservation_token:
+                self._cloud_update_map_target_status(
+                    account_ref,
+                    "bandit",
+                    selected_target,
+                    reservation_token,
+                    "available",
+                    str(error),
+                    strict=False,
+                )
+            raise
+        if reservation_token and not self._cloud_update_map_target_status(
+            account_ref,
+            "bandit",
+            selected_target,
+            reservation_token,
+            "dispatching",
+            "brush preflight starting",
+        ):
+            raise OperationKnownFailureError(
+                "共享刷黄目标预占已失效，本轮未发送游戏请求",
+                code="CLOUD_TARGET_RESERVATION_LOST",
+            )
+        try:
+            executed = self._run_brush_execute_game_workflow(
+                execution, execute_body, context
+            )
+        except OperationKnownFailureError as error:
+            if reservation_token:
+                next_status = (
+                    "rejected"
+                    if error.code == "BRUSH_DISPATCH_REJECTED"
+                    else "missing"
+                    if "TARGET" in error.code and "MISSING" in error.code
+                    else "available"
+                )
+                self._cloud_update_map_target_status(
+                    account_ref,
+                    "bandit",
+                    selected_target,
+                    reservation_token,
+                    next_status,
+                    str(error),
+                    strict=False,
+                )
+            if error.code == "BRUSH_DISPATCH_REJECTED":
+                error.details.setdefault("sourceRowIndex", source_row_index)
+                error.details.setdefault("generalTroops", general_troops)
+                error.details.setdefault("selectedLevels", list(rule.get("levels") or []))
+                # The game has just said this bandit is gone.  Candidates are
+                # always taken nearest-first from the cache, so without writing
+                # that fact back the very same corpse is re-selected on every
+                # tick until the snapshot TTL expires - both live accounts sat
+                # on "目标不存在，不能到达" every ten seconds with the cloud pool
+                # unavailable.  The cloud copy is already marked above; this
+                # covers the local snapshot that the union reads next time.
+                if _brush_target_is_gone(str(error)):
+                    self._invalidate_map_snapshot_target(
+                        account_ref, "bandit", selected_target, str(error)
+                    )
+            raise
+        except Exception as error:
+            if reservation_token:
+                self._cloud_update_map_target_status(
+                    account_ref,
+                    "bandit",
+                    selected_target,
+                    reservation_token,
+                    "uncertain",
+                    str(error),
+                    strict=False,
+                )
+            raise
+        result = dict(executed.get("result") or {})
+        if reservation_token:
+            self._cloud_update_map_target_status(
+                account_ref,
+                "bandit",
+                selected_target,
+                reservation_token,
+                "dispatched",
+                str(result.get("battleText") or "dispatch accepted"),
+                strict=False,
+            )
+        completed_at = int(self._ports.clock.now_millis())
+        if skip_heal_once:
+            brush_state.pop("skipHealOnce", None)
+            brush_state.pop("skipHealReason", None)
+            brush_state["lastSkippedHealAtMillis"] = completed_at
+        brush_state.update({
+            "cursor": (cursor + 1) % len(rules),
+            "usedCount": int(brush_state.get("usedCount") or 0) + 1,
+            "nextWakeAtMillis": completed_at
+            + int(schedule["postDispatchPollMillis"]),
+            "lastState": "dispatched",
+            "lastBattleId": result.get("successBattleId"),
+            "lastMessage": str(
+                result.get("battleText") or "刷黄出征已确认"
+            ),
+        })
+        state["brush"] = brush_state
+        self._save_resident_automation_state(account_ref, state)
+        return {
+            "feature": "brush",
+            "state": "dispatched",
+            "success": True,
+            "dispatchAccepted": True,
+            "battleId": result.get("successBattleId"),
+            "target": result.get("target") or selected_target,
+            "sourceRowIndex": source_row_index,
+            "formationSourceRowIndex": formation_source_row_index,
+            "formationNumber": formation_number,
+            "selectedLevels": list(rule.get("levels") or []),
+            "message": brush_state["lastMessage"],
+            "nextWakeAtMillis": brush_state["nextWakeAtMillis"],
+            **scan_metadata,
+        }
+
+    def _run_configured_mine_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        mine = dict(configs.get("mine") or {})
+        settings = dict(mine.get("settings") or {})
+        rows = [
+            dict(row)
+            for row in mine.get("rows") or []
+            if isinstance(row, dict) and row.get("enabled") is True
+        ]
+        if not rows:
+            raise OperationKnownFailureError(
+                "共享打矿配置没有可执行规则",
+                code="SHARED_MINE_RULE_MISSING",
+            )
+        mine_state = dict(state.get("mine") or {})
+        cursor = max(0, int(mine_state.get("cursor") or 0))
+        row = rows[cursor % len(rows)]
+        level = row.get("level")
+        search_body = self.mine_search_operation_payload(
+            {
+                "accountRef": account_ref,
+                "settings": {
+                    "scope": str(row.get("scope") or "附近"),
+                    "centerX": int(row.get("x") or settings.get("centerX") or 0),
+                    "centerY": int(row.get("y") or settings.get("centerY") or 0),
+                    "x": int(row.get("x") or 0),
+                    "y": int(row.get("y") or 0),
+                    "resourceTypes": [str(row.get("resourceType") or "")],
+                    "levels": [int(level)] if level not in (None, "") else [],
+                    "onlyEmpty": bool(row.get("onlyEmpty")),
+                    "onlyDefended": bool(row.get("onlyDefended")),
+                },
+            },
+            context,
+        )
+        cloud_mode = self._cloud_presence_mode(account_ref)
+        if str(cloud_mode.get("mode") or "") == "CLOUD_UNAVAILABLE":
+            raise OperationKnownFailureError(
+                "共享地图连接暂不可用，本轮打矿已安全延后",
+                code="CLOUD_SHARED_DATA_UNAVAILABLE",
+            )
+        cloud_shared = str(cloud_mode.get("mode") or "") == "CLOUD_SHARED"
+        execution.publish_progress(5, {"phase": "resident-mine-search"})
+        cloud_targets: list[Dict[str, Any]] = []
+        if cloud_shared:
+            cloud_targets = [
+                target
+                for target in self._cloud_query_map_targets(
+                    account_ref, "mine"
+                )
+                if mine_target_matches(
+                    target,
+                    resource_types=list(search_body.get("resourceTypes") or []),
+                    levels=list(search_body.get("levels") or []),
+                    only_empty=bool(search_body.get("onlyEmpty")),
+                    only_defended=bool(search_body.get("onlyDefended")),
+                    exact_x=(
+                        int(search_body["startX"])
+                        if str(search_body["scope"]) == "定点" else None
+                    ),
+                    exact_y=(
+                        int(search_body["startY"])
+                        if str(search_body["scope"]) == "定点" else None
+                    ),
+                )
+            ]
+            cloud_targets.sort(key=lambda target: (
+                (int(target.get("x") or 0) - int(search_body["startX"])) ** 2
+                + (int(target.get("y") or 0) - int(search_body["startY"])) ** 2,
+                -int(target.get("level") or 0),
+                int(target.get("y") or 0),
+                int(target.get("x") or 0),
+                int(target.get("id") or 0),
+            ))
+        if cloud_targets:
+            searched = {
+                "ok": True,
+                "targets": cloud_targets,
+                "mines": cloud_targets,
+                "count": len(cloud_targets),
+                "cloudSharedMap": True,
+            }
+        elif cloud_shared:
+            if str(search_body["scope"]) == "定点":
+                all_coordinates = [(
+                    int(search_body["startX"]), int(search_body["startY"])
+                )]
+            else:
+                all_coordinates = brush_scan_coordinates(
+                    int(search_body["startX"]),
+                    int(search_body["startY"]),
+                    int(search_body["scanLimit"]),
+                )
+            scan_key = f"row:{cursor % len(rows)}"
+            scan_fingerprint = hashlib.sha256(
+                self._json(search_body).encode("utf-8")
+            ).hexdigest()
+            cloud_scan_cursors = {
+                str(key): dict(value)
+                for key, value in dict(
+                    mine_state.get("cloudScanCursors") or {}
+                ).items()
+                if isinstance(value, dict)
+            }
+            cursor_state = dict(cloud_scan_cursors.get(scan_key) or {})
+            try:
+                scan_offset = int(cursor_state.get("nextScanOffset") or 0)
+            except (TypeError, ValueError):
+                scan_offset = 0
+            if (
+                str(cursor_state.get("fingerprint") or "") != scan_fingerprint
+                or not 0 <= scan_offset < len(all_coordinates)
+            ):
+                scan_offset = 0
+            proposed = all_coordinates[scan_offset:scan_offset + 20]
+            claims = self._cloud_claim_map_scans(
+                account_ref, "mine", proposed
+            )
+            claim_tokens = {
+                (int(value["x"]), int(value["y"])): str(value["leaseToken"])
+                for value in claims
+            }
+            claimed_coordinates = [
+                coordinate for coordinate in proposed
+                if coordinate in claim_tokens
+            ]
+            cloud_search_body = {
+                **search_body,
+                "_scanCoordinatesOverride": [
+                    list(value) for value in claimed_coordinates
+                ],
+                "includeScanObservationTargets": True,
+            }
+            try:
+                if claimed_coordinates:
+                    searched = self._run_mine_search_game_workflow(
+                        execution, cloud_search_body, context
+                    )
+                    scan_results = [
+                        dict(value)
+                        for value in searched.get("scanResults") or []
+                        if isinstance(value, dict)
+                    ]
+                    self._cloud_publish_map_observations(
+                        account_ref, "mine", scan_results, claim_tokens
+                    )
+                    scanned_coordinates = {
+                        (int(value["scanCoord"][0]), int(value["scanCoord"][1]))
+                        for value in scan_results
+                        if isinstance(value.get("scanCoord"), (list, tuple))
+                        and len(value["scanCoord"]) >= 2
+                    }
+                else:
+                    searched = {"ok": True, "targets": [], "mines": []}
+                    scanned_coordinates = set()
+            except Exception:
+                self._cloud_release_map_scans(
+                    account_ref, "mine", list(claim_tokens.values())
+                )
+                raise
+            self._cloud_release_map_scans(
+                account_ref,
+                "mine",
+                [
+                    token for coordinate, token in claim_tokens.items()
+                    if coordinate not in scanned_coordinates
+                ],
+            )
+            advanced = len(proposed)
+            next_offset = scan_offset + advanced
+            wrapped = next_offset >= len(all_coordinates)
+            cloud_scan_cursors[scan_key] = {
+                "fingerprint": scan_fingerprint,
+                "nextScanOffset": 0 if wrapped else next_offset,
+                "lastScanOffset": scan_offset,
+                "scannedCount": len(scanned_coordinates),
+                "scanWrapped": wrapped,
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+            }
+            mine_state["cloudScanCursors"] = cloud_scan_cursors
+            state["mine"] = mine_state
+            self._save_resident_automation_state(account_ref, state)
+            searched["cloudSharedMap"] = True
+        else:
+            # One actor keeps the complete existing local mine-search path.
+            searched = self._run_mine_search_game_workflow(
+                execution, search_body, context
+            )
+        targets = [
+            dict(item)
+            for item in searched.get("targets") or []
+            if isinstance(item, dict)
+        ]
+        schedule = dict(self._behavior_contract["mine"]["schedule"])
+        now_millis = int(self._ports.clock.now_millis())
+        if not targets:
+            mine_state.update({
+                "cursor": (cursor + 1) % len(rows),
+                "nextWakeAtMillis": now_millis
+                + int(schedule["targetUnavailableRetryMillis"]),
+                "lastState": "no-targets",
+                "lastMessage": "本轮没有匹配且可安全占领的矿点",
+            })
+            state["mine"] = mine_state
+            self._save_resident_automation_state(account_ref, state)
+            return {
+                "feature": "mine",
+                "state": "no-targets",
+                "success": True,
+                "message": mine_state["lastMessage"],
+                "nextWakeAtMillis": mine_state["nextWakeAtMillis"],
+            }
+        common = dict(configs.get("common") or {})
+        selected_target = dict(targets[0])
+        reservation_token = ""
+        if cloud_shared:
+            for candidate in targets:
+                token = self._cloud_reserve_map_target(
+                    account_ref, "mine", candidate
+                )
+                if token:
+                    selected_target = dict(candidate)
+                    reservation_token = token
+                    selected_target["_cloudReservationToken"] = token
+                    selected_target["_cloudMapKind"] = "mine"
+                    break
+            if not reservation_token:
+                mine_state.update({
+                    "cursor": (cursor + 1) % len(rows),
+                    "nextWakeAtMillis": now_millis
+                    + int(schedule["targetUnavailableRetryMillis"]),
+                    "lastState": "no-targets",
+                    "lastMessage": "匹配矿点已由同区服其他账号领取，稍后重试",
+                })
+                state["mine"] = mine_state
+                self._save_resident_automation_state(account_ref, state)
+                return {
+                    "feature": "mine",
+                    "state": "no-targets",
+                    "success": True,
+                    "message": mine_state["lastMessage"],
+                    "nextWakeAtMillis": mine_state["nextWakeAtMillis"],
+                }
+        try:
+            execute_body = self.mine_execute_operation_payload(
+                {
+                    "accountRef": account_ref,
+                    "confirm": "mine",
+                    "generalIds": list(row.get("generalIds") or []),
+                    "target": selected_target,
+                    "sourceRowIndex": self._configured_row_index(
+                        row, cursor, rows
+                    ),
+                    "maxMarchMinutes": int(
+                        settings.get("maxMarchMinutes") or 45
+                    ),
+                    "fullLoyalty": bool(settings.get("fullLoyalty", True)),
+                    "speedEnabled": bool(settings.get("speed", False)),
+                    "withdrawDefense": bool(
+                        self._behavior_contract["mine"]["withdraw"].get(
+                            "afterGarrisonRequired", True
+                        )
+                    ),
+                    "hostSettings": {
+                        "formations": list(configs.get("formations") or []),
+                        "config": common,
+                    },
+                },
+                context,
+            )
+        except Exception as error:
+            if reservation_token:
+                self._cloud_update_map_target_status(
+                    account_ref,
+                    "mine",
+                    selected_target,
+                    reservation_token,
+                    "available",
+                    str(error),
+                    strict=False,
+                )
+            raise
+        if reservation_token and not self._cloud_update_map_target_status(
+            account_ref,
+            "mine",
+            selected_target,
+            reservation_token,
+            "dispatching",
+            "mine preflight starting",
+        ):
+            raise OperationKnownFailureError(
+                "共享矿点预占已失效，本轮未发送游戏请求",
+                code="CLOUD_TARGET_RESERVATION_LOST",
+            )
+        try:
+            executed = self._run_mine_execute_game_workflow(
+                execution, execute_body, context
+            )
+        except OperationKnownFailureError as error:
+            if reservation_token:
+                next_status = (
+                    "missing"
+                    if error.code == "MINE_PREVIEW_TARGET_MISMATCH"
+                    else "rejected"
+                    if error.code in {
+                        "MINE_PLAYER_OCCUPIED", "MINE_DISPATCH_REJECTED",
+                        "MINE_TARGET_INVALID",
+                    }
+                    else "available"
+                )
+                self._cloud_update_map_target_status(
+                    account_ref,
+                    "mine",
+                    selected_target,
+                    reservation_token,
+                    next_status,
+                    str(error),
+                    strict=False,
+                )
+            raise
+        except Exception as error:
+            if reservation_token:
+                self._cloud_update_map_target_status(
+                    account_ref,
+                    "mine",
+                    selected_target,
+                    reservation_token,
+                    "uncertain",
+                    str(error),
+                    strict=False,
+                )
+            raise
+        result = dict(executed.get("result") or {})
+        if reservation_token:
+            self._cloud_update_map_target_status(
+                account_ref,
+                "mine",
+                selected_target,
+                reservation_token,
+                "dispatched",
+                str(result.get("message") or "dispatch accepted"),
+                strict=False,
+            )
+        completed_at = int(self._ports.clock.now_millis())
+        mine_state.update({
+            "cursor": (cursor + 1) % len(rows),
+            "nextWakeAtMillis": completed_at
+            + int(schedule["postDispatchPollMillis"]),
+            "lastState": "dispatched",
+            "lastBattleId": result.get("successBattleId"),
+            "lastMessage": str(result.get("message") or "打矿出征已确认"),
+        })
+        state["mine"] = mine_state
+        self._save_resident_automation_state(account_ref, state)
+        return {
+            "feature": "mine",
+            "state": "dispatched",
+            "success": True,
+            "dispatchAccepted": True,
+            "battleId": result.get("successBattleId"),
+            "target": result.get("target") or selected_target,
+            # Which 打矿编队 went out is the operator's own numbering, and it
+            # is only knowable here, where the row was chosen.  Report it the
+            # way 刷黄 does so the success line reads 编队N instead of a bare
+            # "出征".
+            "sourceRowIndex": self._configured_row_index(row, cursor, rows),
+            "message": mine_state["lastMessage"],
+            "nextWakeAtMillis": mine_state["nextWakeAtMillis"],
+        }
+
+    def _configured_row_index(
+        self,
+        row: Dict[str, Any],
+        cursor: int,
+        rows: list[Dict[str, Any]],
+    ) -> int:
+        """Index of a chosen config row as the settings page numbered it.
+
+        ``sourceRowIndex`` is the saved row's own identity and survives rows
+        being disabled, so it is preferred; the rotation cursor is only a
+        fallback for configs saved before that field existed.
+        """
+
+        stored = row.get("sourceRowIndex")
+        try:
+            if stored is not None and int(stored) >= 0:
+                return int(stored)
+        except (TypeError, ValueError):
+            pass
+        return max(0, int(cursor)) % max(1, len(rows))
+
+    def _configured_resident_context(
+        self,
+        feature: str,
+        cursor: int,
+        row_count: int,
+    ) -> Dict[str, Any]:
+        now_millis = int(self._ports.clock.now_millis())
+        return {
+            "feature": str(feature),
+            "cursor": max(0, int(cursor)),
+            "nextCursor": (
+                (max(0, int(cursor)) + 1) % max(1, int(row_count))
+            ),
+            "completionToken": (
+                f"{feature}:{now_millis}:{max(0, int(cursor))}"
+            ),
+        }
+
+    def _run_configured_raid_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        raid = dict(configs.get("raid") or {})
+        rows = [
+            dict(row)
+            for row in raid.get("rows") or []
+            if isinstance(row, dict) and row.get("enabled") is True
+        ]
+        if not rows:
+            raise OperationKnownFailureError(
+                "共享掠夺配置没有可执行规则",
+                code="SHARED_RAID_RULE_MISSING",
+            )
+        feature_state = dict(state.get("raid") or {})
+        cursor = max(0, int(feature_state.get("cursor") or 0))
+        row = rows[cursor % len(rows)]
+        resident_context = self._configured_resident_context(
+            "raid", cursor, len(rows)
+        )
+        body = self.raid_action_operation_payload(
+            {
+                **row,
+                "accountRef": account_ref,
+                "confirm": "raid",
+                "hostSettings": {
+                    "formations": list(configs.get("formations") or []),
+                    "config": dict(configs.get("common") or {}),
+                },
+            },
+            context,
+        )
+        body["residentContext"] = resident_context
+        execution.publish_progress(5, {"phase": "resident-raid"})
+        envelope = self._run_raid_execute_game_workflow(
+            execution, body, context
+        )
+        result = dict(envelope.get("result") or {})
+        completed_at = int(self._ports.clock.now_millis())
+        return {
+            **result,
+            "feature": "raid",
+            "state": "dispatched",
+            "success": bool(result.get("success", True)),
+            "dispatchAccepted": True,
+            "battleId": result.get("successBattleId"),
+            "sourceRowIndex": self._configured_row_index(row, cursor, rows),
+            "message": str(result.get("message") or "掠夺出征已确认"),
+            "nextWakeAtMillis": completed_at + int(
+                self._behavior_contract["raid"].get(
+                    "postDispatchPollMillis", 60_000
+                )
+            ),
+            "_residentContext": resident_context,
+        }
+
+    def _run_configured_lossless_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        lossless = dict(configs.get("lossless") or {})
+        settings = dict(lossless.get("settings") or {})
+        rows = [
+            dict(row)
+            for row in lossless.get("rows") or []
+            if isinstance(row, dict) and row.get("enabled") is True
+        ]
+        if not rows:
+            raise OperationKnownFailureError(
+                "共享无损配置没有可执行规则",
+                code="SHARED_LOSSLESS_RULE_MISSING",
+            )
+        feature_state = dict(state.get("lossless") or {})
+        cursor = max(0, int(feature_state.get("cursor") or 0))
+        row = rows[cursor % len(rows)]
+        resident_context = self._configured_resident_context(
+            "lossless", cursor, len(rows)
+        )
+        body = self.lossless_action_operation_payload(
+            {
+                **row,
+                "accountRef": account_ref,
+                "confirm": "lossless",
+                "dailyLimit": int(
+                    settings.get("dailyLimit")
+                    or self._behavior_contract["lossless"]["serverDailyLimit"]
+                ),
+                "hostSettings": {
+                    "formations": list(configs.get("formations") or []),
+                    "config": dict(configs.get("common") or {}),
+                },
+            },
+            context,
+        )
+        body["residentContext"] = resident_context
+        execution.publish_progress(5, {"phase": "resident-lossless"})
+        envelope = self._run_lossless_action_game_workflow(
+            execution, body, context
+        )
+        result = dict(envelope.get("result") or {})
+        result.setdefault("feature", "lossless")
+        result.setdefault("success", True)
+        result["_residentContext"] = resident_context
+        return result
+
+    def _run_configured_dungeon_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        dungeon = dict(configs.get("dungeon") or {})
+        settings = dict(dungeon.get("settings") or {})
+        rows = [
+            dict(row)
+            for row in dungeon.get("rows") or []
+            if isinstance(row, dict) and row.get("enabled") is True
+        ]
+        if not rows:
+            raise OperationKnownFailureError(
+                "共享副本配置没有可执行规则",
+                code="SHARED_DUNGEON_RULE_MISSING",
+            )
+        feature_state = dict(state.get("dungeon") or {})
+        cursor = max(0, int(feature_state.get("cursor") or 0))
+        row = rows[cursor % len(rows)]
+        resident_context = self._configured_resident_context(
+            "dungeon", cursor, len(rows)
+        )
+        body = self.dungeon_action_operation_payload(
+            {
+                **row,
+                "accountRef": account_ref,
+                "confirm": "dungeon",
+                "mode": str(settings.get("mode") or "loop"),
+                "dailyTimes": int(settings.get("dailyTimes") or 999),
+                "hostSettings": {
+                    "formations": list(configs.get("formations") or []),
+                    "config": dict(configs.get("common") or {}),
+                },
+            },
+            context,
+        )
+        body["residentContext"] = resident_context
+        execution.publish_progress(5, {"phase": "resident-dungeon"})
+        envelope = self._run_dungeon_action_game_workflow(
+            execution, body, context
+        )
+        result = dict(envelope.get("result") or {})
+        result.setdefault("feature", "dungeon")
+        result.setdefault("success", True)
+        result["_residentContext"] = resident_context
+        return result
+
+    def _run_configured_ministry_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        ministry = dict(configs.get("ministry") or {})
+        settings = dict(ministry.get("settings") or {})
+        has_pending = bool(
+            self._automation_pending_record(
+                account_ref, "ministryPendingPlantJson"
+            )
+        )
+        if not has_pending and (
+            not bool(ministry.get("enabled"))
+            or not ministry_planting_allowed(settings)
+        ):
+            raise OperationKnownFailureError(
+                "共享六部配置没有已确认的金银花种植任务",
+                code="SHARED_MINISTRY_RULE_MISSING",
+            )
+        execution.publish_progress(5, {"phase": "resident-ministry"})
+        envelope = self._run_hubu_plant_game_workflow(
+            execution,
+            {
+                "accountRef": account_ref,
+                "confirm": "hubu-batch-plant",
+                **settings,
+            },
+            context,
+        )
+        result = dict(envelope.get("result") or {})
+        raw = dict(result.get("raw") or {})
+        phase = str(raw.get("phase") or "garden-full")
+        now_millis = int(self._ports.clock.now_millis())
+        next_wake = now_millis + int(
+            self._behavior_contract["scheduler"]["ministryPollMillis"]
+        )
+        return {
+            **result,
+            "feature": "ministry",
+            "state": (
+                "completed"
+                if phase in {"planted", "plant-recovered"}
+                else "waiting"
+            ),
+            "success": bool(result.get("success", True)),
+            "message": str(
+                result.get("message") or "六部菜地已满，等待下一轮"
+            ),
+            "nextWakeAtMillis": next_wake,
+        }
+
+    def _pending_nested_send_unsettled(
+        self,
+        feature: str,
+        pending: Dict[str, Any],
+    ) -> bool:
+        """Whether this ledger holds a send that ``FORMAL_SEND_STATE_KEYS`` misses.
+
+        Three features record their durable send boundary one level below the
+        top of the record - 将领维护 under ``maintenanceProgress``, 内政 under
+        ``progress``, 背包整理 in ``actionState`` - so a scan of the top-level
+        keys finds a clean record and concludes, wrongly, that nothing is
+        outstanding.
+
+        That single fact was being answered in two places with two different
+        answers.  The isolation gate knew about 将领维护 only, having been
+        patched the day 将领维护 won every tick; 内政 stores its boundary in
+        exactly the same shape and was still being let through, which is the
+        same defect one feature over: the record looks ordinary, the workflow
+        returns ``blocked`` again, and the pair repeats twice a second while
+        holding the account lane.  Both callers now read the answer from here,
+        so a fourth feature with a nested boundary is added once.
+        """
+
+        if not pending:
+            return False
+        if feature == "general":
+            return bool(self._general_maintenance_blocking_steps(pending))
+        if feature == "domestic":
+            return bool(self._domestic_blocking_steps(pending))
+        if feature == "inventory":
+            return str(pending.get("actionState") or "") in {
+                "sending", "uncertain", "accepted", "rejected",
+            }
+        return False
+
+    def _general_maintenance_blocking_steps(
+        self,
+        pending: Dict[str, Any],
+    ) -> list[Dict[str, Any]]:
+        """Return steps which crossed a mutation boundary without safe closure.
+
+        ``rejected`` is deliberately absent.  It means the request was sent and
+        the server answered no, which is a *known* outcome: nothing was
+        applied, so nothing is left for a human to adjudicate.  Treating it as
+        unclosed froze 将领维护 permanently on one real account - the pending
+        could never finish, so it held the lane on every tick and 副本 and 刷黄
+        stopped being scheduled at all.  Only ``sending``, ``uncertain`` and a
+        bare ``accepted`` leave an effect nobody can determine.
+        """
+
+        progress = self._public_json_object(
+            pending.get("maintenanceProgress")
+        )
+        blocked: list[Dict[str, Any]] = []
+        for section, raw_rows in progress.items():
+            rows = self._public_json_object(raw_rows)
+            for step_key, raw_step in rows.items():
+                step = self._public_json_object(raw_step)
+                if str(step.get("state") or "") in {
+                    "sending", "uncertain", "accepted",
+                }:
+                    blocked.append({
+                        "section": str(section),
+                        "stepKey": str(step_key),
+                        **step,
+                    })
+        return blocked
+
+    def _run_durable_general_maintenance_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        section: str,
+        step_key: str,
+        action: Callable[[Any], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Run one general-maintenance step behind a durable send boundary."""
+
+        progress = self._public_json_object(
+            pending.get("maintenanceProgress")
+        )
+        section_rows = self._public_json_object(progress.get(section))
+        previous = self._public_json_object(section_rows.get(step_key))
+        previous_state = str(previous.get("state") or "")
+        if previous_state == "completed":
+            return {
+                "success": True,
+                "skipped": "already-completed",
+                "message": str(previous.get("message") or "已完成"),
+            }
+        if previous_state == "rejected":
+            # The server already answered this one, so there is nothing to
+            # replay and nothing in doubt.  Report it and let the rest of the
+            # round finish: a run that can never complete keeps its pending
+            # record, and that record holds the lane against every other
+            # feature for as long as it exists.
+            return {
+                "success": False,
+                "rejected": True,
+                "message": str(previous.get("message") or "服务器已明确拒绝"),
+                "code": str(previous.get("code") or ""),
+            }
+        if previous_state in {"sending", "uncertain", "accepted"}:
+            raise OperationKnownFailureError(
+                f"将领维护步骤 {section}/{step_key} 曾越过发送边界，"
+                "当前禁止自动重放",
+                code="GENERAL_MAINTENANCE_STEP_REQUIRES_REVIEW",
+                details={"step": previous},
+            )
+
+        def save_step(value: Dict[str, Any]) -> None:
+            section_rows[step_key] = dict(value)
+            progress[section] = dict(section_rows)
+            pending["maintenanceProgress"] = dict(progress)
+            self._save_automation_pending_record(
+                account_ref,
+                "generalMaintenancePendingJson",
+                pending,
+            )
+
+        save_step({
+            "state": "preparing",
+            "updatedAtMillis": int(self._ports.clock.now_millis()),
+        })
+
+        def before_send(metadata: Dict[str, Any]) -> None:
+            save_step({
+                "state": "sending",
+                "sentAtMillis": int(self._ports.clock.now_millis()),
+                "request": dict(metadata),
+            })
+
+        wrapped = _DurablePendingMutationExecution(execution, before_send)
+        try:
+            result = action(wrapped)
+        except OperationKnownFailureError as error:
+            save_step({
+                "state": "rejected" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+                "code": str(error.code),
+            })
+            raise
+        except OperationUncertainError as error:
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+            })
+            raise
+        except Exception as error:
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error) or error.__class__.__name__,
+            })
+            if wrapped.sent:
+                raise OperationUncertainError(
+                    f"将领维护步骤 {section}/{step_key} 发包后异常：{error}",
+                    {"exceptionType": error.__class__.__name__},
+                ) from error
+            raise
+
+        if wrapped.sent:
+            save_step({
+                "state": "accepted",
+                "acceptedAtMillis": int(self._ports.clock.now_millis()),
+                "message": self._automation_result_message(result),
+            })
+        save_step({
+            "state": "completed",
+            "completedAtMillis": int(self._ports.clock.now_millis()),
+            "message": self._automation_result_message(result),
+            "requestSent": bool(wrapped.sent),
+        })
+        return dict(result)
+
+    def _run_configured_general_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run or safely recover one whole periodic general-maintenance round."""
+
+        config = dict(configs.get("general") or {})
+        pending = self._automation_pending_record(
+            account_ref, "generalMaintenancePendingJson"
+        )
+        if not pending and not bool(config.get("enabled")):
+            raise OperationKnownFailureError(
+                "共享将领维护没有已启用的治疗、加体或加忠动作",
+                code="SHARED_GENERAL_RULE_MISSING",
+            )
+
+        execution.publish_progress(5, {"phase": "resident-general-state"})
+        state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            {**context, "operationId": execution.operation_id},
+            read_only=True,
+        )
+        self._persist_automation_general_snapshot(
+            account_ref, state_hex, generals, army
+        )
+        by_id = {
+            int(row.get("id") or 0): dict(row)
+            for row in generals
+            if isinstance(row, dict) and int(row.get("id") or 0) > 0
+        }
+        ordered_generals = [by_id[key] for key in sorted(by_id)]
+        now_millis = int(self._ports.clock.now_millis())
+        # The fresh reading above is the cheapest possible check of whether a
+        # paused general has been topped up by hand (or regenerated early).
+        energy_lifted = self._lift_recovered_energy_cooldowns(
+            account_ref, by_id, state, now_millis
+        )
+
+        if not pending:
+            if not ordered_generals:
+                raise OperationKnownFailureError(
+                    "共享将领维护未读取到任何有效将领",
+                    code="SHARED_GENERAL_EMPTY",
+                )
+            representatives: Dict[int, Dict[str, Any]] = {}
+            for general in ordered_generals:
+                try:
+                    fief_id = int(
+                        general.get("fiefId")
+                        or general.get("placeID")
+                        or general.get("placeId")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    fief_id = 0
+                if fief_id > 0:
+                    representatives.setdefault(fief_id, general)
+            if representatives:
+                heal_targets = [
+                    {
+                        "stepKey": str(fief_id),
+                        "fiefId": fief_id,
+                        "generalId": int(representatives[fief_id]["id"]),
+                    }
+                    for fief_id in sorted(representatives)
+                ]
+            else:
+                first = ordered_generals[0]
+                heal_targets = [{
+                    "stepKey": f"fallback-{int(first['id'])}",
+                    "generalId": int(first["id"]),
+                }]
+            pending = {
+                "schemaVersion": 1,
+                "createdAtMillis": now_millis,
+                "roundKey": f"general-{account_ref}-{now_millis}",
+                "config": {
+                    "autoHeal": bool(config.get("autoHeal")),
+                    "autoEnergy": bool(config.get("autoEnergy")),
+                    "minEnergy": max(
+                        20, min(100, int(config.get("minEnergy") or 20))
+                    ),
+                    "keepFullLoyalty": bool(
+                        config.get("keepFullLoyalty")
+                    ),
+                    "foodToCopper": bool(config.get("foodToCopper")),
+                    "copperFloorWan": int(
+                        config.get("copperFloorWan") or 1
+                    ),
+                    "autoRescue": False,
+                },
+                "orderedGeneralIds": [
+                    int(general["id"]) for general in ordered_generals
+                ],
+                "healTargets": heal_targets,
+                "generalFacts": [
+                    {
+                        "id": int(general["id"]),
+                        "name": str(
+                            general.get("name") or general["id"]
+                        ),
+                        "fiefId": int(
+                            general.get("fiefId")
+                            or general.get("placeID")
+                            or general.get("placeId")
+                            or 0
+                        ),
+                    }
+                    for general in ordered_generals
+                ],
+                "maintenanceProgress": {},
+            }
+            self._save_automation_pending_record(
+                account_ref,
+                "generalMaintenancePendingJson",
+                pending,
+            )
+
+        pending["lastObservedAtMillis"] = now_millis
+        pending["lastObservedGenerals"] = [
+            {
+                "id": int(general["id"]),
+                "energy": general.get("tili", general.get("energy")),
+                "loyalty": general.get("loyalty"),
+                "status": general.get("status"),
+                "statusText": str(
+                    general.get("statusText")
+                    or general.get("displayStatus")
+                    or "未知"
+                ),
+            }
+            for general in ordered_generals
+        ]
+        blocking_steps = self._general_maintenance_blocking_steps(pending)
+        if blocking_steps:
+            pending["blockedAtMillis"] = now_millis
+            pending["requiresAttention"] = True
+            self._save_automation_pending_record(
+                account_ref,
+                "generalMaintenancePendingJson",
+                pending,
+            )
+            first = blocking_steps[0]
+            return {
+                "feature": "general",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "message": (
+                    "将领维护已完成只读状态核对；步骤 "
+                    f"{first['section']}/{first['stepKey']} "
+                    f"处于{first.get('state')}，禁止自动重发"
+                ),
+                "blockedSteps": blocking_steps,
+                "nextWakeAtMillis": None,
+            }
+
+        settings = dict(pending.get("config") or {})
+        ordered_ids = [
+            int(value)
+            for value in pending.get("orderedGeneralIds") or []
+            if int(value) > 0
+        ]
+        missing = [general_id for general_id in ordered_ids if general_id not in by_id]
+        if missing:
+            raise OperationKnownFailureError(
+                "将领维护恢复时未找到将领："
+                + ",".join(str(value) for value in missing),
+                code="GENERAL_MAINTENANCE_GENERAL_MISSING",
+            )
+
+        maintenance: list[Dict[str, Any]] = []
+        if bool(settings.get("autoHeal")):
+            for target in pending.get("healTargets") or []:
+                if not isinstance(target, dict):
+                    continue
+                general_id = int(target.get("generalId") or 0)
+                fief_id = int(target.get("fiefId") or 0)
+                step_key = str(
+                    target.get("stepKey")
+                    or fief_id
+                    or f"fallback-{general_id}"
+                )
+                if general_id not in by_id:
+                    raise OperationKnownFailureError(
+                        f"将领维护治疗代表将领不存在：{general_id}",
+                        code="GENERAL_MAINTENANCE_GENERAL_MISSING",
+                    )
+                heal_body: Dict[str, Any] = {
+                    "accountRef": account_ref,
+                    "confirm": "heal-wounded",
+                    "generalId": str(general_id),
+                    "healAllIfCountUnknown": True,
+                    "foodToCopper": bool(settings.get("foodToCopper")),
+                    "copperFloorWan": int(
+                        settings.get("copperFloorWan") or 1
+                    ),
+                }
+                if fief_id > 0:
+                    heal_body["fiefId"] = str(fief_id)
+                result = self._run_durable_general_maintenance_step(
+                    execution,
+                    account_ref,
+                    pending,
+                    "healByFief",
+                    step_key,
+                    lambda step_execution, heal_body=heal_body: (
+                        self._run_troop_heal_game_workflow(
+                            step_execution, heal_body, context
+                        )
+                    ),
+                )
+                maintenance.append({
+                    "step": "heal",
+                    "fiefId": fief_id or None,
+                    "generalId": general_id,
+                    "result": result,
+                })
+
+        energy_paused: list[Dict[str, Any]] = []
+        if bool(settings.get("autoEnergy")):
+            cooldowns = self._general_energy_cooldowns(
+                account_ref, int(self._ports.clock.now_millis())
+            )
+            for general_id in ordered_ids:
+                general = by_id[general_id]
+                paused = cooldowns.get(general_id)
+                if paused is not None:
+                    # Already known to be short and unable to march; asking
+                    # the inventory again before the pause ends learns
+                    # nothing and costs a round trip per tick.
+                    maintenance.append({
+                        "step": "energy",
+                        "generalId": general_id,
+                        "result": {
+                            "success": True,
+                            "skipped": "energy-cooldown",
+                            "message": str(paused.get("message") or ""),
+                            "untilMillis": int(paused.get("untilMillis") or 0),
+                        },
+                    })
+                    continue
+                try:
+                    result = self._run_durable_general_maintenance_step(
+                        execution,
+                        account_ref,
+                        pending,
+                        "energyByGeneral",
+                        str(general_id),
+                        lambda step_execution, general=general: (
+                            self._run_general_energy_maintenance_step(
+                                step_execution,
+                                account_ref,
+                                general,
+                                context,
+                                enabled=True,
+                                threshold=int(settings.get("minEnergy") or 20),
+                                action_name="将领维护",
+                            )
+                        ),
+                    )
+                except OperationKnownFailureError as error:
+                    if error.code != "EXPEDITION_ENERGY_ITEM_UNAVAILABLE":
+                        raise
+                    # The step is already durably recorded as
+                    # ``failed-before-send`` and the general's formations are
+                    # paused by the energy step itself.  Aborting the whole
+                    # round here is what left the pending record alive and
+                    # the account lane held on every tick; the remaining
+                    # generals still deserve their heal/energy/loyalty pass.
+                    energy_paused.append({
+                        "generalId": general_id,
+                        "generalName": str(
+                            general.get("name") or general_id
+                        ),
+                        "message": str(error),
+                        "retryAtMillis": error.details.get("retryAtMillis"),
+                    })
+                    result = {
+                        "success": False,
+                        "code": str(error.code),
+                        "message": str(error),
+                        "formationPaused": True,
+                    }
+                maintenance.append({
+                    "step": "energy",
+                    "generalId": general_id,
+                    "result": result,
+                })
+
+        if bool(settings.get("keepFullLoyalty")):
+            for general_id in ordered_ids:
+                general = by_id[general_id]
+                result = self._run_durable_general_maintenance_step(
+                    execution,
+                    account_ref,
+                    pending,
+                    "loyaltyByGeneral",
+                    str(general_id),
+                    lambda step_execution, general=general: (
+                        self._run_general_loyalty_maintenance_step(
+                            step_execution,
+                            account_ref,
+                            general,
+                            context,
+                            action_name="将领维护",
+                        )
+                    ),
+                )
+                maintenance.append({
+                    "step": "loyalty",
+                    "generalId": general_id,
+                    "result": result,
+                })
+
+        completed_at = int(self._ports.clock.now_millis())
+        last_run = {
+            "roundKey": pending.get("roundKey"),
+            "completedAtMillis": completed_at,
+            "orderedGeneralIds": ordered_ids,
+            "healTargets": list(pending.get("healTargets") or []),
+            "stepCount": len(maintenance),
+        }
+        next_wake = completed_at + int(
+            self._behavior_contract["scheduler"][
+                "generalMaintenancePollMillis"
+            ]
+        )
+        completion_message = "将领维护完成：按封地治疗并逐将检查加体、加忠"
+        if energy_paused:
+            names = "、".join(
+                str(row.get("generalName") or row.get("generalId"))
+                for row in energy_paused
+            )
+            until = max(
+                int(row.get("retryAtMillis") or 0) for row in energy_paused
+            )
+            completion_message += (
+                f"；{names}体力不足以出征且宝库没有活血丹，"
+                f"所在编队已暂停至{china_clock_text(until)}，其余任务继续"
+            )
+            last_run["energyPaused"] = energy_paused
+        if energy_lifted:
+            completion_message += "；" + "、".join(
+                f"{row['generalName']}体力已恢复至{row['energy']}"
+                for row in energy_lifted
+            ) + "，已提前解除所在编队暂停"
+            last_run["energyLifted"] = energy_lifted
+        general_state = dict(state.get("general") or {})
+        general_state.update({
+            "lastState": "completed",
+            "lastMessage": completion_message,
+            "nextWakeAtMillis": next_wake,
+        })
+        state["general"] = general_state
+        state["updatedAtMillis"] = completed_at
+        self._update_account_public_state(
+            account_ref,
+            {
+                "generalMaintenancePendingJson": "{}",
+                "generalMaintenanceLastRunJson": self._json(last_run),
+                "residentAutomationStateJson": self._json(state),
+            },
+        )
+        return {
+            "feature": "general",
+            "state": "completed",
+            "success": True,
+            "message": completion_message,
+            "maintenance": maintenance,
+            "energyPaused": energy_paused,
+            "energyLifted": energy_lifted,
+            "nextWakeAtMillis": next_wake,
+        }
+
+    def _domestic_blocking_steps(
+        self,
+        pending: Dict[str, Any],
+    ) -> list[Dict[str, Any]]:
+        progress = self._public_json_object(pending.get("progress"))
+        blocked: list[Dict[str, Any]] = []
+        for step_key, raw_step in progress.items():
+            step = self._public_json_object(raw_step)
+            if str(step.get("state") or "") in {
+                "sending", "uncertain", "accepted",
+            }:
+                blocked.append({"stepKey": str(step_key), **step})
+        return blocked
+
+    def _run_durable_domestic_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        step_key: str,
+        action: Callable[[Any], Dict[str, Any]],
+        *,
+        safe_rejection_codes: set[str] | None = None,
+    ) -> Dict[str, Any]:
+        progress = self._public_json_object(pending.get("progress"))
+        previous = self._public_json_object(progress.get(step_key))
+        previous_state = str(previous.get("state") or "")
+        if previous_state == "completed":
+            return {
+                "success": True,
+                "skipped": "already-completed",
+                "message": str(previous.get("message") or "已完成"),
+            }
+        if previous_state == "rejected":
+            return {
+                "success": False,
+                "rejected": True,
+                "message": str(previous.get("message") or "服务器已明确拒绝"),
+                "code": str(previous.get("code") or ""),
+            }
+        if previous_state in {"sending", "uncertain", "accepted"}:
+            raise OperationKnownFailureError(
+                f"自动内政步骤 {step_key} 曾越过发送边界，禁止自动重放",
+                code="DOMESTIC_STEP_REQUIRES_REVIEW",
+                details={"step": previous},
+            )
+
+        def save_step(value: Dict[str, Any]) -> None:
+            progress[step_key] = dict(value)
+            pending["progress"] = dict(progress)
+            self._save_automation_pending_record(
+                account_ref,
+                "domesticPendingActionJson",
+                pending,
+            )
+
+        save_step({
+            "state": "preparing",
+            "updatedAtMillis": int(self._ports.clock.now_millis()),
+        })
+
+        def before_send(metadata: Dict[str, Any]) -> None:
+            save_step({
+                "state": "sending",
+                "sentAtMillis": int(self._ports.clock.now_millis()),
+                "request": dict(metadata),
+            })
+
+        wrapped = _DurablePendingMutationExecution(execution, before_send)
+        safe_codes = set(safe_rejection_codes or set())
+        try:
+            result = action(wrapped)
+        except OperationKnownFailureError as error:
+            if wrapped.sent and error.code in safe_codes:
+                save_step({
+                    "state": "rejected",
+                    "rejectedAtMillis": int(self._ports.clock.now_millis()),
+                    "message": str(error),
+                    "code": str(error.code),
+                })
+                return {
+                    "success": False,
+                    "rejected": True,
+                    "message": str(error),
+                    "code": str(error.code),
+                }
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+                "code": str(error.code),
+            })
+            raise
+        except OperationUncertainError as error:
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error),
+            })
+            raise
+        except Exception as error:
+            save_step({
+                "state": "uncertain" if wrapped.sent else "failed-before-send",
+                "updatedAtMillis": int(self._ports.clock.now_millis()),
+                "message": str(error) or error.__class__.__name__,
+            })
+            if wrapped.sent:
+                raise OperationUncertainError(
+                    f"自动内政步骤 {step_key} 发包后异常：{error}",
+                    {"exceptionType": error.__class__.__name__},
+                ) from error
+            raise
+        if wrapped.sent:
+            save_step({
+                "state": "accepted",
+                "acceptedAtMillis": int(self._ports.clock.now_millis()),
+                "message": self._automation_result_message(result),
+            })
+        save_step({
+            "state": "completed",
+            "completedAtMillis": int(self._ports.clock.now_millis()),
+            "message": self._automation_result_message(result),
+            "requestSent": bool(wrapped.sent),
+        })
+        return dict(result)
+
+    @staticmethod
+    def _domestic_pending_action_still_valid(
+        snapshot: Dict[str, Any],
+        action: Dict[str, Any],
+    ) -> bool:
+        fief_id = int(action.get("fiefId") or 0)
+        fief = next(
+            (
+                value
+                for value in snapshot.get("fiefs") or []
+                if isinstance(value, dict)
+                and int(value.get("fiefId") or 0) == fief_id
+            ),
+            None,
+        )
+        if fief is None:
+            return False
+        if action.get("action") == "building":
+            slot = int(action.get("slot") or 0)
+            building_type = int(action.get("buildingType") or 0)
+            previous_level = action.get("previousLevel")
+            building = next(
+                (
+                    value
+                    for value in fief.get("buildings") or []
+                    if isinstance(value, dict)
+                    and int(value.get("slot") or 0) == slot
+                ),
+                None,
+            )
+            if previous_level is None:
+                return building is None
+            return bool(
+                building
+                and int(building.get("type", -1)) == building_type
+                and int(building.get("level") or 0) == int(previous_level)
+                and not bool(building.get("busy"))
+            )
+        if action.get("action") == "technology":
+            technology_id = int(action.get("technologyId") or 0)
+            previous_level = int(action.get("previousLevel") or 0)
+            technology = next(
+                (
+                    value
+                    for value in snapshot.get("technologies") or []
+                    if isinstance(value, dict)
+                    and int(value.get("technologyId") or 0) == technology_id
+                ),
+                None,
+            )
+            academy_slot = int(action.get("academySlot") or 0)
+            academy = next(
+                (
+                    value
+                    for value in fief.get("buildings") or []
+                    if isinstance(value, dict)
+                    and int(value.get("slot") or 0) == academy_slot
+                    and int(value.get("type", -1)) == 3
+                ),
+                None,
+            )
+            return bool(
+                technology
+                and int(technology.get("level") or 0) == previous_level
+                and not bool(technology.get("researching"))
+                and academy
+                and not bool(academy.get("busy"))
+            )
+        return False
+
+    def _close_domestic_pending(
+        self,
+        account_ref: str,
+        state: Dict[str, Any],
+        pending: Dict[str, Any],
+        *,
+        state_name: str,
+        message: str,
+        next_wake_at_millis: int | None,
+        extra: Dict[str, Any] | None = None,
+    ) -> None:
+        now_millis = int(self._ports.clock.now_millis())
+        feature_state = dict(state.get("domestic") or {})
+        feature_state.update({
+            "lastState": str(state_name),
+            "lastMessage": str(message),
+            "nextWakeAtMillis": next_wake_at_millis,
+        })
+        plan = dict(pending.get("action") or {})
+        if plan.get("nextPreferTechnology") is not None:
+            feature_state["preferTechnology"] = bool(
+                plan.get("nextPreferTechnology")
+            )
+        state["domestic"] = feature_state
+        state["updatedAtMillis"] = now_millis
+        last_action = {
+            "planKey": pending.get("planKey"),
+            "closedAtMillis": now_millis,
+            "state": str(state_name),
+            "message": str(message),
+            "action": plan,
+            "progress": dict(pending.get("progress") or {}),
+            **dict(extra or {}),
+        }
+        self._update_account_public_state(
+            account_ref,
+            {
+                "domesticPendingActionJson": "{}",
+                "domesticLastActionJson": self._json(last_action),
+                "residentAutomationStateJson": self._json(state),
+            },
+        )
+
+    def _run_configured_domestic_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        config = dict(configs.get("domestic") or {})
+        pending = self._automation_pending_record(
+            account_ref, "domesticPendingActionJson"
+        )
+        if not pending and not bool(config.get("active")):
+            raise OperationKnownFailureError(
+                "共享自动内政与升级科技均未启用",
+                code="SHARED_DOMESTIC_RULE_MISSING",
+            )
+        if (
+            not pending
+            and bool(config.get("upgradeTechnology"))
+            and not list(config.get("technologyIds") or [])
+        ):
+            raise OperationKnownFailureError(
+                "升级科技已开启，但没有选择科技",
+                code="SHARED_DOMESTIC_TECHNOLOGY_EMPTY",
+            )
+
+        execution.publish_progress(5, {"phase": "resident-domestic-query"})
+        snapshot = self._run_domestic_query_game_workflow(
+            execution,
+            {"accountRef": account_ref},
+            {**context, "readOnly": True},
+        )
+        now_millis = int(self._ports.clock.now_millis())
+        if not pending:
+            prefer_technology = bool(
+                (state.get("domestic") or {}).get("preferTechnology")
+            )
+            plan = plan_next_internal_affairs_action(
+                list(snapshot.get("fiefs") or []),
+                list(snapshot.get("technologies") or []),
+                config,
+                prefer_technology=prefer_technology,
+            )
+            if bool(plan.get("blocked")):
+                return {
+                    "feature": "domestic",
+                    "state": "blocked",
+                    "success": False,
+                    "requiresAttention": True,
+                    "message": str(plan.get("reason") or "自动内政计划失败关闭"),
+                    "nextWakeAtMillis": None,
+                }
+            if plan.get("action") is None:
+                if (
+                    bool(config.get("upgradeTechnology"))
+                    and not bool(config.get("enabled"))
+                    and snapshot.get("technologyParseError")
+                ):
+                    raise OperationKnownFailureError(
+                        "升级科技无法解析最新科技状态："
+                        + str(snapshot.get("technologyParseError")),
+                        code="SHARED_DOMESTIC_TECHNOLOGY_STATE_INVALID",
+                    )
+                next_wake = now_millis + int(
+                    plan.get("nextWakeDelayMillis")
+                    or self._behavior_contract["scheduler"][
+                        "domesticPollMillis"
+                    ]
+                )
+                feature_state = dict(state.get("domestic") or {})
+                feature_state.update({
+                    "lastState": "waiting",
+                    "lastMessage": str(plan.get("reason") or "暂无内政动作"),
+                    "nextWakeAtMillis": next_wake,
+                })
+                state["domestic"] = feature_state
+                self._save_resident_automation_state(account_ref, state)
+                return {
+                    "feature": "domestic",
+                    "state": "waiting",
+                    "success": True,
+                    "message": feature_state["lastMessage"],
+                    "nextWakeAtMillis": next_wake,
+                }
+            pending = {
+                "schemaVersion": 1,
+                "createdAtMillis": now_millis,
+                "planKey": f"domestic-{account_ref}-{now_millis}",
+                "config": dict(config),
+                "action": dict(plan),
+                "progress": {},
+            }
+            self._save_automation_pending_record(
+                account_ref,
+                "domesticPendingActionJson",
+                pending,
+            )
+
+        pending["lastObservedAtMillis"] = now_millis
+        progress = self._public_json_object(pending.get("progress"))
+        accepted_keys = [
+            str(step_key)
+            for step_key, raw_step in progress.items()
+            if str(self._public_json_object(raw_step).get("state") or "")
+            == "accepted"
+        ]
+        if accepted_keys:
+            for step_key in accepted_keys:
+                progress[step_key] = {
+                    **self._public_json_object(progress.get(step_key)),
+                    "state": "completed",
+                    "completedAtMillis": now_millis,
+                    "confirmedBy": "durable-accepted-receipt",
+                    "requestSent": True,
+                }
+            pending["progress"] = progress
+            self._save_automation_pending_record(
+                account_ref,
+                "domesticPendingActionJson",
+                pending,
+            )
+        action = dict(pending.get("action") or {})
+        if not self._domestic_pending_action_still_valid(snapshot, action):
+            self._close_domestic_pending(
+                account_ref,
+                state,
+                pending,
+                state_name="replanned",
+                message="内政候选状态已变化，本次未发包并重新规划",
+                next_wake_at_millis=now_millis,
+            )
+            return {
+                "feature": "domestic",
+                "state": "replanned",
+                "success": True,
+                "message": "内政候选状态已变化，本次未发包并重新规划",
+                "nextWakeAtMillis": now_millis,
+            }
+
+        resources = dict(snapshot.get("resources") or {})
+        required_copper = max(0, int(action.get("requiredCopper") or 0))
+        required_food = max(0, int(action.get("requiredFood") or 0))
+        if (
+            (required_copper > 0 or required_food > 0)
+            and snapshot.get("resourceParseError")
+        ):
+            raise OperationKnownFailureError(
+                "自动内政无法确认当前铜钱/粮食："
+                + str(snapshot.get("resourceParseError")),
+                code="SHARED_DOMESTIC_RESOURCE_STATE_INVALID",
+            )
+        current_copper = max(0, int(resources.get("copper") or 0))
+        current_food = max(0, int(resources.get("food") or 0))
+        settings = dict(pending.get("config") or {})
+        copper_floor = int(settings.get("copperFloorWan") or 1) * 10_000
+        target_copper = (
+            max(required_copper, copper_floor)
+            if bool(settings.get("foodToCopper"))
+            else required_copper
+        )
+        blocking_steps = self._domestic_blocking_steps(pending)
+        exchange_block = next(
+            (
+                step for step in blocking_steps
+                if step.get("stepKey") == "resourceExchange"
+            ),
+            None,
+        )
+        if (
+            exchange_block is not None
+            and not snapshot.get("resourceParseError")
+            and current_copper >= target_copper
+        ):
+            progress = self._public_json_object(pending.get("progress"))
+            progress["resourceExchange"] = {
+                **self._public_json_object(progress.get("resourceExchange")),
+                "state": "completed",
+                "completedAtMillis": now_millis,
+                "confirmedBy": "read-only-resource-state",
+                "observedCopper": current_copper,
+                "requestSent": True,
+            }
+            pending["progress"] = progress
+            pending.pop("blockedAtMillis", None)
+            pending.pop("requiresAttention", None)
+            self._save_automation_pending_record(
+                account_ref,
+                "domesticPendingActionJson",
+                pending,
+            )
+            blocking_steps = self._domestic_blocking_steps(pending)
+        if blocking_steps:
+            pending["blockedAtMillis"] = now_millis
+            pending["requiresAttention"] = True
+            self._save_automation_pending_record(
+                account_ref,
+                "domesticPendingActionJson",
+                pending,
+            )
+            first = blocking_steps[0]
+            return {
+                "feature": "domestic",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "message": (
+                    f"自动内政步骤 {first['stepKey']} 处于"
+                    f"{first.get('state')}；已只读核对，禁止自动重发"
+                ),
+                "blockedSteps": blocking_steps,
+                "nextWakeAtMillis": None,
+            }
+        if current_food < required_food:
+            next_wake = now_millis + int(
+                self._behavior_contract["scheduler"]["domesticPollMillis"]
+            )
+            self._close_domestic_pending(
+                account_ref,
+                state,
+                pending,
+                state_name="waiting-resources",
+                message=(
+                    f"{action.get('description')}等待粮食："
+                    f"需要{required_food}，当前{current_food}"
+                ),
+                next_wake_at_millis=next_wake,
+            )
+            return {
+                "feature": "domestic",
+                "state": "waiting-resources",
+                "success": True,
+                "message": "自动内政粮食不足，等待下一轮",
+                "nextWakeAtMillis": next_wake,
+            }
+        exchange_progress = self._public_json_object(
+            (pending.get("progress") or {}).get("resourceExchange")
+        )
+        exchange_completed = str(exchange_progress.get("state") or "") == "completed"
+        if current_copper < target_copper and exchange_completed:
+            next_wake = now_millis + int(
+                self._behavior_contract["scheduler"]["domesticPollMillis"]
+            )
+            self._close_domestic_pending(
+                account_ref,
+                state,
+                pending,
+                state_name="waiting-resources",
+                message=(
+                    f"{action.get('description')}在已确认粮食转铜后仍等待铜钱："
+                    f"需要{target_copper}，当前{current_copper}；不会重复兑换"
+                ),
+                next_wake_at_millis=next_wake,
+            )
+            return {
+                "feature": "domestic",
+                "state": "waiting-resources",
+                "success": True,
+                "message": "粮食转铜已完成但铜钱仍不足；未重复兑换或提交动作",
+                "nextWakeAtMillis": next_wake,
+            }
+        if current_copper < target_copper and not exchange_completed:
+            deficit = target_copper - current_copper
+            copper_amount = max(3_000, ((deficit + 2_999) // 3_000) * 3_000)
+            food_amount = copper_amount // 3_000 * 10_000
+            if (
+                not bool(settings.get("foodToCopper"))
+                or current_food < food_amount + required_food
+            ):
+                next_wake = now_millis + int(
+                    self._behavior_contract["scheduler"]["domesticPollMillis"]
+                )
+                self._close_domestic_pending(
+                    account_ref,
+                    state,
+                    pending,
+                    state_name="waiting-resources",
+                    message=(
+                        f"{action.get('description')}等待资源："
+                        f"需铜钱{required_copper}/粮食{required_food}，"
+                        f"当前铜钱{current_copper}/粮食{current_food}"
+                    ),
+                    next_wake_at_millis=next_wake,
+                )
+                return {
+                    "feature": "domestic",
+                    "state": "waiting-resources",
+                    "success": True,
+                    "message": "自动内政资源不足，等待下一轮",
+                    "nextWakeAtMillis": next_wake,
+                }
+            exchange = self._run_durable_domestic_step(
+                execution,
+                account_ref,
+                pending,
+                "resourceExchange",
+                lambda step_execution: self._run_heal_resource_exchange(
+                    step_execution,
+                    account_ref,
+                    food_amount,
+                    context,
+                    reason="domestic-resource-floor",
+                ),
+                safe_rejection_codes={
+                    "TROOP_HEAL_RESOURCE_EXCHANGE_REJECTED"
+                },
+            )
+            if bool(exchange.get("rejected")):
+                next_wake = now_millis + int(
+                    self._behavior_contract["scheduler"]["domesticPollMillis"]
+                )
+                self._close_domestic_pending(
+                    account_ref,
+                    state,
+                    pending,
+                    state_name="retry",
+                    message=str(exchange.get("message") or "粮食转铜被拒绝"),
+                    next_wake_at_millis=next_wake,
+                )
+                return {
+                    "feature": "domestic",
+                    "state": "retry",
+                    "success": False,
+                    "message": str(exchange.get("message") or "粮食转铜被拒绝"),
+                    "nextWakeAtMillis": next_wake,
+                }
+
+        action_body: Dict[str, Any] = {
+            "accountRef": account_ref,
+            "action": str(action.get("action")),
+            "fiefId": int(action.get("fiefId") or 0),
+        }
+        if action.get("action") == "building":
+            action_body.update({
+                "slot": int(action.get("slot") or 0),
+                "buildingType": int(action.get("buildingType") or 0),
+                "previousLevel": action.get("previousLevel"),
+            })
+            safe_rejections = {"DOMESTIC_BUILDING_REJECTED"}
+        else:
+            action_body.update({
+                "academySlot": int(action.get("academySlot") or 0),
+                "technologyId": int(action.get("technologyId") or 0),
+                "targetLevel": int(action.get("targetLevel") or 0),
+            })
+            safe_rejections = {"DOMESTIC_TECHNOLOGY_REJECTED"}
+        action_result = self._run_durable_domestic_step(
+            execution,
+            account_ref,
+            pending,
+            "action",
+            lambda step_execution: self._run_domestic_action_game_workflow(
+                step_execution, action_body, context
+            ),
+            safe_rejection_codes=safe_rejections,
+        )
+        if bool(action_result.get("rejected")):
+            delay = int(
+                self._behavior_contract["scheduler"]["domesticPollMillis"]
+            )
+            state_name = "retry"
+            success = False
+            message = str(
+                action_result.get("message")
+                or f"{action.get('description')}被服务器拒绝"
+            )
+        else:
+            delay = int(
+                action.get("nextWakeDelayMillis")
+                or self._behavior_contract["scheduler"]["domesticPollMillis"]
+            )
+            state_name = "completed"
+            success = True
+            message = str(
+                (action_result.get("result") or {}).get("message")
+                or action_result.get("message")
+                or f"{action.get('description')}已确认"
+            )
+        next_wake = int(self._ports.clock.now_millis()) + delay
+        self._close_domestic_pending(
+            account_ref,
+            state,
+            pending,
+            state_name=state_name,
+            message=message,
+            next_wake_at_millis=next_wake,
+            extra={"success": success},
+        )
+        return {
+            "feature": "domestic",
+            "state": state_name,
+            "success": success,
+            "message": message,
+            "planKey": pending.get("planKey"),
+            "action": action,
+            "nextWakeAtMillis": next_wake,
+        }
+
+    @staticmethod
+    def _daily_periodic_cycle(
+        key: str,
+        now_millis: int,
+    ) -> tuple[int, int]:
+        now = int(now_millis)
+        if str(key) == "arenaCoins":
+            # 22:00 China is 14:00 UTC. Subtracting that boundary yields a
+            # stable integer cycle without depending on host timezone data.
+            boundary_utc_millis = 14 * 60 * 60 * 1000
+            cycle = (now - boundary_utc_millis) // (24 * 60 * 60 * 1000)
+            next_cycle = (
+                (cycle + 1) * 24 * 60 * 60 * 1000
+                + boundary_utc_millis
+            )
+            return int(cycle), int(next_cycle)
+        cycle = china_day_key(now)
+        return int(cycle), int(china_start_millis(cycle + 1, 0))
+
+    def _daily_periodic_workflow(
+        self,
+        key: str,
+    ) -> Callable[
+        [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
+        Dict[str, Any],
+    ]:
+        workflows = {
+            "autoSignIn": self._run_daily_sign_in_game_workflow,
+            "arenaCoins": self._run_daily_arena_coins_game_workflow,
+            "autoDonate": self._run_daily_donate_game_workflow,
+            "salary": self._run_daily_salary_game_workflow,
+            "nationalCollect": self._run_daily_national_collect_game_workflow,
+            "cityLordCollect": self._run_daily_city_lord_collect_game_workflow,
+            "generalVisit": self._run_daily_general_visit_game_workflow,
+        }
+        workflow = workflows.get(str(key))
+        if workflow is None:
+            raise OperationKnownFailureError(
+                f"共享日常调度返回未知功能：{key}",
+                code="SHARED_DAILY_FEATURE_INVALID",
+            )
+        return self.daily_completion_workflow(str(key), workflow)
+
+    def _run_configured_daily_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        daily = dict(configs.get("daily") or {})
+        configured_keys = {
+            str(value)
+            for value in daily.get("enabledKeys") or []
+            if str(value or "").strip()
+        }
+        raw_allowed_keys = context.get("dailyAllowedKeys")
+        if isinstance(raw_allowed_keys, list):
+            configured_keys &= {
+                str(value)
+                for value in raw_allowed_keys
+                if str(value or "").strip()
+            }
+        ordered_keys = [
+            str(feature["key"])
+            for feature in self._behavior_contract["daily"]["features"]
+            if str(feature["key"]) in configured_keys
+        ]
+        now_millis = int(self._ports.clock.now_millis())
+        retry_millis = int(
+            self._behavior_contract["daily"]["schedule"][
+                "failedFeatureRetryMillis"
+            ]
+        )
+        daily_state = dict(state.get("daily") or {})
+        candidates: list[Dict[str, Any]] = []
+        cycle_by_key: Dict[str, tuple[int, int]] = {}
+        completion_counts: Dict[str, int] = {}
+
+        for key in ordered_keys:
+            cycle_key, next_cycle = self._daily_periodic_cycle(
+                key, now_millis
+            )
+            cycle_by_key[key] = (cycle_key, next_cycle)
+            feature_state = dict(daily_state.get(key) or {})
+            if int(
+                feature_state.get("cycleKey")
+                if feature_state.get("cycleKey") is not None
+                else -1
+            ) != cycle_key:
+                feature_state = {
+                    "cycleKey": cycle_key,
+                    "nextWakeAtMillis": now_millis,
+                }
+            completion_count = max(
+                0,
+                int(
+                    self._ports.daily_completions.count(
+                        account_ref,
+                        key,
+                        now_millis,
+                    )
+                ),
+            )
+            completion_counts[key] = completion_count
+            if completion_count > 0:
+                feature_state.update({
+                    "lastState": "completed",
+                    "completionCount": completion_count,
+                    "nextWakeAtMillis": next_cycle,
+                })
+            elif int(
+                feature_state.get("blockedCycleKey")
+                if feature_state.get("blockedCycleKey") is not None
+                else -1
+            ) == cycle_key:
+                feature_state["nextWakeAtMillis"] = next_cycle
+            else:
+                due = int(feature_state.get("nextWakeAtMillis") or now_millis)
+                candidates.append({
+                    "key": key,
+                    "cycleKey": cycle_key,
+                    "nextCycleAtMillis": next_cycle,
+                    "dueAtMillis": due,
+                })
+            daily_state[key] = feature_state
+
+        def recompute_next_wake() -> Optional[int]:
+            """Return the earliest deadline across independent daily keys.
+
+            A daily feature's next cycle is a deadline for that feature only.
+            The account lane must wake for the earliest sibling deadline, retry,
+            or still-due task instead of inheriting whichever feature happened
+            to run last.  A workflow may take long enough for another key's
+            stored deadline to pass while it is running, so the public wake
+            deadline is never allowed to precede the time at which this result
+            is produced.
+            """
+
+            current_millis = int(self._ports.clock.now_millis())
+            wakes: list[int] = []
+            for key in ordered_keys:
+                cycle_key, next_cycle = cycle_by_key[key]
+                feature_state = dict(daily_state.get(key) or {})
+                if int(
+                    feature_state.get("cycleKey")
+                    if feature_state.get("cycleKey") is not None
+                    else -1
+                ) != cycle_key:
+                    wakes.append(current_millis)
+                    continue
+                if completion_counts.get(key, 0) > 0:
+                    wakes.append(max(current_millis, next_cycle))
+                    continue
+                if int(
+                    feature_state.get("blockedCycleKey")
+                    if feature_state.get("blockedCycleKey") is not None
+                    else -1
+                ) == cycle_key:
+                    wakes.append(max(current_millis, next_cycle))
+                    continue
+                wakes.append(max(
+                    current_millis,
+                    int(
+                        feature_state.get("nextWakeAtMillis")
+                        or current_millis
+                    ),
+                ))
+            return min(wakes) if wakes else None
+
+        def persist_daily_state() -> Optional[int]:
+            """Persist both per-task deadlines and the account aggregate.
+
+            The aggregate is a cache for hosts and diagnostics only; the
+            per-key deadlines remain the source of truth.  Keeping the cache
+            synchronized prevents a stale root ``daily.nextWakeAtMillis`` from
+            making a completed cycle look blocked after a process restart.
+            """
+
+            aggregate = recompute_next_wake()
+            if aggregate is None:
+                daily_state.pop("nextWakeAtMillis", None)
+            else:
+                daily_state["nextWakeAtMillis"] = aggregate
+            state["daily"] = daily_state
+            self._save_resident_automation_state(account_ref, state)
+            return aggregate
+
+        persist_daily_state()
+        due_candidates = [
+            row
+            for row in candidates
+            if int(row["dueAtMillis"]) <= now_millis
+        ]
+        if not due_candidates:
+            return {
+                "feature": None,
+                "state": "idle",
+                "success": True,
+                "message": (
+                    "共享日常任务等待下一执行时间"
+                    if ordered_keys
+                    else "当前没有已开启的共享日常任务"
+                ),
+                "nextWakeAtMillis": recompute_next_wake(),
+            }
+
+        selected = due_candidates[0]
+        key = str(selected["key"])
+        cycle_key = int(selected["cycleKey"])
+        next_cycle = int(selected["nextCycleAtMillis"])
+        feature_state = dict(daily_state.get(key) or {})
+        previous_operation_id = str(
+            feature_state.get("attemptOperationId") or ""
+        )
+        if (
+            previous_operation_id
+            and previous_operation_id != execution.operation_id
+            and int(
+                feature_state.get("attemptCycleKey")
+                if feature_state.get("attemptCycleKey") is not None
+                else -1
+            ) == cycle_key
+        ):
+            previous = self.operation_status(previous_operation_id).get(
+                "operation"
+            ) or {}
+            if bool(previous.get("requestSent")) or str(
+                previous.get("status") or ""
+            ) in {"RUNNING", "UNCERTAIN"}:
+                feature_state.update({
+                    "lastState": "uncertain",
+                    "blockedCycleKey": cycle_key,
+                    "lastMessage": "此前日常请求回执不明，当前周期禁止自动重放",
+                    "nextWakeAtMillis": next_cycle,
+                })
+                daily_state[key] = feature_state
+                persist_daily_state()
+                return {
+                    "feature": "daily",
+                    "dailyKey": key,
+                    "state": "blocked",
+                    "success": False,
+                    "requiresAttention": True,
+                    "message": feature_state["lastMessage"],
+                    "nextWakeAtMillis": None,
+                }
+
+        feature_state.update({
+            "lastState": "attempting",
+            "attemptCycleKey": cycle_key,
+            "attemptOperationId": execution.operation_id,
+            "attemptStartedAtMillis": now_millis,
+        })
+        daily_state[key] = feature_state
+        persist_daily_state()
+        body: Dict[str, Any] = {"accountRef": account_ref}
+        if key == "generalVisit":
+            body["generalVisitGeneralIds"] = list(
+                daily.get("generalVisitGeneralIds") or []
+            )
+        execution.publish_progress(
+            5, {"phase": "periodic-daily", "dailyKey": key}
+        )
+        try:
+            response = self._daily_periodic_workflow(key)(
+                execution, body, context
+            )
+        except OperationUncertainError as error:
+            feature_state.update({
+                "lastState": "uncertain",
+                "blockedCycleKey": cycle_key,
+                "lastMessage": str(error),
+                "nextWakeAtMillis": next_cycle,
+            })
+            daily_state[key] = feature_state
+            persist_daily_state()
+            raise
+        except OperationKnownFailureError as error:
+            result = dict(error.details.get("result") or {})
+            partial = bool(
+                result.get("partialSuccess")
+                or int(
+                    result.get("successfulCount")
+                    or result.get("successCount")
+                    or 0
+                ) > 0
+            )
+            failure_retry_millis = retry_millis
+            if error.code in {
+                "GAME_COMMAND_SESSION_MISSING",
+                "GAME_COMMAND_DM_INVALID",
+            }:
+                failure_retry_millis = max(
+                    failure_retry_millis,
+                    int(
+                        self._behavior_contract["scheduler"][
+                            "sessionUnavailableRetryMillis"
+                        ]
+                    ),
+                )
+            feature_state.update({
+                "lastState": "blocked" if partial else "retry",
+                "lastErrorCode": error.code,
+                "lastMessage": str(error),
+                "nextWakeAtMillis": (
+                    next_cycle
+                    if partial
+                    else now_millis + failure_retry_millis
+                ),
+            })
+            if partial:
+                feature_state["blockedCycleKey"] = cycle_key
+            feature_state.pop("attemptOperationId", None)
+            feature_state.pop("attemptCycleKey", None)
+            daily_state[key] = feature_state
+            # A known failure (including a known partial result) is local to
+            # this feature.  It must not freeze sibling daily tasks.
+            next_wake = persist_daily_state()
+            return {
+                "feature": "daily",
+                "dailyKey": key,
+                "state": feature_state["lastState"],
+                "success": False,
+                "requiresAttention": False,
+                "errorCode": error.code,
+                "message": str(error),
+                "nextWakeAtMillis": next_wake,
+                "taskNextWakeAtMillis": feature_state["nextWakeAtMillis"],
+                "cycleKey": cycle_key,
+            }
+
+        result = dict(response.get("result") or {})
+        completed = bool(
+            response.get("completionCount")
+            or result.get("completionCount")
+            or result.get("completed") is True
+        )
+        feature_state.update({
+            "lastState": "completed" if completed else "retry",
+            "lastMessage": str(result.get("message") or ""),
+            "completionCount": int(
+                response.get("completionCount")
+                or result.get("completionCount")
+                or 0
+            ),
+            "nextWakeAtMillis": (
+                next_cycle if completed else now_millis + retry_millis
+            ),
+        })
+        skipped = bool(result.get("skipped"))
+        if skipped:
+            feature_state.update({
+                "skipped": True,
+                "skipReason": str(result.get("skipReason") or ""),
+                "statusText": str(
+                    result.get("statusText") or result.get("message") or "已做（跳过）"
+                ),
+            })
+        else:
+            feature_state.pop("skipped", None)
+            feature_state.pop("skipReason", None)
+            feature_state.pop("statusText", None)
+        feature_state.pop("attemptOperationId", None)
+        feature_state.pop("attemptCycleKey", None)
+        daily_state[key] = feature_state
+        if completed:
+            completion_counts[key] = max(
+                completion_counts.get(key, 0),
+                int(
+                    response.get("completionCount")
+                    or result.get("completionCount")
+                    or 1
+                ),
+            )
+        next_wake = persist_daily_state()
+        return {
+            "feature": "daily",
+            "dailyKey": key,
+            "state": feature_state["lastState"],
+            "success": bool(result.get("success", completed)),
+            "message": str(
+                result.get("message")
+                or DAILY_COMPLETION_LABELS.get(key)
+                or key
+            ),
+            "nextWakeAtMillis": next_wake,
+            "taskNextWakeAtMillis": feature_state["nextWakeAtMillis"],
+            "cycleKey": cycle_key,
+            "skipped": skipped,
+            "skipReason": str(result.get("skipReason") or "") if skipped else None,
+            "statusText": str(result.get("statusText") or "") if skipped else None,
+            "result": result,
+        }
+
+    @staticmethod
+    def _inventory_policy_hash(policy: Dict[str, Any]) -> str:
+        canonical = json.dumps(
+            policy,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _execute_automatic_inventory_action(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        action: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        kind = str(action.get("kind") or "")
+        if kind == "open":
+            opcode = 0x3144
+            expected_opcode = 0xA144
+            payload = build_use_inventory_item_payload(
+                int(action.get("itemId") or 0),
+                int(action.get("requestedCount") or 0),
+            )
+        elif kind in {"discard-item", "discard-equipment"}:
+            opcode = 0x1103
+            expected_opcode = 0x8103
+            payload = build_discard_inventory_payload(
+                0 if kind == "discard-item" else 1,
+                int(
+                    action.get("itemId")
+                    if kind == "discard-item"
+                    else action.get("instanceId")
+                    or 0
+                ),
+                int(action.get("requestedCount") or 0),
+            )
+        else:
+            raise OperationKnownFailureError(
+                "自动背包动作类型无效",
+                code="INVENTORY_ACTION_INVALID",
+                details={"action": action},
+            )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "automatic-inventory",
+            "kind": kind,
+            "opcode": f"0x{opcode:04x}",
+            "itemName": str(action.get("itemName") or ""),
+            "requestedCount": int(action.get("requestedCount") or 0),
+        })
+        fact = self._execute_host_game_command(
+            account_ref,
+            opcode,
+            payload,
+            f"shared-core/inventory/automatic/{kind}",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        response = self._required_game_packet(
+            fact,
+            expected_opcode,
+            uncertain_message=(
+                f"背包动作 {kind} 已发送，但未收到 "
+                f"0x{expected_opcode:04x} 回执"
+            ),
+        )
+        if kind == "open":
+            receipt = parse_status_message_payload(response)
+        else:
+            try:
+                receipt = parse_discard_inventory_response(response)
+            except Exception as error:
+                raise OperationUncertainError(
+                    "背包丢弃回执无法解析",
+                    {"responseHex": response.hex()},
+                ) from error
+        if receipt.get("status") is None:
+            raise OperationUncertainError(
+                f"背包动作 {kind} 回执无法确认",
+                {"receipt": receipt},
+            )
+        if not bool(receipt.get("success")):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器拒绝背包动作"),
+                code="INVENTORY_ACTION_REJECTED",
+                details={"action": action, "receipt": receipt},
+            )
+        return {
+            "success": True,
+            "message": str(receipt.get("message") or "背包动作成功"),
+            "receipt": receipt,
+            "payloadHex": payload.hex(),
+        }
+
+    def _complete_automatic_inventory_action(
+        self,
+        account_ref: str,
+        pending: Dict[str, Any],
+        inventory: Dict[str, Any],
+        observation: Dict[str, Any],
+        *,
+        recovered: bool,
+    ) -> Dict[str, Any]:
+        now_millis = int(self._ports.clock.now_millis())
+        action = dict(pending.get("action") or {})
+        consumed = max(0, int(observation.get("consumedCount") or 0))
+        public = self._account_public_state(account_ref)
+        state = self._public_json_object(
+            public.get("residentAutomationStateJson")
+        )
+        feature_state = dict(state.get("inventory") or {})
+        action_count = max(
+            int(feature_state.get("cycleActionCount") or 0),
+            int(pending.get("cycleActionCount") or 0),
+        ) + 1
+        opened_count = max(
+            int(feature_state.get("cycleOpenedCount") or 0),
+            int(pending.get("cycleOpenedCount") or 0),
+        )
+        if str(action.get("kind") or "") == "open":
+            opened_count += consumed
+        message = (
+            f"{action.get('itemName') or '物品'}"
+            f"{' 已开启' if action.get('kind') == 'open' else ' 已丢弃'}"
+            f" x{consumed}"
+        )
+        if recovered:
+            message += "（通过刷新背包安全恢复）"
+        last_action = {
+            "completedAtMillis": now_millis,
+            "action": action,
+            "observation": observation,
+            "receipt": pending.get("receipt") or {},
+            "recovered": bool(recovered),
+            "message": message,
+        }
+        feature_state.update({
+            "configHash": str(pending.get("configHash") or ""),
+            "cycleId": str(pending.get("cycleId") or ""),
+            "cycleActionCount": action_count,
+            "cycleOpenedCount": opened_count,
+            "lastState": "completed",
+            "lastMessage": message,
+            "lastAction": last_action,
+            "nextWakeAtMillis": now_millis + int(
+                self._behavior_contract["scheduler"][
+                    "inventoryActionDelayMillis"
+                ]
+            ),
+        })
+        state["inventory"] = feature_state
+        self._update_account_public_state(
+            account_ref,
+            {
+                **self._inventory_public_state_updates(inventory),
+                "inventoryPendingActionJson": "{}",
+                "inventoryLastActionJson": self._json(last_action),
+                "residentAutomationStateJson": self._json(state),
+            },
+        )
+        return {
+            "feature": "inventory",
+            "state": "completed",
+            "success": True,
+            "message": message,
+            "action": action,
+            "consumedCount": consumed,
+            "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
+        }
+
+    def _run_automatic_inventory_pending_recovery(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        pending: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        now_millis = int(self._ports.clock.now_millis())
+        action_state = str(pending.get("actionState") or "")
+        if action_state in {"preparing", "failed-before-send"}:
+            self._update_account_public_state(
+                account_ref,
+                {"inventoryPendingActionJson": "{}"},
+            )
+            return {
+                "feature": "inventory",
+                "state": "retry",
+                "success": False,
+                "message": "背包动作未越过发送边界，已安全释放并等待重新规划",
+                "nextWakeAtMillis": now_millis + int(
+                    self._behavior_contract["scheduler"][
+                        "inventoryActionDelayMillis"
+                    ]
+                ),
+            }
+        if action_state == "rejected":
+            archived = {
+                **pending,
+                "requiresAttention": False,
+                "resolvedAtMillis": now_millis,
+                "recoveryResolution": "definitive-server-rejection",
+            }
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "inventoryPendingActionJson": "{}",
+                    "inventoryLastRejectedActionJson": self._json(archived),
+                },
+            )
+            return {
+                "feature": "inventory",
+                "state": "retry",
+                "success": False,
+                "requiresAttention": False,
+                "errorCode": str(
+                    pending.get("errorCode")
+                    or "INVENTORY_ACTION_REJECTED"
+                ),
+                "message": str(
+                    pending.get("error") or "背包动作已被服务器拒绝"
+                ),
+                "nextWakeAtMillis": now_millis + int(
+                    self._behavior_contract["scheduler"][
+                        "inventoryPollMillis"
+                    ]
+                ),
+            }
+        retry_millis = max(
+            1_000,
+            int(
+                self._behavior_contract["scheduler"][
+                    "inventoryVerificationRetryMillis"
+                ]
+            ),
+        )
+        # Once the verification deadline has elapsed, another read is still
+        # safe but it must not monopolize the account lane.  Keep retrying the
+        # read-only observation on the inventory cadence while allowing brush,
+        # dungeon and the other independent features to run in between.
+        inventory_poll_millis = max(
+            retry_millis,
+            int(
+                self._behavior_contract["scheduler"].get(
+                    "inventoryPollMillis", retry_millis
+                )
+            ),
+        )
+        deadline = int(
+            pending.get("verificationDeadlineMillis")
+            or now_millis
+            + int(
+                self._behavior_contract["scheduler"][
+                    "inventoryVerificationTimeoutMillis"
+                ]
+            )
+        )
+        execution.publish_progress(
+            75, {"phase": "inventory-action-verification"}
+        )
+        try:
+            inventory = self._fresh_inventory_state(
+                account_ref,
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                phase="shared-core/inventory/automatic/verify",
+            )
+        except Exception as error:
+            blocked = now_millis >= deadline
+            next_poll_at = now_millis + (
+                inventory_poll_millis if blocked else retry_millis
+            )
+            pending.update({
+                "lastVerificationAtMillis": now_millis,
+                "lastVerificationError": str(error),
+                "verificationDeadlineMillis": deadline,
+                "nextPollAtMillis": next_poll_at,
+            })
+            if blocked:
+                pending["requiresAttention"] = True
+                pending.setdefault("blockedAtMillis", now_millis)
+            else:
+                pending.pop("requiresAttention", None)
+            self._save_automation_pending_record(
+                account_ref, "inventoryPendingActionJson", pending
+            )
+            if blocked:
+                return {
+                    "feature": "inventory",
+                    "state": "blocked",
+                    "success": False,
+                    "requiresAttention": True,
+                    "message": "背包动作越过发送边界后始终无法刷新核对，禁止自动重发",
+                    "nextWakeAtMillis": next_poll_at,
+                }
+            return {
+                "feature": "inventory",
+                "state": "verifying",
+                "success": True,
+                "message": "背包动作已发送，等待只读刷新核对实际消耗",
+                "nextWakeAtMillis": next_poll_at,
+            }
+        action = dict(pending.get("action") or {})
+        observation = observe_automatic_inventory_action(action, inventory)
+        if bool(observation.get("applied")):
+            return self._complete_automatic_inventory_action(
+                account_ref,
+                pending,
+                inventory,
+                observation,
+                recovered=action_state != "accepted",
+            )
+        blocked = now_millis >= deadline
+        next_poll_at = now_millis + (
+            inventory_poll_millis if blocked else retry_millis
+        )
+        pending.update({
+            "lastVerificationAtMillis": now_millis,
+            "lastObservation": observation,
+            "verificationDeadlineMillis": deadline,
+            "nextPollAtMillis": next_poll_at,
+        })
+        if blocked:
+            pending["requiresAttention"] = True
+            pending.setdefault("blockedAtMillis", now_millis)
+        else:
+            pending.pop("requiresAttention", None)
+        self._save_automation_pending_record(
+            account_ref, "inventoryPendingActionJson", pending
+        )
+        if blocked:
+            return {
+                "feature": "inventory",
+                "state": "blocked",
+                "success": False,
+                "requiresAttention": True,
+                "message": (
+                    "背包动作已越过发送边界，但刷新后物品数量"
+                    "未变；已保留账本并禁止自动重发"
+                ),
+                "nextWakeAtMillis": next_poll_at,
+            }
+        return {
+            "feature": "inventory",
+            "state": "verifying",
+            "success": True,
+            "message": "背包动作已发送，物品数量尚未变化，继续只读核对",
+            "nextWakeAtMillis": next_poll_at,
+        }
+
+    def _run_configured_inventory_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        pending = self._automation_pending_record(
+            account_ref, "inventoryPendingActionJson"
+        )
+        if pending:
+            return self._run_automatic_inventory_pending_recovery(
+                execution, account_ref, pending, context
+            )
+        policy = dict(configs.get("inventory") or {})
+        if not bool(policy.get("enabled")):
+            raise OperationKnownFailureError(
+                "共享自动背包没有已开启规则",
+                code="SHARED_INVENTORY_RULE_MISSING",
+            )
+        now_millis = int(self._ports.clock.now_millis())
+        policy_hash = self._inventory_policy_hash(policy)
+        feature_state = dict(state.get("inventory") or {})
+        if str(feature_state.get("configHash") or "") != policy_hash:
+            feature_state = {
+                "configHash": policy_hash,
+                "cycleId": f"inventory:{now_millis}",
+                "cycleActionCount": 0,
+                "cycleOpenedCount": 0,
+                "nextWakeAtMillis": now_millis,
+            }
+            state["inventory"] = feature_state
+            self._save_resident_automation_state(account_ref, state)
+        execution.publish_progress(10, {"phase": "inventory-planning"})
+        inventory = self._fresh_inventory_state(
+            account_ref,
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            phase="shared-core/inventory/automatic/plan",
+        )
+        try:
+            planned = plan_next_automatic_inventory_action(
+                inventory,
+                policy,
+                opened_count=int(
+                    feature_state.get("cycleOpenedCount") or 0
+                ),
+                action_count=int(
+                    feature_state.get("cycleActionCount") or 0
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="INVENTORY_PLAN_INVALID",
+            ) from error
+        action = planned.get("action")
+        if not isinstance(action, dict):
+            poll = int(
+                self._behavior_contract["scheduler"][
+                    "inventoryPollMillis"
+                ]
+            )
+            feature_state.update({
+                "lastCycleId": feature_state.get("cycleId"),
+                "lastCycleActionCount": int(
+                    feature_state.get("cycleActionCount") or 0
+                ),
+                "lastCycleOpenedCount": int(
+                    feature_state.get("cycleOpenedCount") or 0
+                ),
+                "cycleId": f"inventory:{now_millis + poll}",
+                "cycleActionCount": 0,
+                "cycleOpenedCount": 0,
+                "lastState": "waiting",
+                "lastMessage": str(planned.get("message") or ""),
+                "nextWakeAtMillis": now_millis + poll,
+            })
+            state["inventory"] = feature_state
+            self._save_resident_automation_state(account_ref, state)
+            return {
+                "feature": "inventory",
+                "state": "waiting",
+                "success": True,
+                "message": feature_state["lastMessage"],
+                "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
+            }
+        verification_timeout = int(
+            self._behavior_contract["scheduler"][
+                "inventoryVerificationTimeoutMillis"
+            ]
+        )
+        pending = {
+            "schemaVersion": 1,
+            "cycleId": str(feature_state.get("cycleId") or ""),
+            "cycleActionCount": int(
+                feature_state.get("cycleActionCount") or 0
+            ),
+            "cycleOpenedCount": int(
+                feature_state.get("cycleOpenedCount") or 0
+            ),
+            "configHash": policy_hash,
+            "action": dict(action),
+            "actionState": "preparing",
+            "createdAtMillis": now_millis,
+            "verificationDeadlineMillis": (
+                now_millis + verification_timeout
+            ),
+        }
+        self._save_automation_pending_record(
+            account_ref, "inventoryPendingActionJson", pending
+        )
+
+        def before_send(metadata: Dict[str, Any]) -> None:
+            pending.update({
+                "actionState": "sending",
+                "sentAtMillis": int(self._ports.clock.now_millis()),
+                "request": dict(metadata),
+            })
+            self._save_automation_pending_record(
+                account_ref, "inventoryPendingActionJson", pending
+            )
+
+        durable = _DurablePendingMutationExecution(execution, before_send)
+        try:
+            receipt = self._execute_automatic_inventory_action(
+                durable, account_ref, action, context
+            )
+        except OperationKnownFailureError as error:
+            if durable.sent:
+                pending.update({
+                    "actionState": "rejected",
+                    "error": str(error),
+                    "errorCode": error.code,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "inventoryPendingActionJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"inventoryPendingActionJson": "{}"}
+                )
+            raise
+        except OperationUncertainError as error:
+            if durable.sent:
+                pending.update({
+                    "actionState": "uncertain",
+                    "error": str(error),
+                })
+                self._save_automation_pending_record(
+                    account_ref, "inventoryPendingActionJson", pending
+                )
+            else:
+                self._update_account_public_state(
+                    account_ref, {"inventoryPendingActionJson": "{}"}
+                )
+            raise
+        except Exception as error:
+            if durable.sent:
+                pending.update({
+                    "actionState": "uncertain",
+                    "error": str(error) or error.__class__.__name__,
+                })
+                self._save_automation_pending_record(
+                    account_ref, "inventoryPendingActionJson", pending
+                )
+                raise OperationUncertainError(
+                    f"背包动作发送后异常：{error}"
+                ) from error
+            self._update_account_public_state(
+                account_ref, {"inventoryPendingActionJson": "{}"}
+            )
+            raise
+        pending.update({
+            "actionState": "accepted",
+            "acceptedAtMillis": int(self._ports.clock.now_millis()),
+            "receipt": receipt,
+        })
+        self._save_automation_pending_record(
+            account_ref, "inventoryPendingActionJson", pending
+        )
+        return self._run_automatic_inventory_pending_recovery(
+            execution, account_ref, pending, context
+        )
+
+    def _enqueue_alarm_events(
+        self,
+        account_ref: str,
+        events: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Persist alarm events before calling any non-durable host port."""
+
+        pending = self._automation_pending_record(
+            account_ref, "alarmPendingEventsJson"
+        )
+        existing = [
+            dict(value)
+            for value in pending.get("events") or []
+            if isinstance(value, dict)
+        ]
+        known = {
+            str(value.get("fingerprint") or "")
+            for value in existing
+            if str(value.get("fingerprint") or "")
+        }
+        for value in events:
+            event = dict(value)
+            fingerprint = str(event.get("fingerprint") or "").strip()
+            if not fingerprint or fingerprint in known:
+                continue
+            event["accountRef"] = str(account_ref)
+            event.setdefault("logWritten", False)
+            event.setdefault("notificationDelivered", False)
+            existing.append(event)
+            known.add(fingerprint)
+        envelope = {
+            "schemaVersion": 1,
+            "events": existing,
+            "createdAtMillis": int(
+                pending.get("createdAtMillis")
+                or self._ports.clock.now_millis()
+            ),
+        }
+        return self._save_automation_pending_record(
+            account_ref, "alarmPendingEventsJson", envelope
+        )
+
+    def _deliver_pending_alarm_events(
+        self,
+        account_ref: str,
+    ) -> Dict[str, Any]:
+        """Best-effort delivery with durable per-port progress markers."""
+
+        pending = self._automation_pending_record(
+            account_ref, "alarmPendingEventsJson"
+        )
+        events = [
+            dict(value)
+            for value in pending.get("events") or []
+            if isinstance(value, dict)
+        ]
+        if not events:
+            if pending:
+                self._update_account_public_state(
+                    account_ref, {"alarmPendingEventsJson": "{}"}
+                )
+            return {"deliveredCount": 0, "pendingCount": 0, "error": ""}
+        delivered = 0
+        try:
+            while events:
+                event = dict(events[0])
+                event["accountRef"] = str(account_ref)
+                if not bool(event.get("logWritten")):
+                    self._ports.logs.write({
+                        **event,
+                        "event": "alarm",
+                        "accountRef": str(account_ref),
+                    })
+                    event["logWritten"] = True
+                    events[0] = event
+                    pending["events"] = events
+                    self._save_automation_pending_record(
+                        account_ref, "alarmPendingEventsJson", pending
+                    )
+                if (
+                    bool(event.get("showNotification"))
+                    and not bool(event.get("notificationDelivered"))
+                ):
+                    self._ports.notifications.notify(event)
+                    event["notificationDelivered"] = True
+                    events[0] = event
+                    pending["events"] = events
+                    self._save_automation_pending_record(
+                        account_ref, "alarmPendingEventsJson", pending
+                    )
+                events.pop(0)
+                delivered += 1
+                if events:
+                    pending["events"] = events
+                    pending.pop("lastError", None)
+                    self._save_automation_pending_record(
+                        account_ref, "alarmPendingEventsJson", pending
+                    )
+                else:
+                    self._update_account_public_state(
+                        account_ref, {"alarmPendingEventsJson": "{}"}
+                    )
+        except Exception as error:
+            pending["events"] = events
+            pending["lastError"] = str(error) or error.__class__.__name__
+            pending["lastAttemptAtMillis"] = int(
+                self._ports.clock.now_millis()
+            )
+            self._save_automation_pending_record(
+                account_ref, "alarmPendingEventsJson", pending
+            )
+            return {
+                "deliveredCount": delivered,
+                "pendingCount": len(events),
+                "error": pending["lastError"],
+            }
+        return {"deliveredCount": delivered, "pendingCount": 0, "error": ""}
+
+    def _run_configured_alarm_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        raw_policy = configs.get("alarm")
+        policy = normalize_alarm_policy(
+            dict(raw_policy)
+            if isinstance(raw_policy, dict)
+            else {
+                "incomingEnabled": False,
+                "militaryEnabled": False,
+                "errorEnabled": False,
+            }
+        )
+        schedule = self._behavior_contract["scheduler"]
+        poll_millis = int(schedule["alarmPollMillis"])
+        notification_retry = int(schedule["alarmNotificationRetryMillis"])
+        now_millis = int(self._ports.clock.now_millis())
+        pending = self._automation_pending_record(
+            account_ref, "alarmPendingEventsJson"
+        )
+        if pending:
+            delivery = self._deliver_pending_alarm_events(account_ref)
+            failed = bool(delivery.get("error"))
+            return {
+                "feature": "alarm",
+                "state": "retry" if failed else "delivered-pending",
+                "success": not failed,
+                "message": (
+                    "军情警报待投递事件仍未送达：" + str(delivery["error"])
+                    if failed
+                    else f"已恢复投递{int(delivery['deliveredCount'])}条军情警报"
+                ),
+                "nextWakeAtMillis": now_millis + (
+                    notification_retry if failed else poll_millis
+                ),
+            }
+
+        execution.publish_progress(10, {"phase": "resident-alarm-refresh"})
+        snapshot = self._refresh_military_snapshot_game(
+            account_ref,
+            execution,
+            context,
+            phase="shared-core/resident/alarm",
+        )
+        observed_at = int(self._ports.clock.now_millis())
+        alarm_state = dict(state.get("alarm") or {})
+        plan = plan_alarm_observation(
+            snapshot,
+            policy,
+            alarm_state,
+            now_millis=observed_at,
+            fingerprint_limit=int(schedule["alarmFingerprintLimit"]),
+        )
+        alarm_state = dict(plan["state"])
+        alarm_state["nextWakeAtMillis"] = observed_at + poll_millis
+        state["alarm"] = alarm_state
+        self._save_resident_automation_state(account_ref, state)
+        self._update_account_public_state(
+            account_ref,
+            {
+                "alarmLastEventsJson": self._json({
+                    "observedAtMillis": observed_at,
+                    "events": list(plan.get("currentEvents") or []),
+                })
+            },
+        )
+        events = [
+            dict(value)
+            for value in plan.get("events") or []
+            if isinstance(value, dict)
+        ]
+        if events:
+            self._enqueue_alarm_events(account_ref, events)
+            delivery = self._deliver_pending_alarm_events(account_ref)
+            failed = bool(delivery.get("error"))
+            if failed:
+                alarm_state["nextWakeAtMillis"] = observed_at + notification_retry
+                state["alarm"] = alarm_state
+                self._save_resident_automation_state(account_ref, state)
+            notification_count = sum(
+                1 for event in events if bool(event.get("showNotification"))
+            )
+            return {
+                "feature": "alarm",
+                "state": "retry" if failed else "notified",
+                "success": not failed,
+                "eventCount": len(events),
+                "notificationCount": notification_count,
+                "message": (
+                    "军情警报已记录，平台投递失败：" + str(delivery["error"])
+                    if failed
+                    else (
+                        f"已记录{len(events)}条新军情，"
+                        f"展示{notification_count}条通知"
+                    )
+                ),
+                "nextWakeAtMillis": alarm_state["nextWakeAtMillis"],
+            }
+        baseline = bool(plan.get("baselineEstablished"))
+        return {
+            "feature": "alarm",
+            "state": "baseline" if baseline else "waiting",
+            "success": True,
+            "eventCount": 0,
+            "notificationCount": 0,
+            "message": (
+                "军情警报基线已建立，不重放已有军情"
+                if baseline
+                else "本轮没有新军情警报"
+            ),
+            "nextWakeAtMillis": alarm_state["nextWakeAtMillis"],
+        }
+
+    def emit_host_alarm_error(
+        self,
+        account_ref: str,
+        message: str,
+        source: str = "host",
+    ) -> Dict[str, Any]:
+        """Let Python apply errorEnabled and durable dedupe for host failures."""
+
+        normalized_ref = str(account_ref or "").strip()
+        if not normalized_ref or self._accounts.get(normalized_ref) is None:
+            raise ValueError("宿主异常警报账号不存在")
+        public = self._account_public_state(normalized_ref)
+        configs = self._public_json_object(
+            public.get("residentAutomationConfigJson")
+        )
+        raw_policy = configs.get("alarm")
+        policy = normalize_alarm_policy(
+            dict(raw_policy)
+            if isinstance(raw_policy, dict)
+            else {
+                "incomingEnabled": False,
+                "militaryEnabled": False,
+                "errorEnabled": False,
+            }
+        )
+        state = self._public_json_object(
+            public.get("residentAutomationStateJson")
+        )
+        alarm_state = dict(state.get("alarm") or {})
+        now_millis = int(self._ports.clock.now_millis())
+        plan = plan_error_alarm(
+            policy,
+            alarm_state,
+            str(message or ""),
+            source=str(source or "host"),
+            now_millis=now_millis,
+            dedupe_millis=int(
+                self._behavior_contract["scheduler"]["alarmErrorDedupeMillis"]
+            ),
+        )
+        state["alarm"] = dict(plan["state"])
+        self._save_resident_automation_state(normalized_ref, state)
+        event = plan.get("event")
+        if not isinstance(event, dict):
+            return {
+                "ok": True,
+                "accountRef": normalized_ref,
+                "emitted": False,
+                "reason": str(plan.get("reason") or "disabled"),
+            }
+        self._enqueue_alarm_events(normalized_ref, [event])
+        delivery = self._deliver_pending_alarm_events(normalized_ref)
+        return {
+            "ok": not bool(delivery.get("error")),
+            "accountRef": normalized_ref,
+            "emitted": True,
+            "fingerprint": str(event.get("fingerprint") or ""),
+            "pendingCount": int(delivery.get("pendingCount") or 0),
+            "error": str(delivery.get("error") or ""),
+        }
+
+    def emit_host_alarm_error_json(
+        self,
+        account_ref: str,
+        message: str,
+        source: str = "host",
+    ) -> str:
+        return self._json(
+            self.emit_host_alarm_error(account_ref, message, source)
+        )
+
+    def _apply_resident_result_state(
+        self,
+        account_ref: str,
+        result: Dict[str, Any],
+        resident_context: Dict[str, Any] | None = None,
+        *,
+        from_pending: bool = False,
+    ) -> Dict[str, Any]:
+        feature_alias = {
+            "brushYellow": "brush",
+            "brush": "brush",
+            "mine": "mine",
+            "raid": "raid",
+            "lossless": "lossless",
+            "dungeon": "dungeon",
+            "general": "general",
+            "ministry": "ministry",
+            "domestic": "domestic",
+            "inventory": "inventory",
+            "alarm": "alarm",
+        }
+        feature = feature_alias.get(str(result.get("feature") or ""))
+        if feature is None:
+            return dict(result)
+        public = self._account_public_state(account_ref)
+        state = self._public_json_object(
+            public.get("residentAutomationStateJson")
+        )
+        feature_state = dict(state.get(feature) or {})
+        context_value = dict(resident_context or {})
+        if context_value.get("feature") == feature and (
+            bool(result.get("dispatchAccepted")) or from_pending
+        ):
+            try:
+                feature_state["cursor"] = max(
+                    0, int(context_value["nextCursor"])
+                )
+            except (KeyError, TypeError, ValueError):
+                pass
+        next_feature_state = str(result.get("state") or "completed")
+        feature_state.update({
+            "lastState": next_feature_state,
+            "lastMessage": str(result.get("message") or ""),
+            "nextWakeAtMillis": result.get("nextWakeAtMillis"),
+            # Aging asks "how long since this feature last had the lane", and
+            # the answer was recorded only where the *configured* path selects
+            # one.  A feature that held the lane through a pending workflow
+            # therefore still looked starved, so when 打矿 finished a 13-minute
+            # garrison loop it tied with the very features it had just starved
+            # and won the tie on priority (mine 300 > dungeon 200 > brush 150),
+            # immediately starting the next loop.  Being served is holding the
+            # lane, not which branch handed it over.
+            "lastServedAtMillis": int(self._ports.clock.now_millis()),
+        })
+        # When a feature blocks it stops proposing a deadline, so the scheduler
+        # has to derive one.  Record *when* the block happened: anchoring the
+        # retry on this instant keeps the deadline fixed, whereas deriving it
+        # from the read time produces a target that never arrives.
+        #
+        # Whether a human is needed is recorded as its own fact.  It used to be
+        # inferred from the state being spelled "blocked", which made the
+        # scheduler's answer depend on vocabulary: 副本 halts as
+        # ``clear-unconfirmed``, so it was neither given a retry deadline nor
+        # allowed to keep its block instant, and fell through to "due now" -
+        # competing on every tick while making no progress.  A feature that has
+        # stopped must cost the others nothing, whatever its stop is called.
+        requires_attention = bool(result.get("requiresAttention"))
+        if next_feature_state in RESIDENT_BLOCKED_STATES or requires_attention:
+            feature_state.setdefault(
+                "blockedAtMillis", int(self._ports.clock.now_millis())
+            )
+        else:
+            feature_state.pop("blockedAtMillis", None)
+        if requires_attention:
+            feature_state["requiresAttention"] = True
+        else:
+            feature_state.pop("requiresAttention", None)
+        if result.get("errorCode"):
+            feature_state["lastErrorCode"] = str(result["errorCode"])
+        elif bool(result.get("success")) and not bool(
+            result.get("requiresAttention")
+        ):
+            feature_state.pop("lastErrorCode", None)
+        if (
+            feature == "dungeon"
+            and context_value.get("feature") == "dungeon"
+            and str(result.get("state") or "")
+            in {"chest-opened", "settlement-recovered"}
+        ):
+            current_day = china_day_key(
+                int(self._ports.clock.now_millis())
+            )
+            if int(
+                feature_state.get("dayKey")
+                if feature_state.get("dayKey") is not None
+                else -1
+            ) != current_day:
+                feature_state.update({"dayKey": current_day, "usedCount": 0})
+            completion_token = str(
+                context_value.get("completionToken") or ""
+            )
+            if completion_token and str(
+                feature_state.get("lastCompletionToken") or ""
+            ) != completion_token:
+                feature_state["usedCount"] = (
+                    int(feature_state.get("usedCount") or 0) + 1
+                )
+                feature_state["lastCompletionToken"] = completion_token
+        if feature == "lossless":
+            # One lossless round starts at the first (guard) dispatch.  It is
+            # consumed even if that guard battle loses, so never wait for the
+            # fifth-stage settlement before recording it.  The battle id makes
+            # replaying the same durable result idempotent.
+            now_millis = int(self._ports.clock.now_millis())
+            current_day = china_day_key(now_millis)
+            if int(
+                feature_state.get("dayKey")
+                if feature_state.get("dayKey") is not None
+                else -1
+            ) != current_day:
+                feature_state.update({"dayKey": current_day, "usedCount": 0})
+                feature_state.pop("lastRoundBattleId", None)
+                feature_state.pop("lastRoundStartedAtMillis", None)
+
+            status = result.get("status")
+            status = status if isinstance(status, dict) else {}
+            status_used = status.get("usedAttempts")
+            if status_used is None and status.get("remainingAttempts") is not None:
+                status_used = int(
+                    self._behavior_contract["lossless"]["serverDailyLimit"]
+                ) - int(status["remainingAttempts"])
+            if status_used is not None:
+                feature_state["usedCount"] = max(
+                    int(feature_state.get("usedCount") or 0),
+                    max(0, int(status_used)),
+                )
+
+            stage = result.get("stage")
+            stage = stage if isinstance(stage, dict) else {}
+            stage_name = str(stage.get("stageName") or stage.get("name") or "")
+            try:
+                stage_id = int(stage.get("stageId") or 0)
+            except (TypeError, ValueError):
+                stage_id = 0
+            is_guard = stage_name == "卫兵" or (
+                stage_id > 0 and stage_id & 0xFF == 0x11
+            )
+            try:
+                round_battle_id = int(
+                    result.get("battleId") or result.get("successBattleId") or 0
+                )
+            except (TypeError, ValueError):
+                round_battle_id = 0
+            if (
+                bool(result.get("dispatchAccepted"))
+                and is_guard
+                and round_battle_id > 0
+                and int(feature_state.get("lastRoundBattleId") or 0)
+                != round_battle_id
+            ):
+                daily_limit = int(
+                    self._behavior_contract["lossless"]["serverDailyLimit"]
+                )
+                feature_state["usedCount"] = min(
+                    daily_limit,
+                    int(feature_state.get("usedCount") or 0) + 1,
+                )
+                feature_state["lastRoundBattleId"] = round_battle_id
+                feature_state["lastRoundStartedAtMillis"] = now_millis
+        if result.get("battleId") or result.get("successBattleId"):
+            feature_state["lastBattleId"] = (
+                result.get("battleId") or result.get("successBattleId")
+            )
+        state[feature] = feature_state
+        self._save_resident_automation_state(account_ref, state)
+        return dict(result)
+
+    def _append_resident_success_record(
+        self,
+        account_ref: str,
+        result: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Persist one definitive resident success with a stable battle key."""
+
+        now_millis = int(self._ports.clock.now_millis())
+        record = resident_success_record(result, now_millis=now_millis)
+        if record is None:
+            return None
+        return self._append_success_record(account_ref, record)
+
+    def _append_success_record(
+        self,
+        account_ref: str,
+        record: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Persist one already-built success fact, newest last, deduplicated.
+
+        Kept separate from the resident tick so any workflow that establishes a
+        definitive fact can record it where the fact is known, rather than
+        having the record page re-derive it from log text.
+        """
+
+        if record is None:
+            return None
+        now_millis = int(self._ports.clock.now_millis())
+        public = self._account_public_state(account_ref)
+        records = [
+            dict(value)
+            for value in self._public_json_list(
+                public.get("successRecordsJson")
+            )
+            if isinstance(value, dict)
+        ]
+        dedupe_key = str(record.get("dedupeKey") or "").strip()
+        if dedupe_key and any(
+            str(value.get("dedupeKey") or "").strip() == dedupe_key
+            for value in records
+        ):
+            return None
+        latest_id = max(
+            (
+                int(value.get("id") or 0)
+                for value in records
+                if str(value.get("id") or "").lstrip("-").isdigit()
+            ),
+            default=0,
+        )
+        record.update({
+            "id": max(now_millis, latest_id + 1),
+            "time": now_millis,
+            "sessionId": str(account_ref),
+            "accountKey": str(account_ref),
+        })
+        records.append(record)
+        records.sort(
+            key=lambda value: (
+                int(value.get("time") or 0),
+                int(value.get("id") or 0),
+            )
+        )
+        records = records[-50:]
+        self._update_account_public_state(
+            account_ref,
+            {"successRecordsJson": self._json(records)},
+        )
+        self._write_user_log(
+            account_ref,
+            "：".join(
+                part
+                for part in (
+                    str(record.get("category") or "").strip(),
+                    str(record.get("message") or "").strip(),
+                )
+                if part
+            ),
+        )
+        return dict(record)
+
+    def _write_user_log(self, account_ref: str, message: str) -> None:
+        """Narrate one finished fact for the operator's runtime log.
+
+        Everything else this core writes to the log port is a trace, and the host
+        treats an unmarked line as such. Only lines that pass through here claim
+        the operator's panel, so the claim stays deliberate and reviewable.
+        """
+
+        text = str(message or "").strip()
+        if not text:
+            return
+        try:
+            self._ports.logs.write({
+                "audience": "user",
+                "level": "info",
+                "accountRef": str(account_ref),
+                "message": text,
+            })
+        except Exception:
+            # Narration must never be able to fail the work it narrates.
+            pass
+
+    def _run_configured_resident_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        public = self._account_public_state(account_ref)
+        configs = self._public_json_object(
+            public.get("residentAutomationConfigJson")
+        )
+        state = self._public_json_object(
+            public.get("residentAutomationStateJson")
+        )
+        started, active_keys = self._resident_started_and_keys(public)
+        raw_allowed = context.get("allowedFeatures")
+        if isinstance(raw_allowed, list):
+            allowed = {
+                str(value).strip()
+                for value in raw_allowed
+                if str(value or "").strip()
+            }
+            allowed_active_keys = {
+                "brushYellow" if value == "brush" else value
+                for value in allowed
+                if value in {
+                    "brush", "mine", "raid", "lossless", "dungeon",
+                    "general", "ministry", "domestic", "inventory", "alarm",
+                }
+            }
+            active_keys &= allowed_active_keys
+        now_millis = int(self._ports.clock.now_millis())
+        decision = resident_due_decision(
+            configs,
+            state,
+            now_millis=now_millis,
+            saved_tasks_started=started,
+            active_keys=active_keys,
+            priorities=dict(
+                self._behavior_contract["scheduler"]["residentPriority"]
+            ),
+        )
+        state = dict(decision.get("state") or state)
+        feature = decision.get("feature")
+        if feature is None:
+            self._save_resident_automation_state(account_ref, state)
+            return {
+                "feature": None,
+                "state": "idle",
+                "success": True,
+                "message": (
+                    "共享常驻任务等待下一业务时间"
+                    if decision.get("nextWakeAtMillis") is not None
+                    else "当前没有已启动的共享常驻任务"
+                ),
+                "nextWakeAtMillis": decision.get("nextWakeAtMillis"),
+            }
+        # Aging needs to know when each feature was last served.  The decision
+        # itself stays pure, so the fact is recorded here, where the state is
+        # written anyway.
+        feature_state = dict(state.get(feature) or {})
+        feature_state["lastServedAtMillis"] = now_millis
+        state[feature] = feature_state
+        self._save_resident_automation_state(account_ref, state)
+        try:
+            if feature == "mine":
+                return self._run_configured_mine_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "brush":
+                return self._run_configured_brush_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "raid":
+                return self._run_configured_raid_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "lossless":
+                return self._run_configured_lossless_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "dungeon":
+                return self._run_configured_dungeon_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "general":
+                return self._run_configured_general_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "ministry":
+                return self._run_configured_ministry_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "domestic":
+                return self._run_configured_domestic_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "inventory":
+                return self._run_configured_inventory_tick(
+                    execution, account_ref, configs, state, context
+                )
+            if feature == "alarm":
+                return self._run_configured_alarm_tick(
+                    execution, account_ref, configs, state, context
+                )
+            raise OperationKnownFailureError(
+                f"共享常驻调度返回未知功能：{feature}",
+                code="SHARED_RESIDENT_FEATURE_INVALID",
+            )
+        except OperationKnownFailureError as error:
+            # A resident feature may spend a long time on read-only scanning
+            # before the final request is rejected (for example, a bandit
+            # target disappears while an 80-cell scan is still running).
+            # Base the retry deadline on the failure time, not on the time at
+            # which this tick originally selected the feature; otherwise a
+            # long scan can return an already-expired deadline and immediately
+            # start another expensive scan.
+            retry_base_millis = int(self._ports.clock.now_millis())
+            pending_field = {
+                "mine": "minePendingGarrisonJson",
+                "brush": "brushPendingRecoveryJson",
+                "raid": "raidPendingReturnJson",
+                "lossless": "losslessPendingBattleJson",
+                "dungeon": "dungeonPendingRunJson",
+                "general": "generalMaintenancePendingJson",
+                "ministry": "ministryPendingPlantJson",
+                "domestic": "domesticPendingActionJson",
+                "inventory": "inventoryPendingActionJson",
+                "alarm": "alarmPendingEventsJson",
+            }.get(str(feature), "")
+            pending = self._automation_pending_record(
+                account_ref, pending_field
+            ) if pending_field else {}
+            feature_state = dict(state.get(str(feature)) or {})
+            pending_requires_attention = bool(pending)
+            if pending and str(feature) in NESTED_SEND_BOUNDARY_FEATURES:
+                # These three know precisely which of their own steps is
+                # outstanding, so a bare "there is a ledger" is too coarse.
+                pending_requires_attention = (
+                    self._pending_nested_send_unsettled(str(feature), pending)
+                )
+            blocked = pending_requires_attention or error.code in {
+                "SHARED_BRUSH_RULE_MISSING",
+                "SHARED_MINE_RULE_MISSING",
+                "SHARED_RAID_RULE_MISSING",
+                "SHARED_LOSSLESS_RULE_MISSING",
+                "SHARED_DUNGEON_RULE_MISSING",
+                "SHARED_GENERAL_RULE_MISSING",
+                "SHARED_GENERAL_EMPTY",
+                "GENERAL_MAINTENANCE_GENERAL_MISSING",
+                "GENERAL_MAINTENANCE_STEP_REQUIRES_REVIEW",
+                "SHARED_DOMESTIC_RULE_MISSING",
+                "SHARED_DOMESTIC_TECHNOLOGY_EMPTY",
+                "DOMESTIC_STEP_REQUIRES_REVIEW",
+                "SHARED_MINISTRY_RULE_MISSING",
+                "SHARED_INVENTORY_RULE_MISSING",
+                "INVENTORY_PLAN_INVALID",
+                "INVENTORY_ACTION_INVALID",
+                "EXPEDITION_ROLE_LEVEL_TOO_LOW",
+                "EXPEDITION_FORMATION_RULE_MISSING",
+                "EXPEDITION_GENERALS_EMPTY",
+                "EXPEDITION_GENERALS_OVER_LIMIT",
+                "SHARED_RESIDENT_FEATURE_INVALID",
+            }
+            if feature in {"mine", "brush"}:
+                delay = int(
+                    self._behavior_contract[
+                        "mine" if feature == "mine" else "brushYellow"
+                    ]["schedule"].get(
+                        "targetUnavailableRetryMillis", 10_000
+                    )
+                )
+            elif feature == "raid":
+                delay = int(
+                    self._behavior_contract["raid"].get(
+                        "busyGeneralPollMillis", 10_000
+                    )
+                )
+            elif feature == "lossless":
+                delay = int(
+                    self._behavior_contract["lossless"]["schedule"].get(
+                        "cooldownPollMinMillis", 5_000
+                    )
+                )
+            elif feature == "dungeon":
+                delay = int(
+                    self._behavior_contract["dungeon"]["schedule"].get(
+                        "waitingUnlockMillis", 60_000
+                    )
+                )
+            elif feature == "general":
+                delay = int(
+                    self._behavior_contract["scheduler"][
+                        "generalMaintenancePollMillis"
+                    ]
+                )
+            elif feature == "domestic":
+                delay = int(
+                    self._behavior_contract["scheduler"][
+                        "domesticPollMillis"
+                    ]
+                )
+            elif feature == "inventory":
+                delay = int(
+                    self._behavior_contract["scheduler"][
+                        "inventoryPollMillis"
+                    ]
+                )
+            elif feature == "alarm":
+                delay = int(
+                    self._behavior_contract["scheduler"]["alarmPollMillis"]
+                )
+            else:
+                delay = int(
+                    self._behavior_contract["scheduler"][
+                        "ministryPollMillis"
+                    ]
+                )
+            if error.code in {
+                "GAME_COMMAND_SESSION_MISSING",
+                "GAME_COMMAND_DM_INVALID",
+            }:
+                delay = max(
+                    delay,
+                    int(
+                        self._behavior_contract["scheduler"][
+                            "sessionUnavailableRetryMillis"
+                        ]
+                    ),
+                )
+            error_details = dict(error.details)
+            error_message = str(error)
+            # A paused formation names its own deadline.  Polling it on the
+            # feature's short retry interval would only re-read a ledger that
+            # cannot change before then.
+            try:
+                retry_hint = int(error_details.get("retryAtMillis") or 0)
+            except (TypeError, ValueError):
+                retry_hint = 0
+            if retry_hint > retry_base_millis + delay:
+                delay = retry_hint - retry_base_millis
+            high_level_troop_rejected = (
+                feature == "brush"
+                and error.code == "BRUSH_DISPATCH_REJECTED"
+                and _BRUSH_HIGH_LEVEL_TROOP_ERROR_MARKER in error_message
+            )
+            if high_level_troop_rejected:
+                try:
+                    display_row_number = max(
+                        0, int(error_details.get("sourceRowIndex") or 0)
+                    ) + 1
+                except (TypeError, ValueError):
+                    display_row_number = 1
+                user_message = (
+                    f"刷黄编队{display_row_number}未满足每个将领配兵达到1000"
+                )
+            else:
+                user_message = error_message
+            feature_state.update({
+                "lastState": "blocked" if blocked else "retry",
+                "lastErrorCode": error.code,
+                "lastMessage": user_message,
+                "nextWakeAtMillis": (
+                    None if blocked else retry_base_millis + delay
+                ),
+            })
+            state[str(feature)] = feature_state
+            self._save_resident_automation_state(account_ref, state)
+            result = {
+                "feature": feature,
+                "state": "blocked" if blocked else "retry",
+                "success": False,
+                "requiresAttention": blocked,
+                "errorCode": error.code,
+                "message": user_message,
+                "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
+            }
+            if "sourceRowIndex" in error_details:
+                result["sourceRowIndex"] = error_details["sourceRowIndex"]
+            if "generalTroops" in error_details:
+                result["generalTroops"] = error_details["generalTroops"]
+            if "selectedLevels" in error_details:
+                result["selectedLevels"] = error_details["selectedLevels"]
+            if high_level_troop_rejected:
+                result["serverMessage"] = error_message
+            return result
+
+    def _run_automation_recovery_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run the highest-priority persisted recovery for one account."""
+
+        raw_allowed = context.get("allowedFeatures")
+        allowed = (
+            {
+                str(value).strip()
+                for value in raw_allowed
+                if str(value or "").strip()
+            }
+            if isinstance(raw_allowed, list)
+            else {
+                "mine", "lossless", "brush", "raid", "dungeon", "general",
+                "ministry", "domestic", "inventory", "alarm", "daily",
+            }
+        )
+        resident_context: Dict[str, Any] = {}
+        from_pending = False
+        selected_pending_feature = ""
+        pending_before: dict[str, Dict[str, Any]] = {}
+        isolated_pending_features: set[str] = set()
+        # A pending workflow may yield the account lane while it waits for a
+        # read-only observation.  Its deadline is still a real account wake
+        # deadline; otherwise a later configured task can park the whole
+        # account past the point at which the pending workflow must be polled.
+        # Keep these deadlines separate from the isolation projection because
+        # an ambiguous mutation has no safe automatic wake, while a future
+        # ``nextPollAtMillis`` explicitly does.
+        pending_wake_deadlines: dict[str, int] = {}
+        # A pending ledger can be removed from both scheduling paths for two
+        # very different reasons: it may simply be waiting for its next
+        # read-only observation, or it may still need a human to resolve an
+        # ambiguous mutation.  Keep the latter as a separate projection so a
+        # host UI does not turn an ordinary battle poll into an error badge.
+        isolated_attention_features: set[str] = set()
+        pending_fields = {
+            "alarm": "alarmPendingEventsJson",
+            "mine": "minePendingGarrisonJson",
+            "lossless": "losslessPendingBattleJson",
+            "brush": "brushPendingRecoveryJson",
+            "raid": "raidPendingReturnJson",
+            "dungeon": "dungeonPendingRunJson",
+            "general": "generalMaintenancePendingJson",
+            "ministry": "ministryPendingPlantJson",
+            "domestic": "domesticPendingActionJson",
+            "inventory": "inventoryPendingActionJson",
+        }
+
+        def safe_read_only_recovery_probe(
+            value: Dict[str, Any], feature: str
+        ) -> bool:
+            """Let stale attention flags reach workflows that only re-read state.
+
+            ``requiresAttention`` is a conclusion drawn by an earlier run, and
+            conclusions expire.  It stays justified only while a mutation whose
+            outcome is genuinely unknown is still outstanding, because that is
+            the one case a human has to adjudicate.  Every other send state is
+            a *known* result: ``accepted`` means the server took it,
+            ``not-sent``/``rejected`` mean it never landed.  Re-reading state is
+            safe in all of those.
+
+            Two real accounts show why this must not be an allowlist of
+            features or error codes.  副本 was isolated for four days over a
+            preflight that sent nothing, and again after an eight-minute pause
+            during which its battle tracking expired - a confirmed ``accepted``
+            dispatch, not an ambiguous one.  将领维护 stayed isolated on "宝库
+            没有活血丹" long after the item was bought.  In each case the flag
+            outlived the condition and nothing re-evaluated it.
+            """
+
+            # ``preDispatchMutationState`` is deliberately absent.  A gate
+            # placed above a resolver can only ever block: an interrupted heal
+            # or top-up kept 副本 isolated, which meant the very workflow that
+            # knows how to settle it by observation was never entered.  Reading
+            # state is safe in every case; what must not happen is *replaying*
+            # the mutation, and that decision belongs inside each workflow,
+            # next to the evidence.  Every expedition workflow already fails
+            # closed on an ambiguous preflight, and 副本/刷黄 additionally
+            # reconcile it once the generals are idle and nothing formal was
+            # sent.  Formal sends stay here: no amount of reading undoes them.
+            #
+            # General maintenance stores its send boundary one level deeper,
+            # under ``maintenanceProgress``.  A top-level ``sendState`` is
+            # therefore absent on a real account even though (for example)
+            # ``healByFief/539`` is already ``uncertain``.  Treating that shape
+            # as recoverable lets the general pending record win every tick;
+            # the general workflow then returns ``blocked`` and the same record
+            # is selected again, starving unrelated resident work.  The nested
+            # helper is the source of truth for that feature's durable steps.
+            return not any(
+                str(value.get(key) or "") in AMBIGUOUS_SEND_STATES
+                for key in FORMAL_SEND_STATE_KEYS
+            ) and not self._pending_nested_send_unsettled(feature, value)
+
+        def pending_ready(value: Dict[str, Any], feature: str) -> bool:
+            if not value or feature not in allowed:
+                return False
+            if context.get("configuredExecutionAllowed", True) is False:
+                return True
+            now_millis = int(self._ports.clock.now_millis())
+            try:
+                isolated_until = int(value.get("isolatedUntilMillis") or 0)
+            except (TypeError, ValueError):
+                isolated_until = 0
+
+            def remember_pending_deadline(deadline: int) -> None:
+                if deadline <= now_millis:
+                    return
+                previous = pending_wake_deadlines.get(feature)
+                if previous is None or deadline < previous:
+                    pending_wake_deadlines[feature] = deadline
+
+            stale_attention_can_be_rechecked = safe_read_only_recovery_probe(
+                value, feature
+            )
+            if (
+                bool(value.get("requiresAttention"))
+                and not stale_attention_can_be_rechecked
+            ) or isolated_until > now_millis:
+                isolated_pending_features.add(feature)
+                if bool(value.get("requiresAttention")):
+                    isolated_attention_features.add(feature)
+                remember_pending_deadline(isolated_until)
+                return False
+            # A pending workflow that is only *waiting* on the game - a battle
+            # in progress, generals marching home - holds nothing in flight and
+            # has no reason to own the account lane until its own deadline
+            # arrives.  Without this, 副本 took 87% of all ticks while merely
+            # polling a battle, and 刷黄 managed one dispatch in 14.5 minutes.
+            # A record that never sets the field keeps the old always-ready
+            # behaviour, so this cannot strand a workflow that still needs the
+            # lane every tick.
+            try:
+                next_poll_at = int(value.get("nextPollAtMillis") or 0)
+            except (TypeError, ValueError):
+                next_poll_at = 0
+            if next_poll_at > now_millis:
+                # A pending record that is only waiting for its next
+                # read-only observation must not be allowed back through the
+                # configured path.  The old code returned here without
+                # recording the feature as isolated; resident_due_decision
+                # could therefore select the same feature immediately and
+                # _run_configured_* would re-enter its pending recovery on
+                # every account tick.  Mark it explicitly so the configured
+                # candidate set is filtered for exactly the same interval.
+                isolated_pending_features.add(feature)
+                if bool(value.get("requiresAttention")):
+                    isolated_attention_features.add(feature)
+                remember_pending_deadline(next_poll_at)
+                return False
+            return True
+
+        def run_pending(
+            feature: str,
+            pending: Dict[str, Any],
+            action: Callable[[], Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            # Kept so the lane binder can tell a workflow that advanced from
+            # one that recomputed the same refusal; see
+            # ``_bind_pending_lane_deadline``.
+            pending_before[feature] = deepcopy(pending)
+            try:
+                return action()
+            except OperationKnownFailureError as error:
+                now_millis = int(self._ports.clock.now_millis())
+                retryable = error.code in {
+                    "BRUSH_RECOVERY_HEAL_RECONCILE_MISSING",
+                    "BRUSH_RECOVERY_HEAL_RECONCILE_REJECTED",
+                    "BRUSH_RECOVERY_HEAL_RECONCILE_INVALID",
+                    # This is a read-only resource shortage before the item
+                    # request boundary.  It must yield the account lane and
+                    # be retried later; treating it as attention-required
+                    # makes general maintenance win every resident tick.
+                    "EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                }
+                retry_at = now_millis + (
+                    30_000 if retryable else 0
+                )
+                if retryable:
+                    # A paused formation carries its own deadline; a shorter
+                    # isolation would just re-read the same ledger early.
+                    try:
+                        hinted = int(
+                            dict(error.details).get("retryAtMillis") or 0
+                        )
+                    except (TypeError, ValueError):
+                        hinted = 0
+                    retry_at = max(retry_at, hinted)
+                field = pending_fields.get(feature)
+                # ``pending`` is the snapshot taken *before* the workflow ran.
+                # Writing it back discards every send-boundary marker the
+                # workflow durably recorded on its way to failing - which is
+                # the one ledger that stops a landed mutation from being sent
+                # twice.  It also made a multi-step round unable to converge:
+                # 将领维护 kept losing each general's recorded outcome, so the
+                # round never finished, its record never cleared, and the
+                # pending lane it held starved 副本 and 刷黄.
+                current = (
+                    self._automation_pending_record(account_ref, field)
+                    if field
+                    else {}
+                )
+                updated = {
+                    **(current or pending),
+                    "lastErrorCode": str(error.code),
+                    "lastError": str(error),
+                    "lastErrorAtMillis": now_millis,
+                    "requiresAttention": not retryable,
+                }
+                if retryable:
+                    updated["isolatedUntilMillis"] = retry_at
+                else:
+                    updated["isolatedAtMillis"] = now_millis
+                    updated.pop("isolatedUntilMillis", None)
+                if field:
+                    self._save_automation_pending_record(
+                        account_ref,
+                        field,
+                        updated,
+                    )
+                return {
+                    "feature": (
+                        "brushYellow" if feature == "brush" else feature
+                    ),
+                    "state": "retry" if retryable else "blocked",
+                    "success": False,
+                    "requiresAttention": not retryable,
+                    "errorCode": str(error.code),
+                    "message": str(error),
+                    "nextWakeAtMillis": retry_at if retryable else None,
+                    "isolated": True,
+                }
+        alarm_pending = self._automation_pending_record(
+            account_ref,
+            "alarmPendingEventsJson",
+        )
+        mine_pending = self._automation_pending_record(
+            account_ref,
+            "minePendingGarrisonJson",
+        )
+        if pending_ready(alarm_pending, "alarm"):
+            selected_pending_feature = "alarm"
+            from_pending = True
+            public = self._account_public_state(account_ref)
+            result = run_pending(
+                "alarm",
+                alarm_pending,
+                lambda: self._run_configured_alarm_tick(
+                    execution,
+                    account_ref,
+                    self._public_json_object(
+                        public.get("residentAutomationConfigJson")
+                    ),
+                    self._public_json_object(
+                        public.get("residentAutomationStateJson")
+                    ),
+                    context,
+                ),
+            )
+        elif pending_ready(mine_pending, "mine"):
+            selected_pending_feature = "mine"
+            resident_context = dict(mine_pending.get("residentContext") or {})
+            from_pending = True
+            result = run_pending(
+                "mine",
+                mine_pending,
+                lambda: self._run_mine_garrison_game_workflow(
+                    execution,
+                    account_ref,
+                    mine_pending,
+                    context,
+                ),
+            )
+        else:
+            lossless_pending = self._automation_pending_record(
+                account_ref,
+                "losslessPendingBattleJson",
+            )
+            if pending_ready(lossless_pending, "lossless"):
+                selected_pending_feature = "lossless"
+                resident_context = dict(
+                    lossless_pending.get("residentContext") or {}
+                )
+                from_pending = True
+                result = run_pending(
+                    "lossless",
+                    lossless_pending,
+                    lambda: self._run_lossless_recovery_game_workflow(
+                        execution,
+                        account_ref,
+                        lossless_pending,
+                        context,
+                    ),
+                )
+            else:
+                brush_pending = self._automation_pending_record(
+                    account_ref,
+                    "brushPendingRecoveryJson",
+                )
+                if pending_ready(brush_pending, "brush"):
+                    selected_pending_feature = "brush"
+                    resident_context = dict(
+                        brush_pending.get("residentContext") or {}
+                    )
+                    from_pending = True
+                    result = run_pending(
+                        "brush",
+                        brush_pending,
+                        lambda: self._run_brush_recovery_game_workflow(
+                            execution,
+                            account_ref,
+                            brush_pending,
+                            context,
+                        ),
+                    )
+                else:
+                    raid_pending = self._automation_pending_record(
+                        account_ref,
+                        "raidPendingReturnJson",
+                    )
+                    if pending_ready(raid_pending, "raid"):
+                        selected_pending_feature = "raid"
+                        resident_context = dict(
+                            raid_pending.get("residentContext") or {}
+                        )
+                        from_pending = True
+                        result = run_pending(
+                            "raid",
+                            raid_pending,
+                            lambda: self._run_raid_return_game_workflow(
+                                execution,
+                                account_ref,
+                                raid_pending,
+                                context,
+                            ),
+                        )
+                    else:
+                        dungeon_pending = self._automation_pending_record(
+                            account_ref,
+                            "dungeonPendingRunJson",
+                        )
+                        if pending_ready(dungeon_pending, "dungeon"):
+                            selected_pending_feature = "dungeon"
+                            resident_context = dict(
+                                dungeon_pending.get("residentContext") or {}
+                            )
+                            from_pending = True
+                            result = run_pending(
+                                "dungeon",
+                                dungeon_pending,
+                                lambda: self._run_dungeon_recovery_game_workflow(
+                                    execution,
+                                    account_ref,
+                                    dungeon_pending,
+                                    context,
+                                ),
+                            )
+                        else:
+                            general_pending = (
+                                self._automation_pending_record(
+                                    account_ref,
+                                    "generalMaintenancePendingJson",
+                                )
+                            )
+                            if pending_ready(general_pending, "general"):
+                                selected_pending_feature = "general"
+                                from_pending = True
+                                configs = self._public_json_object(
+                                    self._account_public_state(
+                                        account_ref
+                                    ).get("residentAutomationConfigJson")
+                                )
+                                state = self._public_json_object(
+                                    self._account_public_state(
+                                        account_ref
+                                    ).get("residentAutomationStateJson")
+                                )
+                                result = run_pending(
+                                    "general",
+                                    general_pending,
+                                    lambda: self._run_configured_general_tick(
+                                        execution,
+                                        account_ref,
+                                        configs,
+                                        state,
+                                        context,
+                                    ),
+                                )
+                            else:
+                                ministry_pending = (
+                                    self._automation_pending_record(
+                                        account_ref,
+                                        "ministryPendingPlantJson",
+                                    )
+                                )
+                                if pending_ready(ministry_pending, "ministry"):
+                                    selected_pending_feature = "ministry"
+                                    from_pending = True
+                                    configs = self._public_json_object(
+                                        self._account_public_state(
+                                            account_ref
+                                        ).get("residentAutomationConfigJson")
+                                    )
+                                    state = self._public_json_object(
+                                        self._account_public_state(
+                                            account_ref
+                                        ).get("residentAutomationStateJson")
+                                    )
+                                    result = run_pending(
+                                        "ministry",
+                                        ministry_pending,
+                                        lambda: self._run_configured_ministry_tick(
+                                            execution,
+                                            account_ref,
+                                            configs,
+                                            state,
+                                            context,
+                                        ),
+                                    )
+                                else:
+                                    domestic_pending = (
+                                        self._automation_pending_record(
+                                            account_ref,
+                                            "domesticPendingActionJson",
+                                        )
+                                    )
+                                    inventory_pending = (
+                                        self._automation_pending_record(
+                                            account_ref,
+                                            "inventoryPendingActionJson",
+                                        )
+                                    )
+                                    if pending_ready(domestic_pending, "domestic"):
+                                        selected_pending_feature = "domestic"
+                                        from_pending = True
+                                        configs = self._public_json_object(
+                                            self._account_public_state(
+                                                account_ref
+                                            ).get("residentAutomationConfigJson")
+                                        )
+                                        state = self._public_json_object(
+                                            self._account_public_state(
+                                                account_ref
+                                            ).get("residentAutomationStateJson")
+                                        )
+                                        result = run_pending(
+                                            "domestic",
+                                            domestic_pending,
+                                            lambda: self._run_configured_domestic_tick(
+                                                execution,
+                                                account_ref,
+                                                configs,
+                                                state,
+                                                context,
+                                            ),
+                                        )
+                                    elif pending_ready(
+                                        inventory_pending,
+                                        "inventory",
+                                    ):
+                                        selected_pending_feature = "inventory"
+                                        from_pending = True
+                                        result = run_pending(
+                                            "inventory",
+                                            inventory_pending,
+                                            lambda: self._run_automatic_inventory_pending_recovery(
+                                                execution,
+                                                account_ref,
+                                                inventory_pending,
+                                                context,
+                                            ),
+                                        )
+                                    elif (
+                                        allowed.intersection({
+                                            "brush", "mine", "raid", "lossless",
+                                            "dungeon", "general", "ministry",
+                                            "domestic", "inventory", "alarm", "daily",
+                                        })
+                                        and context.get(
+                                            "configuredExecutionAllowed", True
+                                        ) is not False
+                                    ):
+                                        configured_context = dict(context)
+                                        configured_allowed = [
+                                            value
+                                            for value in allowed
+                                            if value
+                                            not in isolated_pending_features
+                                        ]
+                                        configured_context["allowedFeatures"] = (
+                                            configured_allowed
+                                        )
+                                        daily_before_residents = bool(
+                                            self._behavior_contract["scheduler"].get(
+                                                "dailyFeaturesRunBeforeResidents"
+                                            )
+                                        )
+                                        if daily_before_residents and "daily" in allowed:
+                                            public = self._account_public_state(
+                                                account_ref
+                                            )
+                                            configs = self._public_json_object(
+                                                public.get(
+                                                    "residentAutomationConfigJson"
+                                                )
+                                            )
+                                            state = self._public_json_object(
+                                                public.get(
+                                                    "residentAutomationStateJson"
+                                                )
+                                            )
+                                            daily_result = self._run_configured_daily_tick(
+                                                execution,
+                                                account_ref,
+                                                configs,
+                                                state,
+                                                configured_context,
+                                            )
+                                            resident_keys = {
+                                                "brush", "mine", "raid", "lossless",
+                                                "dungeon", "general", "ministry",
+                                                "domestic", "inventory", "alarm",
+                                            }
+                                            resident_allowed = bool(
+                                                resident_keys.intersection(
+                                                    configured_allowed
+                                                )
+                                            )
+                                            daily_wake = daily_result.get(
+                                                "nextWakeAtMillis"
+                                            )
+                                            daily_terminal_for_gate = bool(
+                                                daily_result.get("state")
+                                                in {"retry", "blocked"}
+                                                and not bool(
+                                                    daily_result.get(
+                                                        "requiresAttention"
+                                                    )
+                                                )
+                                                and daily_wake is not None
+                                                and int(daily_wake)
+                                                > int(self._ports.clock.now_millis())
+                                            )
+                                            daily_still_owns_lane = bool(
+                                                daily_result.get("feature") is not None
+                                                and not daily_terminal_for_gate
+                                            )
+                                            if (
+                                                daily_still_owns_lane
+                                                or not resident_allowed
+                                            ):
+                                                # One tick advances one daily key.
+                                                # A due sibling keeps the gate closed;
+                                                # a retry/terminal result whose next
+                                                # daily deadline is in the future
+                                                # releases the lane to residents.
+                                                result = daily_result
+                                            else:
+                                                daily_wake = daily_result.get(
+                                                    "nextWakeAtMillis"
+                                                )
+                                                result = self._run_configured_resident_tick(
+                                                    execution,
+                                                    account_ref,
+                                                    configured_context,
+                                                )
+                                                resident_wake = result.get(
+                                                    "nextWakeAtMillis"
+                                                )
+                                                if daily_wake is not None and (
+                                                    resident_wake is None
+                                                    or int(daily_wake) < int(resident_wake)
+                                                ):
+                                                    result["nextWakeAtMillis"] = int(
+                                                        daily_wake
+                                                    )
+                                        else:
+                                            # Compatibility path for an older
+                                            # contract. The current shared
+                                            # contract enables the daily gate,
+                                            # but retaining this branch keeps
+                                            # older bundled callers fail-soft.
+                                            result = self._run_configured_resident_tick(
+                                                execution,
+                                                account_ref,
+                                                configured_context,
+                                            )
+                                            if (
+                                                result.get("feature") is None
+                                                and "daily" in allowed
+                                            ):
+                                                resident_wake = result.get(
+                                                    "nextWakeAtMillis"
+                                                )
+                                                public = self._account_public_state(
+                                                    account_ref
+                                                )
+                                                configs = self._public_json_object(
+                                                    public.get(
+                                                        "residentAutomationConfigJson"
+                                                    )
+                                                )
+                                                state = self._public_json_object(
+                                                    public.get(
+                                                        "residentAutomationStateJson"
+                                                    )
+                                                )
+                                                result = self._run_configured_daily_tick(
+                                                    execution,
+                                                    account_ref,
+                                                    configs,
+                                                    state,
+                                                    context,
+                                                )
+                                                daily_wake = result.get(
+                                                    "nextWakeAtMillis"
+                                                )
+                                                if resident_wake is not None and (
+                                                    daily_wake is None
+                                                    or int(resident_wake) < int(daily_wake)
+                                                ):
+                                                    result["nextWakeAtMillis"] = int(
+                                                        resident_wake
+                                                    )
+                                    else:
+                                        next_isolated_wake = None
+                                        for feature in isolated_pending_features:
+                                            field = pending_fields.get(feature)
+                                            if not field:
+                                                continue
+                                            isolated = self._automation_pending_record(
+                                                account_ref,
+                                                field,
+                                            )
+                                            try:
+                                                isolated_until = int(
+                                                    isolated.get(
+                                                        "isolatedUntilMillis"
+                                                    ) or 0
+                                                )
+                                            except (TypeError, ValueError):
+                                                isolated_until = 0
+                                            if isolated_until > 0 and (
+                                                next_isolated_wake is None
+                                                or isolated_until
+                                                < next_isolated_wake
+                                            ):
+                                                next_isolated_wake = isolated_until
+                                        result = {
+                                            "feature": None,
+                                            "state": "idle",
+                                            "success": True,
+                                            "message": (
+                                                "已隔离不可自动重放的待决账本；"
+                                                "其他功能仍可继续调度"
+                                                if isolated_pending_features
+                                                else "本次唤醒没有允许执行的共享功能"
+                                            ),
+                                            "nextWakeAtMillis": next_isolated_wake,
+                                            "isolatedPendingFeatures": sorted(
+                                                isolated_pending_features
+                                            ),
+                                        }
+        inline_context = result.pop("_residentContext", None)
+        pending_released = bool(result.pop("_pendingReleased", False))
+        if isinstance(inline_context, dict) and inline_context:
+            resident_context = dict(inline_context)
+        self._apply_resident_result_state(
+            account_ref,
+            result,
+            resident_context,
+            from_pending=from_pending,
+        )
+        success_record = self._append_resident_success_record(
+            account_ref,
+            result,
+        )
+        if success_record is not None:
+            result["successRecord"] = success_record
+        # A durable pending workflow has strict priority over configured work.
+        # When it returns a future poll time, waking earlier for another due
+        # feature cannot run that feature: the same pending workflow is chosen
+        # again first.  Preserve its deadline to avoid a tight read-only poll
+        # loop.  A pending result without a deadline may still inherit the next
+        # configured wake so the account lane does not stall.
+        # Waking earlier than a pending's deadline is only useful once that
+        # pending will actually step aside; otherwise the same workflow is
+        # re-selected and the early wake is a spin.  A pending that published a
+        # future nextPollAtMillis has stepped aside, so the account may wake for
+        # other due work: 副本 correctly stopped polling during its 105s battle,
+        # yet the lane still sat idle for 89 of those seconds because nothing
+        # woke up to notice 刷黄 was due.
+        pending_yielded = False
+        if from_pending and selected_pending_feature:
+            yielded_field = pending_fields.get(selected_pending_feature)
+            if yielded_field:
+                yielded_record = self._automation_pending_record(
+                    account_ref, yielded_field
+                )
+                # A workflow that finished cleared its own record, so it holds
+                # nothing and cannot be re-selected.  Its feature-scoped
+                # deadline must not become the account's: 将领维护 completing
+                # with a ten-minute cadence parked 副本 and 刷黄 for ten
+                # minutes even though both were already due.  ``pending_released``
+                # was an explicit flag only two workflows remembered to set;
+                # the empty record is the fact itself.
+                if not yielded_record:
+                    pending_released = True
+                else:
+                    yielded_record = self._bind_pending_lane_deadline(
+                        account_ref,
+                        yielded_field,
+                        yielded_record,
+                        result,
+                        pending_before.get(selected_pending_feature),
+                    )
+                try:
+                    pending_yielded = int(
+                        yielded_record.get("nextPollAtMillis") or 0
+                    ) > int(self._ports.clock.now_millis())
+                except (TypeError, ValueError):
+                    pending_yielded = False
+        # Reporting is unconditional; only the wake-merge inside is a decision.
+        # The two were entangled, so a tick owned by a pending workflow
+        # published no due-set at all - and that is exactly the tick on which a
+        # starved feature is invisible.  A scheduler has to say what it
+        # declined, not only what it chose.
+        if True:  # noqa: SIM108 - scope marker for the reporting block
+            public = self._account_public_state(account_ref)
+            configs = self._public_json_object(
+                public.get("residentAutomationConfigJson")
+            )
+            resident_state = self._public_json_object(
+                public.get("residentAutomationStateJson")
+            )
+            started, active_keys = self._resident_started_and_keys(public)
+            raw_allowed = context.get("allowedFeatures")
+            if isinstance(raw_allowed, list):
+                allowed = {
+                    str(value).strip()
+                    for value in raw_allowed
+                    if str(value or "").strip()
+                }
+                active_keys &= {
+                    "brushYellow" if value == "brush" else value
+                    for value in allowed
+                    if value in {
+                        "brush", "mine", "raid", "lossless", "dungeon",
+                        "general", "ministry", "domestic", "inventory", "alarm",
+                    }
+                }
+            # Report the same effective candidate set that execution received.
+            # A pending feature that is yielding until its next read-only poll
+            # is removed from configured scheduling; leaving it in ``cand=``
+            # made the log look as if it were still competing for the lane.
+            active_keys -= {
+                "brushYellow" if value == "brush" else value
+                for value in isolated_pending_features
+            }
+            # Renew the same-server presence lease on the tick cadence, not as
+            # a side effect of a brush or mine round.  Only accounts that
+            # actually use the shared map pay for it, and a failure here can
+            # never affect the tick: the mode simply stays whatever it was.
+            if active_keys & {"brushYellow", "mine"}:
+                try:
+                    self._cloud_presence_mode(account_ref)
+                except Exception:
+                    pass
+            next_decision = resident_due_decision(
+                configs,
+                resident_state,
+                now_millis=int(self._ports.clock.now_millis()),
+                saved_tasks_started=started,
+                active_keys=active_keys,
+                priorities=dict(
+                    self._behavior_contract["scheduler"][
+                        "residentPriority"
+                    ]
+                ),
+            )
+            blocked = next_decision.get("blocked") or []
+            if blocked:
+                result["blockedFeatures"] = blocked
+            result["candidateFeatures"] = next_decision.get("candidates") or []
+            # A feature that is due and keeps losing every tick is the shape of
+            # every stall so far.  Name it here, where the due-set is already
+            # known, instead of waiting for someone to notice missing records.
+            overdue = next_decision.get("stalled") or []
+            if overdue:
+                result["stalledFeatures"] = overdue
+            # ``requiresAttention`` on a feature result is a feature-scoped
+            # conclusion (for example, an inventory mutation whose outcome is
+            # still unknown).  It must not suppress the account's wake for
+            # unrelated due work.  Only an attention result with no feature
+            # at all can describe an account-scoped inability to proceed.
+            result_feature = str(result.get("feature") or "").strip()
+            account_requires_attention = bool(
+                result.get("requiresAttention")
+            ) and not result_feature
+            if (
+                not account_requires_attention
+                and (
+                    not from_pending
+                    or pending_released
+                    or pending_yielded
+                    or result.get("nextWakeAtMillis") is None
+                )
+            ):
+                candidate_wake = next_decision.get("nextWakeAtMillis")
+                current_wake = result.get("nextWakeAtMillis")
+                if candidate_wake is not None and (
+                    current_wake is None
+                    or int(candidate_wake) < int(current_wake)
+                ):
+                    result["nextWakeAtMillis"] = int(candidate_wake)
+        # Every future read-only observation is an event the account scheduler
+        # must wake for.  This merge is intentionally independent of the
+        # selected feature's ``requiresAttention`` flag: an unresolved
+        # general-maintenance step may stay isolated while a dungeon/brush
+        # poll remains perfectly safe and due sooner than configured idle work.
+        pending_wake = min(pending_wake_deadlines.values(), default=None)
+        if pending_wake is not None:
+            current_wake = result.get("nextWakeAtMillis")
+            try:
+                current_wake_int = int(current_wake)
+            except (TypeError, ValueError):
+                current_wake_int = None
+            if current_wake_int is None or pending_wake < current_wake_int:
+                result["nextWakeAtMillis"] = pending_wake
+        # Which branch owned this tick was tracked but never reported, so a
+        # feature starved by a durable pending workflow looked identical to a
+        # feature that was simply idle.  One real account sat at zero 副本 runs
+        # for 70 hours because of exactly that blind spot.
+        #
+        # Isolation was reported only when *every* feature was isolated, which
+        # is the one case the user would have noticed anyway.  While any other
+        # feature keeps running the account looks healthy, so an isolated
+        # feature has to be named on every tick or it stays invisible.
+        if isolated_pending_features:
+            result.setdefault(
+                "isolatedPendingFeatures", sorted(isolated_pending_features)
+            )
+        if isolated_attention_features:
+            result["isolatedAttentionFeatures"] = sorted(
+                isolated_attention_features
+            )
+        return {
+            "ok": True,
+            "accountRef": str(account_ref),
+            "tickAtMillis": int(self._ports.clock.now_millis()),
+            "decidedVia": selected_pending_feature or "configured",
+            **result,
+        }
+
+    def _daily_preflight_packet(
+        self,
+        fact: Dict[str, Any],
+        response_opcode: int,
+        message: str,
+    ) -> bytes:
+        payload = self._game_packet(fact, response_opcode)
+        if payload is None:
+            raise RuntimeError(message)
+        return payload
+
+    def _domestic_refresh_general_facts(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> tuple[bytes, list[Dict[str, Any]]]:
+        account = self._accounts.get(account_ref) or {}
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        public = session.get("publicState")
+        public = public if isinstance(public, dict) else {}
+        role_id = int(public.get("roleId") or session.get("accountId") or account.get("id") or account_ref)
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            0x1016,
+            struct.pack(">q", role_id),
+            "shared-core/domestic/state-refresh",
+            {**context, "readOnly": True},
+            mutation_sent=False,
+        )
+        payload = self._daily_preflight_packet(
+            fact,
+            0x8004,
+            "内政状态刷新未收到 0x8004",
+        )
+        try:
+            generals = recover_generals_from_8004(payload.hex())
+        except Exception as error:
+            raise RuntimeError(f"内政状态刷新解析失败：{error}") from error
+        return payload, generals
+
+    def _domestic_cached_fief_locations(
+        self,
+        account_ref: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        account = self._accounts.get(account_ref) or {}
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        public = session.get("publicState")
+        public = public if isinstance(public, dict) else {}
+        return self._owned_fief_location_map(
+            public.get("ownedFiefLocationsJson")
+        )
+
+    def _run_domestic_query_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        state_payload, generals = self._domestic_refresh_general_facts(
+            execution, account_ref, context
+        )
+        try:
+            technologies = parse_technology_states_from_8004(state_payload)
+            technology_parse_error = ""
+        except Exception as error:
+            technologies = []
+            technology_parse_error = str(error)
+        try:
+            role_state = parse_8004_head(
+                state_payload,
+                "shared-core/domestic/0x1016/0x8004",
+            )
+            resources = {
+                "copper": int(role_state.get("copper") or 0),
+                "food": int(role_state.get("food") or 0),
+            }
+            resource_parse_error = ""
+        except Exception as error:
+            resources = {"copper": 0, "food": 0}
+            resource_parse_error = str(error)
+        locations = self._domestic_cached_fief_locations(account_ref)
+        fief_ids: list[int] = []
+        for general in generals:
+            try:
+                value = int(
+                    general.get("fiefId")
+                    or general.get("placeID")
+                    or general.get("placeId")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0 and value not in fief_ids:
+                fief_ids.append(value)
+        for key in locations:
+            try:
+                value = int(key)
+            except (TypeError, ValueError):
+                continue
+            if value > 0 and value not in fief_ids:
+                fief_ids.append(value)
+        fiefs: list[Dict[str, Any]] = []
+        for fief_id in fief_ids:
+            execution.raise_if_cancelled()
+            fact = self._daily_command_fact(
+                execution,
+                account_ref,
+                0x1246,
+                build_fief_query_payload(fief_id),
+                f"shared-core/domestic/query/{fief_id}",
+                {**context, "readOnly": True},
+                mutation_sent=False,
+            )
+            payload = self._daily_preflight_packet(
+                fact,
+                0x8246,
+                f"读取封地 {fief_id} 未收到 0x8246",
+            )
+            state = parse_8246_fief_result(payload, fief_id)
+            cached = locations.get(str(fief_id)) or {}
+            state["fiefName"] = str(
+                cached.get("fiefName")
+                or cached.get("name")
+                or state.get("fiefName")
+                or ""
+            )
+            fiefs.append(state)
+        updated_at = int(self._ports.clock.now_millis())
+        queue_summary: Dict[str, Any] | None = None
+        if not technology_parse_error:
+            queue_summary = summarize_role_queues(
+                fiefs,
+                technologies,
+                updated_at=updated_at,
+            )
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "technologyStatesJson": self._json(technologies),
+                    "roleQueueSummaryJson": self._json(queue_summary),
+                },
+            )
+        result = {
+            "fiefIds": fief_ids,
+            "fiefs": fiefs,
+            "technologies": technologies,
+            "technologyParseError": technology_parse_error,
+            "resources": resources,
+            "resourceParseError": resource_parse_error,
+            "updatedAt": updated_at,
+            "source": "0x1016/0x8004+0x1246/0x8246",
+        }
+        if queue_summary is not None:
+            result["roleQueueSummary"] = queue_summary
+        return {"ok": True, **result}
+
+    def _run_domestic_action_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        action = str(body["action"])
+        fief_id = int(body["fiefId"])
+        if action == "building":
+            slot = int(body["slot"])
+            building_type = int(body["buildingType"])
+            previous_level: int | None = None
+            try:
+                preflight = self._daily_command_fact(
+                    execution,
+                    account_ref,
+                    0x1246,
+                    build_fief_query_payload(fief_id),
+                    "shared-core/domestic/action/building/preflight",
+                    {**context, "readOnly": True},
+                    mutation_sent=False,
+                )
+                pre_payload = self._daily_preflight_packet(
+                    preflight,
+                    0x8246,
+                    f"建筑操作前读取封地 {fief_id} 失败",
+                )
+                pre_state = parse_8246_fief_result(pre_payload, fief_id)
+                before = next(
+                    (
+                        row for row in pre_state.get("buildings") or []
+                        if int(row.get("slot", -1)) == slot
+                    ),
+                    None,
+                )
+                if "previousLevel" in body:
+                    expected_previous = body.get("previousLevel")
+                    if expected_previous is None:
+                        if before is not None:
+                            raise OperationKnownFailureError(
+                                "建筑空地候选已被占用，本次不会发送旧计划",
+                                code="DOMESTIC_BUILDING_CANDIDATE_CHANGED",
+                            )
+                    elif not (
+                        before is not None
+                        and int(before.get("type", -1)) == building_type
+                        and int(before.get("level") or 0) == int(expected_previous)
+                        and not bool(before.get("busy"))
+                    ):
+                        raise OperationKnownFailureError(
+                            "建筑升级候选已变化，本次不会发送旧计划",
+                            code="DOMESTIC_BUILDING_CANDIDATE_CHANGED",
+                        )
+                if before is not None:
+                    previous_level = int(before.get("level") or 0)
+            except OperationKnownFailureError:
+                raise
+            except Exception as error:
+                raise OperationKnownFailureError(
+                    str(error) or "建筑操作前置读取失败",
+                    code="DOMESTIC_BUILDING_PREFLIGHT_FAILED",
+                ) from error
+            opcode = 0x1200
+            response_opcode = 0x8200
+            payload = build_building_action_payload(
+                fief_id, slot, building_type
+            )
+            execution.raise_if_cancelled()
+            execution.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "domestic-building",
+                "opcode": "0x1200",
+                "fiefId": fief_id,
+                "slot": slot,
+            })
+            fact = self._daily_command_fact(
+                execution,
+                account_ref,
+                opcode,
+                payload,
+                "shared-core/domestic/action/building",
+                context,
+                mutation_sent=True,
+            )
+            receipt_payload = self._game_packet(fact, response_opcode)
+            if receipt_payload is None:
+                raise OperationUncertainError(
+                    "建筑操作请求已发送，但未收到 0x8200 回执"
+                )
+            receipt = parse_8200_building_result(receipt_payload)
+            if receipt.get("success") and building_action_was_applied(
+                receipt.get("buildings") or [], slot, building_type, previous_level
+            ):
+                result = {
+                    **receipt,
+                    "success": True,
+                    "confirmedBy": "0x8200建筑同步",
+                    "fiefId": fief_id,
+                    "slot": slot,
+                    "buildingType": building_type,
+                    "payloadHex": payload.hex(),
+                }
+                return {"ok": True, "result": result}
+            # A syntactically valid response which does not include the updated
+            # building is followed by one read-only verification.  A failed
+            # verification is uncertainty, never a silent replay.
+            try:
+                verify_fact = self._daily_command_fact(
+                    execution,
+                    account_ref,
+                    0x1246,
+                    build_fief_query_payload(fief_id),
+                    "shared-core/domestic/action/building/verify",
+                    {**context, "operationId": execution.operation_id, "readOnly": True},
+                    mutation_sent=True,
+                )
+                verify_payload = self._game_packet(verify_fact, 0x8246)
+                if verify_payload is None:
+                    raise RuntimeError("建筑操作复查未收到 0x8246")
+                verified = parse_8246_fief_result(verify_payload, fief_id)
+            except Exception as error:
+                raise OperationUncertainError(
+                    f"建筑操作已发送，但复查失败：{error}"
+                ) from error
+            applied = building_action_was_applied(
+                verified.get("buildings") or [], slot, building_type, previous_level
+            )
+            result = {
+                **receipt,
+                "success": bool(applied),
+                "confirmedBy": "提交后复查" if applied else "",
+                "fiefId": fief_id,
+                "slot": slot,
+                "buildingType": building_type,
+                "payloadHex": payload.hex(),
+                "checkedBuildings": verified.get("buildings") or [],
+            }
+            if not applied:
+                raise OperationKnownFailureError(
+                    "建筑操作未获得服务器成功回执",
+                    code="DOMESTIC_BUILDING_REJECTED",
+                    details={"result": result},
+                )
+            return {"ok": True, "result": result}
+
+        opcode = 0x123F
+        response_opcode = 0x823F
+        payload = build_technology_upgrade_payload(
+            fief_id,
+            int(body["academySlot"]),
+            int(body["technologyId"]),
+            int(body["targetLevel"]),
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "domestic-technology",
+            "opcode": "0x123f",
+            "fiefId": fief_id,
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            opcode,
+            payload,
+            "shared-core/domestic/action/technology",
+            context,
+            mutation_sent=True,
+        )
+        receipt_payload = self._game_packet(fact, response_opcode)
+        if receipt_payload is None:
+            raise OperationUncertainError(
+                "科技升级请求已发送，但未收到 0x823F 回执"
+            )
+        receipt = parse_status_message_payload(receipt_payload)
+        if receipt.get("status") is None:
+            raise OperationUncertainError(
+                "科技升级请求已发送，但 0x823F 回执无法确认"
+            )
+        result = {
+            **receipt,
+            "fiefId": fief_id,
+            "academySlot": int(body["academySlot"]),
+            "technologyId": int(body["technologyId"]),
+            "targetLevel": int(body["targetLevel"]),
+            "payloadHex": payload.hex(),
+        }
+        if not bool(receipt.get("success")):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "科技升级未获得成功回执"),
+                code="DOMESTIC_TECHNOLOGY_REJECTED",
+                details={"result": result},
+            )
+        return {"ok": True, "result": result}
+
+    def _daily_national_cities(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> list[Dict[str, Any]]:
+        contract = self._behavior_contract["daily"]["actions"]["nationalCollect"]
+        request_opcode = self._contract_opcode(contract, "cityListRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "cityListResponseOpcode")
+        cities_by_name: Dict[str, Dict[str, Any]] = {}
+        for category_value in contract["includedListCategories"]:
+            category = int(category_value)
+            page = 1
+            while page <= 100:
+                execution.raise_if_cancelled()
+                fact = self._daily_command_fact(
+                    execution,
+                    account_ref,
+                    request_opcode,
+                    build_national_city_list_payload(category, page),
+                    f"shared-core/daily/national/list/{category}/{page}",
+                    {**context, "readOnly": True},
+                    mutation_sent=False,
+                )
+                payload = self._daily_preflight_packet(
+                    fact,
+                    response_opcode,
+                    f"国家征收城池列表未收到 "
+                    f"0x{response_opcode:04x}：category={category} page={page}",
+                )
+                parsed = parse_national_city_page(payload, category)
+                if int(parsed.get("status") or 0) != 0:
+                    raise OperationKnownFailureError(
+                        f"国家征收城池列表被服务器拒绝："
+                        f"status={parsed.get('status')}",
+                        code="DAILY_NATIONAL_LIST_REJECTED",
+                    )
+                total_pages = min(100, max(1, int(parsed.get("totalPages") or 1)))
+                rows = parsed.get("cities") or []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("cityName") or row.get("name") or "").strip()
+                    if not name:
+                        continue
+                    normalized = dict(row)
+                    normalized["queryCategory"] = category
+                    cities_by_name.setdefault(name, normalized)
+                if page >= total_pages:
+                    break
+                page += 1
+        return list(cities_by_name.values())
+
+    def _run_daily_national_collect_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        citizen_skip = national_citizen_daily_skip_result(
+            self._daily_account_session_snapshot(account_ref)
+        )
+        if citizen_skip is not None:
+            return {"ok": True, "result": citizen_skip}
+        contract = self._behavior_contract["daily"]["actions"]["nationalCollect"]
+        status_opcode = self._contract_opcode(contract, "statusRequestOpcode")
+        status_response_opcode = self._contract_opcode(
+            contract, "statusResponseOpcode"
+        )
+        collect_opcode = self._contract_opcode(contract, "collectRequestOpcode")
+        collect_response_opcode = self._contract_opcode(
+            contract, "collectResponseOpcode"
+        )
+        cities = self._daily_national_cities(
+            execution, account_ref, context
+        )
+        unique: Dict[str, Dict[str, Any]] = {}
+        for city in cities:
+            name = str(city.get("cityName") or city.get("name") or "").strip()
+            kind = str(city.get("kind") or "unknown")
+            if name and kind in {"state", "commandery", "county"}:
+                unique.setdefault(name, dict(city))
+        if not unique:
+            return {
+                "ok": True,
+                "result": {
+                    "success": True,
+                    "completed": True,
+                    "noTarget": True,
+                    "successfulCount": 0,
+                    "attemptedCount": 0,
+                    "failureCount": 0,
+                    "inspectedCount": 0,
+                    "candidateCount": 0,
+                    "message": "没有可执行的国家征收城池（已跳过小城）",
+                    "inspections": [],
+                    "attempts": [],
+                },
+            }
+
+        hierarchy_rank = {"state": 0, "commandery": 1, "county": 2}
+        hierarchy_label = {"state": "州城", "commandery": "郡城", "county": "县城"}
+        inspections: list[Dict[str, Any]] = []
+        attempts: list[Dict[str, Any]] = []
+        ranked: list[Dict[str, Any]] = []
+        failure_count = 0
+        status_failure_count = 0
+        inspected_count = 0
+        quota_limits: list[int] = []
+        quota_used_values: list[int] = []
+
+        for inspection_order, (name, city) in enumerate(unique.items(), start=1):
+            kind = str(city.get("kind") or "unknown")
+            try:
+                fact = self._daily_command_fact(
+                    execution,
+                    account_ref,
+                    status_opcode,
+                    build_national_city_status_payload(name),
+                    f"shared-core/daily/national/status/{name}",
+                    {**context, "readOnly": True},
+                    mutation_sent=False,
+                )
+                payload = self._daily_preflight_packet(
+                    fact,
+                    status_response_opcode,
+                    f"{name}征收状态未收到 "
+                    f"0x{status_response_opcode:04x}",
+                )
+                state = parse_national_collect_status(payload)
+            except OperationKnownFailureError:
+                raise
+            except Exception as error:
+                failure_count += 1
+                status_failure_count += 1
+                failure = {
+                    "city": name,
+                    "kind": kind,
+                    "kindLabel": hierarchy_label.get(kind, kind),
+                    "success": False,
+                    "stage": "status",
+                    "inspectionOrder": inspection_order,
+                    "message": str(error) or "征收状态查询异常",
+                }
+                inspections.append(failure)
+                attempts.append(failure)
+                continue
+            inspected_count += 1
+            observed_limit = max(0, int(state.get("limit") or 0))
+            observed_used = max(0, int(state.get("usedCount") or 0))
+            if observed_limit > 0:
+                quota_limits.append(observed_limit)
+                quota_used_values.append(observed_used)
+            copper = max(0, int(state.get("currentCopper") or 0))
+            can_collect = bool(state.get("canCollect") and copper > 0)
+            inspection = {
+                "city": name,
+                "kind": kind,
+                "kindLabel": hierarchy_label.get(kind, kind),
+                "inspectionOrder": inspection_order,
+                "success": True,
+                "stage": "status",
+                "status": int(state.get("status") or 0),
+                "availability": int(state.get("availability") or 0),
+                "usedCount": observed_used,
+                "limit": observed_limit,
+                "copper": copper,
+                "food": max(0, int(state.get("currentFood") or 0)),
+                "canCollect": can_collect,
+            }
+            inspections.append(inspection)
+            if can_collect:
+                ranked.append({
+                    "city": city,
+                    "name": name,
+                    "kind": kind,
+                    "state": state,
+                    "copper": copper,
+                })
+
+        quota_limit = min(quota_limits) if quota_limits else None
+        quota_used = max(quota_used_values) if quota_used_values else 0
+        max_attempts = int(contract.get("maxAttempts") or 20)
+        quota_remaining = (
+            max(0, quota_limit - quota_used)
+            if quota_limit is not None
+            else max_attempts
+        )
+        quota_exhausted = quota_limit is not None and quota_remaining <= 0
+        ranked.sort(key=lambda item: (
+            -int(item["copper"]),
+            hierarchy_rank.get(str(item["kind"]), 99),
+            str(item["name"]),
+        ))
+        ranking = [
+            {
+                "rank": index,
+                "city": item["name"],
+                "kind": item["kind"],
+                "kindLabel": hierarchy_label.get(
+                    str(item["kind"]), str(item["kind"])
+                ),
+                "copper": int(item["copper"]),
+            }
+            for index, item in enumerate(ranked, start=1)
+        ]
+
+        successful_count = 0
+        successful_copper = 0
+        collect_attempt_count = 0
+        if not quota_exhausted:
+            for rank, item in enumerate(ranked, start=1):
+                if collect_attempt_count >= max_attempts:
+                    break
+                if successful_count >= quota_remaining:
+                    quota_exhausted = quota_limit is not None
+                    break
+                execution.raise_if_cancelled()
+                execution.mark_request_sent({
+                    "transport": "android-raw-game-command",
+                    "feature": "daily-national-collect",
+                    "city": item["name"],
+                    "opcode": f"0x{collect_opcode:04x}",
+                })
+                collect_attempt_count += 1
+                fact = self._daily_command_fact(
+                    execution,
+                    account_ref,
+                    collect_opcode,
+                    build_national_collect_payload(str(item["name"])),
+                    f"shared-core/daily/national/collect/{item['name']}",
+                    context,
+                    mutation_sent=True,
+                )
+                payload = self._game_packet(fact, collect_response_opcode)
+                if payload is None:
+                    raise OperationUncertainError(
+                        f"{item['name']}国家征收请求已发送，但未收到 "
+                        f"0x{collect_response_opcode:04x} 回执"
+                    )
+                receipt = parse_daily_status_utf_receipt(
+                    payload, success_status=1
+                )
+                action = {
+                    **receipt,
+                    "city": item["name"],
+                    "kind": item["kind"],
+                    "kindLabel": hierarchy_label.get(
+                        str(item["kind"]), str(item["kind"])
+                    ),
+                    "stage": "collect",
+                    "selectionRank": rank,
+                    "copper": int(item["state"].get("currentCopper") or 0),
+                }
+                attempts.append(action)
+                if receipt.get("success"):
+                    successful_count += 1
+                    successful_copper += int(action["copper"])
+                    if (
+                        quota_limit is not None
+                        and quota_used + successful_count >= quota_limit
+                    ):
+                        quota_exhausted = True
+                        break
+                else:
+                    failure_count += 1
+
+        if successful_count:
+            message = (
+                f"国家征收{'部分' if failure_count else ''}完成："
+                f"成功{successful_count}次，预计获得铜钱{successful_copper}，"
+                f"失败{failure_count}项，检查{inspected_count}座州/郡/县城，"
+                "已跳过小城"
+            )
+        elif quota_exhausted:
+            message = "国家征收次数已用尽"
+        elif inspected_count and not ranked and not status_failure_count:
+            message = "当前州城、郡城、县城均没有可征收铜钱（已跳过小城）"
+        elif status_failure_count and not ranked:
+            message = f"国家征收筛选失败：{status_failure_count}座城池状态未能读取"
+        else:
+            message = f"国家征收未完成：失败{failure_count}次，已跳过小城"
+        no_target = bool(inspected_count and not ranked and not status_failure_count)
+        all_ranked_processed = not ranked or collect_attempt_count >= len(ranked)
+        terminal_quota = bool(quota_exhausted and status_failure_count == 0)
+        completed = bool(
+            terminal_quota
+            or no_target
+            or (
+                all_ranked_processed
+                and status_failure_count == 0
+                and failure_count == 0
+                and successful_count == collect_attempt_count
+            )
+        )
+        success = bool(completed and failure_count == 0)
+        result = {
+            "success": success,
+            "partialSuccess": successful_count > 0 and failure_count > 0,
+            "completed": completed,
+            "noTarget": no_target,
+            "successfulCount": successful_count,
+            "successfulCopper": successful_copper,
+            "attemptedCount": collect_attempt_count,
+            "eventCount": len(attempts),
+            "failureCount": failure_count,
+            "statusFailureCount": status_failure_count,
+            "inspectedCount": inspected_count,
+            "candidateCount": len(unique),
+            "eligibleCount": len(ranked),
+            "quotaUsed": quota_used,
+            "quotaLimit": quota_limit,
+            "quotaRemaining": max(0, quota_remaining - successful_count),
+            "quotaExhausted": quota_exhausted,
+            "skippedSmallCities": True,
+            "message": message,
+            "ranking": ranking,
+            "inspections": inspections,
+            "attempts": attempts,
+        }
+        if not completed:
+            raise OperationKnownFailureError(
+                message,
+                code="DAILY_NATIONAL_COLLECT_INCOMPLETE",
+                details={"result": result},
+            )
+        return {"ok": True, "result": result}
+
+    def _run_daily_city_lord_collect_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        session = self._daily_account_session_snapshot(account_ref)
+        role_state = session.get("roleState")
+        role_state = role_state if isinstance(role_state, dict) else {}
+        role_id = int(
+            role_state.get("roleId")
+            or session.get("accountId")
+            or account_ref
+        )
+        contract = self._behavior_contract["daily"]["actions"]["cityLordCollect"]
+        list_opcode = self._contract_opcode(contract, "ownedCityRequestOpcode")
+        list_response_opcode = self._contract_opcode(
+            contract, "ownedCityResponseOpcode"
+        )
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            list_opcode,
+            build_owned_city_list_payload(role_id),
+            "shared-core/daily/city-lord/list",
+            {**context, "readOnly": True},
+            mutation_sent=False,
+        )
+        payload = self._daily_preflight_packet(
+            fact,
+            list_response_opcode,
+            f"自有城池列表未收到 0x{list_response_opcode:04x}",
+        )
+        owned = parse_owned_city_list(payload)
+        unique: list[Dict[str, Any]] = []
+        seen = set()
+        for city in owned.get("cities") or []:
+            if not isinstance(city, dict):
+                continue
+            name = str(city.get("cityName") or city.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            unique.append(dict(city))
+        if not unique:
+            return {
+                "ok": True,
+                "result": {
+                    "success": True,
+                    "completed": True,
+                    "noTarget": True,
+                    "partialSuccess": False,
+                    "attemptedCount": 0,
+                    "successCount": 0,
+                    "failureCount": 0,
+                    "ineligibleCount": 0,
+                    "alreadyCount": 0,
+                    "ownedCityCount": int(owned.get("count") or 0),
+                    "message": "没有查询到可执行城主征收的自有城池",
+                    "attempts": [],
+                    "ownedCities": list(owned.get("cities") or []),
+                    "listOpcode": "0x1318/0x8318",
+                },
+            }
+        collect_opcode = self._contract_opcode(contract, "collectRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "collectResponseOpcode")
+        attempts = []
+        for city in unique:
+            name = str(city.get("cityName") or city.get("name") or "")
+            execution.raise_if_cancelled()
+            execution.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "daily-city-lord-collect",
+                "city": name,
+                "opcode": f"0x{collect_opcode:04x}",
+            })
+            fact = self._daily_command_fact(
+                execution,
+                account_ref,
+                collect_opcode,
+                build_city_lord_collect_payload(name),
+                f"shared-core/daily/city-lord/collect/{name}",
+                context,
+                mutation_sent=True,
+            )
+            receipt_payload = self._game_packet(fact, response_opcode)
+            if receipt_payload is None:
+                raise OperationUncertainError(
+                    f"{name}城主征收请求已发送，但未收到 "
+                    f"0x{response_opcode:04x} 回执"
+                )
+            receipt = parse_daily_status_utf_receipt(
+                receipt_payload, success_status=1
+            )
+            message = str(receipt.get("message") or "")
+            if receipt.get("success"):
+                kind = "collected"
+            elif any(marker in message for marker in contract["ineligibleMarkers"]):
+                kind = "ineligible"
+            elif any(marker in message for marker in contract["alreadyCollectedMarkers"]):
+                kind = "already"
+            else:
+                kind = "failed"
+            attempts.append({**receipt, "city": name, "attemptKind": kind})
+        collected = [row for row in attempts if row["attemptKind"] == "collected"]
+        already = [row for row in attempts if row["attemptKind"] == "already"]
+        ineligible = [row for row in attempts if row["attemptKind"] == "ineligible"]
+        failed = [row for row in attempts if row["attemptKind"] == "failed"]
+        if failed and not (collected or already):
+            message = f"城主征收失败：可尝试{len(unique)}座，失败{len(failed)}座"
+            if ineligible:
+                message += f"，不可征{len(ineligible)}座"
+        elif failed:
+            message = (
+                f"城主征收部分完成：成功{len(collected)}座"
+                f"{'，已征过' + str(len(already)) + '座' if already else ''}"
+                f"，失败{len(failed)}座"
+            )
+        else:
+            parts = []
+            if collected:
+                parts.append(f"成功{len(collected)}座")
+            if already:
+                parts.append(f"已征过{len(already)}座")
+            if ineligible:
+                parts.append(f"不可征{len(ineligible)}座")
+            message = "城主征收完成：" + ("，".join(parts) if parts else "无待征收城池")
+        result = {
+            "success": not failed,
+            "partialSuccess": bool(failed and (collected or already)),
+            "completed": not failed,
+            "attemptedCount": len(attempts),
+            "successCount": len(collected),
+            "alreadyCount": len(already),
+            "ineligibleCount": len(ineligible),
+            "failureCount": len(failed),
+            "executedCount": len(collected) + len(already),
+            "ownedCityCount": len(unique),
+            "message": message,
+            "attempts": attempts,
+            "ownedCities": [
+                {
+                    "cityName": str(city.get("cityName") or city.get("name") or ""),
+                    "x": city.get("x"),
+                    "y": city.get("y"),
+                    "ownerName": city.get("ownerName"),
+                }
+                for city in unique
+            ],
+            "listOpcode": "0x1318/0x8318",
+        }
+        if failed:
+            raise OperationKnownFailureError(
+                message,
+                code="DAILY_CITY_LORD_COLLECT_INCOMPLETE",
+                details={"result": result},
+            )
+        return {"ok": True, "result": result}
+
+    def _daily_general_visit_candidates_raw(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        contract = self._behavior_contract["daily"]["actions"]["generalVisit"]
+        request_opcode = self._contract_opcode(contract, "listRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "listResponseOpcode")
+        page_size = int(contract["pageSize"])
+        page = 1
+        pages = []
+        by_id: Dict[str, Dict[str, Any]] = {}
+        while page <= 100:
+            execution.raise_if_cancelled()
+            fact = self._daily_command_fact(
+                execution,
+                account_ref,
+                request_opcode,
+                build_general_visit_list_payload(page, page_size),
+                f"shared-core/daily/general-visit/list/{page}",
+                {**context, "readOnly": True},
+                mutation_sent=False,
+            )
+            payload = self._daily_preflight_packet(
+                fact,
+                response_opcode,
+                f"名将列表未收到 0x{response_opcode:04x}：page={page}",
+            )
+            parsed = parse_general_visit_page(payload)
+            if int(parsed.get("status") or 0) != 0 and not parsed.get("candidates"):
+                server_message = str(parsed.get("message") or "").strip()
+                if general_visit_already_visited(
+                    parsed.get("status"), parsed.get("message")
+                ):
+                    return {
+                        "success": True,
+                        "completed": True,
+                        "alreadyVisited": True,
+                        "message": str(parsed.get("message") or "本日已拜访"),
+                        "generals": [],
+                        "candidates": [],
+                        "pages": len(pages),
+                    }
+                if general_visit_has_no_candidates(
+                    parsed.get("status"), parsed.get("message")
+                ):
+                    return {
+                        "success": True,
+                        "completed": True,
+                        "noTarget": True,
+                        "skipped": True,
+                        "skipReason": "king-has-no-generals",
+                        "statusText": server_message,
+                        "message": server_message,
+                        "generals": [],
+                        "candidates": [],
+                        "pages": len(pages),
+                    }
+                raise OperationKnownFailureError(
+                    f"名将列表被服务器拒绝："
+                    f"{parsed.get('message') or parsed.get('status')}",
+                    code="GENERAL_VISIT_UNAVAILABLE",
+                )
+            pages.append(parsed)
+            actual_page_size = int(parsed.get("pageSize") or page_size)
+            rows = parsed.get("candidates") or []
+            for candidate in rows:
+                if not isinstance(candidate, dict):
+                    continue
+                normalized = dict(candidate)
+                normalized["page"] = int(parsed.get("page") or page)
+                normalized["pageSize"] = actual_page_size
+                by_id.setdefault(str(normalized.get("id")), normalized)
+            if len(rows) < page_size or actual_page_size <= 0:
+                break
+            page += 1
+        candidates = list(by_id.values())
+        return {
+            "success": True,
+            "generals": candidates,
+            "candidates": candidates,
+            "pages": len(pages),
+        }
+
+    def _run_daily_general_visit_candidates_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        citizen_skip = national_citizen_daily_skip_result(
+            self._daily_account_session_snapshot(account_ref)
+        )
+        if citizen_skip is not None:
+            return {
+                "ok": True,
+                **citizen_skip,
+                "generals": [],
+                "candidates": [],
+                "pages": 0,
+                "updatedAt": self._ports.clock.now_millis(),
+            }
+        query = self._daily_general_visit_candidates_raw(
+            execution, account_ref, context
+        )
+        candidates = []
+        for raw in query.get("candidates") or []:
+            if not isinstance(raw, dict):
+                continue
+            candidate_id = int(raw.get("idInt") or raw.get("id") or 0)
+            if candidate_id <= 0:
+                raise RuntimeError("名将拜访候选缺少有效 ID")
+            captive_state = int(raw.get("captiveState") or 0)
+            candidates.append({
+                **dict(raw),
+                "id": candidate_id,
+                "idInt": candidate_id,
+                "name": str(raw.get("name") or candidate_id),
+                "level": int(raw.get("level") or 0),
+                "captiveState": captive_state,
+                "available": captive_state == 0,
+            })
+        return {
+            "ok": True,
+            "generals": candidates,
+            "candidates": candidates,
+            "completed": bool(query.get("completed")),
+            "alreadyVisited": bool(query.get("alreadyVisited")),
+            "noTarget": bool(query.get("noTarget")),
+            "skipped": bool(query.get("skipped")),
+            "skipReason": str(query.get("skipReason") or ""),
+            "statusText": str(query.get("statusText") or ""),
+            "message": str(query.get("message") or ""),
+            "pages": int(query.get("pages") or 0),
+            "updatedAt": self._ports.clock.now_millis(),
+        }
+
+    def _run_daily_general_visit_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        citizen_skip = national_citizen_daily_skip_result(
+            self._daily_account_session_snapshot(account_ref)
+        )
+        if citizen_skip is not None:
+            return {"ok": True, "result": citizen_skip}
+        selected = normalize_general_visit_ids(
+            body.get("generalVisitGeneralIds")
+        )
+        query = self._daily_general_visit_candidates_raw(
+            execution, account_ref, context
+        )
+        if query.get("noTarget"):
+            message = str(query.get("message") or "不可拜访，国王麾下无名将")
+            return {
+                "ok": True,
+                "result": {
+                    "success": True,
+                    "completed": True,
+                    "noTarget": True,
+                    "skipped": True,
+                    "skipReason": str(
+                        query.get("skipReason") or "king-has-no-generals"
+                    ),
+                    "statusText": message,
+                    "attemptedCount": 0,
+                    "failureCount": 0,
+                    "message": message,
+                    "attempts": [],
+                    "skippedCandidates": [],
+                },
+            }
+        if query.get("alreadyVisited"):
+            return {
+                "ok": True,
+                "result": {
+                    "success": True,
+                    "completed": True,
+                    "duplicateVisit": True,
+                    "attemptedCount": 0,
+                    "failureCount": 0,
+                    "message": str(query.get("message") or "本日已经完成名将拜访"),
+                    "attempts": [],
+                    "skipped": [],
+                },
+            }
+        if not selected:
+            raise OperationKnownFailureError(
+                "名将拜访未选择将领",
+                code="GENERAL_VISIT_SELECTION_REQUIRED",
+            )
+        candidates = query.get("candidates") or []
+        by_id: Dict[str, Dict[str, Any]] = {}
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            for key in (
+                candidate.get("id"),
+                candidate.get("idInt"),
+                candidate.get("idHex"),
+            ):
+                if key not in (None, ""):
+                    by_id[str(key)] = candidate
+        contract = self._behavior_contract["daily"]["actions"]["generalVisit"]
+        visit_opcode = self._contract_opcode(contract, "visitRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "visitResponseOpcode")
+        attempts = []
+        skipped = []
+        for selected_id in selected:
+            candidate = by_id.get(str(selected_id))
+            if candidate is None:
+                skipped.append({
+                    "generalId": str(selected_id),
+                    "message": "当前不可拜访，已顺延",
+                })
+                continue
+            name = str(candidate.get("name") or selected_id)
+            if int(candidate.get("captiveState") or 0) != 0:
+                skipped.append({
+                    "generalId": str(selected_id),
+                    "generalName": name,
+                    "message": "当前不可拜访，已顺延",
+                })
+                continue
+            execution.raise_if_cancelled()
+            execution.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "daily-general-visit",
+                "generalId": str(selected_id),
+                "opcode": f"0x{visit_opcode:04x}",
+            })
+            page = max(1, int(candidate.get("page") or 1))
+            page_size = max(1, min(100, int(
+                candidate.get("pageSize") or contract["pageSize"]
+            )))
+            fact = self._daily_command_fact(
+                execution,
+                account_ref,
+                visit_opcode,
+                build_general_visit_payload(selected_id, page, page_size),
+                f"shared-core/daily/general-visit/claim/{selected_id}",
+                context,
+                mutation_sent=True,
+            )
+            payload = self._game_packet(fact, response_opcode)
+            if payload is None:
+                raise OperationUncertainError(
+                    f"拜访{name}请求已发送，但未收到 "
+                    f"0x{response_opcode:04x} 回执"
+                )
+            receipt = parse_general_visit_receipt(payload)
+            action = {
+                **receipt,
+                "generalId": str(selected_id),
+                "generalName": name,
+                "page": page,
+                "pageSize": page_size,
+            }
+            attempts.append(action)
+            if receipt.get("alreadyVisited"):
+                return {
+                    "ok": True,
+                    "result": {
+                        "success": True,
+                        "completed": True,
+                        "duplicateVisit": True,
+                        "attemptedCount": len(attempts),
+                        "failureCount": sum(
+                            not bool(row.get("success")) for row in attempts
+                        ),
+                        "message": str(receipt.get("message") or "本日已经完成名将拜访"),
+                        "attempts": attempts,
+                        "skipped": skipped,
+                    },
+                }
+            if (
+                receipt.get("success")
+                or receipt.get("invitationResolved")
+                or receipt.get("completed")
+            ):
+                recruited = bool(
+                    receipt.get("recruited")
+                    or (
+                        receipt.get("success")
+                        and not receipt.get("invitationRejected")
+                    )
+                )
+                rejected = bool(receipt.get("invitationRejected"))
+                if recruited and not rejected:
+                    summary = f"名将拜访成功：{name}已接受征召"
+                elif rejected:
+                    summary = f"名将拜访成功：{name}已拜访（暂未接受征召）"
+                else:
+                    summary = f"名将拜访成功：{name}"
+                detail = str(receipt.get("message") or "").strip()
+                if detail and detail not in summary:
+                    summary += f"；{detail}"
+                return {
+                    "ok": True,
+                    "result": {
+                        "success": True,
+                        "completed": True,
+                        "visitResolved": True,
+                        "recruited": recruited and not rejected,
+                        "invitationRejected": rejected,
+                        "attemptedCount": len(attempts),
+                        "failureCount": 0,
+                        "message": summary,
+                        "attempts": attempts,
+                        "skipped": skipped,
+                    },
+                }
+        result = {
+            "success": False,
+            "partialSuccess": False,
+            "completed": False,
+            "noTarget": not bool(attempts),
+            "attemptedCount": len(attempts),
+            "failureCount": len(attempts),
+            "skippedCount": len(skipped),
+            "message": (
+                "已按优先级尝试，未有名将拜访成功"
+                if attempts
+                else "没有可尝试拜访的已选名将"
+            ),
+            "attempts": attempts,
+            "skipped": skipped,
+        }
+        raise OperationKnownFailureError(
+            str(result["message"]),
+            code="GENERAL_VISIT_NOT_COMPLETED",
+            details={"result": result},
+        )
+
+    def _run_daily_sign_in_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        contract = self._behavior_contract["daily"]["signIn"]
+        request_opcode = self._contract_opcode(contract, "requestOpcode")
+        activity_opcode = self._contract_opcode(contract, "activityResponseOpcode")
+        legacy_opcode = self._contract_opcode(contract, "legacyResponseOpcode")
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "daily-sign-in",
+            "opcode": f"0x{request_opcode:04x}",
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            request_opcode,
+            b"",
+            "shared-core/daily/sign-in",
+            context,
+            mutation_sent=True,
+        )
+        packets = [
+            {"opcode": int(packet.get("opcode") or 0), "payload": bytes(packet.get("payload") or b"")}
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict)
+        ]
+        parsed = parse_daily_sign_in_packets(packets)
+        if not parsed.get("responseOpcode"):
+            raise OperationUncertainError(
+                "签到请求已发送，但未收到可识别的服务器回执",
+                {"responseOpcodes": [f"0x{row['opcode']:04x}" for row in packets]},
+            )
+        if not bool(parsed.get("success")):
+            raise OperationKnownFailureError(
+                str(parsed.get("message") or "服务器未确认签到成功"),
+                code="DAILY_SIGN_IN_REJECTED",
+                details={"receipt": parsed},
+            )
+
+        box_contract = contract["diamondBox"]
+        box_warning = ""
+        box_result: Dict[str, Any] | None = None
+        try:
+            box_opcode = self._contract_opcode(box_contract, "requestOpcode")
+            box_response_opcode = self._contract_opcode(
+                box_contract, "responseOpcode"
+            )
+            box_fact = self._daily_command_fact(
+                execution,
+                account_ref,
+                box_opcode,
+                bytes.fromhex(str(box_contract.get("payloadHex") or "")),
+                "shared-core/daily/sign-in/diamond-box",
+                context,
+                mutation_sent=True,
+            )
+            box_payload = self._game_packet(box_fact, box_response_opcode)
+            if box_payload is None:
+                box_warning = f"每日金钻宝箱未收到 0x{box_response_opcode:04x} 回执"
+            else:
+                box_result = parse_daily_diamond_box_response(box_payload)
+                if not bool(box_result.get("success")):
+                    box_warning = str(
+                        box_result.get("message") or "每日金钻宝箱未确认成功"
+                    )
+        except Exception as error:
+            # Sign-in itself is already server-confirmed; the optional box must
+            # not turn that confirmed daily result into UNCERTAIN.
+            box_warning = str(error)
+        message = str(parsed.get("message") or "签到请求已由服务器确认")
+        if box_result and box_result.get("success"):
+            message += "；" + str(box_result.get("message") or "每日金钻宝箱已领取")
+        elif box_warning:
+            message += "；每日金钻宝箱未领取：" + box_warning
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": message,
+                "raw": {
+                    "signIn": parsed,
+                    "diamondBox": box_result,
+                    "diamondBoxWarning": box_warning,
+                    "packets": self._fact_packets(fact),
+                },
+            },
+        }
+
+    def _run_daily_arena_coins_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        contract = self._behavior_contract["daily"]["actions"]["arenaCoins"]
+        read_opcode = self._contract_opcode(contract, "readRequestOpcode")
+        claim_opcode = self._contract_opcode(contract, "claimRequestOpcode")
+        response_opcode = self._contract_opcode(contract, "claimResponseOpcode")
+        # The read is a preflight only; it does not cross the irreversible
+        # boundary and therefore remains cancellable.
+        read_fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            read_opcode,
+            b"",
+            "shared-core/daily/arena/read",
+            {**context, "readOnly": True},
+            mutation_sent=False,
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "daily-arena-coins",
+            "opcode": f"0x{claim_opcode:04x}",
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            claim_opcode,
+            b"",
+            "shared-core/daily/arena/claim",
+            context,
+            mutation_sent=True,
+        )
+        payload = self._game_packet(fact, response_opcode)
+        if payload is None:
+            raise OperationUncertainError(
+                f"竞技币领取请求已发送，但未收到 0x{response_opcode:04x} 回执"
+            )
+        receipt = parse_arena_coin_claim_response(payload)
+        if not bool(receipt.get("success")):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器未确认竞技币领取成功"),
+                code="DAILY_ARENA_REJECTED",
+                details={"receipt": receipt},
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": str(receipt.get("message") or "竞技奖励领取成功"),
+                "raw": {
+                    "receipt": receipt,
+                    "readArena": self._fact_packets(read_fact),
+                    "claim": self._fact_packets(fact),
+                },
+            },
+        }
+
+    def _run_daily_salary_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        citizen_skip = national_citizen_daily_skip_result(
+            self._daily_account_session_snapshot(account_ref)
+        )
+        if citizen_skip is not None:
+            return {"ok": True, "result": citizen_skip}
+        contract = self._behavior_contract["daily"]["actions"]["salary"]
+        request_opcode = self._contract_opcode(contract, "requestOpcode")
+        response_opcode = self._contract_opcode(contract, "responseOpcode")
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "daily-salary",
+            "opcode": f"0x{request_opcode:04x}",
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            request_opcode,
+            bytes.fromhex(str(contract.get("payloadHex") or "01")),
+            "shared-core/daily/salary",
+            context,
+            mutation_sent=True,
+        )
+        payload = self._game_packet(fact, response_opcode)
+        if payload is None:
+            raise OperationUncertainError(
+                f"俸禄领取请求已发送，但未收到 0x{response_opcode:04x} 回执"
+            )
+        receipt = parse_salary_receipt(payload)
+        if not bool(receipt.get("success")):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器未确认俸禄领取成功"),
+                code="DAILY_SALARY_REJECTED",
+                details={"receipt": receipt},
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": str(receipt.get("message") or "国家俸禄领取成功"),
+                "raw": {"receipt": receipt, "packets": self._fact_packets(fact)},
+            },
+        }
+
+    def unassign_all_operation_result(
+        self,
+        host_response: Dict[str, Any],
+        _request: Dict[str, Any],
+        _context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        fact = host_response.get("unassignAllFact")
+        if not isinstance(fact, dict):
+            raise ValueError("一键卸兵适配器未返回事实")
+        receipt = fact.get("receipt")
+        if not isinstance(receipt, dict) or not isinstance(receipt.get("success"), bool):
+            raise ValueError("一键卸兵适配器回执无效")
+        if not receipt["success"]:
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器未确认一键卸兵成功"),
+                code="UNASSIGN_ALL_REJECTED",
+            )
+        raw = receipt.get("raw")
+        raw = dict(raw) if isinstance(raw, dict) else {}
+
+        def count(name: str) -> int:
+            try:
+                return max(0, int(raw.get(name) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        generals = fact.get("generals")
+        army = fact.get("army")
+        role_state = fact.get("roleState")
+        if not isinstance(generals, list):
+            raise ValueError("一键卸兵将领快照必须是数组")
+        if not isinstance(army, list):
+            raise ValueError("一键卸兵军队快照必须是数组")
+        if not isinstance(role_state, dict):
+            raise ValueError("一键卸兵角色快照必须是对象")
+        cleared_count = count("clear.clearedCount")
+        skipped_count = count("clear.skippedCount")
+        response = {
+            "ok": True,
+            "success": True,
+            "clearedCount": cleared_count,
+            "skippedCount": skipped_count,
+            "results": raw,
+            "generals": [dict(row) for row in generals if isinstance(row, dict)],
+            "army": list(army),
+            "roleState": dict(role_state),
+            "message": str(
+                fact.get("message")
+                or raw.get("message")
+                or (
+                    f"服务器已确认一键卸兵成功：{cleared_count}名将领当前无配兵"
+                    if cleared_count
+                    else "当前没有需要卸兵的空闲将领"
+                )
+            ),
+        }
+        warning = str(fact.get("refreshWarning") or "").strip()
+        if warning:
+            response["refreshWarning"] = warning
+        return response
+
+    def troop_assign_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("真实配兵缺少账号")
+        if str(body.get("confirm") or "") != "assign-troops":
+            raise ValueError("真实配兵需要 confirm=assign-troops")
+        general_id = positive_game_id(body.get("generalId"), "将领 ID")
+        raw_soldier_type = (
+            body.get("soldierTypeCode")
+            if body.get("soldierTypeCode") not in (None, "")
+            else body.get("soldierType", "轻骑兵")
+        )
+        soldier_code, soldier_name = strict_soldier_type(raw_soldier_type)
+        try:
+            soldier_count = int(
+                body.get("soldierCount", body.get("count", 0)) or 0
+            )
+            group = int(body.get("group") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("配兵数量或分组无效") from error
+        if not 0 <= soldier_count <= 0x7FFFFFFF:
+            raise ValueError("配兵数量必须在 0..2147483647 之间")
+        if not -128 <= group <= 127:
+            raise ValueError("配兵分组必须在 -128..127 之间")
+        return {
+            "accountRef": account_ref,
+            "confirm": "assign-troops",
+            "generalId": str(general_id),
+            "soldierType": soldier_name,
+            "soldierTypeCode": soldier_code,
+            "soldierCount": soldier_count,
+            "group": group,
+        }
+
+    def inventory_open_one_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("单次开箱缺少账号")
+        if str(body.get("confirm") or "") != "open-one":
+            raise ValueError("单次开箱需要 confirm=open-one")
+        item_name = str(body.get("itemName") or "").strip()
+        if not item_name:
+            raise ValueError("缺少物品名称")
+        if item_name not in AUTO_OPEN_ITEM_NAMES:
+            raise ValueError("该物品不在自动开箱允许范围")
+        return {
+            "accountRef": account_ref,
+            "confirm": "open-one",
+            "itemName": item_name,
+        }
+
+    def troop_refill_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("批量补兵缺少账号")
+        if str(body.get("confirm") or "") != "batch-refill":
+            raise ValueError("真实批量补兵需要 confirm=batch-refill")
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        general_ids = []
+        for value in raw_ids:
+            general_id = positive_game_id(value, "将领 ID")
+            if general_id not in general_ids:
+                general_ids.append(general_id)
+        if not general_ids:
+            raise ValueError("批量补兵至少需要一名将领")
+        if len(general_ids) > 0xFF:
+            raise ValueError("批量补兵将领数量超过 255")
+        return {
+            "accountRef": account_ref,
+            "confirm": "batch-refill",
+            "generalIds": [str(value) for value in general_ids],
+        }
+
+    def troop_heal_operation_payload(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("真实治疗缺少账号")
+        if str(body.get("confirm") or "") != "heal-wounded":
+            raise ValueError("真实治疗伤兵需要 confirm=heal-wounded")
+        general_id = positive_game_id(body.get("generalId"), "将领 ID")
+        payload: Dict[str, Any] = {
+            "accountRef": account_ref,
+            "confirm": "heal-wounded",
+            "generalId": str(general_id),
+            "healAllIfCountUnknown": bool(
+                body.get("healAllIfCountUnknown", True)
+            ),
+            "foodToCopper": bool(body.get("foodToCopper", False)),
+        }
+        if body.get("fiefId") or body.get("placeID") or body.get("placeId"):
+            fief_id = positive_game_id(
+                body.get("fiefId")
+                or body.get("placeID")
+                or body.get("placeId"),
+                "封地 ID",
+            )
+            payload["fiefId"] = str(fief_id)
+        raw_soldier = (
+            body.get("soldierTypeCode")
+            if body.get("soldierTypeCode") not in (None, "")
+            else body.get("soldierType")
+        )
+        if raw_soldier not in (None, ""):
+            soldier_code, soldier_name = strict_soldier_type(raw_soldier)
+            payload.update({
+                "soldierType": soldier_name,
+                "soldierTypeCode": soldier_code,
+            })
+        if body.get("woundedCount") not in (None, ""):
+            try:
+                wounded_count = int(body["woundedCount"])
+            except (TypeError, ValueError) as error:
+                raise ValueError("伤兵数量无效") from error
+            if not -1 <= wounded_count <= 0x7FFFFFFF:
+                raise ValueError("伤兵数量超出范围")
+            payload["woundedCount"] = wounded_count
+        if body.get("soldierGroup") not in (None, "") or body.get(
+            "healGroup"
+        ) not in (None, ""):
+            try:
+                group = int(
+                    body.get("soldierGroup", body.get("healGroup", 2))
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError("治疗兵组无效") from error
+            if not -128 <= group <= 127:
+                raise ValueError("治疗兵组必须在 -128..127 之间")
+            payload["soldierGroup"] = group
+        try:
+            floor_wan = int(body.get("copperFloorWan") or 1)
+        except (TypeError, ValueError) as error:
+            raise ValueError("铜钱保底档位无效") from error
+        if floor_wan not in {1, 10, 20, 50}:
+            raise ValueError("铜钱保底只支持1、10、20、50万")
+        payload["copperFloorWan"] = floor_wan
+        return payload
+
+    def _run_general_energy_maintenance_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        general: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        enabled: bool,
+        threshold: int,
+        action_name: str,
+    ) -> Dict[str, Any]:
+        """Run the shared, at-most-one-item energy maintenance step.
+
+        The caller owns the surrounding operation/pending ledger.  Keeping this
+        step independent from expedition selection lets resident and periodic
+        tasks reuse the exact same planner, payload, receipt and send boundary.
+        """
+
+        # Do not refresh the inventory merely because a workflow includes
+        # energy maintenance.  The inventory read is only needed when a
+        # reliable energy value is below the enabled threshold; otherwise it
+        # would add an unnecessary network round trip (and could make a
+        # disabled auto-energy setting fail on an otherwise ready dispatch).
+        normalized_threshold = max(20, min(int(threshold), 100))
+        current_raw = (
+            general.get("tili")
+            if general.get("tili") is not None
+            else general.get("energy")
+        )
+        needs_inventory = False
+        if enabled and bool(general.get("energyReliable")) and current_raw is not None:
+            try:
+                needs_inventory = int(current_raw) < normalized_threshold
+            except (TypeError, ValueError):
+                needs_inventory = False
+        inventory = (
+            self._fresh_inventory_state(
+                account_ref,
+                context,
+                phase=f"shared-core/{action_name}/energy-inventory",
+            )
+            if needs_inventory
+            else {"items": []}
+        )
+        try:
+            plan = plan_general_energy_use(
+                general,
+                inventory,
+                enabled=enabled,
+                threshold=threshold,
+                action_name=action_name,
+            )
+        except (RuntimeError, ValueError) as error:
+            message = str(error)
+            item_unavailable = "宝库没有活血丹" in message
+            try:
+                current_energy = int(current_raw)
+            except (TypeError, ValueError):
+                current_energy = None
+            if (
+                item_unavailable
+                and current_energy is not None
+                and current_energy > EXPEDITION_MIN_ENERGY
+            ):
+                # Below the top-up threshold but still above the dispatch gate:
+                # the general can march exactly as it stands.  Reporting this
+                # as a failure let 将领维护 re-enter the same round every tick
+                # for 561 seconds on a real account, holding the lane against
+                # 副本 and 刷黄 over an item that would have changed nothing.
+                return {
+                    "ready": True,
+                    "actionRequired": False,
+                    "reason": "energy-item-unavailable",
+                    "generalId": int(general.get("id") or 0),
+                    "generalName": str(
+                        general.get("name") or general.get("id") or "未知将领"
+                    ),
+                    "before": current_energy,
+                    "after": current_energy,
+                    "threshold": normalized_threshold,
+                    "message": (
+                        f"{message}；体力{current_energy}仍高于出征下限"
+                        f"{EXPEDITION_MIN_ENERGY}，本次不加体、继续执行"
+                    ),
+                }
+            details: Dict[str, Any] = {
+                "retryableResourceShortage": item_unavailable,
+                "resource": "活血丹" if item_unavailable else "",
+            }
+            if item_unavailable:
+                # Cannot march and cannot be topped up.  Stamina regenerates
+                # by itself, so the answer is a timed pause of this general's
+                # formations rather than a fault for someone to review.
+                now_millis = int(self._ports.clock.now_millis())
+                cooldown = self._record_general_energy_cooldown(
+                    account_ref,
+                    general,
+                    action_name=action_name,
+                    message=message,
+                    now_millis=now_millis,
+                )
+                details.update({
+                    "generalId": int(general.get("id") or 0),
+                    "generalName": str(cooldown.get("generalName") or ""),
+                    "retryAtMillis": int(cooldown["untilMillis"]),
+                    "formationPaused": True,
+                })
+                message = (
+                    f"{message}；体力不足以出征，所在编队已暂停至"
+                    f"{china_clock_text(int(cooldown['untilMillis']))}"
+                )
+            raise OperationKnownFailureError(
+                message,
+                code=(
+                    "EXPEDITION_ENERGY_ITEM_UNAVAILABLE"
+                    if item_unavailable
+                    else "EXPEDITION_ENERGY_PRECHECK_FAILED"
+                ),
+                details=details,
+            ) from error
+        if not plan.get("actionRequired"):
+            return dict(plan)
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "general-maintenance-energy",
+            "generalId": int(plan["generalId"]),
+            "opcode": "0x1218",
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            0x1218,
+            build_use_general_item_payload(int(plan["generalId"]), 12, 1),
+            f"shared-core/{action_name}/energy",
+            context,
+            mutation_sent=True,
+        )
+        payload = self._game_packet(fact, 0x8218)
+        if payload is None:
+            raise OperationUncertainError(
+                f"{action_name}加体请求已发送，但未收到 0x8218 回执"
+            )
+        receipt = parse_use_general_item_response(payload)
+        if not receipt.get("success"):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or f"{action_name}加体失败"),
+                code="EXPEDITION_ENERGY_REJECTED",
+                details={"plan": plan, "receipt": receipt},
+            )
+        try:
+            applied = apply_general_energy_receipt(
+                plan, receipt, action_name=action_name
+            )
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="EXPEDITION_ENERGY_RESULT_INVALID",
+            ) from error
+        general["tili"] = int(applied.get("after") or plan.get("expectedAfter") or 0)
+        general["energyReliable"] = True
+        # Record where the fact is known.  The resident tick only reports
+        # "将领维护完成", and expedition preflights report their dispatch, so a
+        # spent 活血丹 previously left no trace anywhere the user could see it.
+        try:
+            self._append_success_record(
+                account_ref,
+                general_energy_success_record(
+                    applied,
+                    now_millis=int(self._ports.clock.now_millis()),
+                ),
+            )
+        except Exception as error:
+            # The item is already spent and the general is already topped up.
+            # Bookkeeping must never be able to turn that into a failure and
+            # send the caller down a retry path.
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-automation",
+                "accountRef": str(account_ref),
+                "message": f"活血丹使用记录写入失败：{error}",
+            })
+        return applied
+
+    def _run_general_loyalty_maintenance_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        general: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        action_name: str,
+    ) -> Dict[str, Any]:
+        """Top up one general through the shared full-loyalty step."""
+
+        try:
+            plans = plan_generals_full_loyalty(
+                [general],
+                action_name=action_name,
+            )
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="EXPEDITION_LOYALTY_PRECHECK_FAILED",
+            ) from error
+        plan = plans[0]
+        if bool(plan.get("skipped")):
+            return dict(plan)
+        general_id = int(plan["generalId"])
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "general-maintenance-loyalty",
+            "generalId": general_id,
+            "opcode": "0x121f",
+        })
+        fact = self._daily_command_fact(
+            execution,
+            account_ref,
+            0x121F,
+            build_add_loyalty_payload(general_id, int(plan["delta"])),
+            f"shared-core/{action_name}/loyalty/{general_id}",
+            context,
+            mutation_sent=True,
+        )
+        payload = self._game_packet(fact, 0x821F)
+        if payload is None:
+            raise OperationUncertainError(
+                f"{action_name}加忠请求已发送，但未收到 0x821f 回执"
+            )
+        receipt = parse_821f_loyalty_response(payload)
+        try:
+            applied = apply_full_loyalty_receipt(
+                plan, receipt, action_name=action_name
+            )
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="EXPEDITION_LOYALTY_RESULT_INVALID",
+                details={"plan": plan, "receipt": receipt},
+            ) from error
+        general["loyalty"] = int(applied["loyalty"])
+        general["loyaltyLimit"] = int(applied["loyaltyLimit"])
+        return applied
+
+    def _run_general_maintenance_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        general: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        auto_energy: bool,
+        energy_threshold: int,
+        keep_full_loyalty: bool,
+        action_name: str,
+    ) -> Dict[str, Any]:
+        """Run the one shared energy/loyalty sequence for a general.
+
+        This method contains no scheduler or platform decision.  Every caller
+        supplies its existing durable execution context, so a mutation always
+        crosses the same pre-send boundary on desktop and Android.
+        """
+
+        energy = self._run_general_energy_maintenance_step(
+            execution,
+            account_ref,
+            general,
+            context,
+            enabled=bool(auto_energy),
+            threshold=int(energy_threshold),
+            action_name=action_name,
+        )
+        loyalty: Dict[str, Any] = {
+            "enabled": bool(keep_full_loyalty),
+            "skipped": not bool(keep_full_loyalty),
+            "reason": "full-loyalty-disabled",
+        }
+        if keep_full_loyalty:
+            loyalty = self._run_general_loyalty_maintenance_step(
+                execution,
+                account_ref,
+                general,
+                context,
+                action_name=action_name,
+            )
+        return {
+            "generalId": int(general.get("id") or 0),
+            "generalName": str(
+                general.get("name") or general.get("id") or "未知将领"
+            ),
+            "energy": energy,
+            "loyalty": loyalty,
+        }
+
+    @staticmethod
+    def _expedition_host_settings(body: Dict[str, Any]) -> Dict[str, Any]:
+        raw = body.get("hostSettings")
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _expedition_formation_rule(
+        self,
+        body: Dict[str, Any],
+        general_id: int,
+    ) -> Dict[str, Any] | None:
+        settings = self._expedition_host_settings(body)
+        rows = settings.get("formations")
+        if not isinstance(rows, list):
+            rows = body.get("formationRules")
+        if not isinstance(rows, list):
+            return None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ids = row.get("generalIds")
+            ids = ids if isinstance(ids, list) else [row.get("generalId")]
+            try:
+                if any(int(value) == int(general_id) for value in ids if value not in (None, "")):
+                    return dict(row)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _run_expedition_preflight(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        action_name: str,
+        require_role_level: int | None = None,
+        require_full_loyalty: bool = False,
+        restore_saved_formation: bool = True,
+    ) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+        raw_ids = body.get("generalIds")
+        if not isinstance(raw_ids, list):
+            raw_ids = [body.get("generalId")] if body.get("generalId") else []
+        ids: list[int] = []
+        for value in raw_ids:
+            if value in (None, ""):
+                continue
+            try:
+                general_id = positive_game_id(value, "将领 ID")
+            except ValueError as error:
+                raise OperationKnownFailureError(
+                    str(error), code="EXPEDITION_GENERAL_INVALID"
+                ) from error
+            if general_id not in ids:
+                ids.append(general_id)
+        if not ids:
+            raise OperationKnownFailureError(
+                f"{action_name}至少需要一名出征将领",
+                code="EXPEDITION_GENERALS_EMPTY",
+            )
+        maximum = int(self._behavior_contract["brushYellow"]["maximumGeneralsPerFormation"])
+        if len(ids) > maximum:
+            raise OperationKnownFailureError(
+                f"{action_name}编队最多选择{maximum}名将领",
+                code="EXPEDITION_GENERALS_OVER_LIMIT",
+            )
+        # A formation whose general was found unable to march and unable to be
+        # topped up is paused as a whole.  Decide that from the ledger, before
+        # the state read: every caller already treats this code as a timed
+        # resource wait, and ``retryAtMillis`` tells it exactly how long.
+        paused = self._general_energy_cooldown_block(
+            account_ref, ids, int(self._ports.clock.now_millis())
+        )
+        if paused is not None:
+            raise OperationKnownFailureError(
+                f"{action_name}{paused['message']}",
+                code="EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                details={
+                    "retryableResourceShortage": True,
+                    "resource": "活血丹",
+                    "generalIds": list(paused["generalIds"]),
+                    "retryAtMillis": int(paused["untilMillis"]),
+                    "formationPaused": True,
+                },
+            )
+        state_hex, generals, _army = self._fresh_formation_state(
+            account_ref,
+            context,
+            read_only=True,
+        )
+        by_id = {int(row.get("id")): row for row in generals if row.get("id")}
+        selected: list[Dict[str, Any]] = []
+        for general_id in ids:
+            general = by_id.get(general_id)
+            if general is None:
+                raise OperationKnownFailureError(
+                    f"{action_name}出征前检查未找到将领：{general_id}",
+                    code="EXPEDITION_GENERAL_NOT_FOUND",
+                )
+            selected.append(dict(general))
+        if require_role_level is not None:
+            role = parse_8004_head(
+                bytes.fromhex(state_hex),
+                "shared-core/0x1016/0x8004",
+            )
+            if int(role.get("level") or 0) < int(require_role_level):
+                raise OperationKnownFailureError(
+                    f"请{int(require_role_level)}级之后再开启{action_name}",
+                    code="EXPEDITION_ROLE_LEVEL_TOO_LOW",
+                )
+        settings = self._expedition_host_settings(body)
+        config = settings.get("config") if isinstance(settings.get("config"), dict) else {}
+        general_settings = config.get("general") if isinstance(config.get("general"), dict) else {}
+        # Android and desktop habit projections expose the common switches at
+        # `hostSettings.config` (while older callers sometimes nest them under
+        # `config.general`).  Read both forms in one place so the host cannot
+        # accidentally turn on a network mutation merely because a field was
+        # stored in the flatter representation.
+        def setting(name: str, default: Any) -> Any:
+            if name in body:
+                return body.get(name)
+            if name in settings:
+                return settings.get(name)
+            if name in config:
+                return config.get(name)
+            if name in general_settings:
+                return general_settings.get(name)
+            return default
+
+        heal_enabled = bool(
+            setting("healWounded", True)
+        )
+        auto_energy = bool(
+            setting("autoEnergy", True)
+        )
+        try:
+            energy_threshold = int(
+                setting("energyThreshold", 20)
+            )
+        except (TypeError, ValueError):
+            energy_threshold = 20
+        energy_threshold = max(20, min(100, energy_threshold))
+        maintenance_results: list[Dict[str, Any]] = []
+        for general in selected:
+            if heal_enabled:
+                heal_body = {
+                    "accountRef": account_ref,
+                    "confirm": "heal-wounded",
+                    "generalId": str(general["id"]),
+                    "healAllIfCountUnknown": True,
+                    "foodToCopper": bool(setting("foodToCopper", False)),
+                    "copperFloorWan": int(setting("copperFloorWan", 1) or 1),
+                }
+                self._run_troop_heal_game_workflow(
+                    execution, heal_body, context
+                )
+            maintenance_results.append(self._run_general_maintenance_step(
+                execution,
+                account_ref,
+                general,
+                context,
+                auto_energy=auto_energy,
+                energy_threshold=energy_threshold,
+                keep_full_loyalty=require_full_loyalty,
+                action_name=action_name,
+            ))
+            if restore_saved_formation:
+                rule = self._expedition_formation_rule(body, int(general["id"]))
+                if rule is None:
+                    raise OperationKnownFailureError(
+                        f"{action_name}出征前检查未找到{general.get('name') or general['id']}的保存配兵规则",
+                        code="EXPEDITION_FORMATION_RULE_MISSING",
+                    )
+                assign_body = {
+                    "accountRef": account_ref,
+                    "confirm": "assign-troops",
+                    "generalId": str(general["id"]),
+                    "soldierType": str(rule.get("soldierType") or rule.get("soldierTypeName") or "轻骑兵"),
+                    "soldierCount": int(rule.get("soldierCount") or rule.get("count") or 0),
+                }
+                self._run_troop_assign_game_workflow(
+                    execution, assign_body, context
+                )
+        _state_hex, refreshed, _army = self._fresh_formation_state(
+            account_ref,
+            context,
+            read_only=True,
+        )
+        refreshed_by_id = {int(row.get("id")): row for row in refreshed if row.get("id")}
+        final: list[Dict[str, Any]] = []
+        for general_id in ids:
+            row = refreshed_by_id.get(general_id)
+            if row is None:
+                raise OperationKnownFailureError(
+                    f"{action_name}配置后无法重新读取将领{general_id}",
+                    code="EXPEDITION_POST_PREFLIGHT_MISSING",
+                )
+            if str(row.get("statusText") or row.get("displayStatus") or "") != "闲":
+                raise OperationKnownFailureError(
+                    f"{action_name}出征前将领{row.get('name') or general_id}不是空闲状态",
+                    code="EXPEDITION_GENERAL_BUSY",
+                )
+            if (
+                not row.get("energyReliable")
+                or int(row.get("tili") or 0) <= EXPEDITION_MIN_ENERGY
+            ):
+                raise OperationKnownFailureError(
+                    f"{action_name}出征前将领{row.get('name') or general_id}体力不足或不可确认",
+                    code="EXPEDITION_ENERGY_NOT_READY",
+                )
+            if int(row.get("soldierCount") or row.get("currentSoldierCount") or 0) <= 0:
+                raise OperationKnownFailureError(
+                    f"{action_name}出征前将领{row.get('name') or general_id}没有可用兵力",
+                    code="EXPEDITION_TROOPS_NOT_READY",
+                )
+            final.append(dict(row))
+        return final, {
+            "stateHex": state_hex,
+            "generalIds": ids,
+            "maintenance": maintenance_results,
+        }
+
+    def _run_formation_apply_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply every normalized formation through the one shared 0x1226 path."""
+
+        account_ref = str(body["accountRef"])
+        rows = body.get("formations")
+        rows = rows if isinstance(rows, list) else []
+        if not rows:
+            raise OperationKnownFailureError(
+                "没有可执行的配兵规则",
+                code="FORMATION_APPLY_EMPTY",
+            )
+        results: list[Dict[str, Any]] = []
+        skipped: list[Dict[str, Any]] = []
+        total = len(rows)
+        for index, raw in enumerate(rows):
+            if not isinstance(raw, dict):
+                raise OperationKnownFailureError(
+                    f"第{index + 1}条配兵规则无效",
+                    code="FORMATION_APPLY_ROW_INVALID",
+                )
+            execution.raise_if_cancelled()
+            execution.publish_progress(
+                5 + int(index * 85 / max(1, total)),
+                {
+                    "phase": "applying-formation-row",
+                    "rowIndex": index,
+                    "rowCount": total,
+                    "generalId": str(raw.get("generalId") or ""),
+                },
+            )
+            try:
+                applied = self._run_troop_assign_game_workflow(
+                    execution,
+                    {
+                        "accountRef": account_ref,
+                        "confirm": "assign-troops",
+                        "generalId": raw.get("generalId"),
+                        "soldierType": raw.get("soldierType"),
+                        "soldierCount": raw.get("soldierCount"),
+                        "group": raw.get("group", 0),
+                    },
+                    context,
+                )
+            except OperationKnownFailureError as error:
+                # A batch save must not let one currently marching general
+                # prevent an idle general later in the same batch from being
+                # assigned. The rule is already persisted; this row is safe to
+                # retry on the next explicit apply once the general is idle.
+                if error.code != "TROOP_ASSIGN_PRECHECK_FAILED":
+                    raise
+                skipped_row = {
+                    "sourceRowIndex": int(raw.get("sourceRowIndex", index) or 0),
+                    "generalId": str(raw.get("generalId") or ""),
+                    "success": False,
+                    "skipped": True,
+                    "message": str(error),
+                    "errorCode": error.code,
+                }
+                results.append(skipped_row)
+                skipped.append(skipped_row)
+                continue
+            route_result = applied.get("result")
+            route_result = dict(route_result) if isinstance(route_result, dict) else {}
+            results.append({
+                "sourceRowIndex": int(raw.get("sourceRowIndex", index) or 0),
+                "generalId": str(raw.get("generalId") or ""),
+                **route_result,
+            })
+        applied_count = sum(
+            1 for row in results
+            if not bool(row.get("skipped")) and bool(row.get("success", True))
+        )
+        return {
+            "ok": True,
+            "success": True,
+            "appliedCount": applied_count,
+            "skippedCount": len(skipped),
+            "partial": bool(skipped),
+            "message": (
+                f"配兵完成：已应用{applied_count}条规则，"
+                f"{len(skipped)}条因将领当前不可配兵暂未执行"
+                if skipped
+                else f"配兵完成：已应用{applied_count}条规则"
+            ),
+            "results": results,
+        }
+
+    def _run_unassign_all_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Clear every idle general through the same shared assignment parser."""
+
+        account_ref = str(body["accountRef"])
+        execution.publish_progress(5, {"phase": "refreshing-formation-state"})
+        state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            context,
+        )
+        idle_status = int(self._behavior_contract["formation"]["idleGeneralStatus"])
+        cleared = 0
+        skipped = 0
+        failures = 0
+        results: list[Dict[str, Any]] = []
+        candidates = []
+        for general in generals:
+            try:
+                general_id = int(general.get("id") or 0)
+                soldier_code = int(general.get("soldierTypeCode"))
+                soldier_count = max(
+                    0,
+                    int(
+                        general.get(
+                            "soldierCount",
+                            general.get("currentSoldierCount", 0),
+                        )
+                        or 0
+                    ),
+                )
+            except (TypeError, ValueError):
+                continue
+            if general_id <= 0 or soldier_code < 0 or soldier_count <= 0:
+                continue
+            candidates.append((dict(general), general_id, soldier_code, soldier_count))
+
+        for index, (general, general_id, soldier_code, soldier_count) in enumerate(candidates):
+            execution.raise_if_cancelled()
+            execution.publish_progress(
+                10 + int(index * 75 / max(1, len(candidates))),
+                {
+                    "phase": "clearing-general-troops",
+                    "generalId": str(general_id),
+                    "generalIndex": index + 1,
+                    "generalCount": len(candidates),
+                },
+            )
+            try:
+                status = int(general.get("status"))
+            except (TypeError, ValueError):
+                status = -1
+            if status != idle_status:
+                skipped += 1
+                results.append({
+                    "generalId": str(general_id),
+                    "name": str(general.get("name") or general_id),
+                    "success": False,
+                    "skipped": True,
+                    "reason": str(
+                        general.get("statusText")
+                        or general.get("displayStatus")
+                        or f"status={status}"
+                    ),
+                })
+                continue
+            try:
+                applied = self._run_troop_assign_game_workflow(
+                    execution,
+                    {
+                        "accountRef": account_ref,
+                        "confirm": "assign-troops",
+                        "generalId": str(general_id),
+                        "soldierTypeCode": soldier_code,
+                        "soldierCount": 0,
+                        "group": 0,
+                    },
+                    context,
+                    clearing=True,
+                )
+                route_result = applied.get("result")
+                route_result = (
+                    dict(route_result) if isinstance(route_result, dict) else {}
+                )
+                success = bool(route_result.get("success"))
+                cleared += int(success)
+                failures += int(not success)
+                results.append({
+                    "generalId": str(general_id),
+                    "name": str(general.get("name") or general_id),
+                    "previousSoldierTypeCode": soldier_code,
+                    "previousSoldierCount": soldier_count,
+                    **route_result,
+                })
+            except OperationKnownFailureError as error:
+                failures += 1
+                results.append({
+                    "generalId": str(general_id),
+                    "name": str(general.get("name") or general_id),
+                    "success": False,
+                    "error": str(error),
+                    "code": error.code,
+                })
+
+        refresh_warning = ""
+        refreshed_generals = generals
+        refreshed_army = army
+        refreshed_state_hex = state_hex
+        try:
+            refreshed_state_hex, refreshed_generals, refreshed_army = (
+                self._fresh_formation_state(
+                    account_ref,
+                    {**context, "operationId": execution.operation_id},
+                    read_only=True,
+                )
+            )
+        except Exception as error:
+            current_operation = self._operations.status(execution.operation_id) or {}
+            if current_operation.get("requestSent"):
+                refresh_warning = f"卸兵已获得服务器回执，但刷新将领失败：{error}"
+            else:
+                raise
+        role_state = parse_8004_head(
+            bytes.fromhex(refreshed_state_hex),
+            "shared-core/formations/unassign-all/refresh",
+        )
+        response: Dict[str, Any] = {
+            "ok": True,
+            "success": True,
+            "clearedCount": cleared,
+            "skippedCount": skipped,
+            "results": results,
+            "generals": refreshed_generals,
+            "army": refreshed_army,
+            "roleState": role_state,
+            "message": (
+                f"服务器已确认一键卸兵成功：{cleared}名将领当前无配兵"
+                if cleared
+                else "当前没有需要卸兵的空闲将领"
+            ),
+        }
+        if refresh_warning:
+            response["refreshWarning"] = refresh_warning
+        if failures:
+            raise OperationKnownFailureError(
+                f"一键卸兵完成部分操作，但有{failures}名将领未获得成功回执",
+                code="UNASSIGN_ALL_PARTIAL_FAILURE",
+                details=response,
+            )
+        return response
+
+    def _run_troop_assign_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        clearing: bool = False,
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        execution.publish_progress(10, {"phase": "refreshing-formation-state"})
+        _state_hex, generals, army = self._fresh_formation_state(
+            account_ref,
+            context,
+        )
+        try:
+            plan = plan_troop_assignment(
+                generals,
+                army,
+                body,
+                self._behavior_contract["formation"],
+            )
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="TROOP_ASSIGN_PRECHECK_FAILED",
+            ) from error
+        if plan["alreadySatisfied"]:
+            return {
+                "ok": True,
+                "result": {
+                    "success": True,
+                    "message": (
+                        f"{plan['generalName']}当前已精确满足 "
+                        f"{plan['effectiveCount']}{plan['soldierType']}，未重复发送"
+                    ),
+                    "raw": {**plan, "skipped": "already-satisfied"},
+                },
+            }
+
+        contract = self._behavior_contract["formation"]
+        opcode = self._contract_opcode(contract, "assignRequestOpcode")
+        expected_opcode = self._contract_opcode(
+            contract,
+            "assignResponseOpcode",
+        )
+        payload = build_assign_troops_payload(
+            plan["generalIdHex"],
+            plan["soldierTypeCode"],
+            int(plan["effectiveCount"]),
+            group=int(plan["group"]),
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "troop-assign",
+            "opcode": f"0x{opcode:04x}",
+        })
+        execution.publish_progress(55, {"phase": "waiting-for-assign-receipt"})
+        fact = self._execute_host_game_command(
+            account_ref,
+            opcode,
+            payload,
+            "shared-core/troops/assign",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        response_payload = self._required_game_packet(
+            fact,
+            expected_opcode,
+            uncertain_message="配兵请求已发送，但未收到 0x8226 回执",
+        )
+        parsed = parse_assign_troops_response(response_payload)
+        if parsed.get("status") is None:
+            raise OperationUncertainError(
+                "配兵请求已发送，但 0x8226 回执无法确认",
+                {"receipt": parsed},
+            )
+        if not bool(parsed.get("success")):
+            raise OperationKnownFailureError(
+                str(parsed.get("message") or "服务器拒绝配兵"),
+                code="TROOP_ASSIGN_REJECTED",
+                details={"receipt": parsed},
+            )
+        server_message = str(parsed.get("message") or "配兵成功").strip()
+        if clearing and (
+            int(parsed.get("assignedSoldierTypeCode") or 0) == -1
+            and int(parsed.get("assignedSoldierCount") or 0) == 0
+        ):
+            server_message = "卸兵成功：当前无配兵"
+        exact = assignment_receipt_matches_plan(
+            parsed,
+            plan,
+            clearing=clearing,
+        )
+        if not exact:
+            raise OperationKnownFailureError(
+                "配兵回执未达到共享核心计算的目标兵种和数量",
+                code="TROOP_ASSIGN_RESULT_MISMATCH",
+                details={"plan": plan, "receipt": parsed},
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": server_message,
+                "raw": {
+                    **parsed,
+                    "serverMessage": str(parsed.get("message") or ""),
+                    "requestedCount": plan["requestedCount"],
+                    "effectiveCount": plan["effectiveCount"],
+                    "generalName": plan["generalName"],
+                },
+            },
+        }
+
+    def _run_inventory_open_one_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        item_name = str(body["itemName"])
+        execution.publish_progress(10, {"phase": "refreshing-inventory"})
+        inventory = self._fresh_inventory_state(
+            account_ref,
+            context,
+            phase="shared-core/inventory/open-one/preflight",
+        )
+        try:
+            plan = plan_open_one_inventory(inventory, item_name)
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="INVENTORY_OPEN_PRECHECK_FAILED",
+            ) from error
+
+        payload = build_use_inventory_item_payload(
+            int(plan["itemId"]),
+            int(plan["openCount"]),
+        )
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "inventory-open-one",
+            "opcode": "0x3144",
+            "itemId": int(plan["itemId"]),
+        })
+        execution.publish_progress(55, {"phase": "waiting-for-open-receipt"})
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x3144,
+            payload,
+            "shared-core/inventory/open-one/execute",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        response_payload = self._required_game_packet(
+            fact,
+            0xA144,
+            uncertain_message=(
+                "开箱请求已发送，但未收到 0xA144 回执"
+            ),
+        )
+        receipt = parse_status_message_payload(response_payload)
+        if receipt.get("status") is None:
+            raise OperationUncertainError(
+                "开箱请求已发送，但 0xA144 回执无法确认",
+                {"receipt": receipt},
+            )
+        if not bool(receipt.get("success")):
+            raise OperationKnownFailureError(
+                str(receipt.get("message") or "服务器拒绝开箱"),
+                code="INVENTORY_OPEN_REJECTED",
+                details={"plan": plan, "receipt": receipt},
+            )
+
+        refresh_warning = ""
+        refreshed_inventory: Optional[Dict[str, Any]] = None
+        try:
+            execution.publish_progress(85, {"phase": "refreshing-inventory-after-open"})
+            refreshed_inventory = self._fresh_inventory_state(
+                account_ref,
+                {**context, "operationId": execution.operation_id},
+                phase="shared-core/inventory/open-one/post-refresh",
+            )
+        except Exception as error:
+            # The 0xA144 success receipt is terminal evidence. A later read-only
+            # refresh failure must not turn a confirmed mutation into UNCERTAIN.
+            refresh_warning = f"开箱已获得服务器成功回执，但刷新背包失败：{error}"
+
+        message = str(receipt.get("message") or "开箱成功")
+        reward_text = (
+            inventory_reward_log_text(message)
+            or "服务器确认成功，未返回奖励说明"
+        )
+        result: Dict[str, Any] = {
+            "ok": True,
+            "itemName": item_name,
+            "result": {
+                "success": True,
+                "message": message,
+                "raw": {
+                    "itemId": int(plan["itemId"]),
+                    "itemName": item_name,
+                    "count": int(plan["openCount"]),
+                    "payloadHex": payload.hex(),
+                    "rewardText": reward_text,
+                    "receipt": receipt,
+                    "preflight": plan,
+                },
+            },
+        }
+        if refreshed_inventory is not None:
+            result["inventory"] = refreshed_inventory
+        if refresh_warning:
+            result["refreshWarning"] = refresh_warning
+        return result
+
+    def _run_troop_refill_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        execution.publish_progress(10, {"phase": "refreshing-formation-state"})
+        _state_hex, generals, _army = self._fresh_formation_state(
+            account_ref,
+            context,
+        )
+        try:
+            selected = select_refill_generals(generals, body["generalIds"])
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="TROOP_REFILL_PRECHECK_FAILED",
+            ) from error
+        contract = self._behavior_contract["formation"]
+        opcode = self._contract_opcode(contract, "refillRequestOpcode")
+        expected_opcode = self._contract_opcode(
+            contract,
+            "refillResponseOpcode",
+        )
+        payload = build_refill_payload([row["idHex"] for row in selected])
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "troop-refill",
+            "opcode": f"0x{opcode:04x}",
+        })
+        execution.publish_progress(55, {"phase": "waiting-for-refill-receipt"})
+        fact = self._execute_host_game_command(
+            account_ref,
+            opcode,
+            payload,
+            "shared-core/troops/refill",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        response_payload = self._required_game_packet(
+            fact,
+            expected_opcode,
+            uncertain_message="补兵请求已发送，但未收到 0x8229 回执",
+        )
+        parsed = parse_refill_response(response_payload)
+        if parsed.get("status") is None:
+            raise OperationUncertainError(
+                "补兵请求已发送，但 0x8229 回执无法确认",
+                {"receipt": parsed},
+            )
+        if not bool(parsed.get("success")):
+            raise OperationKnownFailureError(
+                str(parsed.get("message") or "服务器拒绝补兵"),
+                code="TROOP_REFILL_REJECTED",
+                details={"receipt": parsed},
+            )
+        expected_ids = {int(row["id"]) for row in selected}
+        actual_ids = {
+            int(row.get("generalId") or 0)
+            for row in parsed.get("roleUpdates") or []
+            if isinstance(row, dict)
+        }
+        if not expected_ids.issubset(actual_ids):
+            raise OperationKnownFailureError(
+                "补兵 0x8229 未返回全部请求将领的确认结果",
+                code="TROOP_REFILL_RESULT_INCOMPLETE",
+                details={
+                    "expectedGeneralIds": sorted(expected_ids),
+                    "actualGeneralIds": sorted(actual_ids),
+                    "receipt": parsed,
+                },
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": str(parsed.get("message") or "批量补兵成功"),
+                "raw": {
+                    **parsed,
+                    "generals": selected,
+                },
+            },
+        }
+
+    def _run_troop_heal_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        execution.publish_progress(10, {"phase": "refreshing-heal-state"})
+        state_hex, generals, _army = self._fresh_formation_state(
+            account_ref,
+            context,
+        )
+        try:
+            plan = plan_heal_wounded(
+                generals,
+                body,
+                allow_all_if_count_unknown=bool(
+                    body.get("healAllIfCountUnknown", True)
+                ),
+            )
+        except ValueError as error:
+            raise OperationKnownFailureError(
+                str(error),
+                code="TROOP_HEAL_PRECHECK_FAILED",
+            ) from error
+        if not bool(plan.get("ready")):
+            if bool(plan.get("noWounded")):
+                return {
+                    "ok": True,
+                    "result": {
+                        "success": True,
+                        "message": str(plan.get("reason") or "当前没有伤兵"),
+                        "raw": {"skipped": "no-wounded-soldiers", "plan": plan},
+                    },
+                }
+            raise OperationKnownFailureError(
+                str(plan.get("reason") or "治疗条件不足"),
+                code="TROOP_HEAL_PLAN_NOT_READY",
+                details={"plan": plan},
+            )
+
+        role_state = parse_8004_head(
+            bytes.fromhex(state_hex),
+            "shared-core/0x1016/0x8004",
+        )
+        try:
+            current_copper = max(0, int(role_state.get("copper") or 0))
+            current_food = max(0, int(role_state.get("food") or 0))
+        except (TypeError, ValueError):
+            current_copper = 0
+            current_food = 0
+        copper_check: Dict[str, Any] = {
+            "enabled": bool(body.get("foodToCopper")),
+            "exchanged": False,
+            "copper": current_copper,
+            "food": current_food,
+        }
+        prior_mutation = False
+        if bool(body.get("foodToCopper")):
+            floor = int(body.get("copperFloorWan") or 1) * 10_000
+            copper_check["floor"] = floor
+            if current_copper < floor:
+                deficit = floor - current_copper
+                copper_amount = max(3_000, ((deficit + 2_999) // 3_000) * 3_000)
+                food_amount = copper_amount // 3_000 * 10_000
+                if 0 < current_food < food_amount:
+                    raise OperationKnownFailureError(
+                        "治疗伤兵前铜钱低于保底，且粮食不足以完成转换",
+                        code="TROOP_HEAL_COPPER_FLOOR_FOOD_SHORTAGE",
+                        details={
+                            "copper": current_copper,
+                            "floor": floor,
+                            "food": current_food,
+                            "requiredFood": food_amount,
+                        },
+                    )
+                exchange = self._run_heal_resource_exchange(
+                    execution,
+                    account_ref,
+                    food_amount,
+                    context,
+                    reason="copper-floor",
+                )
+                prior_mutation = True
+                copper_check.update({
+                    "exchanged": True,
+                    "foodAmount": food_amount,
+                    "copperAmount": copper_amount,
+                    "exchange": exchange,
+                })
+                current_copper = int(exchange.get("copper") or current_copper)
+                current_food = int(exchange.get("food") or current_food)
+
+        pre_info, heal = self._run_heal_attempt(
+            execution,
+            account_ref,
+            plan,
+            context,
+            prior_mutation=prior_mutation,
+        )
+        recovery: Optional[Dict[str, Any]] = None
+        if not bool(heal.get("success")) and "铜钱不足" in str(
+            heal.get("message") or ""
+        ):
+            food_amount = 100_000
+            copper_amount = 30_000
+            if 0 < current_food < food_amount:
+                raise OperationKnownFailureError(
+                    "治疗伤兵铜钱不足；固定恢复需要100000粮食，"
+                    f"当前只有{current_food}",
+                    code="TROOP_HEAL_RECOVERY_FOOD_SHORTAGE",
+                    details={"healReceipt": heal, "currentFood": current_food},
+                )
+            exchange = self._run_heal_resource_exchange(
+                execution,
+                account_ref,
+                food_amount,
+                context,
+                reason="heal-copper-recovery",
+            )
+            recovery = {
+                "attempted": True,
+                "foodAmount": food_amount,
+                "copperAmount": copper_amount,
+                "exchange": exchange,
+                "originalHealMessage": str(heal.get("message") or ""),
+            }
+            pre_info, heal = self._run_heal_attempt(
+                execution,
+                account_ref,
+                plan,
+                context,
+                prior_mutation=True,
+            )
+        if not bool(heal.get("success")):
+            raise OperationKnownFailureError(
+                str(heal.get("message") or "服务器未确认治疗成功"),
+                code="TROOP_HEAL_REJECTED",
+                details={
+                    "plan": plan,
+                    "preInfo": pre_info,
+                    "heal": heal,
+                    "copperCheck": copper_check,
+                    "copperRecovery": recovery,
+                },
+            )
+        message = str(heal.get("message") or "治疗成功")
+        if recovery is not None:
+            message = (
+                "治疗铜钱不足，已固定兑换100000粮食后重试成功"
+            )
+        return {
+            "ok": True,
+            "result": {
+                "success": True,
+                "message": message,
+                "raw": {
+                    "plan": plan,
+                    "preInfo": pre_info,
+                    "heal": heal,
+                    "copperCheck": copper_check,
+                    "copperRecovery": recovery,
+                },
+            },
+        }
+
+    def _run_heal_resource_exchange(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        food_amount: int,
+        context: Dict[str, Any],
+        *,
+        reason: str,
+    ) -> Dict[str, Any]:
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "troop-heal-resource-exchange",
+            "reason": reason,
+            "opcode": "0x1152",
+            "foodAmount": int(food_amount),
+            "expectedCopper": int(food_amount) * 3 // 10,
+        })
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x1152,
+            build_resource_exchange_payload(1, int(food_amount)),
+            f"shared-core/troops/heal/{reason}",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        payload = self._required_game_packet(
+            fact,
+            0x8152,
+            uncertain_message="粮食转铜请求已发送，但未收到 0x8152 回执",
+        )
+        parsed = parse_resource_exchange_response(payload)
+        if parsed.get("status") is None:
+            raise OperationUncertainError(
+                "粮食转铜请求已发送，但回执无法确认",
+                {"receipt": parsed},
+            )
+        if not bool(parsed.get("success")):
+            raise OperationKnownFailureError(
+                str(parsed.get("message") or "粮食转铜失败"),
+                code="TROOP_HEAL_RESOURCE_EXCHANGE_REJECTED",
+                details={"receipt": parsed},
+            )
+        return {
+            **parsed,
+            "direction": "food-to-copper",
+            "foodAmount": int(food_amount),
+            "expectedCopper": int(food_amount) * 3 // 10,
+        }
+
+    def _run_heal_attempt(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        plan: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        prior_mutation: bool,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        pre_payload = bytes.fromhex(str(plan["preInfoPayloadHex"]))
+        heal_payload = bytes.fromhex(str(plan["healPayloadHex"]))
+        execution.publish_progress(45, {"phase": "checking-heal-cost"})
+        pre_fact = self._execute_host_game_command(
+            account_ref,
+            0x1231,
+            pre_payload,
+            "shared-core/troops/heal/pre-info",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=prior_mutation,
+        )
+        pre_response = self._game_packet(pre_fact, 0x8231)
+        if pre_response is None:
+            message = "治疗预估未收到 0x8231 回执"
+            if prior_mutation:
+                raise OperationUncertainError(message)
+            raise OperationKnownFailureError(
+                message,
+                code="TROOP_HEAL_PREINFO_MISSING",
+            )
+        pre_info = parse_heal_preinfo_response(pre_response)
+        if not bool(pre_info.get("success")):
+            raise OperationKnownFailureError(
+                str(pre_info.get("message") or "治疗预估失败"),
+                code="TROOP_HEAL_PREINFO_REJECTED",
+                details={"preInfo": pre_info},
+            )
+
+        execution.raise_if_cancelled()
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": "troop-heal",
+            "opcode": "0x1230",
+        })
+        execution.publish_progress(70, {"phase": "waiting-for-heal-receipt"})
+        heal_fact = self._execute_host_game_command(
+            account_ref,
+            0x1230,
+            heal_payload,
+            "shared-core/troops/heal/execute",
+            {**context, "operationId": execution.operation_id},
+            mutation_sent=True,
+        )
+        heal_response = self._required_game_packet(
+            heal_fact,
+            0x8230,
+            uncertain_message="治疗请求已发送，但未收到 0x8230 回执",
+        )
+        heal = parse_heal_response(heal_response)
+        if heal.get("status") is None:
+            raise OperationUncertainError(
+                "治疗请求已发送，但 0x8230 回执无法确认",
+                {"receipt": heal},
+            )
+        return pre_info, heal
+
     def route_metadata(self, method: str, path: str) -> Optional[Dict[str, Any]]:
         key = self._route_key(method, path)
         route = self._route_index.get(key)
@@ -415,6 +19082,8 @@ class CoreFacade:
         handler: NetworkRouteHandler,
         *,
         persisted_payload_builder: Optional[PersistedPayloadBuilder] = None,
+        coalesce_active: bool = False,
+        runnable_when: Optional[Callable[[], bool]] = None,
     ) -> None:
         key, route = self._declared_route(method, path)
         if route.get("responseClass") != "network-operation":
@@ -437,18 +19106,584 @@ class CoreFacade:
             context = dict(persisted.get("requestContext") or {})
             return handler(body, context, execution)
 
-        self._operations.register_runner(operation_kind, runner)
+        self._operations.register_runner(
+            operation_kind,
+            runner,
+            runnable_when=(
+                runnable_when
+                if runnable_when is not None
+                else self._operation_run_gate
+            ),
+        )
         self._network_handlers[key] = {
             "kind": operation_kind,
             "operationType": str(route["operationKind"]),
             "payloadBuilder": persisted_payload_builder,
+            "coalesceActive": bool(coalesce_active),
         }
+
+    def register_automation_recovery_runner(
+        self,
+        host_bridge: Any = None,
+    ) -> None:
+        """Register the internal recovery tick behind an optional host lease.
+
+        This is deliberately not a public HTTP route.  A platform scheduler wakes
+        the core, submits a short operation, and receives ``nextWakeAtMillis``;
+        the scheduler itself never decides which packet to send.
+        """
+
+        if self._automation_recovery_runner_registered:
+            return
+        if host_bridge is not None:
+            required = (
+                "executionOwnerActive",
+                "tryAcquireNetworkOperation",
+                "releaseNetworkOperation",
+            )
+            missing = [name for name in required if not hasattr(host_bridge, name)]
+            if missing:
+                raise TypeError(
+                    "automation recovery host is missing: " + ", ".join(missing)
+                )
+
+        def runner(
+            execution: OperationExecutionContext,
+            persisted: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            account_ref = str(persisted.get("accountRef") or "").strip()
+            if not account_ref:
+                raise OperationKnownFailureError(
+                    "自动化恢复 tick 缺少账号",
+                    code="AUTOMATION_TICK_ACCOUNT_MISSING",
+                )
+            context = dict(persisted.get("requestContext") or {})
+            self._require_live_account_for_host_operation(account_ref)
+            acquired = False
+            busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
+            try:
+                if host_bridge is not None:
+                    while not acquired:
+                        if not bool(host_bridge.executionOwnerActive()):
+                            raise OperationDeferredError(
+                                "Android 前台执行所有者未激活，已拒绝自动化恢复"
+                            )
+                        execution.raise_if_cancelled()
+                        acquired = bool(
+                            host_bridge.tryAcquireNetworkOperation(account_ref)
+                        )
+                        if not acquired:
+                            execution.wait(busy_backoff)
+                            busy_backoff = min(
+                                busy_backoff * 2,
+                                HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                            )
+                    execution.raise_if_cancelled()
+                    if not bool(host_bridge.executionOwnerActive()):
+                        raise OperationDeferredError(
+                            "Android 前台执行所有者已停止，未发送自动化恢复请求"
+                        )
+                return self._run_automation_recovery_tick(
+                    execution,
+                    account_ref,
+                    context,
+                )
+            finally:
+                if acquired:
+                    host_bridge.releaseNetworkOperation(account_ref)
+
+        self._operations.register_runner(
+            AUTOMATION_RECOVERY_OPERATION_KIND,
+            runner,
+            runnable_when=(
+                (lambda: _host_network_lane_ready(host_bridge))
+                if host_bridge is not None
+                else self._operation_run_gate
+            ),
+        )
+        self._automation_recovery_runner_registered = True
+
+    def submit_automation_recovery_tick(
+        self,
+        account_ref: str,
+        *,
+        tick_key: Optional[str] = None,
+        request_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Submit one short, durable recovery tick for an account."""
+
+        normalized_ref = str(account_ref or "").strip()
+        if not normalized_ref:
+            raise ValueError("自动化恢复 tick 缺少账号")
+        if self._accounts.get(normalized_ref) is None:
+            raise ValueError("自动化恢复 tick 账号不存在")
+        if not self._automation_recovery_runner_registered:
+            self.register_automation_recovery_runner()
+        context = dict(request_context or {})
+        self._assert_no_sensitive_values(context)
+        now_millis = int(self._ports.clock.now_millis())
+        key = str(tick_key or f"{now_millis}").strip()
+        if not key:
+            key = str(now_millis)
+        payload = {
+            "accountRef": normalized_ref,
+            "requestContext": context,
+        }
+        return self._operations.submit_network(
+            account_ref=normalized_ref,
+            operation_type="mutation",
+            kind=AUTOMATION_RECOVERY_OPERATION_KIND,
+            idempotency_key=f"automation-recovery:{normalized_ref}:{key}",
+            payload=payload,
+            # A one-shot operator reconciliation must queue behind an active
+            # normal scheduler tick instead of coalescing into it and losing
+            # its explicit confirmation context.
+            coalesce_active=not bool(
+                isinstance(context.get("operatorReconcileFeatures"), list)
+                and context.get("operatorReconcileFeatures")
+            ),
+            defer_until_ready=True,
+        )
+
+    def submit_automation_recovery_tick_json(
+        self,
+        account_ref: str,
+        tick_key: str = "",
+        request_context_json: str = "{}",
+    ) -> str:
+        context = json.loads(request_context_json or "{}")
+        if not isinstance(context, dict):
+            raise ValueError("自动化恢复 tick request context 必须是对象")
+        return self._json(
+            self.submit_automation_recovery_tick(
+                account_ref,
+                tick_key=tick_key or None,
+                request_context=context,
+            )
+        )
+
+    def register_raid_action_runner(self, host_bridge: Any = None) -> None:
+        """Register the shared one-shot raid action on the account lane."""
+
+        if self._raid_action_runner_registered:
+            return
+        if host_bridge is not None:
+            required = (
+                "executionOwnerActive",
+                "tryAcquireNetworkOperation",
+                "releaseNetworkOperation",
+            )
+            missing = [name for name in required if not hasattr(host_bridge, name)]
+            if missing:
+                raise TypeError(
+                    "raid action host is missing: " + ", ".join(missing)
+                )
+
+        def runner(
+            execution: OperationExecutionContext,
+            persisted: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            body = dict(persisted.get("body") or {})
+            context = dict(persisted.get("requestContext") or {})
+            account_ref = str(body.get("accountRef") or "").strip()
+            self._require_live_account_for_host_operation(account_ref)
+            acquired = False
+            busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
+            try:
+                if host_bridge is not None:
+                    while not acquired:
+                        if not bool(host_bridge.executionOwnerActive()):
+                            raise OperationDeferredError(
+                                "Android 前台执行所有者未激活，已拒绝掠夺操作"
+                            )
+                        execution.raise_if_cancelled()
+                        acquired = bool(
+                            host_bridge.tryAcquireNetworkOperation(account_ref)
+                        )
+                        if not acquired:
+                            execution.wait(busy_backoff)
+                            busy_backoff = min(
+                                busy_backoff * 2,
+                                HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                            )
+                    execution.raise_if_cancelled()
+                    if not bool(host_bridge.executionOwnerActive()):
+                        raise OperationDeferredError(
+                            "Android 前台执行所有者已停止，未发送掠夺操作"
+                        )
+                return self._run_raid_execute_game_workflow(
+                    execution,
+                    body,
+                    context,
+                )
+            finally:
+                if acquired:
+                    host_bridge.releaseNetworkOperation(account_ref)
+
+        self._operations.register_runner(
+            RAID_ACTION_OPERATION_KIND,
+            runner,
+            runnable_when=(
+                (lambda: _host_network_lane_ready(host_bridge))
+                if host_bridge is not None
+                else self._operation_run_gate
+            ),
+        )
+        self._raid_action_runner_registered = True
+
+    def submit_raid_action(
+        self,
+        body: Dict[str, Any],
+        request_context: Optional[Dict[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        context = dict(request_context or {})
+        normalized = self.raid_action_operation_payload(dict(body), context)
+        self._assert_no_sensitive_values(normalized)
+        self._assert_no_sensitive_values(context)
+        if not self._raid_action_runner_registered:
+            self.register_raid_action_runner()
+        account_ref = str(normalized["accountRef"])
+        now_millis = int(self._ports.clock.now_millis())
+        key = str(idempotency_key or f"raid-{now_millis}").strip()
+        return self._operations.submit_network(
+            account_ref=account_ref,
+            operation_type="mutation",
+            kind=RAID_ACTION_OPERATION_KIND,
+            idempotency_key=f"raid-action:{account_ref}:{key}",
+            payload={"body": normalized, "requestContext": context},
+            coalesce_active=True,
+        )
+
+    def submit_raid_action_json(
+        self,
+        body_json: str,
+        request_context_json: str = "{}",
+        idempotency_key: str = "",
+    ) -> str:
+        body = json.loads(body_json or "{}")
+        context = json.loads(request_context_json or "{}")
+        if not isinstance(body, dict) or not isinstance(context, dict):
+            raise ValueError("掠夺 operation 输入必须是对象")
+        return self._json(
+            self.submit_raid_action(
+                body,
+                context,
+                idempotency_key=idempotency_key or None,
+            )
+        )
+
+    def register_lossless_action_runner(self, host_bridge: Any = None) -> None:
+        """Register the shared one-tick lossless state machine."""
+
+        if self._lossless_action_runner_registered:
+            return
+        if host_bridge is not None:
+            required = (
+                "executionOwnerActive",
+                "tryAcquireNetworkOperation",
+                "releaseNetworkOperation",
+            )
+            missing = [name for name in required if not hasattr(host_bridge, name)]
+            if missing:
+                raise TypeError(
+                    "lossless action host is missing: " + ", ".join(missing)
+                )
+
+        def runner(
+            execution: OperationExecutionContext,
+            persisted: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            body = dict(persisted.get("body") or {})
+            context = dict(persisted.get("requestContext") or {})
+            account_ref = str(body.get("accountRef") or "").strip()
+            self._require_live_account_for_host_operation(account_ref)
+            acquired = False
+            busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
+            try:
+                if host_bridge is not None:
+                    while not acquired:
+                        if not bool(host_bridge.executionOwnerActive()):
+                            raise OperationDeferredError(
+                                "Android 前台执行所有者未激活，已拒绝无损操作"
+                            )
+                        execution.raise_if_cancelled()
+                        acquired = bool(
+                            host_bridge.tryAcquireNetworkOperation(account_ref)
+                        )
+                        if not acquired:
+                            execution.wait(busy_backoff)
+                            busy_backoff = min(
+                                busy_backoff * 2,
+                                HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                            )
+                    execution.raise_if_cancelled()
+                    if not bool(host_bridge.executionOwnerActive()):
+                        raise OperationDeferredError(
+                            "Android 前台执行所有者已停止，未发送无损操作"
+                        )
+                return self._run_lossless_action_game_workflow(
+                    execution,
+                    body,
+                    context,
+                )
+            finally:
+                if acquired:
+                    host_bridge.releaseNetworkOperation(account_ref)
+
+        self._operations.register_runner(
+            LOSSLESS_ACTION_OPERATION_KIND,
+            runner,
+            runnable_when=(
+                (lambda: _host_network_lane_ready(host_bridge))
+                if host_bridge is not None
+                else self._operation_run_gate
+            ),
+        )
+        self._lossless_action_runner_registered = True
+
+    def submit_lossless_action(
+        self,
+        body: Dict[str, Any],
+        request_context: Optional[Dict[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        context = dict(request_context or {})
+        normalized = self.lossless_action_operation_payload(
+            dict(body), context
+        )
+        self._assert_no_sensitive_values(normalized)
+        self._assert_no_sensitive_values(context)
+        if not self._lossless_action_runner_registered:
+            self.register_lossless_action_runner()
+        account_ref = str(normalized["accountRef"])
+        now_millis = int(self._ports.clock.now_millis())
+        key = str(idempotency_key or f"lossless-{now_millis}").strip()
+        return self._operations.submit_network(
+            account_ref=account_ref,
+            operation_type="mutation",
+            kind=LOSSLESS_ACTION_OPERATION_KIND,
+            idempotency_key=f"lossless-action:{account_ref}:{key}",
+            payload={"body": normalized, "requestContext": context},
+            coalesce_active=True,
+        )
+
+    def submit_lossless_action_json(
+        self,
+        body_json: str,
+        request_context_json: str = "{}",
+        idempotency_key: str = "",
+    ) -> str:
+        body = json.loads(body_json or "{}")
+        context = json.loads(request_context_json or "{}")
+        if not isinstance(body, dict) or not isinstance(context, dict):
+            raise ValueError("无损 operation 输入必须是对象")
+        return self._json(
+            self.submit_lossless_action(
+                body,
+                context,
+                idempotency_key=idempotency_key or None,
+            )
+        )
+
+    def register_dungeon_action_runner(self, host_bridge: Any = None) -> None:
+        """Register the shared one-tick dungeon state machine."""
+
+        if self._dungeon_action_runner_registered:
+            return
+        if host_bridge is not None:
+            required = (
+                "executionOwnerActive",
+                "tryAcquireNetworkOperation",
+                "releaseNetworkOperation",
+            )
+            missing = [name for name in required if not hasattr(host_bridge, name)]
+            if missing:
+                raise TypeError(
+                    "dungeon action host is missing: " + ", ".join(missing)
+                )
+
+        def runner(
+            execution: OperationExecutionContext,
+            persisted: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            body = dict(persisted.get("body") or {})
+            context = dict(persisted.get("requestContext") or {})
+            account_ref = str(body.get("accountRef") or "").strip()
+            self._require_live_account_for_host_operation(account_ref)
+            acquired = False
+            busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
+            try:
+                if host_bridge is not None:
+                    while not acquired:
+                        if not bool(host_bridge.executionOwnerActive()):
+                            raise OperationDeferredError(
+                                "Android 前台执行所有者未激活，已拒绝副本操作"
+                            )
+                        execution.raise_if_cancelled()
+                        acquired = bool(
+                            host_bridge.tryAcquireNetworkOperation(account_ref)
+                        )
+                        if not acquired:
+                            execution.wait(busy_backoff)
+                            busy_backoff = min(
+                                busy_backoff * 2,
+                                HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                            )
+                    execution.raise_if_cancelled()
+                    if not bool(host_bridge.executionOwnerActive()):
+                        raise OperationDeferredError(
+                            "Android 前台执行所有者已停止，未发送副本操作"
+                        )
+                return self._run_dungeon_action_game_workflow(
+                    execution,
+                    body,
+                    context,
+                )
+            finally:
+                if acquired:
+                    host_bridge.releaseNetworkOperation(account_ref)
+
+        self._operations.register_runner(
+            DUNGEON_ACTION_OPERATION_KIND,
+            runner,
+            runnable_when=(
+                (lambda: _host_network_lane_ready(host_bridge))
+                if host_bridge is not None
+                else self._operation_run_gate
+            ),
+        )
+        self._dungeon_action_runner_registered = True
+
+    def acknowledge_dungeon_defeat(
+        self,
+        account_ref: str,
+    ) -> Dict[str, Any]:
+        """Archive only a confirmed defeat after an explicit config save."""
+
+        normalized_ref = str(account_ref or "").strip()
+        if not normalized_ref:
+            raise ValueError("确认副本战败缺少账号")
+        pending = self._automation_pending_record(
+            normalized_ref,
+            "dungeonPendingRunJson",
+        )
+        if not pending:
+            return {
+                "ok": True,
+                "acknowledged": False,
+                "reason": "no-pending-defeat",
+            }
+        if pending.get("defeatConfirmed") is not True:
+            return {
+                "ok": True,
+                "acknowledged": False,
+                "blocked": True,
+                "reason": "pending-is-not-confirmed-defeat",
+            }
+        ambiguous_fields = [
+            field
+            for field in (
+                "preDispatchMutationState",
+                "prepareSendState",
+                "dispatchSendState",
+                "chestSendState",
+            )
+            if str(pending.get(field) or "").lower()
+            in {"sending", "uncertain"}
+        ]
+        if ambiguous_fields:
+            return {
+                "ok": True,
+                "acknowledged": False,
+                "blocked": True,
+                "reason": "ambiguous-mutation-boundary",
+                "ambiguousFields": ambiguous_fields,
+            }
+        acknowledged_at = int(self._ports.clock.now_millis())
+        result_record = {
+            "state": "defeat-acknowledged",
+            "defeatConfirmed": True,
+            "acknowledgedAtMillis": acknowledged_at,
+            "battleId": pending.get("battleId"),
+            "generalIds": list(pending.get("generalIds") or []),
+            "stage": dict(pending.get("stageRef") or {}),
+            "message": "用户重新保存副本配置，已确认上一场明确战败",
+        }
+        self._update_account_public_state(
+            normalized_ref,
+            {
+                "dungeonPendingRunJson": "{}",
+                "dungeonLastResultJson": self._json(result_record),
+            },
+        )
+        return {
+            "ok": True,
+            "acknowledged": True,
+            "result": result_record,
+        }
+
+    def acknowledge_dungeon_defeat_json(self, account_ref: str) -> str:
+        return self._json(self.acknowledge_dungeon_defeat(account_ref))
+
+    def submit_dungeon_action(
+        self,
+        body: Dict[str, Any],
+        request_context: Optional[Dict[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        context = dict(request_context or {})
+        normalized = self.dungeon_action_operation_payload(
+            dict(body), context
+        )
+        self._assert_no_sensitive_values(normalized)
+        self._assert_no_sensitive_values(context)
+        if not self._dungeon_action_runner_registered:
+            self.register_dungeon_action_runner()
+        account_ref = str(normalized["accountRef"])
+        now_millis = int(self._ports.clock.now_millis())
+        key = str(idempotency_key or f"dungeon-{now_millis}").strip()
+        return self._operations.submit_network(
+            account_ref=account_ref,
+            operation_type="mutation",
+            kind=DUNGEON_ACTION_OPERATION_KIND,
+            idempotency_key=f"dungeon-action:{account_ref}:{key}",
+            payload={"body": normalized, "requestContext": context},
+            coalesce_active=True,
+        )
+
+    def submit_dungeon_action_json(
+        self,
+        body_json: str,
+        request_context_json: str = "{}",
+        idempotency_key: str = "",
+    ) -> str:
+        body = json.loads(body_json or "{}")
+        context = json.loads(request_context_json or "{}")
+        if not isinstance(body, dict) or not isinstance(context, dict):
+            raise ValueError("副本 operation 输入必须是对象")
+        return self._json(
+            self.submit_dungeon_action(
+                body,
+                context,
+                idempotency_key=idempotency_key or None,
+            )
+        )
 
     def register_host_network_route(
         self,
         method: str,
         path: str,
         host_bridge: Any,
+        *,
+        persisted_payload_builder: Optional[PersistedPayloadBuilder] = None,
+        host_response_projector: Optional[HostResponseProjector] = None,
+        coalesce_active: bool = False,
+        require_live_account: bool = True,
+        require_execution_owner: bool = True,
     ) -> None:
         """Register a host transport adapter behind shared operation semantics."""
 
@@ -461,8 +19696,180 @@ class CoreFacade:
             raise TypeError("host bridge does not expose executionOwnerActive")
         route_method = str(method).upper()
         route_path = str(path).split("?", 1)[0]
+        _key, route = self._declared_route(route_method, route_path)
+        mutation = str(route.get("operationKind") or "") == "mutation"
+        if mutation and (
+            not hasattr(host_bridge, "tryAcquireNetworkOperation")
+            or not hasattr(host_bridge, "releaseNetworkOperation")
+        ):
+            raise TypeError(
+                "mutation host bridge requires two-phase account lock methods"
+            )
 
         def hosted_handler(
+            body: Dict[str, Any],
+            context: Dict[str, Any],
+            execution: OperationExecutionContext,
+        ) -> Dict[str, Any]:
+            account_ref = self._account_ref(body, context)
+            if require_live_account:
+                self._require_live_account_for_host_operation(account_ref)
+            execution.publish_progress(
+                5,
+                {"phase": "waiting-for-account-lane-or-game-server"},
+            )
+            busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
+            host_lock_acquired = False
+            try:
+                while True:
+                    if (
+                        require_execution_owner
+                        and not bool(host_bridge.executionOwnerActive())
+                    ):
+                        raise OperationDeferredError(
+                            "Android 前台执行所有者未激活，已拒绝游戏网络请求"
+                        )
+                    execution.raise_if_cancelled()
+                    if mutation and not host_lock_acquired:
+                        host_lock_acquired = bool(
+                            host_bridge.tryAcquireNetworkOperation(account_ref)
+                        )
+                        if not host_lock_acquired:
+                            execution.wait(busy_backoff)
+                            busy_backoff = min(
+                                busy_backoff * 2,
+                                HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                            )
+                            continue
+                        # Recheck cancellation and live ownership after taking the
+                        # JVM scheduler lock but before crossing the irreversible line.
+                        execution.raise_if_cancelled()
+                        if (
+                            require_execution_owner
+                            and not bool(host_bridge.executionOwnerActive())
+                        ):
+                            raise OperationDeferredError(
+                                "Android 前台执行所有者已停止，未发送游戏请求"
+                            )
+                        execution.mark_request_sent({
+                            "method": route_method,
+                            "path": route_path,
+                            "transport": "android-host",
+                        })
+                    host_context = {
+                        **context,
+                        "operationId": execution.operation_id,
+                    }
+                    raw_response = host_bridge.executeNetworkOperation(
+                        route_method,
+                        route_path,
+                        self._json(body),
+                        self._json(host_context),
+                    )
+                    try:
+                        response = json.loads(str(raw_response or "{}"))
+                    except json.JSONDecodeError as error:
+                        raise RuntimeError(
+                            "host network adapter returned invalid JSON"
+                        ) from error
+                    if not isinstance(response, dict):
+                        raise RuntimeError(
+                            "host network adapter response must be an object"
+                        )
+                    status = int(response.get("status") or 500)
+                    response_body = response.get("body")
+                    if not isinstance(response_body, dict):
+                        raise RuntimeError(
+                            "host network adapter body must be an object"
+                        )
+                    self._assert_no_sensitive_values(response_body)
+                    response_code = str(response_body.get("code") or "")
+                    if response_code == HOST_ACCOUNT_BUSY_CODE:
+                        if mutation:
+                            raise OperationKnownFailureError(
+                                "mutation adapter reported busy after lock acquisition",
+                                code="HOST_LOCK_CONTRACT_FAILED",
+                            )
+                        execution.wait(busy_backoff)
+                        busy_backoff = min(
+                            busy_backoff * 2,
+                            HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                        )
+                        continue
+                    if not 200 <= status < 300 or response_body.get("ok") is False:
+                        raise OperationKnownFailureError(
+                            str(
+                                response_body.get("error")
+                                or response_body.get("message")
+                                or f"host network adapter failed with status {status}"
+                            ),
+                            code=response_code or "HOST_OPERATION_FAILED",
+                            details={"httpStatus": status},
+                        )
+                    break
+            finally:
+                if host_lock_acquired:
+                    host_bridge.releaseNetworkOperation(account_ref)
+            if host_response_projector is not None:
+                response_body = self._object(
+                    host_response_projector(
+                        dict(response_body),
+                        dict(body),
+                        dict(context),
+                    ),
+                    "projected host operation response",
+                )
+                self._assert_no_sensitive_values(response_body)
+            execution.publish_progress(90, {"phase": "persisting-result"})
+            return dict(response_body)
+
+        self.register_network_route(
+            route_method,
+            route_path,
+            hosted_handler,
+            persisted_payload_builder=persisted_payload_builder,
+            coalesce_active=coalesce_active,
+            runnable_when=(
+                (lambda: _host_network_lane_ready(host_bridge))
+                if require_execution_owner
+                else (lambda: True)
+            ),
+        )
+
+    def register_host_game_command_route(
+        self,
+        method: str,
+        path: str,
+        host_bridge: Any,
+        workflow: Callable[
+            [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
+            Dict[str, Any],
+        ],
+        *,
+        persisted_payload_builder: PersistedPayloadBuilder,
+        coalesce_active: bool = True,
+    ) -> None:
+        """Register a Python-owned workflow over a host byte transport."""
+
+        has_python_raw_transport = (
+            self._ports.raw_http is not None
+            and self._ports.session_secrets is not None
+        )
+        if not has_python_raw_transport and self._ports.game_commands is None:
+            raise TypeError("host does not expose a shared game byte transport")
+        if not hasattr(host_bridge, "executionOwnerActive"):
+            raise TypeError("host bridge does not expose executionOwnerActive")
+        if (
+            not hasattr(host_bridge, "tryAcquireNetworkOperation")
+            or not hasattr(host_bridge, "releaseNetworkOperation")
+        ):
+            raise TypeError("raw game mutation requires two-phase account lock methods")
+        if not callable(workflow):
+            raise TypeError("raw game workflow must be callable")
+        route_method = str(method).upper()
+        route_path = str(path).split("?", 1)[0]
+
+        def game_workflow_handler(
             body: Dict[str, Any],
             context: Dict[str, Any],
             execution: OperationExecutionContext,
@@ -471,61 +19878,43 @@ class CoreFacade:
             self._require_live_account_for_host_operation(account_ref)
             execution.publish_progress(
                 5,
-                {"phase": "waiting-for-account-lane-or-game-server"},
+                {"phase": "waiting-for-account-lane"},
             )
             busy_backoff = HOST_ACCOUNT_BUSY_INITIAL_BACKOFF_SECONDS
-            while True:
-                if not bool(host_bridge.executionOwnerActive()):
-                    raise RuntimeError(
-                        "Android 前台执行所有者未激活，已拒绝游戏网络请求"
-                    )
-                execution.raise_if_cancelled()
-                raw_response = host_bridge.executeNetworkOperation(
-                    route_method,
-                    route_path,
-                    self._json(body),
-                    self._json(context),
-                )
-                try:
-                    response = json.loads(str(raw_response or "{}"))
-                except json.JSONDecodeError as error:
-                    raise RuntimeError(
-                        "host network adapter returned invalid JSON"
-                    ) from error
-                if not isinstance(response, dict):
-                    raise RuntimeError(
-                        "host network adapter response must be an object"
-                    )
-                status = int(response.get("status") or 500)
-                response_body = response.get("body")
-                if not isinstance(response_body, dict):
-                    raise RuntimeError(
-                        "host network adapter body must be an object"
-                    )
-                self._assert_no_sensitive_values(response_body)
-                if str(response_body.get("code") or "") == HOST_ACCOUNT_BUSY_CODE:
-                    execution.wait(busy_backoff)
-                    busy_backoff = min(
-                        busy_backoff * 2,
-                        HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
-                    )
-                    continue
-                if not 200 <= status < 300 or response_body.get("ok") is False:
-                    raise RuntimeError(
-                        str(
-                            response_body.get("error")
-                            or response_body.get("message")
-                            or f"host network adapter failed with status {status}"
+            acquired = False
+            try:
+                while not acquired:
+                    if not bool(host_bridge.executionOwnerActive()):
+                        raise OperationDeferredError(
+                            "Android 前台执行所有者未激活，已拒绝游戏网络请求"
                         )
+                    execution.raise_if_cancelled()
+                    acquired = bool(
+                        host_bridge.tryAcquireNetworkOperation(account_ref)
                     )
-                break
-            execution.publish_progress(90, {"phase": "persisting-result"})
-            return dict(response_body)
+                    if not acquired:
+                        execution.wait(busy_backoff)
+                        busy_backoff = min(
+                            busy_backoff * 2,
+                            HOST_ACCOUNT_BUSY_MAX_BACKOFF_SECONDS,
+                        )
+                execution.raise_if_cancelled()
+                if not bool(host_bridge.executionOwnerActive()):
+                    raise OperationDeferredError(
+                        "Android 前台执行所有者已停止，未发送游戏请求"
+                    )
+                return workflow(execution, dict(body), dict(context))
+            finally:
+                if acquired:
+                    host_bridge.releaseNetworkOperation(account_ref)
 
         self.register_network_route(
             route_method,
             route_path,
-            hosted_handler,
+            game_workflow_handler,
+            persisted_payload_builder=persisted_payload_builder,
+            coalesce_active=coalesce_active,
+            runnable_when=lambda: _host_network_lane_ready(host_bridge),
         )
 
     def dispatch(
@@ -618,6 +20007,7 @@ class CoreFacade:
                 idempotency_key=idempotency_key,
                 coalesce_active=(
                     str(registration["operationType"]) == "query"
+                    or bool(registration.get("coalesceActive"))
                 ),
             )
             return CoreResponse(202, submission)
@@ -713,14 +20103,26 @@ class CoreFacade:
             )
         )
 
-    def operation_status(self, operation_id: str) -> Dict[str, Any]:
-        operation = self._operations.status(operation_id)
+    def operation_status(
+        self,
+        operation_id: str,
+        wait_millis: int = 0,
+    ) -> Dict[str, Any]:
+        budget = max(0, int(wait_millis or 0))
+        if budget > 0:
+            operation = self._operations.await_status(operation_id, budget)
+        else:
+            operation = self._operations.status(operation_id)
         if operation is None:
             return {"ok": False, "error": "operation not found"}
         return {"ok": True, "operation": operation}
 
-    def operation_status_json(self, operation_id: str) -> str:
-        return self._json(self.operation_status(operation_id))
+    def operation_status_json(
+        self,
+        operation_id: str,
+        wait_millis: int = 0,
+    ) -> str:
+        return self._json(self.operation_status(operation_id, wait_millis))
 
     def operations_snapshot(self) -> Dict[str, Any]:
         operations = self._operations.list_operations()
@@ -794,23 +20196,100 @@ class CoreFacade:
         account_refs = body.get("accountRefs")
         if account_refs is not None and not isinstance(account_refs, list):
             raise ValueError("accountRefs must be an array")
+        summary_only = bool(body.get("summary", False))
         snapshot = self._accounts.presentation_snapshot()
-        return {
-            "ok": True,
-            "accounts": project_account_cards(
-                snapshot["accounts"],
-                runtime_by_account,
-                self._account_lifecycle,
-                execution_owner_active=bool(
-                    context.get("executionOwnerActive", False)
-                ),
-                now_millis=int(
-                    context.get("nowMillis")
-                    or self._ports.clock.now_millis()
-                ),
-                account_refs=account_refs,
+        cards = project_account_cards(
+            snapshot["accounts"],
+            runtime_by_account,
+            self._account_lifecycle,
+            execution_owner_active=bool(
+                context.get("executionOwnerActive", False)
             ),
+            now_millis=int(
+                context.get("nowMillis")
+                or self._ports.clock.now_millis()
+            ),
+            account_refs=account_refs,
+        )
+        if summary_only:
+            for card in cards:
+                card.pop("session", None)
+                card.pop("accountHabits", None)
+                card.pop("taskStack", None)
+                card.pop("notices", None)
+        response = {
+            "ok": True,
+            "accounts": cards,
         }
+        if "summary" in body:
+            response["summary"] = summary_only
+        return response
+
+    def _areas_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        local = project_area_catalog(body)
+        if local["areas"]:
+            return {**local, "source": "local-cache"}
+        port = self._ports.cloud_shared_data
+        if port is None or not bool(port.configured()):
+            return {
+                **local,
+                "source": "unavailable",
+                "error": "共享云端区服目录未配置",
+            }
+        platform_key = str(local["platformKey"])
+        try:
+            response = port.exchange({
+                "method": "POST",
+                "path": "/v1/servers/directory/query",
+                "body": {"platformKey": platform_key},
+            })
+            if not isinstance(response, dict):
+                raise RuntimeError("共享区服目录传输未返回对象")
+            status = int(response.get("status") or 0)
+            payload = response.get("body")
+            if not isinstance(payload, dict):
+                raise RuntimeError("共享区服目录响应正文无效")
+            if not 200 <= status < 300 or payload.get("ok") is not True:
+                raise RuntimeError(
+                    str(payload.get("error") or f"共享区服目录 HTTP {status}")
+                )
+            projected = project_area_catalog({
+                "platformKey": platform_key,
+                "areas": payload.get("areas") or [],
+                "updatedAt": payload.get("updatedAt"),
+            })
+            return {**projected, "source": "cloud-shared-data"}
+        except Exception as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "cloud-shared-data",
+                "message": f"读取共享区服目录失败：{error}",
+            })
+            return {
+                **local,
+                "source": "unavailable",
+                "error": f"读取共享云端区服目录失败：{error}",
+            }
+
+    def _reference_guide_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Any:
+        response = guide_reference_payload(
+            body,
+            now_millis=int(
+                context.get("nowMillis")
+                or self._ports.clock.now_millis()
+            ),
+        )
+        if response.get("ok") is False:
+            return CoreResponse(404, response)
+        return response
 
     def _settings_write_plan_route(
         self,
@@ -847,6 +20326,19 @@ class CoreFacade:
             exists=bool(body.get("exists", True)),
         )
 
+    def _brush_recommended_center_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        request = dict(body)
+        request["minimumRoleLevel"] = (
+            int(self._behavior_contract["brushYellow"]["minimumRoleLevel"])
+            if bool(body.get("enforceRoleLevel"))
+            else 0
+        )
+        return recommend_brush_center(request)
+
     def _ministry_settings_write_plan_route(
         self,
         body: Dict[str, Any],
@@ -872,6 +20364,2993 @@ class CoreFacade:
                 body,
             ),
         }
+
+    def _mine_settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/mine/save",
+                body,
+            ),
+        }
+
+    def _scoped_settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/settings/save",
+                body,
+            ),
+        }
+
+    def _raid_settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/raid/execute",
+                body,
+            ),
+        }
+
+    def _lossless_settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/lossless/execute",
+                body,
+            ),
+        }
+
+    def _dungeon_settings_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "plan": self.settings_write_plan(
+                "/api/dungeon/execute",
+                body,
+            ),
+        }
+
+    def _system_logs_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return project_system_logs(body)
+
+    def _account_logs_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return project_account_logs(body)
+
+    def _automation_status_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return project_automation_status(body)
+
+    def _success_records_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        request = dict(body)
+        account_ref = str(request.get("accountRef") or "").strip()
+        raw_records = request.get("records")
+        if raw_records is not None and not isinstance(raw_records, list):
+            raise ValueError("成功记录条目必须是数组")
+        records = list(raw_records or [])
+        if account_ref and self._accounts.get(account_ref) is not None:
+            public_state = self._account_public_state(account_ref)
+            records.extend(
+                resident_success_records_from_public_state(
+                    public_state,
+                    account_ref=account_ref,
+                )
+            )
+            records.extend(
+                self._resident_success_operation_history(
+                    account_ref, public_state
+                )
+            )
+        request["records"] = records
+        return project_success_records(request)
+
+    def _resident_success_operation_history(
+        self,
+        account_ref: str,
+        public_state: Dict[str, Any],
+    ) -> list[Dict[str, Any]]:
+        """Build the old-ledger detail recovery once per viewed account."""
+
+        with self._resident_success_history_lock:
+            cached = self._resident_success_history_cache.get(account_ref)
+            if cached is not None:
+                return list(cached)
+            expedition_facts = self._operations.list_result_facts(
+                account_ref,
+                result_keys=[
+                    "feature",
+                    "state",
+                    "success",
+                    "dispatchAccepted",
+                    "battleId",
+                    "successBattleId",
+                    "target",
+                    "stage",
+                    "sourceRowIndex",
+                    "formationSourceRowIndex",
+                    "formationNumber",
+                    "successRecord",
+                    "tickAtMillis",
+                    "acceptedAtMillis",
+                    "dispatchAtMillis",
+                    "completedAtMillis",
+                ],
+                required_truthy_key="dispatchAccepted",
+                limit=1_000,
+            )
+            domestic_facts = self._operations.list_result_facts(
+                account_ref,
+                result_keys=[
+                    "feature",
+                    "state",
+                    "success",
+                    "planKey",
+                    "action",
+                    "message",
+                    "successRecord",
+                    "tickAtMillis",
+                    "acceptedAtMillis",
+                    "completedAtMillis",
+                ],
+                required_truthy_key="action",
+                limit=1_000,
+            )
+            daily_facts = self._operations.list_result_facts(
+                account_ref,
+                result_keys=[
+                    "feature",
+                    "state",
+                    "success",
+                    "completed",
+                    "dailyKey",
+                    "cycleKey",
+                    "skipped",
+                    "skipReason",
+                    "statusText",
+                    "taskNextWakeAtMillis",
+                    "result",
+                    "successRecord",
+                    "tickAtMillis",
+                    "acceptedAtMillis",
+                    "completedAtMillis",
+                ],
+                limit=1_000,
+            )
+            recovered = resident_success_records_from_operation_facts(
+                [*expedition_facts, *domestic_facts, *daily_facts],
+                account_ref=account_ref,
+                public_state=public_state,
+            )
+            self._resident_success_history_cache[account_ref] = recovered
+            return list(recovered)
+
+    def _bandit_map_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return project_bandit_map(
+            body,
+            now_millis=self._ports.clock.now_millis(),
+            ttl_millis=int(
+                self._behavior_contract["mapSearch"]["targetCacheTtlMillis"]
+            ),
+        )
+
+    def _mine_map_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return project_mine_map(
+            body,
+            now_millis=self._ports.clock.now_millis(),
+            ttl_millis=int(
+                self._behavior_contract["mine"]["targetCacheTtlMillis"]
+            ),
+        )
+
+    def _account_log_write_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {"ok": True, "plan": account_log_write_plan(body)}
+
+    def _system_log_clear_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {"ok": True, "plan": system_log_clear_plan(body)}
+
+    def _notice_dismiss_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {"ok": True, "plan": notice_dismiss_plan(body)}
+
+    def _account_stop_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("停止账号缺少账号")
+        reason = str(body.get("reason") or "用户明确停止托管").strip()[:240]
+        return {
+            "ok": True,
+            "plan": {
+                "networkRequired": False,
+                "write": {
+                    "accountRef": account_ref,
+                    "savedTasksStarted": False,
+                    "enabled": False,
+                    "loginState": "REAL_PROTOCOL_STOPPED",
+                    "runtimeReason": reason,
+                    "serviceAction": "reconcile-enabled-accounts",
+                },
+            },
+        }
+
+    def _account_delete_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("删除账号缺少账号")
+        return {
+            "ok": True,
+            "plan": {
+                "networkRequired": False,
+                "write": {
+                    "accountRef": account_ref,
+                    "deleteCredentialFirst": True,
+                    "deleteStores": [
+                        "account",
+                        "configs",
+                        "requestHealth",
+                        "reconnect",
+                        "expeditionTransactions",
+                        "dismissedNotices",
+                        "localMaps",
+                        "runtimeStatuses",
+                    ],
+                    "serviceAction": "reconcile-enabled-accounts",
+                },
+            },
+        }
+
+    def _automation_start_saved_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        if not account_ref:
+            raise ValueError("开始保存任务缺少账号")
+        account_enabled = bool(body.get("accountEnabled"))
+        login_state = str(body.get("loginState") or "").strip().lower()
+        has_live_session = bool(body.get("hasLiveSession"))
+        execution_owner_active = bool(body.get("executionOwnerActive"))
+        activate_now = (
+            account_enabled
+            and has_live_session
+            and login_state in {
+                "online",
+                "real_protocol_online",
+            }
+        )
+        already_started = (
+            bool(body.get("savedTasksStarted"))
+            and activate_now
+            and execution_owner_active
+        )
+        return {
+            "ok": True,
+            "plan": {
+                "networkRequired": False,
+                "write": {
+                    "accountRef": account_ref,
+                    "savedTasksStarted": True,
+                    "activateNow": activate_now,
+                    "serviceAction": (
+                        "start-or-refresh"
+                        if activate_now
+                        else "defer-until-account-start"
+                    ),
+                },
+                "response": {
+                    "alreadyStarted": already_started,
+                    "waitingForAccountStart": not activate_now,
+                },
+            },
+        }
+
+    def _automation_stop_plan_route(
+        self,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = self._account_ref(body, context)
+        task_id = str(body.get("taskId") or "").strip()[:160]
+        if not account_ref and not task_id:
+            raise ValueError("停止任务必须提供账号或 taskId")
+        stop_scope = "task" if task_id else "account"
+        write: Dict[str, Any] = {
+            "accountRef": account_ref,
+            "taskId": task_id,
+            "scope": stop_scope,
+            "serviceAction": "refresh-task-plan",
+        }
+        if stop_scope == "account":
+            write["savedTasksStarted"] = False
+        return {
+            "ok": True,
+            "plan": {
+                "networkRequired": False,
+                "write": write,
+            },
+        }
+
+    @staticmethod
+    def _contract_opcode(contract: Dict[str, Any], key: str) -> int:
+        raw = contract.get(key)
+        try:
+            value = int(str(raw), 0) if isinstance(raw, str) else int(raw)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"行为契约 {key} 无效：{raw}") from error
+        if not 0 <= value <= 0xFFFF:
+            raise RuntimeError(f"行为契约 {key} 超出 opcode 范围")
+        return value
+
+    def _account_public_state(self, account_ref: str) -> Dict[str, Any]:
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise OperationKnownFailureError(
+                "共享账号账本中不存在该账号",
+                code="ACCOUNT_MISSING",
+            )
+        session = account.get("session")
+        if not isinstance(session, dict):
+            raise OperationKnownFailureError(
+                "当前账号没有真实 Session",
+                code="ACCOUNT_SESSION_MISSING",
+            )
+        public_state = session.get("publicState")
+        return dict(public_state) if isinstance(public_state, dict) else {}
+
+    def _account_session_account_id(self, account_ref: str) -> Any:
+        account = self._accounts.get(account_ref)
+        if account is None:
+            return account_ref
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        return session.get("accountId") or account.get("id") or account_ref
+
+    def _update_account_public_state(
+        self,
+        account_ref: str,
+        updates: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Atomically replace public observations without touching secrets."""
+
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise OperationKnownFailureError(
+                "共享账号账本中不存在该账号",
+                code="ACCOUNT_MISSING",
+            )
+        session = account.get("session")
+        if not isinstance(session, dict):
+            raise OperationKnownFailureError(
+                "当前账号没有真实 Session",
+                code="ACCOUNT_SESSION_MISSING",
+            )
+        public_state = session.get("publicState")
+        public_state = (
+            dict(public_state) if isinstance(public_state, dict) else {}
+        )
+        public_state.update({
+            str(key): value
+            for key, value in dict(updates).items()
+            if str(key).strip() and value is not None
+        })
+        account["session"] = {**session, "publicState": public_state}
+        self._accounts.upsert(account)
+        return dict(public_state)
+
+    def _record_successful_game_response(
+        self,
+        account_ref: str,
+        request_opcodes: list[int],
+        fact: Dict[str, Any],
+        phase: str,
+    ) -> None:
+        """Treat a parsed authenticated reply as stronger liveness evidence.
+
+        Session validation exists to prove that the existing authenticated
+        channel still works. A normal task reply already proves exactly that,
+        so forcing an additional 0x3110 request only adds load and another
+        failure point. Writes are rate-limited because map scans may return
+        several valid replies per second.
+        """
+
+        packets = [
+            packet
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict)
+        ]
+        if not packets or not request_opcodes:
+            return
+        if self._session_rejection_reason(
+            {**fact, "packets": packets},
+            request_opcode=int(request_opcodes[0]),
+        ):
+            return
+        now_millis = int(self._ports.clock.now_millis())
+        public_state = self._account_public_state(account_ref)
+        try:
+            previous = int(public_state.get("lastValidatedAt") or 0)
+        except (TypeError, ValueError):
+            previous = 0
+        minimum_interval = int(
+            self._account_lifecycle
+            .successful_response_refresh_min_interval_millis
+        )
+        if 0 <= now_millis - previous < minimum_interval:
+            return
+        self._update_account_public_state(
+            account_ref,
+            {
+                "lastValidatedAt": str(now_millis),
+                "lastSuccessfulGameResponseAt": str(now_millis),
+                "lastSuccessfulGameResponsePhase": str(phase)[:160],
+            },
+        )
+
+    @staticmethod
+    def _public_json_value(value: Any, fallback: Any) -> Any:
+        if isinstance(value, (dict, list)):
+            return json.loads(json.dumps(value, ensure_ascii=False))
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                return fallback
+            if isinstance(parsed, type(fallback)):
+                return parsed
+        return fallback
+
+    @classmethod
+    def _public_json_object(cls, value: Any) -> Dict[str, Any]:
+        return dict(cls._public_json_value(value, {}))
+
+    @classmethod
+    def _public_json_list(cls, value: Any) -> list[Dict[str, Any]]:
+        rows = cls._public_json_value(value, [])
+        return [dict(item) for item in rows if isinstance(item, dict)]
+
+    @classmethod
+    def _owned_fief_location_map(cls, value: Any) -> Dict[str, Dict[str, Any]]:
+        """Normalize the login/manual owned-fief cache without hiding bad rows."""
+
+        if isinstance(value, str) and value.strip():
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                value = []
+        locations: Dict[str, Dict[str, Any]] = {}
+        if isinstance(value, dict):
+            candidates = value.items()
+        elif isinstance(value, list):
+            candidates = ((None, row) for row in value)
+        else:
+            candidates = ()
+        for key, raw in candidates:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            try:
+                fief_id = int(
+                    row.get("targetId")
+                    or row.get("fiefId")
+                    or row.get("id")
+                    or key
+                    or 0
+                )
+            except (TypeError, ValueError):
+                continue
+            if fief_id > 0:
+                locations[str(fief_id)] = row
+        return locations
+
+    @classmethod
+    def _merge_general_fief_locations(
+        cls,
+        generals: list[Dict[str, Any]],
+        cached_fiefs: Any,
+    ) -> list[Dict[str, Any]]:
+        """Attach names/coordinates because 0x8004 itself only supplies fiefId."""
+
+        locations = cls._owned_fief_location_map(cached_fiefs)
+        merged = []
+        for raw in generals:
+            general = dict(raw)
+            try:
+                fief_id = int(
+                    general.get("fiefId")
+                    or general.get("placeID")
+                    or general.get("placeId")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                fief_id = 0
+            location = locations.get(str(fief_id)) if fief_id > 0 else None
+            if location:
+                fief_name = str(
+                    location.get("fiefName") or location.get("name") or ""
+                ).strip()
+                city_name = str(
+                    location.get("cityName") or location.get("city") or ""
+                ).strip()
+                if fief_name:
+                    general["fiefName"] = fief_name
+                if city_name:
+                    general["cityName"] = city_name
+                if location.get("x") is not None:
+                    general["fiefX"] = location["x"]
+                if location.get("y") is not None:
+                    general["fiefY"] = location["y"]
+            merged.append(general)
+        return merged
+
+    @staticmethod
+    def _merge_general_evidence(
+        current: list[Dict[str, Any]],
+        evidence: list[Dict[str, Any]],
+        refreshed_at_millis: int,
+    ) -> list[Dict[str, Any]]:
+        by_id: Dict[int, Dict[str, Any]] = {}
+        unkeyed = []
+        for item in current:
+            row = dict(item)
+            try:
+                general_id = int(row.get("id") or 0)
+            except (TypeError, ValueError):
+                general_id = 0
+            if general_id > 0:
+                by_id[general_id] = row
+            else:
+                unkeyed.append(row)
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            try:
+                general_id = int(item.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if general_id <= 0:
+                continue
+            by_id[general_id] = {
+                **by_id.get(general_id, {}),
+                **dict(item),
+                "liveStateMillis": int(refreshed_at_millis),
+                "syncedAtMillis": int(refreshed_at_millis),
+            }
+        return list(by_id.values()) + unkeyed
+
+    def _inventory_public_state_updates(
+        self,
+        inventory: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        items = [
+            dict(item)
+            for item in inventory.get("items") or []
+            if isinstance(item, dict)
+        ]
+        equipment = []
+        for value in inventory.get("equipment") or []:
+            if not isinstance(value, dict):
+                continue
+            item = dict(value)
+            item.setdefault("id", item.get("instanceId"))
+            item.setdefault("itemId", item.get("instanceId"))
+            item.setdefault("count", 1)
+            item.setdefault("type", "equipment")
+            equipment.append(item)
+        return {
+            "inventoryJson": self._json(items + equipment),
+            "inventoryCapacity": str(int(inventory.get("capacity") or 0)),
+            "inventoryItemCount": str(len(items)),
+            "inventoryEquipmentCount": str(len(equipment)),
+            "inventorySourceOpcode": str(
+                inventory.get("sourceOpcode") or "0x1104/0x8104"
+            ),
+        }
+
+    def _inventory_view_from_public_state(
+        self,
+        public_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        parsed = self._public_json_value(
+            public_state.get("inventoryJson"),
+            [],
+        )
+        if isinstance(parsed, dict):
+            return dict(parsed)
+        rows = [dict(item) for item in parsed if isinstance(item, dict)]
+        equipment = [
+            item
+            for item in rows
+            if str(item.get("type") or "").lower() == "equipment"
+            or item.get("instanceId") not in (None, "")
+        ]
+        equipment_ids = {id(item) for item in equipment}
+        items = [item for item in rows if id(item) not in equipment_ids]
+        try:
+            capacity = int(public_state.get("inventoryCapacity") or 0)
+        except (TypeError, ValueError):
+            capacity = 0
+        return {
+            "items": items,
+            "equipment": equipment,
+            "capacity": capacity,
+            "itemCount": len(items),
+            "equipmentCount": len(equipment),
+            "sourceOpcode": str(
+                public_state.get("inventorySourceOpcode") or ""
+            ),
+        }
+
+    def _refresh_military_snapshot_game(
+        self,
+        account_ref: str,
+        execution: OperationExecutionContext,
+        context: Dict[str, Any],
+        *,
+        phase: str,
+    ) -> Dict[str, Any]:
+        contract = self._behavior_contract["militarySnapshot"]
+        request_opcode = self._contract_opcode(contract, "requestOpcode")
+        response_opcode = self._contract_opcode(contract, "responseOpcode")
+        fact = self._execute_host_game_command(
+            account_ref,
+            request_opcode,
+            MILITARY_INTEL_REQUEST_PAYLOAD,
+            phase,
+            {
+                **context,
+                "operationId": execution.operation_id,
+                "readOnly": True,
+            },
+            mutation_sent=False,
+        )
+        rejection = self._session_rejection_reason(
+            fact,
+            request_opcode=request_opcode,
+        )
+        if rejection:
+            raise OperationKnownFailureError(
+                rejection,
+                code="MILITARY_SESSION_REJECTED",
+            )
+        payloads = [
+            bytes(packet.get("payload") or b"")
+            for packet in fact.get("packets") or []
+            if isinstance(packet, dict)
+            and int(packet.get("opcode") or -1) == response_opcode
+            and isinstance(packet.get("payload"), (bytes, bytearray))
+        ]
+        if not payloads:
+            raise OperationKnownFailureError(
+                f"军情刷新未收到 0x{response_opcode:04x} 回执",
+                code="MILITARY_RESPONSE_MISSING",
+            )
+        now_millis = int(self._ports.clock.now_millis())
+        public_state = self._account_public_state(account_ref)
+        generals = self._public_json_list(
+            public_state.get("generalsJson")
+        )
+        snapshot = build_military_snapshot(
+            payloads,
+            generals,
+            int(fact.get("httpCode") or 0),
+            updated_at=now_millis,
+        )
+        updates: Dict[str, Any] = {
+            "lastValidatedAt": str(now_millis),
+            "militarySnapshotJson": self._json(snapshot),
+            "militarySnapshot": self._json(snapshot),
+            "militarySnapshotUpdatedAt": str(now_millis),
+        }
+        general_records = [
+            dict(item)
+            for item in snapshot.get("generalStatusRecords") or []
+            if isinstance(item, dict)
+        ]
+        if general_records:
+            updates["militaryGeneralStatusJson"] = self._json(
+                general_records
+            )
+            updates["generalsJson"] = self._json(
+                self._merge_general_evidence(
+                    generals,
+                    general_records,
+                    now_millis,
+                )
+            )
+            updates["lastMilitaryGeneralRefreshAt"] = str(now_millis)
+        captive_records = [
+            dict(item)
+            for item in snapshot.get("captiveGeneralRecords") or []
+            if isinstance(item, dict)
+        ]
+        if captive_records:
+            updates["captiveGeneralsJson"] = self._json(captive_records)
+        self._update_account_public_state(account_ref, updates)
+        return snapshot
+
+    def _project_account_public_state(
+        self,
+        account_ref: str,
+    ) -> Dict[str, Any]:
+        public_state = self._account_public_state(account_ref)
+        role_state = self._public_json_object(
+            public_state.get("roleStateJson")
+        )
+        for key in (
+            "roleId",
+            "roleName",
+            "level",
+            "copper",
+            "food",
+            "prestige",
+            "populationCurrent",
+            "populationCap",
+            "resourcePointCurrent",
+            "resourcePointCap",
+            "officeName",
+        ):
+            if key not in role_state and public_state.get(key) not in (None, ""):
+                role_state[key] = public_state[key]
+        generals = self._merge_general_fief_locations(
+            self._public_json_list(public_state.get("generalsJson")),
+            public_state.get("ownedFiefLocationsJson"),
+        )
+        army = self._public_json_list(public_state.get("armyJson"))
+        if army:
+            role_state["idleArmy"] = army
+        formations = self._public_json_list(
+            public_state.get("formationsJson")
+        )
+        military_intel = self._public_json_object(
+            public_state.get("militaryIntelJson")
+        ) or {
+            "events": [],
+            "statusByName": {},
+            "sourceOpcode": "0x3110/0xa110",
+        }
+        military_snapshot = self._public_json_object(
+            public_state.get("militarySnapshotJson")
+            or public_state.get("militarySnapshot")
+        ) or {
+            "actions": [],
+            "actionCount": 0,
+            "incomingCount": 0,
+            "responded": False,
+            "sourceOpcode": "0x1600/0x8600",
+            "updatedAt": 0,
+        }
+
+        def integer(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        role_id = integer(
+            public_state.get("roleId")
+            or role_state.get("roleId")
+            or self._account_session_account_id(account_ref)
+        )
+        role = {
+            "roleId": role_id,
+            "roleName": str(
+                public_state.get("roleName")
+                or role_state.get("roleName")
+                or ""
+            ),
+            "level": integer(
+                public_state.get("level") or role_state.get("level")
+            ),
+            "country": str(public_state.get("nation") or ""),
+            "title": str(
+                public_state.get("title")
+                or public_state.get("officialTitle")
+                or public_state.get("officeName")
+                or ""
+            ),
+        }
+        return {
+            "ok": True,
+            "accountRef": str(account_ref),
+            "sessionId": str(account_ref),
+            "role": role,
+            "roleState": role_state,
+            "generals": generals,
+            "formations": formations,
+            "army": army,
+            "inventory": self._inventory_view_from_public_state(public_state),
+            "militaryIntel": military_intel,
+            "militarySnapshot": military_snapshot,
+            "dailyActivity": self._public_json_object(
+                public_state.get("dailyActivityJson")
+            ),
+            "dailyStats": self._public_json_object(
+                public_state.get("dailyStatsJson")
+            ),
+            "roleQueueSummary": self._public_json_object(
+                public_state.get("roleQueueSummaryJson")
+            ),
+            "technologyStates": self._public_json_list(
+                public_state.get("technologyStatesJson")
+            ),
+            "taskOverview": self._public_json_object(
+                public_state.get("taskOverviewJson")
+            ),
+            "assistantOperations": self._public_json_value(
+                public_state.get("assistantOperationsJson"),
+                [],
+            ),
+            "updatedAt": int(self._ports.clock.now_millis()),
+        }
+
+    def _execute_host_game_command(
+        self,
+        account_ref: str,
+        opcode: int,
+        payload: bytes,
+        phase: str,
+        context: Dict[str, Any],
+        *,
+        mutation_sent: bool,
+    ) -> Dict[str, Any]:
+        if (
+            self._ports.raw_http is not None
+            and self._ports.session_secrets is not None
+        ):
+            fact = self._execute_shared_raw_http_game_command(
+                account_ref,
+                int(opcode),
+                bytes(payload),
+                str(phase),
+                context,
+            )
+        else:
+            port = self._ports.game_commands
+            if port is None:
+                raise RuntimeError("宿主未提供共享核心原始游戏传输端口")
+            try:
+                fact = port.execute(
+                    account_ref,
+                    int(opcode),
+                    bytes(payload),
+                    str(phase),
+                    context,
+                )
+            except HostGameCommandError as error:
+                if error.status < 500:
+                    raise OperationKnownFailureError(
+                        str(error),
+                        code=error.code,
+                        details={"hostStatus": error.status},
+                    ) from error
+                # Before a mutation this becomes an ordinary FAILED preflight. After
+                # requestSent it deliberately becomes UNCERTAIN in DurableOperationStore.
+                raise
+        if not isinstance(fact, dict):
+            error = RuntimeError("原始游戏命令端口未返回事实对象")
+            if mutation_sent:
+                raise OperationUncertainError(str(error)) from error
+            raise error
+        try:
+            request_opcode = int(fact.get("requestOpcode"))
+            http_code = int(fact.get("httpCode"))
+        except (TypeError, ValueError) as error:
+            if mutation_sent:
+                raise OperationUncertainError(
+                    "原始游戏命令返回的请求或 HTTP 事实无效"
+                ) from error
+            raise RuntimeError("原始游戏命令事实无效") from error
+        if request_opcode != int(opcode):
+            message = (
+                f"原始游戏命令回显 opcode 不匹配："
+                f"{request_opcode:#06x} != {int(opcode):#06x}"
+            )
+            if mutation_sent:
+                raise OperationUncertainError(message)
+            raise RuntimeError(message)
+        if fact.get("httpOk") is not True:
+            details = {"httpStatus": http_code, "opcode": opcode}
+            if mutation_sent and (http_code == 0 or 500 <= http_code < 600):
+                raise OperationUncertainError(
+                    f"游戏 HTTP {http_code} 回执不明；请求已发送，禁止自动重做",
+                    details,
+                )
+            raise OperationKnownFailureError(
+                f"游戏 HTTP {http_code} 未成功",
+                code="GAME_COMMAND_HTTP_FAILED",
+                details=details,
+            )
+        packets = fact.get("packets")
+        if not isinstance(packets, list):
+            message = "原始游戏命令未返回 packets 数组"
+            if mutation_sent:
+                raise OperationUncertainError(message)
+            raise RuntimeError(message)
+        normalized_packets = []
+        for index, packet in enumerate(packets):
+            if not isinstance(packet, dict):
+                message = f"第 {index + 1} 个游戏包事实无效"
+                if mutation_sent:
+                    raise OperationUncertainError(message)
+                raise RuntimeError(message)
+            try:
+                packet_opcode = int(packet.get("opcode"))
+                payload_hex = str(packet.get("payloadHex") or "")
+                packet_payload = bytes.fromhex(payload_hex)
+            except (TypeError, ValueError) as error:
+                message = f"第 {index + 1} 个游戏包的 opcode/payload 无效"
+                if mutation_sent:
+                    raise OperationUncertainError(message) from error
+                raise RuntimeError(message) from error
+            normalized_packets.append({
+                "opcode": packet_opcode,
+                "payload": packet_payload,
+            })
+        normalized_fact = {
+            **dict(fact),
+            "requestOpcode": request_opcode,
+            "httpCode": http_code,
+            "packets": normalized_packets,
+        }
+        self._record_successful_game_response(
+            account_ref,
+            [request_opcode],
+            normalized_fact,
+            str(phase),
+        )
+        return normalized_fact
+
+    def _execute_host_game_command_batch(
+        self,
+        account_ref: str,
+        commands: list[tuple[int, bytes]],
+        phase: str,
+        context: Dict[str, Any],
+        *,
+        mutation_sent: bool,
+    ) -> Dict[str, Any]:
+        """Execute an exact multi-command packet without host-side game logic."""
+
+        expected_opcodes = [int(opcode) for opcode, _payload in commands]
+        if not expected_opcodes:
+            raise ValueError("批量游戏命令不能为空")
+        if self._ports.raw_http is None or self._ports.session_secrets is None:
+            raise RuntimeError("宿主未提供共享核心批量原始 HTTP 端口")
+        fact = self._execute_shared_raw_http_game_commands(
+            account_ref,
+            commands,
+            phase,
+            context,
+        )
+        try:
+            actual_opcodes = [
+                int(value) for value in fact.get("requestOpcodes") or []
+            ]
+            http_code = int(fact.get("httpCode"))
+        except (TypeError, ValueError) as error:
+            if mutation_sent:
+                raise OperationUncertainError(
+                    "批量游戏命令返回的请求或 HTTP 事实无效"
+                ) from error
+            raise RuntimeError("批量游戏命令事实无效") from error
+        if actual_opcodes != expected_opcodes:
+            message = (
+                "批量游戏命令回显 opcode 不匹配："
+                f"{actual_opcodes!r} != {expected_opcodes!r}"
+            )
+            if mutation_sent:
+                raise OperationUncertainError(message)
+            raise RuntimeError(message)
+        if fact.get("httpOk") is not True:
+            details = {
+                "httpStatus": http_code,
+                "opcodes": expected_opcodes,
+            }
+            if mutation_sent and (http_code == 0 or 500 <= http_code < 600):
+                raise OperationUncertainError(
+                    f"游戏 HTTP {http_code} 回执不明；请求已发送，禁止自动重做",
+                    details,
+                )
+            raise OperationKnownFailureError(
+                f"游戏 HTTP {http_code} 未成功",
+                code="GAME_COMMAND_HTTP_FAILED",
+                details=details,
+            )
+        packets = fact.get("packets")
+        if not isinstance(packets, list):
+            message = "批量游戏命令未返回 packets 数组"
+            if mutation_sent:
+                raise OperationUncertainError(message)
+            raise RuntimeError(message)
+        normalized_packets = []
+        for index, packet in enumerate(packets):
+            if not isinstance(packet, dict):
+                message = f"第 {index + 1} 个批量游戏响应包无效"
+                if mutation_sent:
+                    raise OperationUncertainError(message)
+                raise RuntimeError(message)
+            try:
+                packet_opcode = int(packet.get("opcode"))
+                packet_payload = bytes.fromhex(
+                    str(packet.get("payloadHex") or "")
+                )
+            except (TypeError, ValueError) as error:
+                message = f"第 {index + 1} 个批量游戏响应包无法解析"
+                if mutation_sent:
+                    raise OperationUncertainError(message) from error
+                raise RuntimeError(message) from error
+            normalized_packets.append({
+                "opcode": packet_opcode,
+                "payload": packet_payload,
+            })
+        normalized_fact = {
+            **dict(fact),
+            "requestOpcodes": actual_opcodes,
+            "httpCode": http_code,
+            "packets": normalized_packets,
+        }
+        self._record_successful_game_response(
+            account_ref,
+            actual_opcodes,
+            normalized_fact,
+            str(phase),
+        )
+        return normalized_fact
+
+    def _execute_shared_raw_http_game_command(
+        self,
+        account_ref: str,
+        opcode: int,
+        payload: bytes,
+        phase: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        fact = self._execute_shared_raw_http_game_commands(
+            account_ref,
+            [(int(opcode), bytes(payload))],
+            phase,
+            context,
+        )
+        return {**fact, "requestOpcode": int(opcode)}
+
+    def _execute_shared_raw_http_game_commands(
+        self,
+        account_ref: str,
+        commands: list[tuple[int, bytes]],
+        phase: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Send one exact multi-command game packet through the byte host."""
+
+        normalized_commands = [
+            (int(opcode), bytes(payload))
+            for opcode, payload in commands
+        ]
+        if not normalized_commands:
+            raise ValueError("共享原始传输至少需要一条游戏命令")
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise OperationKnownFailureError(
+                "共享原始传输账号不存在",
+                code="GAME_COMMAND_ACCOUNT_MISSING",
+            )
+        session = account.get("session")
+        session = dict(session) if isinstance(session, dict) else {}
+        public_state = session.get("publicState")
+        public_state = (
+            dict(public_state)
+            if isinstance(public_state, dict)
+            else {}
+        )
+        game_http = str(public_state.get("gameHttp") or "").strip()
+        if not game_http:
+            server_url = str(public_state.get("serverUrl") or "").rstrip("/")
+            if server_url:
+                game_http = server_url + "/kingWapServer/HttpClient"
+        secret_port = self._ports.session_secrets
+        http_port = self._ports.raw_http
+        if secret_port is None or http_port is None:
+            raise RuntimeError("共享原始 HTTP 传输端口未就绪")
+        secrets_value = dict(secret_port.load(account_ref))
+        try:
+            dm = int(secrets_value.get("dm") or 0)
+        except (TypeError, ValueError) as error:
+            raise OperationKnownFailureError(
+                "共享原始传输 Session dm 无效",
+                code="GAME_COMMAND_DM_INVALID",
+            ) from error
+        # ``dm`` is an opaque signed 64-bit value from 0x8003.  Values whose
+        # high bit is set are represented as negative Python/Java integers but
+        # retain the same valid eight-byte wire value.  Only zero means that no
+        # verified game session was supplied.
+        if not game_http or dm == 0:
+            raise OperationKnownFailureError(
+                "共享原始传输缺少已验证 Session",
+                code="GAME_COMMAND_SESSION_MISSING",
+            )
+        platform_key = normalize_platform_key(
+            account.get("platformKey") or account.get("platform")
+        )
+        header = str(PLATFORM_LOGIN_PROFILES[platform_key]["header"])
+        request_body = make_packet(
+            normalized_commands,
+            dm,
+            header=header,
+            timestamp_millis=self._ports.clock.now_millis(),
+        )
+        try:
+            response = http_port.exchange({
+                "method": "POST",
+                "url": game_http,
+                "headers": {
+                    # Captured game clients use these HTTP semantics. Several
+                    # live servers return an empty 502 before decoding an
+                    # otherwise valid packet when octet-stream/a desktop UA is
+                    # used.
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": (
+                        "Dalvik/2.1.0 (Linux; U; Android 13; "
+                        "22081212C Build/TKQ1.220829.002)"
+                    ),
+                    "Connection": "Close",
+                    "accept": "*/*",
+                    "Accept-Encoding": "gzip",
+                },
+                "body": request_body,
+                "connectTimeoutMillis": int(
+                    context.get("connectTimeoutMillis") or 15_000
+                ),
+                "readTimeoutMillis": int(
+                    context.get("readTimeoutMillis") or 25_000
+                ),
+                "transportMaxAttempts": int(
+                    context.get("transportMaxAttempts") or 1
+                ),
+                "transportPaceBeforeMillis": int(
+                    context.get("transportPaceBeforeMillis") or 0
+                ),
+                "transportPaceJitterMillis": int(
+                    context.get("transportPaceJitterMillis") or 0
+                ),
+                "transportRetryBaseDelayMillis": int(
+                    context.get("transportRetryBaseDelayMillis") or 0
+                ),
+                "transportRetryJitterMillis": int(
+                    context.get("transportRetryJitterMillis") or 0
+                ),
+                "requireExecutionOwner": True,
+                "accountRef": str(account_ref),
+                "requestOpcode": int(normalized_commands[0][0]),
+                "requestOpcodes": [
+                    int(opcode) for opcode, _payload in normalized_commands
+                ],
+                "gameCommands": [
+                    {
+                        "opcode": int(opcode),
+                        "payloadHex": bytes(payload).hex(),
+                    }
+                    for opcode, payload in normalized_commands
+                ],
+                "phase": str(phase),
+                "readOnly": bool(context.get("readOnly", False)),
+                "operationId": str(context.get("operationId") or ""),
+                "requestId": str(context.get("requestId") or ""),
+            })
+        except OperationDeferredError:
+            raise
+        except Exception as error:
+            raise HostGameCommandError(
+                f"原始游戏 HTTP 传输失败：{error}",
+                code="GAME_COMMAND_TRANSPORT_FAILED",
+                status=503,
+            ) from error
+        try:
+            http_code = int(response.get("status") or 0)
+        except (TypeError, ValueError) as error:
+            raise HostGameCommandError(
+                "原始游戏 HTTP 状态无效",
+                code="GAME_COMMAND_TRANSPORT_INVALID",
+                status=503,
+            ) from error
+        response_body = response.get("body")
+        if not isinstance(response_body, (bytes, bytearray)):
+            raise HostGameCommandError(
+                "原始游戏 HTTP 未返回字节响应",
+                code="GAME_COMMAND_TRANSPORT_INVALID",
+                status=503,
+            )
+        raw = bytes(response_body)
+        packets = parse_response(raw) if 200 <= http_code < 300 else []
+        parse_error = next(
+            (
+                str(packet.get("parseError") or "")
+                for packet in packets
+                if isinstance(packet, dict) and packet.get("parseError")
+            ),
+            "",
+        )
+        if parse_error:
+            raise HostGameCommandError(
+                f"原始游戏响应解析失败：{parse_error}",
+                code="GAME_COMMAND_RESPONSE_INVALID",
+                status=502,
+            )
+        return {
+            "requestOpcodes": [
+                int(opcode) for opcode, _payload in normalized_commands
+            ],
+            "httpCode": http_code,
+            "httpOk": 200 <= http_code < 300,
+            "responseBytes": len(raw),
+            "packets": [
+                {
+                    "opcode": int(packet.get("opcode") or 0),
+                    "payloadHex": bytes(packet.get("payload") or b"").hex(),
+                }
+                for packet in packets
+                if isinstance(packet, dict) and packet.get("opcode") is not None
+            ],
+            "phase": str(phase),
+        }
+
+    @staticmethod
+    def _game_packet(
+        fact: Dict[str, Any],
+        expected_opcode: int,
+    ) -> Optional[bytes]:
+        for packet in fact.get("packets") or []:
+            if (
+                isinstance(packet, dict)
+                and int(packet.get("opcode") or -1) == int(expected_opcode)
+                and isinstance(packet.get("payload"), bytes)
+            ):
+                return bytes(packet["payload"])
+        return None
+
+    def _required_game_packet(
+        self,
+        fact: Dict[str, Any],
+        expected_opcode: int,
+        *,
+        uncertain_message: str,
+    ) -> bytes:
+        payload = self._game_packet(fact, expected_opcode)
+        if payload is None:
+            raise OperationUncertainError(
+                uncertain_message,
+                {
+                    "expectedOpcode": f"0x{expected_opcode:04x}",
+                    "responseOpcodes": [
+                        f"0x{int(packet.get('opcode') or 0):04x}"
+                        for packet in fact.get("packets") or []
+                        if isinstance(packet, dict)
+                    ],
+                },
+            )
+        return payload
+
+    def _fresh_formation_state(
+        self,
+        account_ref: str,
+        context: Dict[str, Any],
+        *,
+        read_only: bool = False,
+    ) -> tuple[str, list[Dict[str, Any]], list[Dict[str, Any]]]:
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise RuntimeError("刷新配兵状态时账号不存在")
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        public_state = session.get("publicState")
+        public_state = public_state if isinstance(public_state, dict) else {}
+        role_id_value = (
+            public_state.get("roleId")
+            or session.get("accountId")
+            or account.get("id")
+        )
+        role_id = positive_game_id(role_id_value, "角色 ID")
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x1016,
+            struct.pack(">q", role_id),
+            "shared-core/formations/state-refresh",
+            {**context, "readOnly": True} if read_only else context,
+            mutation_sent=False,
+        )
+        payload = self._game_packet(fact, 0x8004)
+        if payload is None:
+            raise RuntimeError("配兵前刷新未收到 0x8004 角色状态")
+        state_hex = payload.hex()
+        generals = recover_generals_from_8004(state_hex)
+        if not generals:
+            raise RuntimeError("共享核心未能从 0x8004 恢复将领列表")
+        army = parse_idle_army_from_8004(state_hex, generals)
+        return state_hex, generals, army
+
+    def _fresh_inventory_state(
+        self,
+        account_ref: str,
+        context: Dict[str, Any],
+        *,
+        phase: str,
+    ) -> Dict[str, Any]:
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x1104,
+            b"\x00",
+            phase,
+            context,
+            mutation_sent=False,
+        )
+        payload = self._game_packet(fact, 0x8104)
+        if payload is None:
+            raise OperationKnownFailureError(
+                "刷新背包未收到 0x8104 响应",
+                code="INVENTORY_REFRESH_MISSING",
+            )
+        inventory = parse_8104_inventory(
+            payload,
+            "shared-core/0x1104/0x8104",
+        )
+        parse_error = str(inventory.get("parseError") or "").strip()
+        if parse_error:
+            raise OperationKnownFailureError(
+                f"背包 0x8104 解析失败：{parse_error}",
+                code="INVENTORY_REFRESH_PARSE_FAILED",
+            )
+        self._update_account_public_state(
+            account_ref,
+            self._inventory_public_state_updates(inventory),
+        )
+        return inventory
+
+    def _cloud_shared_identity(
+        self,
+        account_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Build only the anonymous/public identity accepted by the Worker."""
+
+        port = self._ports.cloud_shared_data
+        if port is None or not bool(port.configured()):
+            return None
+        account = self._accounts.get(str(account_ref))
+        if account is None:
+            return None
+        raw_platform = str(
+            account.get("platformKey") or account.get("platform") or ""
+        ).strip()
+        if not raw_platform:
+            return None
+        try:
+            platform_key = normalize_platform_key(raw_platform)
+        except ValueError:
+            return None
+        session = account.get("session")
+        session = dict(session) if isinstance(session, dict) else {}
+        public = session.get("publicState")
+        public = dict(public) if isinstance(public, dict) else {}
+        # A display name is not a stable server identity. Imported legacy
+        # accounts without a protocol server key remain local-only.
+        server_key = str(
+            public.get("serverKey") or account.get("serverId") or ""
+        ).strip()
+        role_id = str(
+            public.get("roleId")
+            or session.get("accountId")
+            or account.get("id")
+            or account_ref
+        ).strip()
+        if not server_key or not role_id:
+            return None
+        actor_source = f"{platform_key}\x00{server_key}\x00{role_id}"
+        actor_id = hashlib.sha256(actor_source.encode("utf-8")).hexdigest()
+        raw_game_http = str(public.get("gameHttp") or "")[:500]
+        public_game_http = ""
+        try:
+            parsed_game_http = urllib.parse.urlsplit(raw_game_http)
+            if parsed_game_http.scheme in {"http", "https"} and parsed_game_http.hostname:
+                hostname = str(parsed_game_http.hostname)
+                host = f"[{hostname}]" if ":" in hostname else hostname
+                netloc = (
+                    f"{host}:{parsed_game_http.port}"
+                    if parsed_game_http.port is not None
+                    else host
+                )
+                public_game_http = urllib.parse.urlunsplit((
+                    parsed_game_http.scheme,
+                    netloc,
+                    parsed_game_http.path,
+                    "",
+                    "",
+                ))
+        except (TypeError, ValueError):
+            public_game_http = ""
+        return {
+            "platformKey": platform_key,
+            "serverKey": server_key,
+            "actorId": actor_id,
+            "server": {
+                "areaId": str(account.get("areaId") or ""),
+                "areaName": str(account.get("serverName") or "")[:160],
+                "gameHttp": public_game_http,
+            },
+        }
+
+    def _cloud_shared_exchange(
+        self,
+        account_ref: str,
+        path: str,
+        body: Dict[str, Any],
+    ) -> tuple[int, Dict[str, Any]]:
+        port = self._ports.cloud_shared_data
+        identity = self._cloud_shared_identity(account_ref)
+        if port is None or identity is None:
+            raise RuntimeError("共享云端数据未配置或账号缺少稳定区服标识")
+        response = port.exchange({
+            "method": "POST",
+            "path": str(path),
+            "body": {
+                "platformKey": identity["platformKey"],
+                "serverKey": identity["serverKey"],
+                "actorId": identity["actorId"],
+                **dict(body),
+            },
+        })
+        if not isinstance(response, dict):
+            raise RuntimeError("共享云端数据传输未返回对象")
+        try:
+            status = int(response.get("status") or 0)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("共享云端数据传输状态无效") from error
+        payload = response.get("body")
+        if not isinstance(payload, dict):
+            raise RuntimeError("共享云端数据传输正文无效")
+        return status, dict(payload)
+
+    @staticmethod
+    def _public_directory_areas(
+        areas: list[Dict[str, Any]],
+    ) -> list[Dict[str, str]]:
+        """Project a passport snapshot onto the Worker's public allow-list."""
+
+        normalized: list[Dict[str, str]] = []
+        seen: set[str] = set()
+        for raw in areas:
+            if not isinstance(raw, dict):
+                continue
+            server_key = str(raw.get("serverKey") or "").strip()[:240]
+            area_name = str(raw.get("areaName") or "").strip()[:160]
+            if not server_key or not area_name or server_key in seen:
+                continue
+            seen.add(server_key)
+            raw_url = str(
+                raw.get("serverUrl") or raw.get("gameHttp") or ""
+            )[:500]
+            public_url = ""
+            try:
+                parsed = urllib.parse.urlsplit(raw_url)
+                if parsed.scheme in {"http", "https"} and parsed.hostname:
+                    hostname = str(parsed.hostname)
+                    host = f"[{hostname}]" if ":" in hostname else hostname
+                    netloc = (
+                        f"{host}:{parsed.port}"
+                        if parsed.port is not None
+                        else host
+                    )
+                    public_url = urllib.parse.urlunsplit((
+                        parsed.scheme, netloc, parsed.path, "", "",
+                    ))
+            except (TypeError, ValueError):
+                public_url = ""
+            normalized.append({
+                "serverKey": server_key,
+                "areaId": str(raw.get("areaId") or "").strip()[:80],
+                "areaName": area_name,
+                "target": str(raw.get("target") or "").strip()[:80],
+                "gameHttp": public_url,
+            })
+        return normalized
+
+    def cloud_directory_sync(
+        self,
+        platform_key: str,
+        areas: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Publish one complete platform directory without account identity."""
+
+        port = self._ports.cloud_shared_data
+        if port is None or not bool(port.configured()):
+            return {"ok": False, "configured": False, "count": 0}
+        normalized_platform = normalize_platform_key(platform_key)
+        public_areas = self._public_directory_areas(areas)
+        if not public_areas:
+            raise ValueError("共享区服目录为空")
+        response = port.exchange({
+            "method": "POST",
+            "path": "/v1/servers/directory/sync",
+            "body": {
+                "platformKey": normalized_platform,
+                "areas": public_areas,
+            },
+        })
+        if not isinstance(response, dict):
+            raise RuntimeError("共享区服目录传输未返回对象")
+        status = int(response.get("status") or 0)
+        payload = response.get("body")
+        if not isinstance(payload, dict):
+            raise RuntimeError("共享区服目录响应正文无效")
+        if not 200 <= status < 300 or payload.get("ok") is not True:
+            raise RuntimeError(
+                str(payload.get("error") or f"共享区服目录 HTTP {status}")
+            )
+        return dict(payload)
+
+    def _schedule_cloud_directory_sync(
+        self,
+        platform_key: str,
+        areas: list[Dict[str, Any]],
+    ) -> None:
+        """Do not add Cloudflare latency to Passport login or UI requests."""
+
+        try:
+            normalized_platform = normalize_platform_key(platform_key)
+        except ValueError:
+            return
+        port = self._ports.cloud_shared_data
+        if port is None or not bool(port.configured()) or not areas:
+            return
+        with self._cloud_mode_lock:
+            if normalized_platform in self._cloud_directory_sync_inflight:
+                return
+            self._cloud_directory_sync_inflight.add(normalized_platform)
+
+        def run() -> None:
+            try:
+                result = self.cloud_directory_sync(normalized_platform, areas)
+                self._ports.logs.write({
+                    "level": "info",
+                    "source": "cloud-shared-data",
+                    "message": (
+                        f"共享区服目录已同步：{normalized_platform} "
+                        f"共{int(result.get('count') or 0)}个区服"
+                    ),
+                })
+            except Exception as error:
+                self._ports.logs.write({
+                    "level": "warn",
+                    "source": "cloud-shared-data",
+                    "message": f"共享区服目录同步失败：{error}",
+                })
+            finally:
+                with self._cloud_mode_lock:
+                    self._cloud_directory_sync_inflight.discard(
+                        normalized_platform
+                    )
+
+        threading.Thread(
+            target=run,
+            name=f"cloud-directory-{normalized_platform}",
+            daemon=True,
+        ).start()
+
+    def _cloud_identity_gap(self, account_ref: str) -> str:
+        """Name the single missing fact, so the report is actionable."""
+
+        port = self._ports.cloud_shared_data
+        if port is None:
+            return "宿主未提供共享云端数据端口"
+        try:
+            if not bool(port.configured()):
+                return "共享云端数据未配置（地址或令牌为空）"
+        except Exception as error:
+            return f"共享云端数据配置检查失败：{error}"
+        account = self._accounts.get(str(account_ref))
+        if account is None:
+            return "账号不在共享账本中"
+        if not str(
+            account.get("platformKey") or account.get("platform") or ""
+        ).strip():
+            return "账号缺少平台标识"
+        session = account.get("session")
+        session = dict(session) if isinstance(session, dict) else {}
+        public = session.get("publicState")
+        public = dict(public) if isinstance(public, dict) else {}
+        if not str(
+            public.get("serverKey") or account.get("serverId") or ""
+        ).strip():
+            return "账号缺少区服标识"
+        return "平台标识无法归一化"
+
+    def _remember_cloud_mode(
+        self,
+        account_ref: str,
+        value: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized = {
+            **dict(value),
+            "checkedAtMillis": int(self._ports.clock.now_millis()),
+        }
+        with self._cloud_mode_lock:
+            previous = dict(self._cloud_modes.get(str(account_ref)) or {})
+            self._cloud_modes[str(account_ref)] = normalized
+        # This decision sets how a same-server account finds its targets, yet
+        # it lived only in memory and was never reported.  Two accounts on one
+        # server rediscovered the identical map from zero - one held 218 cached
+        # bandits, the other 2 - and nothing said which mode either was in or
+        # why.  Log transitions only, so a steady state stays quiet.
+        if str(previous.get("mode") or "") != str(normalized.get("mode") or ""):
+            # Best-effort by construction: a report about a decision must never
+            # be able to fail the decision.  A host bridge without a log sink
+            # would otherwise turn every map search into a failed operation.
+            try:
+                self._ports.logs.write({
+                    "level": "info",
+                    "source": "cloud-shared-data",
+                    "accountRef": str(account_ref),
+                    "message": (
+                        "共享地图模式="
+                        f"{normalized.get('mode')}"
+                        f" 已配置={normalized.get('configured')}"
+                        f" 同服在线数={normalized.get('onlineAccountCount')}"
+                        f" 阈值={normalized.get('threshold')}"
+                        + (
+                            f" 原因={normalized.get('error')}"
+                            if normalized.get("error")
+                            else ""
+                        )
+                    ),
+                })
+            except Exception:
+                pass
+        return dict(normalized)
+
+    def _cloud_presence_mode(
+        self,
+        account_ref: str,
+        *,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Heartbeat is the sole cloud call made while a server has one actor."""
+
+        now_millis = int(self._ports.clock.now_millis())
+        identity = self._cloud_shared_identity(account_ref)
+        if identity is None:
+            # This returned without recording anything, so "the host has no
+            # cloud transport", "the account has no server key" and "the
+            # Worker said one actor" were all indistinguishable from outside.
+            return self._remember_cloud_mode(account_ref, {
+                "mode": "LOCAL_ONLY",
+                "configured": False,
+                "onlineAccountCount": 1,
+                "error": self._cloud_identity_gap(account_ref),
+            })
+        with self._cloud_mode_lock:
+            previous = dict(self._cloud_modes.get(str(account_ref)) or {})
+        if (
+            not force
+            and previous
+            and now_millis - int(previous.get("checkedAtMillis") or 0)
+            < CLOUD_PRESENCE_RENEW_MILLIS
+        ):
+            return previous
+        try:
+            status, payload = self._cloud_shared_exchange(
+                account_ref,
+                "/v1/presence/heartbeat",
+                {"server": dict(identity.get("server") or {})},
+            )
+            mode = str(payload.get("mode") or "")
+            if status != 200 or payload.get("ok") is not True or mode not in {
+                "LOCAL_ONLY", "CLOUD_SHARED",
+            }:
+                raise RuntimeError(
+                    str(payload.get("error") or f"HTTP {status}")
+                )
+            online = max(0, int(payload.get("onlineAccountCount") or 0))
+            # Presence is a statement about *recency*, so one reading of "one
+            # actor" is not proof the peer left - it may simply be mid-battle
+            # and a moment late renewing.  Hold shared mode for a grace window
+            # after the last positive sighting.  Without this an account
+            # oscillated between modes every one to two minutes, deferring a
+            # brush round each time it flipped.  A peer that really is gone is
+            # still corrected: the Worker answers a map query with 409 and the
+            # mode drops immediately.
+            if mode == "LOCAL_ONLY" and str(
+                previous.get("mode") or ""
+            ) == "CLOUD_SHARED":
+                last_shared = int(previous.get("sharedSeenAtMillis") or 0)
+                if last_shared > 0 and (
+                    now_millis - last_shared < CLOUD_PRESENCE_GRACE_MILLIS
+                ):
+                    return self._remember_cloud_mode(account_ref, {
+                        **previous,
+                        "mode": "CLOUD_SHARED",
+                        "onlineAccountCount": online,
+                        "sharedHeldByGrace": True,
+                    })
+            remembered = {
+                "mode": mode,
+                "configured": True,
+                "onlineAccountCount": online,
+                "threshold": max(2, int(payload.get("threshold") or 2)),
+            }
+            if mode == "CLOUD_SHARED":
+                remembered["sharedSeenAtMillis"] = now_millis
+            return self._remember_cloud_mode(account_ref, remembered)
+        except Exception as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "cloud-shared-data",
+                "accountRef": str(account_ref),
+                "message": f"共享云端数据心跳失败：{error}",
+            })
+            if str(previous.get("mode") or "") == "CLOUD_SHARED":
+                return self._remember_cloud_mode(account_ref, {
+                    "mode": "CLOUD_UNAVAILABLE",
+                    "configured": True,
+                    "previouslyShared": True,
+                    "error": str(error),
+                })
+            return self._remember_cloud_mode(account_ref, {
+                "mode": "LOCAL_ONLY",
+                "configured": True,
+                "onlineAccountCount": 1,
+                "heartbeatUnavailable": True,
+            })
+
+    def cloud_presence_heartbeat(self, account_ref: str) -> Dict[str, Any]:
+        """Public host hook used after a confirmed legacy desktop heartbeat."""
+
+        return self._cloud_presence_mode(str(account_ref), force=True)
+
+    def cloud_map_coordination_policy(
+        self,
+        account_ref: str,
+    ) -> Dict[str, Any]:
+        """Tell a host whether its legacy local map prefetch may still run.
+
+        Hosts used to maintain their own background bandit/mine scanners.  The
+        scanners are still required for exact one-account compatibility, but
+        they must never race the cloud lease/reservation workflow.  Keeping
+        this decision in the shared core also preserves the outage rule: once
+        an account has observed ``CLOUD_SHARED``, a cloud failure pauses map
+        work instead of silently falling back to local target selection.
+        """
+
+        presence = self._cloud_presence_mode(str(account_ref))
+        mode = str(presence.get("mode") or "LOCAL_ONLY")
+        return {
+            **presence,
+            "mode": mode,
+            "legacyLocalMapPrefetchAllowed": mode == "LOCAL_ONLY",
+        }
+
+    def cloud_prepare_host_target_dispatch(
+        self,
+        account_ref: str,
+        map_kind: str,
+        target: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Coordinate a remaining trusted host-side expedition entry point.
+
+        Most dispatches execute inside the shared Python workflows.  A small
+        starter-mode compatibility path still owns its verified legacy packet
+        exchange in the desktop host.  This hook lets that path participate in
+        the exact same cloud reservation state machine without exposing the
+        Worker token or a generic cloud request primitive to legacy code.
+        """
+
+        normalized_kind = str(map_kind or "").strip().lower()
+        if normalized_kind not in {"bandit", "mine"}:
+            raise ValueError("共享地图目标类型无效")
+        mode = self._cloud_map_action_mode(
+            str(account_ref),
+            "目标出征",
+        )
+        if mode != "CLOUD_SHARED":
+            return {
+                "mode": mode,
+                "reserved": False,
+                "reservationRequired": False,
+                "reservationToken": "",
+            }
+        normalized_target = dict(target or {})
+        token = self._cloud_reserve_map_target(
+            str(account_ref), normalized_kind, normalized_target
+        )
+        if not token:
+            return {
+                "mode": mode,
+                "reserved": False,
+                "reservationRequired": True,
+                "reservationToken": "",
+                "reason": "目标已被其他账号预占或不再可用",
+            }
+        if not self._cloud_update_map_target_status(
+            str(account_ref),
+            normalized_kind,
+            normalized_target,
+            token,
+            "dispatching",
+            "trusted host dispatch starting",
+        ):
+            return {
+                "mode": mode,
+                "reserved": False,
+                "reservationRequired": True,
+                "reservationToken": "",
+                "reason": "目标预占在出征前已失效",
+            }
+        return {
+            "mode": mode,
+            "reserved": True,
+            "reservationRequired": True,
+            "reservationToken": token,
+        }
+
+    def cloud_finish_host_target_dispatch(
+        self,
+        account_ref: str,
+        map_kind: str,
+        target: Dict[str, Any],
+        reservation_token: str,
+        status: str,
+        reason: str = "",
+    ) -> bool:
+        """Finish a reservation created by cloud_prepare_host_target_dispatch."""
+
+        normalized_kind = str(map_kind or "").strip().lower()
+        normalized_status = str(status or "").strip().lower()
+        if normalized_kind not in {"bandit", "mine"}:
+            raise ValueError("共享地图目标类型无效")
+        if normalized_status not in {
+            "available", "dispatched", "rejected", "missing", "uncertain",
+        }:
+            raise ValueError("共享地图目标终态无效")
+        return self._cloud_update_map_target_status(
+            str(account_ref),
+            normalized_kind,
+            dict(target or {}),
+            str(reservation_token or ""),
+            normalized_status,
+            str(reason or ""),
+            strict=False,
+        )
+
+    def _schedule_cloud_presence_heartbeat(self, account_ref: str) -> None:
+        """Keep game heartbeats non-blocking even if Cloudflare is degraded."""
+
+        normalized_ref = str(account_ref)
+        if self._cloud_shared_identity(normalized_ref) is None:
+            return
+        with self._cloud_mode_lock:
+            if normalized_ref in self._cloud_heartbeats_inflight:
+                return
+            self._cloud_heartbeats_inflight.add(normalized_ref)
+
+        def run() -> None:
+            try:
+                self._cloud_presence_mode(normalized_ref, force=True)
+            finally:
+                with self._cloud_mode_lock:
+                    self._cloud_heartbeats_inflight.discard(normalized_ref)
+
+        threading.Thread(
+            target=run,
+            name=f"cloud-presence-{normalized_ref}",
+            daemon=True,
+        ).start()
+
+    def cloud_presence_heartbeat_json(self, account_ref: str) -> str:
+        return self._json(self.cloud_presence_heartbeat(account_ref))
+
+    def _cloud_map_exchange(
+        self,
+        account_ref: str,
+        path: str,
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        try:
+            status, payload = self._cloud_shared_exchange(
+                account_ref, path, body
+            )
+        except Exception as error:
+            raise OperationKnownFailureError(
+                f"共享地图暂时不可用：{error}",
+                code="CLOUD_SHARED_DATA_UNAVAILABLE",
+            ) from error
+        code = str(payload.get("code") or "")
+        if status == 409 and code in {
+            "SHARED_MODE_INACTIVE", "PRESENCE_REQUIRED",
+        }:
+            self._remember_cloud_mode(account_ref, {
+                "mode": "LOCAL_ONLY",
+                "configured": True,
+                "onlineAccountCount": int(
+                    payload.get("onlineAccountCount") or 1
+                ),
+            })
+            raise OperationKnownFailureError(
+                "共享地图在线人数发生变化，本轮已安全延后",
+                code="CLOUD_SHARED_MODE_CHANGED",
+            )
+        if not 200 <= status < 300 or payload.get("ok") is False:
+            raise OperationKnownFailureError(
+                str(payload.get("error") or f"共享地图 HTTP {status}"),
+                code=code or "CLOUD_SHARED_DATA_REJECTED",
+            )
+        return payload
+
+    @staticmethod
+    def _cloud_target_id(target: Dict[str, Any]) -> str:
+        raw_hex = str(target.get("idHex") or "").strip().lower()
+        if raw_hex:
+            clean = "".join(char for char in raw_hex if char in "0123456789abcdef")
+            if clean:
+                return clean[-16:].rjust(16, "0")
+        try:
+            value = int(target.get("id") or target.get("targetId") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        return f"{value:016x}" if value > 0 else ""
+
+    def _cloud_target_observation(
+        self,
+        map_kind: str,
+        target: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        target_id = self._cloud_target_id(target)
+        if not target_id:
+            return None
+        try:
+            x = int(target.get("x") or 0)
+            y = int(target.get("y") or 0)
+        except (TypeError, ValueError):
+            return None
+        data: Dict[str, Any]
+        if map_kind == "bandit":
+            composition = target.get("composition")
+            composition = (
+                dict(composition) if isinstance(composition, dict) else {}
+            )
+            data = {
+                "name": str(target.get("name") or "")[:300],
+                "kind": str(target.get("kind") or "")[:300],
+                "resource": str(target.get("resource") or "")[:300],
+                "rewardDescription": str(
+                    target.get("rewardDescription") or ""
+                )[:300],
+                "dropCategories": [
+                    str(value)[:80]
+                    for value in target.get("dropCategories") or []
+                ][:16],
+                "lootIds": [
+                    int(value) for value in target.get("lootIds") or []
+                    if str(value).lstrip("-").isdigit() and int(value) >= 0
+                ][:64],
+                "compositionCode": str(
+                    target.get("compositionCode") or ""
+                )[:120],
+                "composition": {
+                    **{
+                        key: max(0, int(composition.get(key) or 0))
+                        for key in ("foot", "bow", "cavalry", "chariot")
+                    },
+                    **(
+                        {"source": "8540-units"}
+                        if composition.get("source") == "8540-units"
+                        else {}
+                    ),
+                },
+                "unitTypes": [
+                    max(0, int(unit.get("soldierTypeCode") or 0))
+                    for unit in target.get("units") or []
+                    if isinstance(unit, dict)
+                ][:64],
+            }
+        else:
+            public_keys = (
+                "name", "kind", "protocolKind", "businessId", "typeCode",
+                "rank", "detailFlag", "ownerName", "ownerCountry",
+                "playerOccupied", "unoccupiedByPlayer", "isEmpty", "occupied",
+                "amountA", "amountB", "storage", "productionPerHour",
+                "description", "valueJ", "valueK", "defenderCount",
+                "hasDefenders",
+            )
+            data = {
+                key: target[key]
+                for key in public_keys
+                if key in target and target[key] is not None
+            }
+        try:
+            level = int(target.get("level") or target.get("rank") or 0)
+        except (TypeError, ValueError):
+            level = 0
+        return {
+            "targetId": target_id,
+            "x": x,
+            "y": y,
+            "type": str(target.get("kind") or target.get("type") or "")[:120],
+            "level": level if level > 0 else None,
+            "data": data,
+        }
+
+    @staticmethod
+    def _cloud_target_from_row(
+        map_kind: str,
+        row: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        target_id = str(row.get("targetId") or "").strip().lower()
+        if not target_id:
+            return None
+        try:
+            numeric_id = int(target_id, 16)
+            x = int(row.get("x") or 0)
+            y = int(row.get("y") or 0)
+        except (TypeError, ValueError):
+            return None
+        data = row.get("data")
+        data = dict(data) if isinstance(data, dict) else {}
+        target: Dict[str, Any] = {
+            **data,
+            "id": numeric_id,
+            "idHex": target_id,
+            "x": x,
+            "y": y,
+            "kind": str(row.get("type") or data.get("kind") or ""),
+            "type": str(row.get("type") or data.get("kind") or ""),
+            "level": int(row.get("level") or data.get("rank") or 0),
+            "sharedTargetKey": f"id:{target_id}",
+            "fromSharedMap": True,
+            "fromCloudSharedMap": True,
+            "fromCache": True,
+        }
+        if map_kind == "bandit" and isinstance(data.get("unitTypes"), list):
+            target["units"] = [
+                {"soldierTypeCode": int(value)}
+                for value in data["unitTypes"]
+                if str(value).lstrip("-").isdigit()
+            ]
+        return target
+
+    def _cloud_query_map_targets(
+        self,
+        account_ref: str,
+        map_kind: str,
+    ) -> list[Dict[str, Any]]:
+        payload = self._cloud_map_exchange(
+            account_ref,
+            "/v1/maps/targets/query",
+            {"mapKind": str(map_kind), "limit": 500},
+        )
+        result: list[Dict[str, Any]] = []
+        for value in payload.get("targets") or []:
+            if not isinstance(value, dict):
+                continue
+            target = self._cloud_target_from_row(map_kind, value)
+            if target is not None:
+                result.append(target)
+        return dedupe_targets(result)
+
+    def _cloud_claim_map_scans(
+        self,
+        account_ref: str,
+        map_kind: str,
+        coordinates: list[tuple[int, int]],
+    ) -> list[Dict[str, Any]]:
+        normalized = list(dict.fromkeys(
+            (int(x), int(y)) for x, y in coordinates
+        ))[:20]
+        if not normalized:
+            return []
+        payload = self._cloud_map_exchange(
+            account_ref,
+            "/v1/maps/scans/claim",
+            {
+                "mapKind": str(map_kind),
+                "coordinates": [
+                    {"x": x, "y": y} for x, y in normalized
+                ],
+            },
+        )
+        claims = []
+        for value in payload.get("scans") or []:
+            if not isinstance(value, dict):
+                continue
+            token = str(value.get("leaseToken") or "").strip()
+            if not token:
+                continue
+            claims.append({
+                "x": int(value.get("x") or 0),
+                "y": int(value.get("y") or 0),
+                "leaseToken": token,
+            })
+        return claims
+
+    def _cloud_release_map_scans(
+        self,
+        account_ref: str,
+        map_kind: str,
+        lease_tokens: list[str],
+        *,
+        strict: bool = False,
+    ) -> None:
+        tokens = list(dict.fromkeys(
+            str(value).strip() for value in lease_tokens
+            if str(value or "").strip()
+        ))[:20]
+        if not tokens:
+            return
+        try:
+            self._cloud_map_exchange(
+                account_ref,
+                "/v1/maps/scans/release",
+                {"mapKind": str(map_kind), "leaseTokens": tokens},
+            )
+        except Exception as error:
+            if strict:
+                raise
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "cloud-shared-data",
+                "accountRef": str(account_ref),
+                "message": f"释放共享地图扫描租约失败：{error}",
+            })
+
+    def _cloud_publish_map_observations(
+        self,
+        account_ref: str,
+        map_kind: str,
+        scan_results: list[Dict[str, Any]],
+        lease_tokens: Dict[tuple[int, int], str],
+    ) -> None:
+        regions = []
+        for result in scan_results:
+            coord = result.get("scanCoord")
+            if not isinstance(coord, (list, tuple)) or len(coord) < 2:
+                continue
+            x, y = int(coord[0]), int(coord[1])
+            targets = []
+            for value in result.get("targets") or []:
+                if not isinstance(value, dict):
+                    continue
+                target = self._cloud_target_observation(map_kind, value)
+                if target is not None:
+                    targets.append(target)
+            region: Dict[str, Any] = {"x": x, "y": y, "targets": targets}
+            lease_token = str(lease_tokens.get((x, y)) or "")
+            if lease_token:
+                region["leaseToken"] = lease_token
+            regions.append(region)
+        if not regions:
+            return
+        self._cloud_map_exchange(
+            account_ref,
+            "/v1/maps/observations",
+            {"mapKind": str(map_kind), "regions": regions},
+        )
+
+    def _cloud_reserve_map_target(
+        self,
+        account_ref: str,
+        map_kind: str,
+        target: Dict[str, Any],
+    ) -> Optional[str]:
+        target_id = self._cloud_target_id(target)
+        if not target_id:
+            return None
+        payload = self._cloud_map_exchange(
+            account_ref,
+            "/v1/maps/targets/reserve",
+            {"mapKind": str(map_kind), "targetId": target_id},
+        )
+        if payload.get("reserved") is not True:
+            return None
+        token = str(payload.get("reservationToken") or "").strip()
+        return token or None
+
+    def _cloud_update_map_target_status(
+        self,
+        account_ref: str,
+        map_kind: str,
+        target: Dict[str, Any],
+        reservation_token: str,
+        status: str,
+        reason: str = "",
+        *,
+        strict: bool = True,
+    ) -> bool:
+        target_id = self._cloud_target_id(target)
+        token = str(reservation_token or "").strip()
+        if not target_id or not token:
+            return False
+        try:
+            payload = self._cloud_map_exchange(
+                account_ref,
+                "/v1/maps/targets/status",
+                {
+                    "mapKind": str(map_kind),
+                    "targetId": target_id,
+                    "reservationToken": token,
+                    "status": str(status),
+                    "reason": str(reason or "")[:300],
+                },
+            )
+            return payload.get("updated") is True
+        except Exception as error:
+            if strict:
+                raise
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "cloud-shared-data",
+                "accountRef": str(account_ref),
+                "message": f"更新共享地图目标状态失败：{error}",
+                "mapKind": str(map_kind),
+                "status": str(status),
+            })
+            return False
+
+    def _cloud_map_action_mode(
+        self,
+        account_ref: str,
+        action_name: str,
+    ) -> str:
+        mode = str(
+            self._cloud_presence_mode(str(account_ref)).get("mode")
+            or "LOCAL_ONLY"
+        )
+        if mode == "CLOUD_UNAVAILABLE":
+            raise OperationKnownFailureError(
+                f"共享地图连接暂不可用，本次{action_name}已安全延后",
+                code="CLOUD_SHARED_DATA_UNAVAILABLE",
+            )
+        return mode
+
+    def _cloud_manual_scan_window(
+        self,
+        account_ref: str,
+        map_kind: str,
+        fingerprint_source: Dict[str, Any],
+        coordinates: list[tuple[int, int]],
+    ) -> tuple[str, int, list[tuple[int, int]], int, bool]:
+        fingerprint = hashlib.sha256(
+            self._json({
+                "mapKind": str(map_kind),
+                **dict(fingerprint_source),
+            }).encode("utf-8")
+        ).hexdigest()
+        cursor_key = f"{account_ref}\x00{map_kind}\x00{fingerprint}"
+        with self._cloud_mode_lock:
+            offset = int(self._cloud_manual_scan_cursors.get(cursor_key) or 0)
+        if not 0 <= offset < len(coordinates):
+            offset = 0
+        proposed = coordinates[offset:offset + 20]
+        next_offset = offset + len(proposed)
+        wrapped = next_offset >= len(coordinates)
+        return (
+            cursor_key,
+            offset,
+            proposed,
+            0 if wrapped else next_offset,
+            wrapped,
+        )
+
+    def _remember_cloud_manual_scan_cursor(
+        self,
+        cursor_key: str,
+        next_offset: int,
+    ) -> None:
+        with self._cloud_mode_lock:
+            self._cloud_manual_scan_cursors[str(cursor_key)] = max(
+                0, int(next_offset)
+            )
+            # Search filters are user-controlled. Bound this process-only cache
+            # so changing filters repeatedly cannot grow it without limit.
+            while len(self._cloud_manual_scan_cursors) > 256:
+                self._cloud_manual_scan_cursors.pop(
+                    next(iter(self._cloud_manual_scan_cursors))
+                )
+
+    def _run_cloud_manual_scan_batch(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        map_kind: str,
+        coordinates: list[tuple[int, int]],
+        raw_workflow: Callable[
+            [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
+            Dict[str, Any],
+        ],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        (
+            cursor_key,
+            scan_offset,
+            proposed,
+            next_scan_offset,
+            scan_wrapped,
+        ) = self._cloud_manual_scan_window(
+            account_ref,
+            map_kind,
+            body,
+            coordinates,
+        )
+        claims = self._cloud_claim_map_scans(
+            account_ref, map_kind, proposed
+        )
+        # A successful claim response is enough to advance: omitted positions
+        # are fresh or leased elsewhere and must not be scanned locally.
+        self._remember_cloud_manual_scan_cursor(cursor_key, next_scan_offset)
+        claim_tokens = {
+            (int(value["x"]), int(value["y"])): str(value["leaseToken"])
+            for value in claims
+        }
+        claimed_coordinates = [
+            coordinate for coordinate in proposed
+            if coordinate in claim_tokens
+        ]
+        if not claimed_coordinates:
+            return {
+                "scanOffset": scan_offset,
+                "scanLimit": len(coordinates),
+                "scanBatchSize": len(proposed),
+                "scannedCount": 0,
+                "nextScanOffset": next_scan_offset,
+                "scanWrapped": scan_wrapped,
+                "scannedCoordinates": [],
+                "scanResults": [],
+            }
+        scan_body = {
+            **body,
+            "_scanCoordinatesOverride": [
+                list(value) for value in claimed_coordinates
+            ],
+            "includeScanObservationTargets": True,
+        }
+        # Brush search validates an override against its selected batch.  Give
+        # the raw reader the entire logical search range and only the claimed
+        # coordinates as the actual request list.
+        if map_kind == "bandit":
+            scan_body.update({"scanOffset": 0, "scanBatchSize": len(coordinates)})
+        try:
+            searched = raw_workflow(execution, scan_body, context)
+            scan_results = [
+                dict(value)
+                for value in searched.get("scanResults") or []
+                if isinstance(value, dict)
+            ]
+            self._cloud_publish_map_observations(
+                account_ref,
+                map_kind,
+                scan_results,
+                claim_tokens,
+            )
+            scanned_coordinates = {
+                (int(value["scanCoord"][0]), int(value["scanCoord"][1]))
+                for value in scan_results
+                if isinstance(value.get("scanCoord"), (list, tuple))
+                and len(value["scanCoord"]) >= 2
+            }
+        except Exception:
+            self._cloud_release_map_scans(
+                account_ref, map_kind, list(claim_tokens.values())
+            )
+            raise
+        self._cloud_release_map_scans(
+            account_ref,
+            map_kind,
+            [
+                token for coordinate, token in claim_tokens.items()
+                if coordinate not in scanned_coordinates
+            ],
+        )
+        return {
+            **searched,
+            "scanOffset": scan_offset,
+            "scanLimit": len(coordinates),
+            "scanBatchSize": len(proposed),
+            "scannedCount": len(scanned_coordinates),
+            "nextScanOffset": next_scan_offset,
+            "scanWrapped": scan_wrapped,
+            "scannedCoordinates": [
+                list(value) for value in sorted(scanned_coordinates)
+            ],
+            "scanResults": scan_results,
+        }
+
+    def _run_cloud_coordinated_brush_search_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        if self._cloud_map_action_mode(account_ref, "找黄") != "CLOUD_SHARED":
+            return self._run_brush_search_game_workflow(
+                execution, body, context
+            )
+
+        def matches(target: Dict[str, Any]) -> bool:
+            return (
+                target_matches_search_filter(
+                    target,
+                    str(body["targetKind"]),
+                    body.get("levels") or [],
+                    list(body.get("drops") or []),
+                    dict(body.get("compositionFilter") or {}),
+                )
+                and (
+                    int(body.get("maxDistance") or 0) <= 0
+                    or abs(int(target.get("x") or 0) - int(body["startX"]))
+                    + abs(int(target.get("y") or 0) - int(body["startY"]))
+                    <= int(body["maxDistance"])
+                )
+            )
+
+        targets = [
+            target
+            for target in self._cloud_query_map_targets(account_ref, "bandit")
+            if matches(target)
+        ]
+        scan: Dict[str, Any] = {}
+        if not targets:
+            coordinates = brush_scan_coordinates(
+                int(body["startX"]),
+                int(body["startY"]),
+                int(body["scanLimit"]),
+            )
+            scan = self._run_cloud_manual_scan_batch(
+                execution,
+                body,
+                context,
+                map_kind="bandit",
+                coordinates=coordinates,
+                raw_workflow=self._run_brush_search_game_workflow,
+            )
+            targets = [
+                target
+                for target in self._cloud_query_map_targets(
+                    account_ref, "bandit"
+                )
+                if matches(target)
+            ]
+        targets.sort(key=lambda target: (
+            (int(target.get("x") or 0) - int(body["startX"])) ** 2
+            + (int(target.get("y") or 0) - int(body["startY"])) ** 2,
+            int(target.get("y") or 0),
+            int(target.get("x") or 0),
+        ))
+        return {
+            "ok": True,
+            "targets": targets,
+            "points": targets,
+            "count": len(targets),
+            "updatedAt": int(self._ports.clock.now_millis()),
+            "cloudSharedMap": True,
+            **{
+                key: scan[key]
+                for key in (
+                    "scanOffset", "scanLimit", "scanBatchSize",
+                    "scannedCount", "nextScanOffset", "scanWrapped",
+                    "scannedCoordinates", "scanResults",
+                )
+                if key in scan
+            },
+        }
+
+    def _run_cloud_coordinated_mine_search_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        if self._cloud_map_action_mode(account_ref, "找矿") != "CLOUD_SHARED":
+            return self._run_mine_search_game_workflow(
+                execution, body, context
+            )
+
+        def matches(target: Dict[str, Any]) -> bool:
+            return mine_target_matches(
+                target,
+                resource_types=list(body.get("resourceTypes") or []),
+                levels=list(body.get("levels") or []),
+                only_empty=bool(body.get("onlyEmpty")),
+                only_defended=bool(body.get("onlyDefended")),
+                exact_x=(
+                    int(body["startX"])
+                    if str(body["scope"]) == "定点" else None
+                ),
+                exact_y=(
+                    int(body["startY"])
+                    if str(body["scope"]) == "定点" else None
+                ),
+            )
+
+        targets = [
+            target
+            for target in self._cloud_query_map_targets(account_ref, "mine")
+            if matches(target)
+        ]
+        scan: Dict[str, Any] = {}
+        if not targets:
+            coordinates = (
+                [(int(body["startX"]), int(body["startY"]))]
+                if str(body["scope"]) == "定点"
+                else brush_scan_coordinates(
+                    int(body["startX"]),
+                    int(body["startY"]),
+                    int(body["scanLimit"]),
+                )
+            )
+            scan = self._run_cloud_manual_scan_batch(
+                execution,
+                body,
+                context,
+                map_kind="mine",
+                coordinates=coordinates,
+                raw_workflow=self._run_mine_search_game_workflow,
+            )
+            targets = [
+                target
+                for target in self._cloud_query_map_targets(account_ref, "mine")
+                if matches(target)
+            ]
+        targets.sort(key=lambda target: (
+            (int(target.get("x") or 0) - int(body["startX"])) ** 2
+            + (int(target.get("y") or 0) - int(body["startY"])) ** 2,
+            -int(target.get("level") or 0),
+            int(target.get("y") or 0),
+            int(target.get("x") or 0),
+        ))
+        return {
+            "ok": True,
+            "targets": targets,
+            "mines": targets,
+            "count": len(targets),
+            "updatedAt": int(self._ports.clock.now_millis()),
+            "cloudSharedMap": True,
+            **{
+                key: scan[key]
+                for key in (
+                    "scanOffset", "scanLimit", "scanBatchSize",
+                    "scannedCount", "nextScanOffset", "scanWrapped",
+                    "scannedCoordinates", "scanResults",
+                )
+                if key in scan
+            },
+        }
+
+    def _run_cloud_coordinated_target_execute_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        map_kind: str,
+        action_name: str,
+        raw_workflow: Callable[
+            [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
+            Dict[str, Any],
+        ],
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        if self._cloud_map_action_mode(account_ref, action_name) != "CLOUD_SHARED":
+            return raw_workflow(execution, body, context)
+        target = dict(body["target"])
+        reservation_token = self._cloud_reserve_map_target(
+            account_ref, map_kind, target
+        )
+        if not reservation_token:
+            raise OperationKnownFailureError(
+                f"共享{action_name}目标已被其他账号预占或不再可用，请重新搜索",
+                code="CLOUD_TARGET_UNAVAILABLE",
+            )
+        if not self._cloud_update_map_target_status(
+            account_ref,
+            map_kind,
+            target,
+            reservation_token,
+            "dispatching",
+            f"manual {map_kind} dispatch starting",
+        ):
+            raise OperationKnownFailureError(
+                f"共享{action_name}目标预占已失效，未发送游戏请求",
+                code="CLOUD_TARGET_RESERVATION_LOST",
+            )
+        try:
+            result = raw_workflow(execution, body, context)
+        except OperationKnownFailureError as error:
+            if error.code in {"BRUSH_DISPATCH_REJECTED", "MINE_DISPATCH_REJECTED"}:
+                status = "rejected"
+            elif error.code in {
+                "MINE_PLAYER_OCCUPIED",
+                "MINE_TARGET_INVALID",
+                "MINE_PREVIEW_TARGET_MISMATCH",
+            }:
+                status = "missing"
+            else:
+                status = "available"
+            self._cloud_update_map_target_status(
+                account_ref,
+                map_kind,
+                target,
+                reservation_token,
+                status,
+                str(error),
+                strict=False,
+            )
+            raise
+        except Exception as error:
+            self._cloud_update_map_target_status(
+                account_ref,
+                map_kind,
+                target,
+                reservation_token,
+                "uncertain",
+                str(error),
+                strict=False,
+            )
+            raise
+        self._cloud_update_map_target_status(
+            account_ref,
+            map_kind,
+            target,
+            reservation_token,
+            "dispatched",
+            f"manual {map_kind} dispatch accepted",
+            strict=False,
+        )
+        return {**result, "cloudSharedMap": True}
+
+    def _run_cloud_coordinated_brush_execute_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._run_cloud_coordinated_target_execute_game_workflow(
+            execution,
+            body,
+            context,
+            map_kind="bandit",
+            action_name="刷黄出征",
+            raw_workflow=self._run_brush_execute_game_workflow,
+        )
+
+    def _run_cloud_coordinated_mine_execute_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._run_cloud_coordinated_target_execute_game_workflow(
+            execution,
+            body,
+            context,
+            map_kind="mine",
+            action_name="打矿出征",
+            raw_workflow=self._run_mine_execute_game_workflow,
+        )
+
+    def _invalidate_map_snapshot_target(
+        self,
+        account_ref: str,
+        kind: str,
+        target: Dict[str, Any],
+        reason: str,
+    ) -> bool:
+        """Record in the local snapshot that the game says a target is gone.
+
+        Best-effort by construction: the dispatch rejection is already the
+        outcome being reported, and a snapshot write failure must not replace
+        it.  Returns whether the host accepted the invalidation.
+        """
+
+        port = self._ports.map_snapshots
+        invalidate = getattr(port, "invalidate", None) if port is not None else None
+        if invalidate is None:
+            return False
+        try:
+            target_id = int(target.get("id") or target.get("targetId") or 0)
+        except (TypeError, ValueError):
+            return False
+        if target_id <= 0:
+            return False
+        try:
+            invalidate(
+                str(account_ref),
+                str(kind),
+                target_id,
+                str(reason),
+                int(self._ports.clock.now_millis()),
+            )
+        except Exception as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-map-snapshot",
+                "message": f"地图快照目标失效写入失败：{error}",
+                "accountRef": str(account_ref),
+                "kind": str(kind),
+            })
+            return False
+        return True
+
+    def _load_map_snapshot_targets(
+        self,
+        *,
+        account_ref: str,
+        kind: str,
+        fingerprint: str,
+        ttl_millis: int,
+    ) -> list[Dict[str, Any]]:
+        """Re-read what this account already discovered for the same scan.
+
+        The single-account mirror of ``_cloud_query_map_targets``: same idea,
+        same target shape, different store.  Rows are rebuilt into full targets
+        so a cached hit can be filtered and dispatched exactly like a freshly
+        scanned one.  A stale or missing snapshot simply yields nothing and the
+        caller scans as before.
+        """
+
+        port = self._ports.map_snapshots
+        if port is None or ttl_millis <= 0:
+            return []
+        loader = getattr(port, "load", None)
+        if loader is None:
+            return []
+        try:
+            snapshot = loader(str(account_ref), str(kind), str(fingerprint))
+        except Exception as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-map-snapshot",
+                "message": f"地图快照读取失败：{error}",
+                "accountRef": str(account_ref),
+                "kind": str(kind),
+            })
+            return []
+        if not isinstance(snapshot, dict):
+            return []
+        try:
+            scanned_at = int(snapshot.get("scannedAtMillis") or 0)
+        except (TypeError, ValueError):
+            return []
+        now_millis = int(self._ports.clock.now_millis())
+        if scanned_at <= 0 or now_millis - scanned_at > int(ttl_millis):
+            return []
+        targets: list[Dict[str, Any]] = []
+        for row in snapshot.get("targets") or []:
+            if not isinstance(row, dict):
+                continue
+            # A target the game already told us was gone is not a candidate.
+            # Skipping this served corpses: one real account held 215 cached
+            # bandits of which exactly 1 was still alive, so nearly every
+            # dispatch came back "目标不存在，不能到达".  Hosts are expected to
+            # filter too; this is the fail-safe for the ones that do not.
+            if row.get("invalidatedAtMillis") not in (None, "", 0):
+                continue
+            try:
+                target_id = int(row.get("targetId") or 0)
+                x = int(row.get("x") or 0)
+                y = int(row.get("y") or 0)
+            except (TypeError, ValueError):
+                continue
+            if target_id <= 0:
+                continue
+            fields = row.get("filterFields")
+            fields = dict(fields) if isinstance(fields, dict) else {}
+            target: Dict[str, Any] = {
+                "id": target_id,
+                "x": x,
+                "y": y,
+                "kind": str(row.get("type") or fields.get("kind") or ""),
+                "type": str(row.get("type") or fields.get("kind") or ""),
+                "fromCache": True,
+                "fromLocalSnapshot": True,
+            }
+            try:
+                level = int(row.get("level") or 0)
+            except (TypeError, ValueError):
+                level = 0
+            if level > 0:
+                target["level"] = level
+            for key, value in fields.items():
+                if key in ("dropCategories", "lootIds"):
+                    try:
+                        parsed = json.loads(value)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, list):
+                        target[key] = parsed
+                    continue
+                target.setdefault(key, value)
+            # ``match_composition`` needs the parsed per-arm counts and refuses
+            # any target whose composition it cannot see.  The snapshot stores
+            # only the flat ``compositionCode``, so without rebuilding this the
+            # cache was write-only in practice: one real account held 216
+            # cached bandits and every single one failed the 兵种 filter, so it
+            # re-swept the map five coordinates at a time regardless.
+            composition = _composition_from_code(target.get("compositionCode"))
+            if composition is not None:
+                target["composition"] = composition
+            targets.append(target)
+        return dedupe_targets(targets)
+
+    def _save_map_snapshot(
+        self,
+        *,
+        account_ref: str,
+        kind: str,
+        fingerprint: str,
+        targets: list[Dict[str, Any]],
+        scanned_at_millis: int,
+    ) -> str:
+        port = self._ports.map_snapshots
+        if port is None:
+            return "当前宿主未提供地图快照存储端口"
+        rows = []
+        scalar_keys = (
+            "idHex",
+            "name",
+            "kind",
+            "protocolKind",
+            "businessId",
+            "typeCode",
+            "level",
+            "rank",
+            "compositionCode",
+            "resource",
+            "rewardDescription",
+            "ownerName",
+            "ownerCountry",
+            "playerOccupied",
+            "unoccupiedByPlayer",
+            "isEmpty",
+            "occupied",
+            "amountA",
+            "amountB",
+            "storage",
+            "productionPerHour",
+            "description",
+            "defenderCount",
+            "hasDefenders",
+        )
+        list_keys = ("dropCategories", "lootIds")
+        for target in targets:
+            try:
+                target_id = int(target.get("id") or 0)
+                x = int(target.get("x") or 0)
+                y = int(target.get("y") or 0)
+                level = int(target.get("level") or target.get("rank") or 0)
+                scan_coord = target.get("scanCoord")
+                if isinstance(scan_coord, (list, tuple)) and len(scan_coord) >= 2:
+                    scan_x, scan_y = int(scan_coord[0]), int(scan_coord[1])
+                else:
+                    scan_x, scan_y = x, y
+            except (TypeError, ValueError):
+                continue
+            if target_id <= 0:
+                continue
+            filter_fields: Dict[str, str] = {}
+            for key in scalar_keys:
+                value = target.get(key)
+                if value in (None, "") or isinstance(value, (dict, list)):
+                    continue
+                if isinstance(value, bool):
+                    filter_fields[key] = "true" if value else "false"
+                else:
+                    filter_fields[key] = str(value)[:256]
+            for key in list_keys:
+                value = target.get(key)
+                if isinstance(value, list):
+                    filter_fields[key] = json.dumps(
+                        value,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )[:256]
+            if target.get("compositionCode") in (None, ""):
+                composition = target.get("composition")
+                if isinstance(composition, dict):
+                    try:
+                        filter_fields["compositionCode"] = "".join(
+                            str(int(composition.get(key) or 0))
+                            for key in ("foot", "bow", "cavalry", "chariot")
+                        )
+                    except (TypeError, ValueError):
+                        pass
+            rows.append({
+                "targetId": target_id,
+                "x": x,
+                "y": y,
+                "scanX": scan_x,
+                "scanY": scan_y,
+                "type": str(target.get("kind") or target.get("type") or "")[:120],
+                "level": level if level > 0 else None,
+                "filterFields": filter_fields,
+                "firstDiscoveredAtMillis": int(scanned_at_millis),
+            })
+        try:
+            port.save({
+                "accountRef": str(account_ref),
+                "kind": str(kind),
+                "fingerprint": str(fingerprint),
+                "scannedAtMillis": int(scanned_at_millis),
+                "targets": rows,
+            })
+        except Exception as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-map-snapshot",
+                "message": f"地图快照保存失败：{error}",
+                "accountRef": str(account_ref),
+                "kind": str(kind),
+            })
+            return f"地图快照保存失败：{error}"
+        return ""
 
     def _require_live_account_for_host_operation(
         self,

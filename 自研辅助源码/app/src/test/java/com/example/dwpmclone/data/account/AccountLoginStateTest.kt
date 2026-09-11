@@ -35,9 +35,18 @@ class AccountLoginStateTest {
             "src/main/java/com/example/dwpmclone/host/SharedPythonCoreHost.kt"
         )
         assertFalse(service.contains("heartbeatIntervalMillis = behaviorContract.accountLifecycle"))
-        assertEquals(true, service.contains("lifecycleDecisions = SharedPythonCoreHost.get(this)"))
-        assertEquals(true, service.contains("stateTransitions = SharedPythonCoreHost.get(this)"))
+        assertEquals(true, service.contains("lifecycleDecisions = sharedPythonCore"))
+        assertEquals(true, service.contains("stateTransitions = sharedPythonCore"))
         assertEquals(true, service.contains("sessionRecovery.prepareProcessRecovery"))
+        assertFalse(service.contains("?: configuredPrimaryTypes"))
+        assertEquals(
+            true,
+            service.contains("SharedResidentTaskStatusMapper.typeFor(")
+        )
+        assertEquals(
+            true,
+            service.contains("result.isolatedAttentionFeatures")
+        )
         assertEquals(true, host.contains("AccountLifecycleDecisionSource,"))
         assertEquals(true, host.contains("account_lifecycle_snapshot_json"))
         assertEquals(true, host.contains("account_transition_json"))

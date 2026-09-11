@@ -15,7 +15,8 @@ class SchedulerTickPolicyTest {
     fun activeUnknownWorkRetriesQuicklyButIdleServiceStaysQuiet() {
         assertEquals(5_000L, SchedulerTickPolicy.nextDelayMillis(10_000L, null, ranWork = true))
         assertEquals(300_000L, SchedulerTickPolicy.nextDelayMillis(10_000L, null, ranWork = false))
-        assertEquals(true, SchedulerTickPolicy.requiresContinuousWakeLock(60_000L))
-        assertEquals(false, SchedulerTickPolicy.requiresContinuousWakeLock(60_001L))
+        assertEquals(false, SchedulerTickPolicy.shouldArmAlarmWatchdog(0L))
+        assertEquals(true, SchedulerTickPolicy.shouldArmAlarmWatchdog(1_000L))
+        assertEquals(true, SchedulerTickPolicy.shouldArmAlarmWatchdog(300_000L))
     }
 }

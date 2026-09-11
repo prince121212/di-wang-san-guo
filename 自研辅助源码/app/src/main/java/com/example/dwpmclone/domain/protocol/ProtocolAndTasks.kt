@@ -54,6 +54,7 @@ data class MineSearchResult(
     val ownerName: String? = null
 )
 data class StepResult(val success: Boolean, val message: String, val raw: Map<String, String> = emptyMap())
+
 data class General(
     val id: Long,
     val name: String,
@@ -179,67 +180,6 @@ interface GameProtocolClient {
         battleId: Long
     ): ProtocolResult<StepResult> = ProtocolResult.Ok(StepResult(true, "打矿驻守状态已清理"))
     suspend fun runDailyStep(session: GameSession, step: DailyStep): ProtocolResult<StepResult>
-    suspend fun queryNationalCities(
-        session: GameSession,
-        kind: NationalCityKind
-    ): ProtocolResult<List<NationalCity>> =
-        ProtocolResult.Err(
-            "NATIONAL_CITY_QUERY_NOT_IMPLEMENTED",
-            "国家城池列表协议尚未实现",
-            false
-        )
-    suspend fun queryNationalCollectStatus(
-        session: GameSession,
-        city: NationalCity
-    ): ProtocolResult<NationalCollectStatus> =
-        ProtocolResult.Err(
-            "NATIONAL_COLLECT_STATUS_NOT_IMPLEMENTED",
-            "国家征收状态协议尚未实现",
-            false
-        )
-    suspend fun collectNationalCity(
-        session: GameSession,
-        city: NationalCity
-    ): ProtocolResult<StepResult> =
-        ProtocolResult.Err(
-            "NATIONAL_COLLECT_NOT_IMPLEMENTED",
-            "国家征收协议尚未实现",
-            false
-        )
-    suspend fun queryOwnedFiefs(session: GameSession): ProtocolResult<List<LootTargetFief>> =
-        ProtocolResult.Err(
-            "OWNED_FIEF_QUERY_NOT_IMPLEMENTED",
-            "自有城池列表协议尚未实现",
-            false
-        )
-    suspend fun queryRaidFiefs(
-        session: GameSession,
-        playerName: String
-    ): ProtocolResult<List<LootTargetFief>> = queryOwnedFiefs(session)
-    suspend fun collectCityLord(
-        session: GameSession,
-        fief: LootTargetFief
-    ): ProtocolResult<StepResult> =
-        ProtocolResult.Err(
-            "CITY_LORD_COLLECT_NOT_IMPLEMENTED",
-            "城主征收协议尚未实现",
-            false
-        )
-    suspend fun queryVisitGenerals(session: GameSession): ProtocolResult<GeneralVisitQuery> =
-        ProtocolResult.Err(
-            "GENERAL_VISIT_QUERY_NOT_IMPLEMENTED",
-            "名将拜访列表协议尚未实现",
-            false
-        )
-    suspend fun visitGeneral(
-        session: GameSession,
-        candidate: GeneralVisitCandidate
-    ): ProtocolResult<StepResult> =
-        ProtocolResult.Err(
-            "GENERAL_VISIT_NOT_IMPLEMENTED",
-            "名将拜访协议尚未实现",
-            false
-        )
     suspend fun queryGenerals(session: GameSession): ProtocolResult<List<General>>
     suspend fun queryFormations(session: GameSession): ProtocolResult<List<FormationRuntime>>
     suspend fun healGeneral(session: GameSession, generalId: Long): ProtocolResult<StepResult>
@@ -255,22 +195,6 @@ interface GameProtocolClient {
     )
     suspend fun updateFormation(session: GameSession, config: FormationConfig): ProtocolResult<StepResult>
     suspend fun runInternalAffairs(session: GameSession, config: InternalAffairsConfig): ProtocolResult<StepResult>
-    suspend fun runSixMinistries(
-        session: GameSession,
-        config: SixMinistriesConfig
-    ): ProtocolResult<StepResult> =
-        ProtocolResult.Err(
-            "REAL_MINISTRY_NOT_IMPLEMENTED",
-            "六部协议尚未由当前客户端实现",
-            false
-        )
-    suspend fun runDungeon(session: GameSession, config: DungeonConfig): ProtocolResult<StepResult>
-    suspend fun runLossless(session: GameSession, config: LosslessConfig): ProtocolResult<StepResult> =
-        ProtocolResult.Err(
-            code = "REAL_LOSSLESS_NOT_IMPLEMENTED",
-            message = "无损真实协议尚未完整迁移，已禁止执行",
-            retryable = false
-        )
     suspend fun queryInventory(session: GameSession): ProtocolResult<List<InventoryItem>>
     suspend fun useOrDiscardItem(
         session: GameSession,
@@ -281,7 +205,6 @@ interface GameProtocolClient {
     suspend fun setVipFeature(session: GameSession, config: VipFeatureConfig): ProtocolResult<StepResult>
     suspend fun surrenderOrReleaseGenerals(session: GameSession, config: SurrenderReleaseConfig): ProtocolResult<StepResult>
     suspend fun sendGeneralToResourcePoint(session: GameSession, config: ResourcePointSendGeneralConfig): ProtocolResult<StepResult>
-    suspend fun runAutoLoot(session: GameSession, config: AutoLootConfig): ProtocolResult<StepResult>
     suspend fun scanAlarms(session: GameSession, config: AlarmConfig): ProtocolResult<StepResult>
     suspend fun queryMilitarySnapshot(session: GameSession): ProtocolResult<MilitarySnapshot> =
         ProtocolResult.Err(

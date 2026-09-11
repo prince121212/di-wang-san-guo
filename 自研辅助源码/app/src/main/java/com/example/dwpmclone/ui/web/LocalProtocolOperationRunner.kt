@@ -110,6 +110,24 @@ class LocalProtocolOperationRunner(
         }
     }
 
+    /** Mutation transport entered after Python acquired the JVM account lock in phase one. */
+    fun <T> executeSharedCoreLockedMutation(
+        accountId: Long,
+        label: String,
+        block: suspend (GameSession, GameProtocolClient) -> ProtocolResult<T>
+    ): ProtocolResult<T> {
+        check(AccountOperationLockRegistry.isHeldByCurrentThread(accountId)) {
+            "共享 mutation 未持有账号执行锁"
+        }
+        return executeInternal(
+            accountId = accountId,
+            label = label,
+            acquireAccountLock = false,
+            lifecycleOwnedBySharedCore = true,
+            block = block
+        )
+    }
+
     private fun <T> executeInternal(
         accountId: Long,
         label: String,

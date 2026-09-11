@@ -44,7 +44,7 @@ class SharedAccountLifecycleTests(unittest.TestCase):
             execution_owner_active=True,
             login_state="REAL_PROTOCOL_ONLINE",
             source_mode=1,
-            now_millis=21_000,
+            now_millis=61_000,
             last_validated_at_millis=1_000,
         )
         orphaned = self.policy.snapshot(
@@ -70,13 +70,13 @@ class SharedAccountLifecycleTests(unittest.TestCase):
         self.assertTrue(relogin["requiresRelogin"])
         self.assertFalse(relogin["mayUseLiveSession"])
 
-    def test_probe_uses_contract_heartbeat_cadence(self) -> None:
+    def test_probe_uses_the_less_aggressive_session_validation_cadence(self) -> None:
         early = self.policy.snapshot(
             account_enabled=True,
             execution_owner_active=True,
             login_state="REAL_PROTOCOL_ONLINE",
             source_mode=1,
-            now_millis=20_999,
+            now_millis=60_999,
             last_validated_at_millis=1_000,
         )
         due = self.policy.snapshot(
@@ -84,7 +84,7 @@ class SharedAccountLifecycleTests(unittest.TestCase):
             execution_owner_active=True,
             login_state="REAL_PROTOCOL_ONLINE",
             source_mode=1,
-            now_millis=21_000,
+            now_millis=61_000,
             last_validated_at_millis=1_000,
         )
         checking = self.policy.snapshot(
@@ -97,6 +97,10 @@ class SharedAccountLifecycleTests(unittest.TestCase):
         self.assertFalse(early["shouldProbe"])
         self.assertTrue(due["shouldProbe"])
         self.assertTrue(checking["shouldProbe"])
+        self.assertEqual(due["heartbeatIntervalMillis"], 20_000)
+        self.assertEqual(due["sessionValidationIntervalMillis"], 60_000)
+        self.assertEqual(self.policy.probe_failure_pause_threshold, 3)
+        self.assertEqual(self.policy.probe_failure_relogin_threshold, 4)
 
     def test_unknown_persisted_state_fails_closed(self) -> None:
         unknown = self.policy.snapshot(

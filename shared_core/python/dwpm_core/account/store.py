@@ -61,6 +61,8 @@ PRESENTATION_PUBLIC_STATE_KEYS = frozenset(
         "serverKey",
         "lastValidatedAt",
         "lastHeartbeatAt",
+        "lastSuccessfulGameResponseAt",
+        "lastSuccessfulGameResponsePhase",
         "lastReloginAt",
         "lastReloginError",
         "lastOfflineAt",
@@ -85,8 +87,11 @@ PRESENTATION_PUBLIC_STATE_KEYS = frozenset(
         "dailyActivityJson",
         "militaryIntelJson",
         "militarySnapshotJson",
+        "residentDailyTaskStatusJson",
     )
 )
+
+RESIDENT_DAILY_COUNTS_SCHEMA = 1
 
 
 class DurableAccountStore:
@@ -311,6 +316,29 @@ def _presentation_record(record: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in (public_state or {}).items()
         if key in PRESENTATION_PUBLIC_STATE_KEYS
     } if isinstance(public_state, dict) else {}
+    resident_daily_counts = _resident_daily_counts_projection(public_state)
+    if resident_daily_counts is not None:
+        # The durable resident state remains the only source of truth.  Expose
+        # only the two tiny daily counters needed by the high-frequency UI;
+        # never copy the full automation state (which may contain large
+        # inventory receipts and scheduler diagnostics) into presentation.
+        visible_state["residentDailyCountsJson"] = json.dumps(
+            resident_daily_counts,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    resident_daily_status = _resident_daily_task_status_projection(public_state)
+    if resident_daily_status is not None:
+        # Keep the account-card projection small: task status is useful after an
+        # Android process restart, while the full scheduler ledger can contain
+        # protocol receipts and recovery diagnostics that do not belong in UI.
+        visible_state["residentDailyTaskStatusJson"] = json.dumps(
+            resident_daily_status,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     # Raw 0x8004 evidence is only needed by the UI's legacy recovery fallback
     # when normalized role/general state has not yet been persisted.
     if not visible_state.get("generalsJson"):
@@ -324,6 +352,99 @@ def _presentation_record(record: Dict[str, Any]) -> Dict[str, Any]:
     }
     projected["session"]["publicState"] = _json_copy(visible_state)
     return projected
+
+
+def _resident_daily_counts_projection(
+    public_state: Any,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(public_state, dict):
+        return None
+    config = _json_object(public_state.get("residentAutomationConfigJson"))
+    if _safe_int(config.get("schemaVersion"), 0) < 2:
+        return None
+    state = _json_object(public_state.get("residentAutomationStateJson"))
+    projection: Dict[str, Any] = {
+        "schemaVersion": RESIDENT_DAILY_COUNTS_SCHEMA,
+        "updatedAtMillis": max(
+            0,
+            _safe_int(state.get("updatedAtMillis"), 0),
+        ),
+    }
+    for feature in ("brush", "dungeon"):
+        feature_state = state.get(feature)
+        feature_state = (
+            feature_state if isinstance(feature_state, dict) else {}
+        )
+        projection[feature] = {
+            "dayKey": _safe_int(feature_state.get("dayKey"), -1),
+            "usedCount": max(
+                0,
+                _safe_int(feature_state.get("usedCount"), 0),
+            ),
+        }
+    return projection
+
+
+def _resident_daily_task_status_projection(
+    public_state: Any,
+) -> Optional[Dict[str, Any]]:
+    """Expose compact per-key daily terminal facts to local UI hosts."""
+
+    if not isinstance(public_state, dict):
+        return None
+    config = _json_object(public_state.get("residentAutomationConfigJson"))
+    if _safe_int(config.get("schemaVersion"), 0) < 2:
+        return None
+    state = _json_object(public_state.get("residentAutomationStateJson"))
+    daily = state.get("daily")
+    if not isinstance(daily, dict):
+        return None
+    output: Dict[str, Any] = {
+        "schemaVersion": 1,
+        "updatedAtMillis": max(0, _safe_int(state.get("updatedAtMillis"), 0)),
+        "daily": {},
+    }
+    for key, raw in daily.items():
+        if not isinstance(raw, dict):
+            continue
+        normalized_key = str(key or "").strip()
+        if not normalized_key or len(normalized_key) > 80:
+            continue
+        item: Dict[str, Any] = {
+            "lastState": str(raw.get("lastState") or "")[:40],
+            "lastMessage": str(raw.get("lastMessage") or "")[:500],
+            "skipped": bool(raw.get("skipped")),
+            "skipReason": str(raw.get("skipReason") or "")[:120],
+            "statusText": str(raw.get("statusText") or "")[:120],
+        }
+        for field in (
+            "cycleKey",
+            "nextWakeAtMillis",
+            "completionCount",
+        ):
+            if raw.get(field) not in (None, ""):
+                item[field] = _safe_int(raw.get(field), 0)
+        output["daily"][normalized_key] = item
+    return output
+
+
+def _json_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip().startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _account_ref(value: Any) -> str:

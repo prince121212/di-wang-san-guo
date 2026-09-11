@@ -4,13 +4,7 @@ import com.example.dwpmclone.data.local.LocalAccountRepository
 import com.example.dwpmclone.data.local.SessionReconnectRepository
 import com.example.dwpmclone.data.local.SessionReconnectState
 import com.example.dwpmclone.data.local.TaskLogRepository
-import com.example.dwpmclone.data.protocol.RealGameProtocolClient
 import com.example.dwpmclone.domain.model.GameAccount
-import com.example.dwpmclone.domain.protocol.State8004ArmyEvidenceParser
-import com.example.dwpmclone.domain.protocol.State8004GeneralEvidenceParser
-import com.example.dwpmclone.domain.protocol.State8004StatusEvidenceParser
-import org.json.JSONArray
-import org.json.JSONObject
 
 object AccountLoginState {
     const val ONLINE = "REAL_PROTOCOL_ONLINE"
@@ -30,7 +24,8 @@ data class AccountLifecycleDecision(
     val shouldProbe: Boolean,
     val mayUseLiveSession: Boolean,
     val runnable: Boolean,
-    val heartbeatIntervalMillis: Long
+    val heartbeatIntervalMillis: Long,
+    val sessionValidationIntervalMillis: Long
 )
 
 fun interface AccountLifecycleDecisionSource {
@@ -45,6 +40,15 @@ fun interface AccountLifecycleDecisionSource {
     ): AccountLifecycleDecision
 }
 
+data class AccountReloginResult(
+    val accountId: Long,
+    val message: String
+)
+
+fun interface AccountReloginSource {
+    fun reloginAccount(accountId: Long): AccountReloginResult
+}
+
 sealed interface SessionProbeResult {
     data class Valid(val updates: Map<String, String>) : SessionProbeResult
     data class Expired(val reason: String) : SessionProbeResult
@@ -55,158 +59,23 @@ fun interface SessionHealthProbe {
     fun probe(account: GameAccount, fullStateRefresh: Boolean): SessionProbeResult
 }
 
-class RealSessionHealthProbe(
-    private val protocol: RealGameProtocolClient = RealGameProtocolClient()
-) : SessionHealthProbe {
-    override fun probe(account: GameAccount, fullStateRefresh: Boolean): SessionProbeResult {
-        val session = account.session ?: return SessionProbeResult.Expired("真实 Session 不存在")
-        val extra = session.channelExtra
-        val gameHttp = extra["gameHttp"]?.takeIf(String::isNotBlank)
-            ?: extra["serverUrl"]?.takeIf(String::isNotBlank)?.trimEnd('/')?.plus("/kingWapServer/HttpClient")
-            ?: return SessionProbeResult.Expired("游戏服务器地址不存在")
-        val dm = extra["dm"]?.toLongOrNull()
-            ?: return SessionProbeResult.Expired("角色会话 dm 不存在")
-        val roleId = extra["roleId"]?.toLongOrNull() ?: account.id
-        val previousHealthAccountId = com.example.dwpmclone.data.protocol.GameRequestHealthSink.currentAccountId()
-        com.example.dwpmclone.data.protocol.GameRequestHealthSink.bindAccount(account.id)
-        return try {
-            runCatching {
-            if (!fullStateRefresh) {
-                val heartbeat = protocol.refreshHeartbeat3110(gameHttp, dm)
-                return@runCatching SessionProbeResult.Valid(
-                    mapOf(
-                        "lastValidatedAt" to System.currentTimeMillis().toString(),
-                        "lastHeartbeatAt" to System.currentTimeMillis().toString(),
-                        "militaryIntelOpcodes" to heartbeat.responseOpcodes.joinToString(),
-                        "militaryIntelPayloadHex" to heartbeat.responsePayloadHex
-                    )
-                )
-            }
-            val refreshed = protocol.refreshRoleState(gameHttp, dm, roleId)
-            val state = refreshed.state
-            val generalRecords = State8004GeneralEvidenceParser.recoverBestAvailableRecords(
-                state.tailHex,
-                state.payloadHex
-            )
-            val statusRecords = State8004StatusEvidenceParser.recoverRecords(state.payloadHex)
-            val armyRows = State8004ArmyEvidenceParser.recover(state.payloadHex)
-            val heartbeat = runCatching { protocol.refreshHeartbeat3110(gameHttp, dm) }.getOrNull()
-            SessionProbeResult.Valid(
-                buildMap {
-                    putAll(mapOf(
-                    "roleId" to state.roleId.toString(),
-                    "roleName" to state.roleName,
-                    "level" to state.level.toString(),
-                    "copper" to state.copper.toString(),
-                    "food" to state.food.toString(),
-                    "prestige" to state.prestige.toString(),
-                    "populationCurrent" to state.populationCurrent.toString(),
-                    "populationCap" to state.populationCap.toString(),
-                    "resourcePointCurrent" to state.resourcePointCurrent.toString(),
-                    "resourcePointCap" to state.resourcePointCap.toString(),
-                    "officeFieldFlag" to (state.officeFieldFlag?.toString() ?: ""),
-                    "officeId" to (state.officeIdUnsigned?.toString() ?: ""),
-                    "officeIdRaw" to (state.officeIdRaw?.toString() ?: ""),
-                    "officeIdUnsigned" to (state.officeIdUnsigned?.toString() ?: ""),
-                    "officeName" to state.officeName,
-                    "officialTitle" to state.officeName,
-                    "state8004PayloadHex" to state.payloadHex,
-                    "state8004TailHex" to state.tailHex,
-                    "roleStateJson" to JSONObject()
-                        .put("roleId", state.roleId)
-                        .put("roleName", state.roleName)
-                        .put("level", state.level)
-                        .put("prestige", state.prestige)
-                        .put("populationCurrent", state.populationCurrent)
-                        .put("populationCap", state.populationCap)
-                        .put("resourcePointCurrent", state.resourcePointCurrent)
-                        .put("resourcePointCap", state.resourcePointCap)
-                        .put("officeFieldFlag", state.officeFieldFlag ?: JSONObject.NULL)
-                        .put("officeId", state.officeIdUnsigned ?: JSONObject.NULL)
-                        .put("officeIdRaw", state.officeIdRaw ?: JSONObject.NULL)
-                        .put("officeIdUnsigned", state.officeIdUnsigned ?: JSONObject.NULL)
-                        .put("officeName", state.officeName)
-                        .put("sourceOpcode", state.sourceOpcode)
-                        .toString(),
-                    "resourceStateJson" to JSONObject()
-                        .put("copper", state.copper)
-                        .put("food", state.food)
-                        .put("prestige", state.prestige)
-                        .put("copperPerHour", state.copperPerHour)
-                        .put("foodPerHour", state.foodPerHour)
-                        .put("populationCurrent", state.populationCurrent)
-                        .put("populationCap", state.populationCap)
-                        .put("resourcePointCurrent", state.resourcePointCurrent)
-                        .put("resourcePointCap", state.resourcePointCap)
-                        .toString(),
-                    "lastValidatedAt" to refreshed.refreshedAtMillis.toString()
-                    ))
-                    if (generalRecords.isNotEmpty()) {
-                        put("generalsJson", JSONArray().apply {
-                            generalRecords.forEach { put(JSONObject(it)) }
-                        }.toString())
-                        put("state8004GeneralRecordCount", generalRecords.size.toString())
-                        put("generalsParserVersion", State8004GeneralEvidenceParser.PARSER_VERSION)
-                    }
-                    if (statusRecords.isNotEmpty()) {
-                        put("statusJson", JSONArray().apply {
-                            statusRecords.forEach { put(JSONObject(it)) }
-                        }.toString())
-                        put("state8004StatusRecordCount", statusRecords.size.toString())
-                    }
-                    if (armyRows.isNotEmpty()) {
-                        put("armyJson", State8004ArmyEvidenceParser.toJson(armyRows))
-                        put("armySource", "live/0x8004-compact-army")
-                        put("armyRecordCount", armyRows.size.toString())
-                    }
-                    heartbeat?.let {
-                        put("lastHeartbeatAt", refreshed.refreshedAtMillis.toString())
-                        put("militaryIntelOpcodes", it.responseOpcodes.joinToString())
-                        put("militaryIntelPayloadHex", it.responsePayloadHex)
-                    }
-                }
-            )
-            }.getOrElse { error ->
-                val message = error.message ?: error::class.java.simpleName
-                if (message.isSessionExpiredEvidence()) {
-                    SessionProbeResult.Expired(message)
-                } else {
-                    SessionProbeResult.Unavailable(message)
-                }
-            }
-        } finally {
-            if (previousHealthAccountId != null) {
-                com.example.dwpmclone.data.protocol.GameRequestHealthSink.bindAccount(previousHealthAccountId)
-            } else {
-                com.example.dwpmclone.data.protocol.GameRequestHealthSink.clearAccount()
-            }
-        }
-    }
-
-    private fun String.isSessionExpiredEvidence(): Boolean =
-        contains("0x8016", ignoreCase = true) ||
-            contains("没有角色信息") ||
-            contains("沒有角色信息") ||
-            contains("会话失效") ||
-            contains("session invalid", ignoreCase = true)
-}
-
 data class SessionRecoverySummary(
     val online: Int,
     val paused: Int,
     val waitingToRetry: Int,
-    val relogged: Int
+    val relogged: Int,
+    val degraded: Int = 0
 )
 
 /** Reconciles enabled accounts before the scheduler may issue any task action. */
 class AccountSessionRecovery(
     private val accounts: LocalAccountRepository,
-    private val loginService: LocalAccountLoginService,
+    private val reloginSource: AccountReloginSource,
     private val reconnects: SessionReconnectRepository,
     private val logs: TaskLogRepository,
     private val lifecycleDecisions: AccountLifecycleDecisionSource,
     private val stateTransitions: AccountStateTransitionSource,
-    private val probe: SessionHealthProbe = RealSessionHealthProbe(),
+    private val probe: SessionHealthProbe,
 ) {
     private val processRecovery = AccountProcessRecoveryCoordinator(stateTransitions)
 
@@ -231,8 +100,38 @@ class AccountSessionRecovery(
         var paused = 0
         var waiting = 0
         var relogged = 0
+        var degraded = 0
         accounts.listAccounts().filter { it.enabled }.forEach { account ->
             val state = account.loginState.uppercase()
+            val retryState = reconnects.state(account.id)
+            val lastValidatedAt = account.session?.channelExtra
+                ?.get("lastValidatedAt")
+                ?.toLongOrNull()
+            val lastProbeFailureAt = account.session?.channelExtra
+                ?.get("lastNetworkPauseAt")
+                ?.toLongOrNull()
+            if (
+                state == AccountLoginState.ONLINE &&
+                retryState.failures > 0 &&
+                lastValidatedAt != null &&
+                lastProbeFailureAt != null &&
+                lastValidatedAt > lastProbeFailureAt
+            ) {
+                val confirmed = transition(
+                    account,
+                    AccountStateEvents.PROBE_VALID,
+                    nowMillis,
+                    validatedAtMillis = lastValidatedAt
+                )
+                applyTransition(account, confirmed)
+                logs.append(
+                    "账号 ${account.id} 已由后续游戏响应确认在线，已清除探活失败连续计数",
+                    "session-recovery",
+                    account.id
+                )
+                online += 1
+                return@forEach
+            }
             val lifecycle = lifecycleDecisions.accountLifecycleDecision(
                 accountEnabled = account.enabled,
                 executionOwnerActive = true,
@@ -245,13 +144,16 @@ class AccountSessionRecovery(
                 nowMillis = nowMillis
             )
             if (lifecycle.requiresRelogin) {
-                val retry = reconnects.state(account.id)
+                val retry = retryState
                 if (retry.nextAttemptAtMillis > nowMillis) {
                     waiting += 1
                     return@forEach
                 }
-                runCatching { loginService.relogin(account, preserveTaskRuntime = true) }
-                    .onSuccess { loggedIn ->
+                runCatching {
+                    val result = reloginSource.reloginAccount(account.id)
+                    accounts.get(result.accountId)
+                        ?: error("共享重登成功后未找到账号记录")
+                }.onSuccess { loggedIn ->
                         val transition = transition(
                             loggedIn,
                             AccountStateEvents.LOGIN_SUCCEEDED,
@@ -296,7 +198,7 @@ class AccountSessionRecovery(
                 paused += 1
                 return@forEach
             }
-            val retry = reconnects.state(account.id)
+            val retry = retryState
             if (retry.nextAttemptAtMillis > nowMillis) {
                 waiting += 1
                 return@forEach
@@ -343,16 +245,36 @@ class AccountSessionRecovery(
                             "nextSessionProbeAt" to (transition.nextRetryAtMillis ?: 0L).toString()
                         )
                     )
-                    logs.append(
-                        "账号 ${account.id} 状态同步暂停，第${transition.failureCount}次；将在${transition.nextRetryAtMillis}后重试",
-                        "session-recovery",
-                        account.id
-                    )
-                    paused += 1
+                    if (transition.liveSessionUsable) {
+                        logs.append(
+                            "账号 ${account.id} 探活暂未确认，连续第${transition.failureCount}次；" +
+                                "Session保持可用，将在${transition.nextRetryAtMillis}快速复核",
+                            "session-recovery",
+                            account.id
+                        )
+                        degraded += 1
+                        online += 1
+                    } else if (transition.nextOperation == "login") {
+                        logs.append(
+                            "账号 ${account.id} 连续第${transition.failureCount}次无法从旧Session取得应用层响应；" +
+                                "将在${transition.nextRetryAtMillis}自动重新登录",
+                            "session-recovery",
+                            account.id
+                        )
+                        paused += 1
+                    } else {
+                        logs.append(
+                            "账号 ${account.id} 状态同步暂停，连续第${transition.failureCount}次；" +
+                                "将在${transition.nextRetryAtMillis}后重试",
+                            "session-recovery",
+                            account.id
+                        )
+                        paused += 1
+                    }
                 }
             }
         }
-        return SessionRecoverySummary(online, paused, waiting, relogged)
+        return SessionRecoverySummary(online, paused, waiting, relogged, degraded)
     }
 
     fun markNeedsRelogin(accountId: Long, reason: String) {
@@ -432,7 +354,7 @@ class AccountSessionRecovery(
         }
         .map { account ->
             val last = account.session?.channelExtra?.get("lastValidatedAt")?.toLongOrNull()
-            val heartbeatIntervalMillis = lifecycleDecisions.accountLifecycleDecision(
+            val sessionValidationIntervalMillis = lifecycleDecisions.accountLifecycleDecision(
                 accountEnabled = account.enabled,
                 executionOwnerActive = true,
                 loginState = account.loginState,
@@ -440,8 +362,8 @@ class AccountSessionRecovery(
                 forceValidation = false,
                 lastValidatedAtMillis = last,
                 nowMillis = nowMillis
-            ).heartbeatIntervalMillis
-            last?.plus(heartbeatIntervalMillis) ?: nowMillis
+            ).sessionValidationIntervalMillis
+            last?.plus(sessionValidationIntervalMillis) ?: nowMillis
         }
         .minOrNull()
 

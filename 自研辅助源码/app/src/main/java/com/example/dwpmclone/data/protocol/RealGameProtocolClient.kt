@@ -5,8 +5,6 @@ import com.example.dwpmclone.domain.protocol.GameHexDryRunParser
 import com.example.dwpmclone.domain.protocol.ItemDictionary
 import com.example.dwpmclone.domain.protocol.EquipmentTemplateDictionary
 import com.example.dwpmclone.domain.protocol.ExecutionRevokedBeforeNetworkException
-import com.example.dwpmclone.domain.protocol.LootProtocolShapes
-import com.example.dwpmclone.domain.protocol.LootTargetFief
 import com.example.dwpmclone.domain.protocol.MapTarget
 import com.example.dwpmclone.domain.protocol.MineSearchResult
 import com.example.dwpmclone.domain.protocol.ResourcePointSearchResponseParser
@@ -15,52 +13,19 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 import java.nio.charset.Charset
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
- * Real read-only protocol client restored from /帝王三国接口.md.
+ * Transitional authenticated transport and legacy read-only parsers.
  *
- * Implemented request chain:
- * 1) passport /common/area/list.action
- * 2) passport /common/area/enter.action
- * 3) game 0x1003 loginBaseinfo
- * 4) game 0x1004 gameLogin
- * 5) game 0x1016 init aggregate, used only to refresh the same read-only role state.
- *
- * This class deliberately does not implement any state-changing game action.
+ * Account login, passport selection and 0x8003 business parsing live only in
+ * the shared Python core. Remaining methods are progressively reduced to raw
+ * transport as their background callers move into the shared scheduler.
  */
 class RealGameProtocolClient(
     /** Dynamic service ownership gate; interactive callers and parser tests default to enabled. */
     private val executionAllowed: () -> Boolean = { true }
 ) {
-    data class Area(
-        val target: String,
-        val areaId: String,
-        val areaName: String,
-        val serverUrl: String,
-        val resUrl: String,
-        val serverVer: String,
-        val lowestVer: String,
-        val serverStatus: String,
-        val updateUrl: String,
-        val flag: String,
-        val clientVersion: String,
-        val serverKey: String,
-        val raw: String
-    )
-
-    data class RoleBrief(
-        val roleId: Long,
-        val roleName: String,
-        val levelCandidate: Int,
-        val country: String,
-        val title: String
-    )
-
     data class RoleState(
         val roleId: Long,
         val roleName: String,
@@ -134,24 +99,6 @@ class RealGameProtocolClient(
         val tailHex: String
     )
 
-    data class LoginResult(
-        val username: String,
-        val session: String,
-        val userId: String,
-        val accountWithSuffix: String?,
-        val area: Area,
-        val dm: Long,
-        val roles: List<RoleBrief>,
-        val selectedRole: RoleBrief,
-        val state: RoleState,
-        val responseOpcodes: List<String>,
-        val syncedAt: String,
-        val inventoryState: InventoryState?,
-        val dailyActivityState: DailyActivityState?,
-        val ownedFiefLocations: List<LootTargetFief>,
-        val ownedFiefLocationError: String?
-    )
-
     data class RecoveredReadOnlyGameHexPlan(
         val descriptor: GameHexDryRunDescriptor,
         val opcode: Int?,
@@ -180,149 +127,6 @@ class RealGameProtocolClient(
         val responseOpcodes: List<String>,
         val responsePayloadHex: String
     )
-
-    fun loginAndFetchState(username: String, password: String, serverQuery: String): LoginResult {
-        val passportText = httpGet(
-            PASSPORT + "common/area/list.action",
-            mapOf(
-                "username" to username,
-                "password" to password,
-                "channelId" to CHANNEL_NUM,
-                "source" to SOURCE,
-                "cType" to CTYPE,
-                "cVersion" to VERSION,
-                "gameKey" to GAME_KEY,
-                "target" to TARGETS
-            )
-        )
-        val lines = passportText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-        require(lines.isNotEmpty()) { "passport 未返回内容" }
-        val head = lines.first().split('`')
-        require(head.size >= 2) { "passport 首行格式异常：${lines.first()}" }
-        val session = head[0]
-        val userId = head[1]
-        val accountWithSuffix = runCatching {
-            httpGet(
-                PASSPORT + "system/user/validate.action",
-                mapOf("session" to session, "target" to "1,2")
-            ).trim().split('`').getOrNull(1)
-        }.getOrNull()
-
-        val areas = lines.drop(1).mapNotNull { parseAreaLine(it) }
-        require(areas.isNotEmpty()) { "passport 未返回区服列表" }
-        val area = selectArea(areas, serverQuery)
-        val enter = httpGet(
-            PASSPORT + "common/area/enter.action",
-            mapOf("session" to session, "areaKey" to area.serverKey)
-        ).trim()
-        require(enter == "1") { "进入区服失败：$enter（${area.areaName}/${area.serverKey}）" }
-
-        val gameHttp = area.serverUrl.trimEnd('/') + GAME_PATH
-        val loginPayload = PacketWriter().apply {
-            utf(userId)
-            utf(session)
-            utf(CHANNEL_NUM)
-        }.toByteArray()
-        val loginPackets = postGame(gameHttp, listOf(GameCommand(0x1003, loginPayload)), dm = 0L)
-        val p8003 = loginPackets.firstOrNull { it.opcode == 0x8003 }
-            ?: error("0x1003 未返回 0x8003，实际=${loginPackets.map { it.hexOpcode() }}")
-        val loginInfo = parse8003(p8003.payload)
-        require(loginInfo.status == 0) { "游戏登录基础信息失败：${loginInfo.message}" }
-        require(loginInfo.roles.isNotEmpty()) { "账号下没有角色" }
-        val selectedRole = loginInfo.roles.getOrNull(loginInfo.selectedIndex.coerceAtLeast(0)) ?: loginInfo.roles.first()
-        // 0x1003 回执后才能确定角色 ID。从此处绑定后续登录同步请求，
-        // 让手机端刚登录完就能像电脑端一样显示接口状态点。
-        val previousHealthAccountId = GameRequestHealthSink.currentAccountId()
-        GameRequestHealthSink.bindAccount(selectedRole.roleId)
-        try {
-
-        val statePackets1004 = postGame(
-            gameHttp,
-            listOf(GameCommand(0x1004, PacketWriter().apply { long(-1L) }.toByteArray())),
-            dm = loginInfo.dm
-        )
-        val state1004 = statePackets1004.firstOrNull { it.opcode == 0x8004 }?.let {
-            parse8004Head(it.payload, "0x1004/0x8004")
-        }
-
-        val initPackets = postGame(
-            gameHttp,
-            listOf(GameCommand(0x1016, PacketWriter().apply { long(selectedRole.roleId) }.toByteArray())),
-            dm = loginInfo.dm
-        )
-        val state1016 = initPackets.firstOrNull { it.opcode == 0x8004 }?.let {
-            parse8004Head(it.payload, "0x1016/0x8004")
-        }
-        val state = state1016 ?: state1004 ?: error("0x1004/0x1016 均未返回 0x8004 角色状态")
-        val inventoryPackets = runCatching {
-            postGame(gameHttp, listOf(GameCommand(0x1104, byteArrayOf(0x00))), dm = loginInfo.dm)
-        }.getOrElse { emptyList() }
-        val inventoryState = inventoryPackets.firstOrNull { it.opcode == 0x8104 }?.let {
-            parse8104Inventory(it.payload, "0x1104/0x8104")
-        }
-        // Desktop parity: read 0x6200 once during login for role-page daily treasure
-        // progress. Failure remains non-fatal and never creates a repeated request loop.
-        val dailyActivityPackets = runCatching {
-            postGame(gameHttp, listOf(GameCommand(0x6200, byteArrayOf())), dm = loginInfo.dm)
-        }.getOrElse { emptyList() }
-        val dailyActivityState = dailyActivityPackets.firstOrNull { it.opcode == 0xE200 }?.let {
-            runCatching {
-                DailyActivityE200Parser.parse(it.payload, "live/0x6200/0xe200")
-            }.getOrNull()
-        }
-        var ownedFiefLocationError: String? = null
-        val ownedFiefPackets = runCatching {
-            postGame(
-                gameHttp,
-                listOf(GameCommand(0x1310, LootProtocolShapes.buildRaidFiefListPayload(state.roleName))),
-                dm = loginInfo.dm
-            )
-        }.getOrElse { error ->
-            ownedFiefLocationError = error.message ?: error::class.java.simpleName
-            emptyList()
-        }
-        val ownedFiefLocations = ownedFiefPackets.firstOrNull { it.opcode == 0x8310 }?.let { packet ->
-            runCatching { LootProtocolShapes.parseFiefList(packet.payload) }
-                .onFailure { error ->
-                    ownedFiefLocationError = "0x8310封地坐标解析失败：${error.message ?: error::class.java.simpleName}"
-                }
-                .getOrDefault(emptyList())
-        } ?: emptyList<LootTargetFief>().also {
-            if (ownedFiefLocationError == null) {
-                ownedFiefLocationError = "0x1310未返回0x8310封地坐标"
-            }
-        }
-        val allOpcodes = (
-            loginPackets + statePackets1004 + initPackets +
-                inventoryPackets + dailyActivityPackets + ownedFiefPackets
-            ).map { it.hexOpcode() }
-
-        return LoginResult(
-            username = username,
-            session = session,
-            userId = userId,
-            accountWithSuffix = accountWithSuffix,
-            area = area,
-            dm = loginInfo.dm,
-            roles = loginInfo.roles,
-            selectedRole = selectedRole,
-            state = state,
-            responseOpcodes = allOpcodes,
-            syncedAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date()),
-            inventoryState = inventoryState,
-            dailyActivityState = dailyActivityState,
-            ownedFiefLocations = ownedFiefLocations,
-            ownedFiefLocationError = ownedFiefLocationError
-        )
-        } finally {
-            if (previousHealthAccountId != null) {
-                GameRequestHealthSink.bindAccount(previousHealthAccountId)
-            } else {
-                GameRequestHealthSink.clearAccount()
-            }
-        }
-    }
-
 
     fun refreshRoleState(gameHttp: String, dm: Long, roleId: Long): LiveStateRefreshResult {
         val packets = postGame(
@@ -512,52 +316,6 @@ class RealGameProtocolClient(
         )
     }
 
-    internal fun parseAreaLine(line: String): Area? {
-        val p = line.split('`')
-        if (p.size < 12) return null
-        return Area(
-            target = p[0], areaId = p[1], areaName = p[2], serverUrl = p[3], resUrl = p[4],
-            serverVer = p[5], lowestVer = p[6], serverStatus = p[7], updateUrl = p[8],
-            flag = p[9], clientVersion = p[10], serverKey = p[11], raw = line
-        )
-    }
-
-    internal fun selectArea(areas: List<Area>, query: String): Area {
-        val normalizedQuery = normalize(query.ifBlank { "周年服351区" })
-        return areas.firstOrNull { normalize(it.areaName) == normalizedQuery }
-            ?: areas.firstOrNull { normalize(it.areaName).contains(normalizedQuery) || normalizedQuery.contains(normalize(it.areaName)) }
-            ?: areas.firstOrNull { it.serverKey.equals(query, ignoreCase = true) }
-            ?: areas.firstOrNull { it.serverKey == "qzone_351" }
-            ?: areas.firstOrNull { it.areaName.contains("351") }
-            ?: error("未找到区服：$query，可选示例：${areas.take(5).joinToString { it.areaName }}")
-    }
-
-    private fun normalize(s: String): String = s
-        .replace("（", "(")
-        .replace("）", ")")
-        .replace(" ", "")
-        .trim()
-        .lowercase(Locale.ROOT)
-
-    private fun httpGet(base: String, params: Map<String, String>): String {
-        requireExecutionAllowed("passport/get")
-        val qs = params.entries.joinToString("&") { (k, v) ->
-            URLEncoder.encode(k, "UTF-8") + "=" + URLEncoder.encode(v, "UTF-8")
-        }
-        val url = URL(base + if (base.contains('?')) "&$qs" else "?$qs")
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 20_000
-            requestMethod = "GET"
-            setRequestProperty("User-Agent", "DWPMClone/1.0 real-protocol")
-        }
-        return try {
-            readResponse(conn)
-        } finally {
-            conn.disconnect()
-        }
-    }
-
     private fun postGame(gameHttp: String, commands: List<GameCommand>, dm: Long): List<GamePacket> {
         val opcodeLabel = commands.firstOrNull()?.opcode?.let { "0x${it.toString(16)}" } ?: "empty"
         requireExecutionAllowed("real-protocol/$opcodeLabel")
@@ -594,8 +352,6 @@ class RealGameProtocolClient(
     private fun requireExecutionAllowed(phase: String) {
         if (!executionAllowed()) throw ExecutionRevokedBeforeNetworkException(phase)
     }
-
-    private fun readResponse(conn: HttpURLConnection): String = String(readResponseBytes(conn), UTF8)
 
     private fun readResponseBytes(conn: HttpURLConnection): ByteArray {
         val code = conn.responseCode
@@ -641,38 +397,6 @@ class RealGameProtocolClient(
             }
         }
         return packets
-    }
-
-    private data class Parsed8003(
-        val status: Int,
-        val message: String,
-        val dm: Long,
-        val selectedIndex: Int,
-        val roles: List<RoleBrief>
-    )
-
-    private fun parse8003(payload: ByteArray): Parsed8003 {
-        val c = PacketCursor(payload)
-        val status = c.i8()
-        val message = c.utf()
-        val dm = c.i64()
-        var selected = 0
-        val roles = mutableListOf<RoleBrief>()
-        if (status == 0) {
-            c.i64() // y6_unknown
-            selected = c.i32()
-            val count = c.i32()
-            repeat(count) {
-                val roleId = c.i64()
-                c.i16()
-                val roleName = c.utf()
-                val levelCandidate = c.i8()
-                val country = c.utf()
-                val title = c.utf()
-                roles += RoleBrief(roleId, roleName, levelCandidate, country, title)
-            }
-        }
-        return Parsed8003(status, message, dm, selected, roles)
     }
 
     internal fun parse8004Head(payload: ByteArray, sourceOpcode: String): RoleState {
@@ -939,15 +663,7 @@ class RealGameProtocolClient(
 
     companion object {
         private val UTF8: Charset = Charsets.UTF_8
-        private const val PASSPORT = "https://sglmpass.3gking.net:12443/"
-        private const val GAME_PATH = "/kingWapServer/HttpClient"
-        private const val CHANNEL_NUM = "0000480502"
-        private const val SOURCE = "diwang.sanguo"
-        private const val GAME_KEY = "diwang.sanguo"
-        private const val CTYPE = "7054"
-        private const val VERSION = "1660606"
         private const val PROTOCOL_HEADER = "1660606`7054`0000480502"
-        private const val TARGETS = "1,2,3,5,11,12,13,14,15,16,17,18,19,20,21,31,32,33,34,41,91"
         private const val INVENTORY_ITEM_RECORD_LEN = 12
         private val READ_ONLY_GAME_HEX_OPCODE_ALLOWLIST = setOf(0x1540, 0x1542)
         private val OFFICE_NAMES_BY_ID: Map<Int, String> = buildMap {

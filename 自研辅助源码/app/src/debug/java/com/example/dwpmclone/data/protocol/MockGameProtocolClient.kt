@@ -61,84 +61,6 @@ class MockGameProtocolClient : GameProtocolClient {
             )
         )
     }
-    override suspend fun queryNationalCities(session: GameSession, kind: NationalCityKind) =
-        ProtocolResult.Ok(
-            if (kind == NationalCityKind.SMALL || kind == NationalCityKind.UNKNOWN) {
-                emptyList()
-            } else {
-                listOf(
-                    NationalCity(
-                        name = "mock-${kind.name.lowercase()}",
-                        kind = kind,
-                        x = 1,
-                        y = 1,
-                        ownerLabel = "mock",
-                        listCategory = when (kind) {
-                            NationalCityKind.STATE -> 1
-                            NationalCityKind.COMMANDERY -> 2
-                            NationalCityKind.COUNTY -> 3
-                            NationalCityKind.SMALL -> 4
-                            NationalCityKind.UNKNOWN -> 0
-                        }
-                    )
-                )
-            }
-        )
-    override suspend fun queryNationalCollectStatus(session: GameSession, city: NationalCity) =
-        ProtocolResult.Ok(
-            NationalCollectStatus(
-                status = 0,
-                availability = 0,
-                usedCount = 0,
-                limit = 5,
-                currentCopper = when (city.kind) {
-                    NationalCityKind.STATE -> 200_000L
-                    NationalCityKind.COMMANDERY -> 150_000L
-                    NationalCityKind.COUNTY -> 100_000L
-                    else -> 0L
-                },
-                copperCap = 200_000L,
-                currentFood = 400_000L,
-                foodCap = 400_000L
-            )
-        )
-    override suspend fun collectNationalCity(session: GameSession, city: NationalCity) =
-        ProtocolResult.Ok(StepResult(true, "mock national collect ${city.name}"))
-    override suspend fun queryOwnedFiefs(session: GameSession) = ProtocolResult.Ok(
-        listOf(LootTargetFief(1, 1L, "mock-fief", "mock-city"))
-    )
-    override suspend fun collectCityLord(session: GameSession, fief: LootTargetFief) =
-        ProtocolResult.Ok(StepResult(true, "mock city lord collect ${fief.cityName}"))
-    override suspend fun queryVisitGenerals(session: GameSession) = ProtocolResult.Ok(
-        GeneralVisitQuery(
-            candidates = (1L..4L).map { id -> GeneralVisitCandidate(
-                id = id,
-                name = "名将$id",
-                level = 75,
-                fiefName = "mock-fief",
-                cityName = "mock-city",
-                captiveState = 0,
-                ownerName = "mock-owner",
-                salaryStars = 1,
-                loyalty = 90,
-                growth = 85,
-                breakout = 90,
-                strengthBase = 170 + id.toInt(),
-                strengthTotal = 170 + id.toInt(),
-                intelligenceBase = 260 + id.toInt(),
-                intelligenceTotal = 260 + id.toInt(),
-                command = 180 + id.toInt(),
-                troopLimit = 2_000,
-                exp = 0L,
-                expLimit = 1L,
-                job = 0,
-                portrait = 0,
-                raw = mapOf("page" to "1", "pageSize" to "4", "mock" to "true")
-            ) }
-        )
-    )
-    override suspend fun visitGeneral(session: GameSession, candidate: GeneralVisitCandidate) =
-        ProtocolResult.Ok(StepResult(true, "mock visit ${candidate.name}"))
     override suspend fun queryGenerals(session: GameSession) = ProtocolResult.Ok(
         listOf(General(id = 1L, name = "赵云", growth = 90, loyalty = 100, energy = 100))
     )
@@ -160,28 +82,12 @@ class MockGameProtocolClient : GameProtocolClient {
         ProtocolResult.Ok(StepResult(true, "mock loyalty +$delta"))
     override suspend fun updateFormation(session: GameSession, config: FormationConfig) = ProtocolResult.Ok(StepResult(true, "mock formation"))
     override suspend fun runInternalAffairs(session: GameSession, config: InternalAffairsConfig) = ProtocolResult.Ok(StepResult(true, "mock internal"))
-    override suspend fun runSixMinistries(session: GameSession, config: SixMinistriesConfig) =
-        ProtocolResult.Ok(
-            StepResult(
-                true,
-                if (!config.cropEnabled && config.stealEnabled) {
-                    "mock six ministries steal scan"
-                } else {
-                    "mock six ministries planting"
-                },
-                mapOf(
-                    "phase" to if (!config.cropEnabled && config.stealEnabled) "steal-scan" else "planted"
-                )
-            )
-        )
-    override suspend fun runDungeon(session: GameSession, config: DungeonConfig) = ProtocolResult.Ok(StepResult(true, "mock dungeon"))
     override suspend fun queryInventory(session: GameSession) = ProtocolResult.Ok(emptyList<InventoryItem>())
     override suspend fun useOrDiscardItem(session: GameSession, itemId: Long, action: InventoryAction, count: Int) =
         ProtocolResult.Ok(StepResult(true, "mock inventory"))
     override suspend fun setVipFeature(session: GameSession, config: VipFeatureConfig) = ProtocolResult.Ok(StepResult(true, "mock vip"))
     override suspend fun surrenderOrReleaseGenerals(session: GameSession, config: SurrenderReleaseConfig) = ProtocolResult.Ok(StepResult(true, "mock surrender/release"))
     override suspend fun sendGeneralToResourcePoint(session: GameSession, config: ResourcePointSendGeneralConfig) = ProtocolResult.Ok(StepResult(true, "mock send general"))
-    override suspend fun runAutoLoot(session: GameSession, config: AutoLootConfig) = ProtocolResult.Ok(StepResult(true, "mock auto loot; real run disabled"))
     override suspend fun scanAlarms(session: GameSession, config: AlarmConfig) = ProtocolResult.Ok(StepResult(true, "mock alarm scan"))
     override suspend fun runBulkToolAction(session: GameSession, action: BulkToolAction) = ProtocolResult.Ok(StepResult(true, "mock bulk $action"))
     override suspend fun queryOpenServer(query: OpenServerQuery) = ProtocolResult.Ok(OpenServerResult(query.serverName, "mock open time"))

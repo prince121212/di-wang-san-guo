@@ -3,6 +3,7 @@ package com.example.dwpmclone.domain.scheduler
 import com.example.dwpmclone.data.protocol.SessionAwareGameProtocolClient
 import com.example.dwpmclone.domain.model.GameSession
 import com.example.dwpmclone.domain.model.HuangTargetType
+import com.example.dwpmclone.domain.protocol.TaskContext
 import com.example.dwpmclone.domain.protocol.TaskDecision
 import com.example.dwpmclone.domain.protocol.TaskType
 import org.json.JSONObject
@@ -65,7 +66,7 @@ class RealSessionTaskPlanAdapterTest {
     }
 
     @Test
-    fun alignedSavedUiPlanRunsBrushYellowClosedLoopThroughServiceLifecycleRunner() {
+    fun alignedSavedUiPlanKeepsKotlinBrushMarkerFailClosed() {
         val savedPlan = SavedConfigTaskPlanFactory.plan(10001L, shuaHuangSavedConfigExport())
         val realSession = GameSession(
             accountId = 10001L,
@@ -75,22 +76,27 @@ class RealSessionTaskPlanAdapterTest {
             sourceMode = 1
         )
         val aligned = RealSessionTaskPlanAdapter.attachRealSession(savedPlan, realSession)
-        val runner = LocalSchedulerLifecycleRunner(
-            TaskScheduler(SessionAwareGameProtocolClient(offlineActionFixturesAllowed = true))
-        )
-
-        val batch = SuspendRunner.run {
-            runner.runPlansOnceAndStopOnTerminal(tick = 12, plans = listOf(aligned), nowMillis = 1_000L)
+        val task = aligned.tasks.single {
+            it.type == TaskType.SHUA_HUANG
+        } as ShuaHuangTask
+        val decision = SuspendRunner.run {
+            task.prepare(
+                TaskContext(
+                    session = aligned.session,
+                    protocol = SessionAwareGameProtocolClient(
+                        offlineActionFixturesAllowed = true,
+                    ),
+                    nowMillis = 1_000L,
+                ),
+            )
         }
 
-        val brushReport = batch.runReports.single { it.type == TaskType.SHUA_HUANG }
-        assertEquals(2, batch.runReports.size)
-        assertEquals(1, batch.deferredIdleTaskCount)
-        assertTrue(batch.runReports.none { it.type == TaskType.BANDIT_PREFETCH })
-        assertEquals(TaskType.SHUA_HUANG, brushReport.type)
-        assertEquals(listOf(TaskDecision.Continue, TaskDecision.Sleep(1_000)), brushReport.decisions)
-        assertEquals(emptyList<TerminalTaskDecision>(), batch.terminalDecisions)
-        assertEquals(emptyList<TaskStopReport>(), batch.stopReports)
+        assertTrue(decision is TaskDecision.Stop)
+        assertTrue(
+            (decision as TaskDecision.Stop).reason.contains(
+                "共享 Python 常驻核心执行",
+            ),
+        )
     }
 
 

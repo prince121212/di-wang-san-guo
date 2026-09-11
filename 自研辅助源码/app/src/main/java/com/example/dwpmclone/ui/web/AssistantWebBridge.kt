@@ -2,6 +2,7 @@ package com.example.dwpmclone.ui.web
 
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import com.example.dwpmclone.host.SharedCoreEventBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
@@ -13,6 +14,7 @@ class AssistantWebBridge(
 ) {
     private val closed = AtomicBoolean(false)
     private val executionLanes = AssistantApiExecutionLanes(classifier)
+    private val eventSubscription = SharedCoreEventBuffer.subscribe(::deliverEvent)
 
     @JavascriptInterface
     fun postMessage(rawMessage: String) {
@@ -49,7 +51,22 @@ class AssistantWebBridge(
         }
     }
 
+    private fun deliverEvent(eventJson: String) {
+        val eventLiteral = JSONObject.quote(eventJson)
+        webView.post {
+            if (!closed.get()) {
+                webView.evaluateJavascript(
+                    "window.AssistantApi&&window.AssistantApi.__event($eventLiteral)",
+                    null
+                )
+            }
+        }
+    }
+
     fun close() {
-        if (closed.compareAndSet(false, true)) executionLanes.close()
+        if (closed.compareAndSet(false, true)) {
+            SharedCoreEventBuffer.unsubscribe(eventSubscription)
+            executionLanes.close()
+        }
     }
 }

@@ -29,7 +29,8 @@ class TaskRuntimeStatusRepository(context: Context) {
     fun reconcileConfigured(
         accountId: Long,
         configuredTypes: Collection<TaskType>,
-        nowMillis: Long
+        nowMillis: Long,
+        executionGeneration: String? = null,
     ) {
         val configured = configuredTypes.toSet()
         val merged = readAll().associateByTo(linkedMapOf()) { it.accountId to it.type }
@@ -40,13 +41,19 @@ class TaskRuntimeStatusRepository(context: Context) {
         }
         configured.forEach { type ->
             val key = accountId to type
-            if (key !in merged) {
+            val current = merged[key]
+            if (current == null || (
+                    executionGeneration != null &&
+                        current.executionGeneration != executionGeneration
+                    )
+            ) {
                 merged[key] = TaskRuntimeStatus(
                     accountId,
                     type,
                     TaskRuntimeState.WAITING,
-                    "任务已配置，等待后台首次调度",
-                    nowMillis
+                    "任务已配置，等待共享核心本轮调度",
+                    nowMillis,
+                    executionGeneration = executionGeneration,
                 )
                 changed = true
             }
@@ -122,7 +129,15 @@ class TaskRuntimeStatusRepository(context: Context) {
                 nextRunAtMillis = obj.optLong("nextRunAtMillis").takeIf {
                     obj.has("nextRunAtMillis") && !obj.isNull("nextRunAtMillis")
                 },
-                tick = obj.optInt("tick").takeIf { obj.has("tick") && !obj.isNull("tick") }
+                tick = obj.optInt("tick").takeIf { obj.has("tick") && !obj.isNull("tick") },
+                executionGeneration = obj.optString("executionGeneration").takeIf {
+                    obj.has("executionGeneration") &&
+                        !obj.isNull("executionGeneration") &&
+                        it.isNotBlank()
+                },
+                skipped = obj.optBoolean("skipped", false),
+                skipReason = obj.optionalString("skipReason"),
+                statusText = obj.optionalString("statusText"),
             )
         }
     }
@@ -140,11 +155,22 @@ class TaskRuntimeStatusRepository(context: Context) {
                         .put("updatedAtMillis", status.updatedAtMillis)
                         .put("nextRunAtMillis", status.nextRunAtMillis ?: JSONObject.NULL)
                         .put("tick", status.tick ?: JSONObject.NULL)
+                        .put(
+                            "executionGeneration",
+                            status.executionGeneration ?: JSONObject.NULL,
+                        )
+                        .put("skipped", status.skipped)
+                        .put("skipReason", status.skipReason ?: JSONObject.NULL)
+                        .put("statusText", status.statusText ?: JSONObject.NULL)
                 )
             }
         check(prefs.edit().putString(KEY, array.toString()).commit()) {
             "无法持久化任务运行状态"
         }
+    }
+
+    private fun JSONObject.optionalString(key: String): String? = optString(key).takeIf {
+        has(key) && !isNull(key) && it.isNotBlank() && it != "null"
     }
 
     companion object {

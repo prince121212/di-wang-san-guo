@@ -253,6 +253,45 @@ class MineSqliteTests(unittest.TestCase):
         self.assertTrue(public["points"][0]["playerOccupied"])
         self.assertEqual(public["ttlMs"], 3 * 60 * 60 * 1000)
 
+    def test_shared_python_snapshot_port_projects_into_mine_database(self) -> None:
+        old_sessions = SERVER.SESSIONS
+        SERVER.SESSIONS = {"mine-sqlite-a": self.sess}
+        try:
+            SERVER._desktop_save_map_snapshot({
+                "accountRef": "mine-sqlite-a",
+                "kind": "MINE",
+                "fingerprint": "94,29|PASTURE_LV2|2|附近|true|false",
+                "scannedAtMillis": SERVER.now_ms(),
+                "targets": [{
+                    "targetId": 0x101,
+                    "x": 95,
+                    "y": 30,
+                    "scanX": 94,
+                    "scanY": 29,
+                    "type": "二级牧场",
+                    "level": 2,
+                    "filterFields": {
+                        "idHex": "0000000000000101",
+                        "kind": "二级牧场",
+                        "businessId": "12",
+                        "typeCode": "5",
+                        "playerOccupied": "false",
+                        "unoccupiedByPlayer": "true",
+                        "isEmpty": "true",
+                        "amountA": "18000",
+                        "amountB": "600",
+                        "defenderCount": "0",
+                    },
+                }],
+            })
+        finally:
+            SERVER.SESSIONS = old_sessions
+
+        public = SERVER.public_mine_map(self.sess)
+        self.assertEqual(len(public["points"]), 1)
+        self.assertEqual(public["points"][0]["idHex"], "0000000000000101")
+        self.assertEqual(public["points"][0]["businessId"], 12)
+
     def test_recall_payload_matches_capture(self) -> None:
         self.assertEqual(
             SERVER.build_mine_recall_payload(0x8F2785).hex(),

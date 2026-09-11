@@ -89,8 +89,7 @@ def _project_account_card(
     if display_name is None:
         display_name = f"{username}@{server_name}"
     has_live_session = bool(state["mayUseLiveSession"])
-
-    return {
+    card = {
         "sessionId": account_ref,
         "username": username,
         "displayName": display_name,
@@ -129,9 +128,13 @@ def _project_account_card(
             else 0
         ),
         "accountHabits": _json_copy(runtime.get("accountHabits") or {}),
+        # The nested session shape is reserved for a currently usable live
+        # session.  Cached account fields remain available on the card itself,
+        # but must not make a stopped/offline account look actionable to either
+        # host UI.
         "session": (
             _json_copy(runtime.get("session"))
-            if has_live_session
+            if has_live_session and isinstance(runtime.get("session"), Mapping)
             else None
         ),
         "recentGameRequests": _list(runtime.get("recentGameRequests")),
@@ -139,6 +142,32 @@ def _project_account_card(
         "taskStack": _list(task_overview.get("taskStack")),
         "notices": _list(task_overview.get("notices")),
     }
+    host_presentation = _mapping(runtime.get("presentation"))
+    for key in (
+        "platform",
+        "platformKey",
+        "serial",
+        "createdAt",
+        "startedAt",
+        "localOnly",
+        "hasStoredPassword",
+        "proxyGroup",
+        "proxyNode",
+        "proxyMode",
+        "proxyIp",
+        "proxyStatus",
+        "proxyError",
+        "proxyCheckedAt",
+        "networkDegraded",
+        "responseUnconfirmed",
+        "heartbeatNetworkFailureCount",
+        "heartbeatUnconfirmedFailureCount",
+    ):
+        if key in record:
+            card[key] = _json_copy(record[key])
+        elif key in host_presentation:
+            card[key] = _json_copy(host_presentation[key])
+    return card
 
 
 def _mapping(value: Any) -> Dict[str, Any]:

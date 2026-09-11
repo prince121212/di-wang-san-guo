@@ -96,7 +96,15 @@ class MobileApiContractTests(unittest.TestCase):
             for match in re.findall(r"/api/[A-Za-z0-9_./-]+", app_text)
         }
         allowed = set(SERVER.MOBILE_LEGACY_GET_PATHS) | set(SERVER.MOBILE_LEGACY_POST_PATHS)
-        self.assertTrue(referenced - allowed <= {"/api/health"})
+        # These routes are implemented only by the Android-local host. They
+        # must not be advertised as forwardable desktop Mobile API routes.
+        android_local_only = {
+            "/api/background/permissions",
+            "/api/background/permissions/open",
+        }
+        self.assertTrue(
+            referenced - allowed <= {"/api/health"} | android_local_only
+        )
 
     def test_settings_revision_conflict_returns_current_snapshot_without_writing(self) -> None:
         account = {"sessionId": "sid", "username": "1608600", "area": {"areaName": "352区"}}
@@ -208,8 +216,13 @@ class MobileApiContractTests(unittest.TestCase):
             "sessionId": sid,
             "username": "1608600",
             "area": {"areaName": "352区"},
-            "status": "stopped",
-            "started": False,
+            # The fixture carries a real in-memory session and exercises the
+            # legacy WebView's nested session payload, so its lifecycle facts
+            # must describe a currently usable session as well.  A stopped
+            # account intentionally receives session=None from the shared
+            # account-card projection.
+            "status": "online",
+            "started": True,
             "createdAt": 1,
         }
         session = {
@@ -358,6 +371,27 @@ class MobileApiContractTests(unittest.TestCase):
                     "task": {"taskId": "mine-task", "status": "running"},
                 },
             ) as start_mine, patch.object(
+                SERVER,
+                "start_raid_task",
+                return_value={
+                    "started": True,
+                    "task": {"taskId": "raid-task", "status": "running"},
+                },
+            ) as start_raid, patch.object(
+                SERVER,
+                "start_lossless_task",
+                return_value={
+                    "started": True,
+                    "task": {"taskId": "lossless-task", "status": "running"},
+                },
+            ) as start_lossless, patch.object(
+                SERVER,
+                "start_dungeon_task",
+                return_value={
+                    "started": True,
+                    "task": {"taskId": "dungeon-task", "status": "running"},
+                },
+            ) as start_dungeon, patch.object(
                 SERVER, "current_task_overview", return_value={}
             ):
                 common = post_json("/api/settings/save", {
@@ -403,6 +437,41 @@ class MobileApiContractTests(unittest.TestCase):
                         }],
                     },
                 })
+                raid = post_json("/api/raid/execute", {
+                    "sessionId": opaque,
+                    "confirm": "raid",
+                    "rows": [{
+                        "enabled": True,
+                        "generalIds": ["1"],
+                        "playerName": "目标甲",
+                        "fiefIndex": 2,
+                        "fullTroops": False,
+                    }],
+                })
+                lossless = post_json("/api/lossless/execute", {
+                    "sessionId": opaque,
+                    "confirm": "lossless",
+                    "settings": {
+                        "fullTroops": True,
+                        "rows": [{
+                            "enabled": True,
+                            "generalIds": ["1"],
+                            "level": "9级",
+                        }],
+                    },
+                })
+                dungeon = post_json("/api/dungeon/execute", {
+                    "sessionId": opaque,
+                    "confirm": "dungeon",
+                    "mode": "loop",
+                    "rows": [{
+                        "enabled": True,
+                        "generalIds": ["1"],
+                        "chapter": "第四章",
+                        "stage": "5",
+                        "chest": "右",
+                    }],
+                })
 
             self.assertTrue(common["ok"])
             self.assertEqual("common.chain", common["scope"])
@@ -417,14 +486,34 @@ class MobileApiContractTests(unittest.TestCase):
             self.assertEqual(["1"], mine["executionRows"][0]["generalIds"])
             self.assertEqual("mine-task", mine["task"]["taskId"])
 
+            self.assertTrue(raid["ok"])
+            self.assertEqual(["1"], raid["executionRows"][0]["generalIds"])
+            self.assertEqual("raid-task", raid["task"]["taskId"])
+
+            self.assertTrue(lossless["ok"])
+            self.assertEqual(9, lossless["executionRows"][0]["level"])
+            self.assertEqual("lossless-task", lossless["task"]["taskId"])
+
+            self.assertTrue(dungeon["ok"])
+            self.assertEqual(3, dungeon["executionRows"][0]["chapter"])
+            self.assertEqual("dungeon-task", dungeon["task"]["taskId"])
+
             saved_kwargs = [entry.kwargs for entry in save.call_args_list]
             self.assertTrue(any("config" in kwargs for kwargs in saved_kwargs))
             self.assertTrue(any("ministry" in kwargs for kwargs in saved_kwargs))
             self.assertTrue(any("mine" in kwargs for kwargs in saved_kwargs))
-            # 设置保存不再绑定六部的在线检查；只有打矿旧路由仍检查。
-            self.assertEqual(1, require_online.call_count)
+            self.assertTrue(any("raid" in kwargs for kwargs in saved_kwargs))
+            self.assertGreaterEqual(
+                sum("military_future" in kwargs for kwargs in saved_kwargs),
+                2,
+            )
+            # 本地设置保存均不再绑定账号在线检查或游戏网络。
+            self.assertEqual(0, require_online.call_count)
             start_ministry.assert_called_once()
             start_mine.assert_called_once()
+            start_raid.assert_called_once()
+            start_lossless.assert_called_once()
+            start_dungeon.assert_called_once()
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -436,6 +525,132 @@ class MobileApiContractTests(unittest.TestCase):
                 SERVER.SESSIONS.update(old_sessions)
                 SERVER.SAVED_CONFIGS.clear()
                 SERVER.SAVED_CONFIGS.update(old_saved_configs)
+
+    def test_resident_settings_save_while_account_is_stopped_and_wait_for_start(self) -> None:
+        sid = "stopped-resident-save"
+        account = {
+            "sessionId": sid,
+            "username": "1608600",
+            "area": {"areaName": "352区"},
+            "status": "stopped",
+            "started": False,
+            "createdAt": 1,
+        }
+        with SERVER.ACCOUNT_LOCK:
+            old_accounts = dict(SERVER.ACCOUNTS)
+            old_sessions = dict(SERVER.SESSIONS)
+            old_saved_formation_rules = dict(SERVER.SAVED_FORMATION_RULES)
+            SERVER.ACCOUNTS.clear()
+            SERVER.SESSIONS.clear()
+            SERVER.SAVED_FORMATION_RULES.clear()
+            SERVER.ACCOUNTS[sid] = account
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        cookie = f"{SERVER.MOBILE_API_COOKIE}=test-mobile-token"
+        opaque = SERVER.mobile_account_ref(sid)
+
+        def post_json(path: str, payload: dict) -> dict:
+            request = urllib.request.Request(
+                base + path,
+                data=json.dumps(payload, ensure_ascii=False).encode(),
+                headers={"Cookie": cookie, "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read())
+
+        try:
+            with patch.object(
+                SERVER,
+                "save_account_habits",
+                return_value={"militaryFile": "memory://military"},
+            ) as save, patch.object(
+                SERVER, "load_account_habits", return_value={}
+            ), patch.object(
+                SERVER, "account_log"
+            ), patch.object(
+                SERVER, "persist_runtime_state"
+            ), patch.object(
+                SERVER, "current_task_overview", return_value={}
+            ), patch.object(
+                SERVER, "request_stop_tasks_for_session_type", return_value=[]
+            ), patch.object(
+                SERVER, "start_raid_task"
+            ) as start_raid, patch.object(
+                SERVER, "start_lossless_task"
+            ) as start_lossless, patch.object(
+                SERVER, "start_dungeon_task"
+            ) as start_dungeon, patch.object(
+                SERVER, "start_apply_formations_task"
+            ) as start_formations:
+                formations = post_json("/api/formations/save", {
+                    "sessionId": opaque,
+                    "formations": [{
+                        "enabled": True,
+                        "generalIds": ["1"],
+                        "soldierType": "近卫兵",
+                        "soldierCount": 1200,
+                    }],
+                    "formationOptions": {"clearOtherGenerals": False},
+                })
+                raid = post_json("/api/raid/execute", {
+                    "sessionId": opaque,
+                    "confirm": "raid",
+                    "rows": [{
+                        "enabled": True,
+                        "generalIds": ["1"],
+                        "playerName": "目标甲",
+                        "fiefIndex": 1,
+                    }],
+                })
+                lossless = post_json("/api/lossless/execute", {
+                    "sessionId": opaque,
+                    "confirm": "lossless",
+                    "settings": {"rows": [{
+                        "enabled": True,
+                        "generalIds": ["1"],
+                        "level": "10级",
+                    }]},
+                })
+                dungeon = post_json("/api/dungeon/execute", {
+                    "sessionId": opaque,
+                    "confirm": "dungeon",
+                    "mode": "loop",
+                    "rows": [{
+                        "enabled": True,
+                        "generalIds": ["1"],
+                        "chapter": "第一章",
+                        "stage": "1",
+                        "chest": "右",
+                    }],
+                })
+
+            for payload in (formations, raid, lossless, dungeon):
+                self.assertTrue(payload["ok"])
+                self.assertTrue(payload["saved"])
+                self.assertTrue(payload["execution"]["accepted"])
+                self.assertFalse(payload["execution"]["started"])
+                self.assertTrue(payload["execution"]["waitingForAccountStart"])
+            self.assertEqual(["1"], formations["normalizedFormations"][0]["generalIds"])
+            self.assertEqual(save.call_count, 4)
+            start_formations.assert_not_called()
+            start_raid.assert_not_called()
+            start_lossless.assert_not_called()
+            start_dungeon.assert_not_called()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+            with SERVER.ACCOUNT_LOCK:
+                SERVER.ACCOUNTS.clear()
+                SERVER.ACCOUNTS.update(old_accounts)
+                SERVER.SESSIONS.clear()
+                SERVER.SESSIONS.update(old_sessions)
+                SERVER.SAVED_FORMATION_RULES.clear()
+                SERVER.SAVED_FORMATION_RULES.update(old_saved_formation_rules)
 
     def test_remote_paired_webview_can_only_read_console_static_assets(self) -> None:
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), SERVER.Handler)

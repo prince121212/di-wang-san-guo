@@ -53,7 +53,7 @@ fun DailyStep.userFacingName(): String = when (this) {
  */
 object UserFacingTextLocalizer {
     private val exactMessages = mapOf(
-        "wakelock acquired for background keepalive" to "已获取后台保活锁",
+        "wakelock acquired for scheduler window" to "已获取调度执行窗口锁",
         "wakelock released" to "已释放后台保活锁",
         "network validated; account sessions must be rechecked before scheduling" to
             "网络已确认可用，调度前将重新检查账号会话",

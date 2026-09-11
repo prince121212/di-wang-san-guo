@@ -22,8 +22,10 @@ from dwpm_core.features.daily import (
     build_salary_payload,
     country_donation_limits,
     general_visit_already_visited,
+    general_visit_has_no_candidates,
     national_citizen_daily_skip_result,
     normalize_general_visit_ids,
+    parse_daily_donation_receipt,
     parse_arena_coin_claim_response,
     parse_daily_diamond_box_response,
     parse_daily_sign_in_packets,
@@ -52,6 +54,26 @@ class SharedDailyProtocolTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         cls.fixtures = payload["fixtures"]
+
+    def test_donation_quota_receipts_are_idempotent_completion(self) -> None:
+        copper = parse_daily_donation_receipt(b"\xfd", "copper", 89000)
+        food = parse_daily_donation_receipt(b"\xfd", "food", 267000)
+        technology = parse_daily_donation_receipt(
+            b"\xfc", "technology", 89000
+        )
+        rejected = parse_daily_donation_receipt(b"\xfe", "copper", 89000)
+
+        for receipt in (copper, food, technology):
+            self.assertTrue(receipt["success"])
+            self.assertTrue(receipt["completed"])
+            self.assertTrue(receipt["alreadyCompleted"])
+            self.assertEqual(
+                receipt["completionReason"],
+                "daily-donation-quota-used",
+            )
+        self.assertEqual(copper["status"], -3)
+        self.assertEqual(technology["status"], -4)
+        self.assertFalse(rejected["success"])
 
     def test_national_city_pages_run_in_shared_core(self) -> None:
         for fixture_name in (
@@ -144,6 +166,23 @@ class SharedDailyProtocolTests(unittest.TestCase):
         self.assertEqual(
             SERVER.build_general_visit_payload(123, 2),
             build_general_visit_payload(123, 2),
+        )
+
+    def test_general_visit_no_generals_is_a_normal_empty_result(self) -> None:
+        payload = bytes([0xFF]) + SERVER.utf("不可拜访，国王麾下无名将")
+        page = parse_general_visit_page(payload)
+
+        self.assertEqual(page["candidates"], [])
+        self.assertTrue(
+            general_visit_has_no_candidates(page["status"], page["message"])
+        )
+        self.assertTrue(
+            SERVER.general_visit_has_no_candidates(
+                page["status"], page["message"]
+            )
+        )
+        self.assertFalse(
+            general_visit_has_no_candidates(-1, "名将列表暂时不可用")
         )
 
     def test_activity_arena_sign_in_and_diamond_run_in_shared_core(self) -> None:

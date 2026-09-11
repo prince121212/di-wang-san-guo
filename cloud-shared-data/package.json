@@ -1,0 +1,22 @@
+{
+  "name": "dwpm-cloud-shared-data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.0",
+    "@cloudflare/workers-types": "5.20260811.1",
+    "typescript": "5.9.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.117.0"
+  }
+}

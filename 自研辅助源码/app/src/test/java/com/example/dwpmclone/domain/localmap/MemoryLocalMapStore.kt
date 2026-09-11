@@ -6,6 +6,30 @@ internal class MemoryLocalMapStore : LocalMapStore {
 
     override fun read(query: LocalMapQueryKey): LocalMapSnapshot? = snapshots[query]
 
+    override fun readShared(query: LocalMapQueryKey): LocalMapSnapshot? {
+        val contributing = snapshots.values.filter {
+            it.query.serverId == query.serverId &&
+                it.query.kind == query.kind &&
+                it.query.fingerprint == query.fingerprint
+        }
+        if (contributing.isEmpty()) return null
+        val merged = contributing.asSequence()
+            .flatMap { it.targets.asSequence() }
+            .groupBy { it.targetId }
+            .values
+            .mapNotNull { records ->
+                records.maxByOrNull {
+                    it.invalidatedAtMillis ?: it.lastValidatedAtMillis
+                }
+            }
+            .toList()
+        return LocalMapSnapshot(
+            query = query,
+            scannedAtMillis = contributing.maxOf { it.scannedAtMillis },
+            targets = merged
+        )
+    }
+
     override fun replace(snapshot: LocalMapSnapshot) {
         snapshots[snapshot.query] = snapshot
     }

@@ -45,6 +45,10 @@ class SharedBehaviorContractTests(unittest.TestCase):
             SERVER.CLIENT_HEARTBEAT_INTERVAL_SEC,
             lifecycle["heartbeatIntervalMillis"] / 1000,
         )
+        self.assertEqual(lifecycle["sessionValidationIntervalMillis"], 60_000)
+        self.assertEqual(lifecycle["probeFailurePauseThreshold"], 3)
+        self.assertEqual(lifecycle["probeFailureReloginThreshold"], 4)
+        self.assertEqual(lifecycle["degradedProbeRetryMillis"], 5_000)
         self.assertEqual(SERVER.ACCOUNT_STATUS_TEXT, lifecycle["statusText"])
         for status, text in lifecycle["statusText"].items():
             self.assertEqual(SERVER.account_status_text(status), text)
@@ -55,12 +59,18 @@ class SharedBehaviorContractTests(unittest.TestCase):
         )
         self.assertEqual(
             [key for key, _label in SERVER.RESIDENT_TASKS],
-            ["mine", "lossless", "brushYellow", "raid", "dungeon", "ministry"],
+            # Operator-requested order: 无损 > 打矿 > 副本 > 刷黄.  Dungeon above
+            # brushYellow is the part that matters: reversed, a perpetually due
+            # brush loop starved dungeon outright on a real account.
+            [
+                "lossless", "mine", "dungeon", "brushYellow", "raid",
+                "general", "ministry", "domestic", "inventory", "alarm",
+            ],
         )
         self.assertTrue(scheduler["sameGeneralMutualExclusionRequired"])
         self.assertTrue(scheduler["onlyRunnableResidentBlocksLowerPriority"])
         self.assertFalse(scheduler["formationPrerequisiteRunsFirst"])
-        self.assertFalse(scheduler["dailyFeaturesRunBeforeResidents"])
+        self.assertTrue(scheduler["dailyFeaturesRunBeforeResidents"])
         self.assertTrue(scheduler["militaryLaneRunsBeforeIdleLane"])
         self.assertTrue(scheduler["expeditionPreparationIsTaskScoped"])
         self.assertTrue(scheduler["idleLaneMustYieldToDueMilitaryWork"])
@@ -111,6 +121,10 @@ class SharedBehaviorContractTests(unittest.TestCase):
             int(actions["generalVisit"]["visitResponseOpcode"], 0),
         )
         self.assertEqual(actions["generalVisit"]["alreadyVisitedStatus"], -2)
+        self.assertIn(
+            "国王麾下无名将",
+            actions["generalVisit"]["noCandidateMarkers"],
+        )
         self.assertIn(
             "拒绝了阁下的邀请",
             actions["generalVisit"]["invitationResolvedMarkers"],
@@ -281,6 +295,7 @@ class SharedBehaviorContractTests(unittest.TestCase):
 
             session["dailyAutomationRetryAt"] = 0
             self.assertTrue(SERVER.execute_daily_automation_after_midnight(session))
+            self.assertEqual(session["dailyAutomationLastRunKind"], "retry")
             self.assertEqual(execute.call_count, 2)
             self.assertEqual(session["dailyAutomationPendingKeys"], [])
             self.assertEqual(session["dailyAutomationRetryAt"], 0)

@@ -29,12 +29,25 @@ class AssistantBehaviorContractTest {
         assertTrue(contract.accountLifecycle.startedRequiresExecutionOwner)
         assertTrue(contract.accountLifecycle.startRunsFreshLogin)
         assertEquals(20_000L, contract.accountLifecycle.heartbeatIntervalMillis)
+        assertEquals(60_000L, contract.accountLifecycle.sessionValidationIntervalMillis)
+        assertEquals(8_000L, contract.accountLifecycle.sessionProbeReadTimeoutMillis)
+        assertEquals(20_000L, contract.accountLifecycle.sessionStateFallbackReadTimeoutMillis)
+        assertEquals(3, contract.accountLifecycle.probeFailurePauseThreshold)
+        assertEquals(4, contract.accountLifecycle.probeFailureReloginThreshold)
+        assertEquals(5_000L, contract.accountLifecycle.degradedProbeRetryMillis)
+        assertEquals(
+            5_000L,
+            contract.accountLifecycle.successfulResponseRefreshMinIntervalMillis
+        )
         assertEquals("开启", contract.accountLifecycle.statusText["online"])
         assertEquals("检测中", contract.accountLifecycle.statusText["checking"])
         assertEquals("掉线", contract.accountLifecycle.statusText["offline"])
         assertEquals("未开启", contract.accountLifecycle.statusText["stopped"])
+        // Operator-requested order: 无损 > 打矿 > 副本 > 刷黄.  Dungeon above
+        // brushYellow is the part that matters: reversed, a perpetually due
+        // brush loop starved dungeon outright on a real account.
         assertEquals(
-            listOf("mine", "lossless", "brushYellow", "raid", "dungeon", "ministry"),
+            listOf("lossless", "mine", "dungeon", "brushYellow", "raid", "general", "ministry", "domestic", "inventory", "alarm"),
             contract.scheduler.residentPriority.entries
                 .sortedByDescending { it.value }
                 .map { it.key }
@@ -42,13 +55,19 @@ class AssistantBehaviorContractTest {
         assertTrue(contract.scheduler.sameGeneralMutualExclusionRequired)
         assertTrue(contract.scheduler.onlyRunnableResidentBlocksLowerPriority)
         assertFalse(contract.scheduler.formationPrerequisiteRunsFirst)
-        assertFalse(contract.scheduler.dailyFeaturesRunBeforeResidents)
+        assertTrue(contract.scheduler.dailyFeaturesRunBeforeResidents)
         assertTrue(contract.scheduler.militaryLaneRunsBeforeIdleLane)
         assertTrue(contract.scheduler.expeditionPreparationIsTaskScoped)
         assertTrue(contract.scheduler.idleLaneMustYieldToDueMilitaryWork)
         assertTrue(contract.scheduler.observationRefreshMayRunBetweenLanes)
         assertTrue(contract.scheduler.waitStatePersistsAcrossProcess)
         assertTrue(contract.scheduler.dayBoundaryUsesContractTimezone)
+        assertEquals(600_000L, contract.scheduler.generalMaintenancePollMillis)
+        assertEquals(600_000L, contract.scheduler.domesticPollMillis)
+        assertEquals(3_600_000L, contract.scheduler.inventoryPollMillis)
+        assertEquals(30_000L, contract.scheduler.alarmPollMillis)
+        assertEquals(200, contract.scheduler.alarmFingerprintLimit)
+        assertEquals(300_000L, contract.scheduler.alarmErrorDedupeMillis)
         assertEquals(0x6260, contract.dailyActions.arenaCoins.readRequestOpcode)
         assertEquals(0x6266, contract.dailyActions.arenaCoins.claimRequestOpcode)
         assertEquals(0xE266, contract.dailyActions.arenaCoins.claimResponseOpcode)
@@ -99,6 +118,13 @@ class AssistantBehaviorContractTest {
         assertEquals(6, contract.mapSearch.world.step)
         assertEquals(80, contract.mapSearch.nearbyRequestLimit)
         assertEquals(384, contract.mapSearch.fullRequestLimit)
+        assertEquals(5, contract.mapSearch.preparationBatchSize)
+        assertEquals(200L, contract.mapSearch.interRequestDelayMillis)
+        assertEquals(150L, contract.mapSearch.interRequestJitterMillis)
+        assertEquals(12_000L, contract.mapSearch.readOnlyRequestTimeoutMillis)
+        assertEquals(2, contract.mapSearch.readOnlyTransportMaxAttempts)
+        assertEquals(750L, contract.mapSearch.readOnlyRetryBaseDelayMillis)
+        assertEquals(500L, contract.mapSearch.readOnlyRetryJitterMillis)
         assertEquals(120_000L, contract.mapSearch.scanCoordinateCacheTtlMillis)
         assertEquals(1_800_000L, contract.mapSearch.targetCacheTtlMillis)
         assertEquals(30, contract.brushYellow.minimumRoleLevel)

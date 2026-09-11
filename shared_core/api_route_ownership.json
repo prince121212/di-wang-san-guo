@@ -22,13 +22,217 @@
       {
         "method": "GET",
         "path": "/api/accounts",
-        "desktop": "desktop-python",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/areas",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/reference/guide",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/accounts/stop",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/accounts/delete",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/accounts/add",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/accounts/start",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/automation/start-saved",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/automation/stop",
+        "desktop": "shared-python",
         "android": "shared-python"
       },
       {
         "method": "GET",
         "path": "/api/military/intel",
-        "desktop": "desktop-python",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/state/refresh",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/heartbeat",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/brush/recommended-center",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/general-visit/candidates",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/raid/fiefs",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/formations/unassign-all",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/troops/assign",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/troops/refill",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/troops/heal",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/inventory/open-one",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/brush/search",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/brush/execute",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/mine/search",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/mine/execute",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/liubu/hubu/query",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/liubu/hubu/plant",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/sign-in/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/arena-coins/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/donate/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/donate/custom",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/salary/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/national-collect/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/city-lord-collect/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/daily/general-visit/claim",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/domestic/query",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/domestic/action",
+        "desktop": "shared-python",
         "android": "shared-python"
       },
       {
@@ -54,13 +258,103 @@
         "path": "/api/formations/save",
         "desktop": "shared-python",
         "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/mine/save",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/settings/save",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/raid/execute",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/lossless/execute",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/dungeon/execute",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/logs/system",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/logs/account",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/automation/status",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/success-records",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/logs/account",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/logs/system/clear",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/notices/dismiss",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/maps/bandits",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "GET",
+        "path": "/api/maps/mines",
+        "desktop": "shared-python",
+        "android": "shared-python"
+      },
+      {
+        "method": "POST",
+        "path": "/api/formations/apply",
+        "desktop": "shared-python",
+        "android": "shared-python"
       }
     ]
   },
   "routes": [
     { "method": "GET", "path": "/api/health", "feature": "system", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "GET", "path": "/api/accounts", "feature": "account", "responseClass": "local", "currentAndroid": "implemented" },
-    { "method": "GET", "path": "/api/areas", "feature": "account", "responseClass": "local", "currentAndroid": "stub", "note": "Android 当前返回空区服目录" },
+    { "method": "GET", "path": "/api/areas", "feature": "account", "responseClass": "local", "currentAndroid": "shared-python", "note": "宿主只提供区服存储事实；去重、排序、平台和响应投影由共享 Python 生成" },
     { "method": "GET", "path": "/api/accounts/settings", "feature": "settings", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "GET", "path": "/api/logs/system", "feature": "logging", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "GET", "path": "/api/logs/account", "feature": "logging", "responseClass": "local", "currentAndroid": "implemented" },
@@ -71,19 +365,20 @@
     { "method": "GET", "path": "/api/maps/mines", "feature": "map", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "GET", "path": "/api/heartbeat", "feature": "account", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
     { "method": "GET", "path": "/api/military/intel", "feature": "military", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
-    { "method": "GET", "path": "/api/reference/guide", "feature": "guide", "responseClass": "local", "currentAndroid": "native-adapter", "note": "Android 当前绕过 API 使用 NativeGuideBridge" },
+    { "method": "GET", "path": "/api/reference/guide", "feature": "guide", "responseClass": "local", "currentAndroid": "shared-python", "note": "Android 只读 APK 原始文本；名将解析、文章目录和开服日期规则由共享 Python 唯一实现" },
 
     { "method": "POST", "path": "/api/logs/account", "feature": "logging", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/logs/system/clear", "feature": "logging", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/notices/dismiss", "feature": "logging", "responseClass": "local", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/accounts/add", "feature": "account", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/accounts/start", "feature": "account", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
+    { "method": "POST", "path": "/api/accounts/add", "feature": "account", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python", "note": "共享 Python 生成无密码草稿和持久化 operation；密码先进入宿主凭据仓，不进 operation 账本" },
+    { "method": "POST", "path": "/api/accounts/start", "feature": "account", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python", "note": "共享 Python 统一受理、幂等、恢复和结果投影；宿主暂保留登录传输适配" },
     { "method": "POST", "path": "/api/accounts/stop", "feature": "account", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/accounts/delete", "feature": "account", "responseClass": "local", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/automation/start-saved", "feature": "scheduler", "responseClass": "local", "currentAndroid": "implemented", "note": "只提交已保存任务，不在页面请求内等待网络" },
-    { "method": "POST", "path": "/api/automation/stop", "feature": "scheduler", "responseClass": "local", "currentAndroid": "implemented" },
+    { "method": "POST", "path": "/api/automation/start-saved", "feature": "scheduler", "responseClass": "local", "currentAndroid": "shared-python", "note": "共享 Python 返回立即启动或等待账号启动计划；不在页面请求内登录或等待网络" },
+    { "method": "POST", "path": "/api/automation/stop", "feature": "scheduler", "responseClass": "local", "currentAndroid": "shared-python", "note": "只停止任务并保持账号在线，不复用停止账号语义" },
     { "method": "POST", "path": "/api/settings/save", "feature": "settings", "responseClass": "local", "currentAndroid": "implemented", "note": "本地落盘与后续任务调整分离" },
     { "method": "POST", "path": "/api/formations/save", "feature": "formation", "responseClass": "local", "currentAndroid": "implemented", "note": "保存规则；实际配兵由异步任务执行" },
+    { "method": "POST", "path": "/api/formations/apply", "feature": "formation", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented", "note": "实际配兵持久化 operation；与本地保存分离" },
     { "method": "POST", "path": "/api/raid/execute", "feature": "raid", "responseClass": "local", "currentAndroid": "implemented", "note": "共享前端当前语义为保存掠夺规则" },
     { "method": "POST", "path": "/api/mine/save", "feature": "mine", "responseClass": "local", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/liubu/save", "feature": "ministry", "responseClass": "local", "currentAndroid": "implemented" },
@@ -93,8 +388,8 @@
 
     { "method": "POST", "path": "/api/brush/search", "feature": "brush", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/brush/execute", "feature": "brush", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/brush/recommended-center", "feature": "brush", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/mine/search", "feature": "mine", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
+    { "method": "POST", "path": "/api/brush/recommended-center", "feature": "brush", "responseClass": "local", "currentAndroid": "implemented" },
+    { "method": "POST", "path": "/api/mine/search", "feature": "mine", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "shared-python" },
     { "method": "POST", "path": "/api/mine/execute", "feature": "mine", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/raid/fiefs", "feature": "raid", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/inventory/open-one", "feature": "inventory", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
@@ -103,20 +398,20 @@
     { "method": "POST", "path": "/api/troops/heal", "feature": "formation", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
     { "method": "POST", "path": "/api/formations/unassign-all", "feature": "formation", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
 
-    { "method": "POST", "path": "/api/daily/sign-in/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/arena-coins/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/donate/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/donate/custom", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/salary/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/national-collect/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/city-lord-collect/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/general-visit/candidates", "feature": "daily", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "implemented" },
-    { "method": "POST", "path": "/api/daily/general-visit/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "implemented" },
+    { "method": "POST", "path": "/api/daily/sign-in/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/arena-coins/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/donate/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/donate/custom", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/salary/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/national-collect/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/city-lord-collect/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/general-visit/candidates", "feature": "daily", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/daily/general-visit/claim", "feature": "daily", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
 
-    { "method": "POST", "path": "/api/liubu/hubu/query", "feature": "ministry", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "missing" },
-    { "method": "POST", "path": "/api/liubu/hubu/plant", "feature": "ministry", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "missing" },
-    { "method": "POST", "path": "/api/domestic/query", "feature": "domestic", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "missing" },
-    { "method": "POST", "path": "/api/domestic/action", "feature": "domestic", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "missing" }
+    { "method": "POST", "path": "/api/liubu/hubu/query", "feature": "ministry", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/liubu/hubu/plant", "feature": "ministry", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/domestic/query", "feature": "domestic", "responseClass": "network-operation", "operationKind": "query", "currentAndroid": "shared-python" },
+    { "method": "POST", "path": "/api/domestic/action", "feature": "domestic", "responseClass": "network-operation", "operationKind": "mutation", "currentAndroid": "shared-python" }
   ],
   "hostOnlyRoutes": [
     { "method": "GET", "path": "/api/core/operations", "owner": "android-host", "note": "Android 页面读取持久化网络 operation；不访问游戏服务器" },
@@ -124,6 +419,9 @@
     { "method": "GET", "path": "/api/core/verification/protocol", "owner": "android-debug-poc", "note": "在 APK 内直接运行共享协议 fixture，Release 不开放" },
     { "method": "POST", "path": "/api/core/operations/simulate", "owner": "android-debug-poc", "note": "只模拟延迟，不访问任何网络" },
     { "method": "POST", "path": "/api/core/operations/cancel", "owner": "android-host", "note": "取消尚未完成的共享网络 operation" },
+
+    { "method": "GET", "path": "/api/background/permissions", "owner": "android-host", "note": "读取 Android 系统后台托管权限；不属于游戏业务核心" },
+    { "method": "POST", "path": "/api/background/permissions/open", "owner": "android-host", "note": "打开 Android 系统权限设置页；不访问游戏服务器" },
 
     { "method": "GET", "path": "/api/dashboard", "owner": "desktop-host", "note": "电脑多账号总控；Android 当前有多余实现，目标移除" },
     { "method": "POST", "path": "/api/dashboard/mine-settings", "owner": "desktop-host" },

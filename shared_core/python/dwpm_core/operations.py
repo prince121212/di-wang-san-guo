@@ -32,8 +32,88 @@ CANCELLED = "CANCELLED"
 UNCERTAIN = "UNCERTAIN"
 TERMINAL_STATES = frozenset((SUCCEEDED, FAILED, CANCELLED, UNCERTAIN))
 
+#: Outcomes that are definitively closed: nothing is left to adjudicate and no
+#: recovery decision can ever depend on them again.  Only these may be pruned.
+#: ``UNCERTAIN`` is terminal but deliberately excluded - it is the record of a
+#: send boundary nobody resolved, which is the one thing this ledger exists for.
+#: ``FAILED`` is excluded too: it is rare, and it is what a person reads when
+#: asking why something stopped.
+PRUNABLE_STATES = frozenset((SUCCEEDED, CANCELLED))
+
+#: How many definitively-closed operations to keep.
+#:
+#: The ledger had no retention at all.  A resident tick creates one durable
+#: operation every few seconds and every one was kept forever: a real device
+#: reached 11,744 records in a 52 MB file, 11,610 of them completed scheduler
+#: ticks.  The whole file is re-serialised and rewritten on *every* state
+#: transition, so that became tens of megabytes of JSON encoding and flash
+#: writes per tick, and about 400 MB of native heap.  MIUI killed the process
+#: with ``ScreenOffCPUCheckKill`` and both accounts lost seven hours overnight.
+#: Unbounded retention was not caution - it is what made the process look
+#: exactly like the runaway it had become.
+#:
+#: The bound is generous next to every real consumer: the host polls an
+#: operation only until it settles, success-record backfill reads a few hundred,
+#: and idempotency keys are unique per tick.
+MAX_RETAINED_CLOSED_OPERATIONS = 300
+
+#: Largest result field kept once an operation is definitively closed.
+#:
+#: ``result`` was 96% of the ledger, and one closed tick carried 109 KB of raw
+#: per-coordinate ``scanResults`` - the working notes of how the outcome was
+#: computed, which nothing reads once the outcome exists.  Measured against the
+#: device: every field any consumer reads back from a closed operation is at
+#: most 550 bytes (``successRecord``), while the bulky ones nobody reads run
+#: from 5 KB to 109 KB.
+#:
+#: The bound is on *size* rather than on a list of field names, deliberately.
+#: A keep-list silently loses data the day someone adds a field; a drop-list
+#: silently leaks the day someone adds a bulky one.  Size is the property that
+#: actually matters, and it needs no maintenance.
+MAX_RETAINED_RESULT_FIELD_BYTES = 4096
+
+#: Most recent closed operations kept whole, before compaction may touch them.
+#:
+#: A result is working notes only *after* everyone has had a chance to read it.
+#: Compacting at the moment of closing is too early: the caller reads the
+#: outcome immediately afterwards, and the desktop 副本/无损 ticks failed with
+#: "未返回业务结果" the first time this ran. The host polls within seconds, so
+#: this window is minutes of headroom.
+UNCOMPACTED_CLOSED_OPERATIONS = 50
+
 OperationRunner = Callable[["OperationExecutionContext", Dict[str, Any]], Dict[str, Any]]
 OperationEventCallback = Callable[[Dict[str, Any]], None]
+OperationRunGate = Callable[[], bool]
+
+
+def _compact_closed_result(record: Dict[str, Any]) -> None:
+    """Drop oversized result fields once nothing can read them again.
+
+    Runs once per record: an operation that is definitively closed has already
+    handed its outcome to whoever asked, so what remains of the bulk is working
+    notes.  What was dropped is recorded rather than silently removed.
+    """
+
+    if record.get("resultCompacted"):
+        return
+    result = record.get("result")
+    if not isinstance(result, dict):
+        record["resultCompacted"] = True
+        return
+    dropped: Dict[str, int] = {}
+    for key in list(result.keys()):
+        try:
+            size = len(
+                json.dumps(result[key], ensure_ascii=False, default=str)
+            )
+        except (TypeError, ValueError):
+            size = MAX_RETAINED_RESULT_FIELD_BYTES + 1
+        if size > MAX_RETAINED_RESULT_FIELD_BYTES:
+            dropped[key] = size
+            result.pop(key, None)
+    record["resultCompacted"] = True
+    if dropped:
+        record["resultDroppedFieldBytes"] = dropped
 
 
 class OperationCancelledError(RuntimeError):
@@ -48,12 +128,43 @@ class OperationUncertainError(RuntimeError):
         self.details = dict(details or {})
 
 
+class OperationKnownFailureError(RuntimeError):
+    """A sent request received a definitive failure and must not become uncertain."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "OPERATION_FAILED",
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = str(code or "OPERATION_FAILED")
+        self.details = dict(details or {})
+
+
+class OperationDeferredError(RuntimeError):
+    """Raised while a durable operation is waiting for a host capability.
+
+    Losing foreground-service ownership or validated network access before a
+    request is sent is not a business failure. The same operation must remain
+    queued so a later Android service/process recovery can continue it without
+    creating a second idempotency record.
+    """
+
+
 class OperationExecutionContext:
     """Narrow runner API which makes send/cancel semantics explicit."""
 
     def __init__(self, store: "DurableOperationStore", operation_id: str) -> None:
         self._store = store
         self.operation_id = operation_id
+
+    @property
+    def host_ready_observed(self) -> bool:
+        """Whether the host execution gate was true when this run started."""
+
+        return self._store._host_ready_observed(self.operation_id)
 
     def mark_request_sent(
         self,
@@ -103,6 +214,7 @@ class DurableOperationStore:
         self._closed = threading.Event()
         self._records: Dict[str, Dict[str, Any]] = {}
         self._runners: Dict[str, OperationRunner] = {}
+        self._runner_gates: Dict[str, OperationRunGate] = {}
         self._lane_threads: Dict[str, threading.Thread] = {}
         self._load()
         self._resume_operations_after_load()
@@ -117,15 +229,27 @@ class DurableOperationStore:
     def persistent(self) -> bool:
         return self._path is not None
 
-    def register_runner(self, kind: str, runner: OperationRunner) -> None:
+    def register_runner(
+        self,
+        kind: str,
+        runner: OperationRunner,
+        *,
+        runnable_when: Optional[OperationRunGate] = None,
+    ) -> None:
         normalized_kind = self._normalized_text(kind, "operation kind", 160)
         if not callable(runner):
             raise TypeError("operation runner must be callable")
+        if runnable_when is not None and not callable(runnable_when):
+            raise TypeError("operation run gate must be callable")
         with self._condition:
             current = self._runners.get(normalized_kind)
             if current is not None and current is not runner:
                 raise ValueError(f"operation runner already registered: {normalized_kind}")
             self._runners[normalized_kind] = runner
+            if runnable_when is None:
+                self._runner_gates.pop(normalized_kind, None)
+            else:
+                self._runner_gates[normalized_kind] = runnable_when
             accounts = {
                 str(record.get("accountRef") or "")
                 for record in self._records.values()
@@ -146,6 +270,7 @@ class DurableOperationStore:
         idempotency_key: str,
         payload: Optional[Dict[str, Any]] = None,
         coalesce_active: bool = False,
+        defer_until_ready: bool = False,
     ) -> Dict[str, Any]:
         account = self._normalized_text(account_ref, "account ref", 200)
         normalized_type = str(operation_type or "").strip().lower()
@@ -201,6 +326,11 @@ class DurableOperationStore:
                 "cancelRequested": False,
                 "result": None,
                 "error": None,
+                # Background resident work opts into waiting for the host
+                # execution lane.  Fresh foreground requests retain their
+                # historical fail-fast behavior when no owner is present.
+                "recoveryPending": bool(defer_until_ready),
+                "hostReadyObserved": False,
             }
             self._records[operation_id] = record
             self._persist_locked()
@@ -330,6 +460,34 @@ class DurableOperationStore:
                 self._persist_locked()
             return self._public_record(record)
 
+    def await_status(
+        self,
+        operation_id: str,
+        timeout_millis: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Read one operation, blocking until it settles or the budget ends.
+
+        A screen-off Android host already holds a wake lock while the lane
+        thread finishes, so waiting here is far cheaper than releasing the CPU
+        and paying a whole alarm wakeup to read the same result moments later.
+        Waiting on the shared condition also releases the GIL, so this never
+        competes with the lane thread it is waiting for.  The budget is a
+        latency optimisation only: a caller that times out still receives the
+        current non-terminal record and keeps its existing polling path.
+        """
+        deadline = self._now_millis() + max(0, int(timeout_millis))
+        with self._condition:
+            while True:
+                record = self._records.get(str(operation_id))
+                if record is None:
+                    return None
+                if self._refresh_simulated_locked(record):
+                    self._persist_locked()
+                remaining = deadline - self._now_millis()
+                if record.get("status") in TERMINAL_STATES or remaining <= 0:
+                    return self._public_record(record)
+                self._condition.wait(remaining / 1000.0)
+
     def list_operations(self) -> List[Dict[str, Any]]:
         with self._lock:
             changed = False
@@ -349,8 +507,73 @@ class DurableOperationStore:
                 )
             ]
 
+    def list_result_facts(
+        self,
+        account_ref: str,
+        *,
+        result_keys: List[str],
+        required_truthy_key: str = "",
+        limit: int = 1_000,
+    ) -> List[Dict[str, Any]]:
+        """Return a bounded, compact view of successful operation results.
+
+        Some protocol results contain full catalogs and packet captures.  Local
+        projections such as the success-record page need only a few fields and
+        must not deep-copy the complete durable ledger on every refresh.
+        """
+
+        account = str(account_ref or "").strip()
+        if not account:
+            return []
+        keys = list(dict.fromkeys(
+            str(value or "").strip()
+            for value in result_keys
+            if str(value or "").strip()
+        ))
+        required = str(required_truthy_key or "").strip()
+        bounded = max(1, min(int(limit), 10_000))
+        with self._lock:
+            records = sorted(
+                self._records.values(),
+                key=lambda item: (
+                    int(item.get("completedAtMillis") or 0),
+                    int(item.get("submittedAtMillis") or 0),
+                    str(item.get("operationId") or ""),
+                ),
+                reverse=True,
+            )
+            facts = []
+            for record in records:
+                if str(record.get("accountRef") or "") != account:
+                    continue
+                if record.get("status") != SUCCEEDED:
+                    continue
+                result = record.get("result")
+                if not isinstance(result, dict):
+                    continue
+                if required and not bool(result.get(required)):
+                    continue
+                facts.append(self._public_record({
+                    "operationId": record.get("operationId"),
+                    "kind": record.get("kind"),
+                    "accountRef": account,
+                    "status": SUCCEEDED,
+                    "submittedAtMillis": record.get("submittedAtMillis"),
+                    "updatedAtMillis": record.get("updatedAtMillis"),
+                    "completedAtMillis": record.get("completedAtMillis"),
+                    "result": {
+                        key: result[key]
+                        for key in keys
+                        if key in result
+                    },
+                }))
+                if len(facts) >= bounded:
+                    break
+            return facts
+
     def cancel(self, operation_id: str) -> Optional[Dict[str, Any]]:
         event_record: Optional[Dict[str, Any]] = None
+        event_type: Optional[str] = None
         with self._condition:
             record = self._records.get(str(operation_id))
             if record is None:
@@ -360,6 +583,8 @@ class DurableOperationStore:
                 if record.get("requestSent"):
                     record["cancellationDenied"] = "request-already-sent"
                     record["updatedAtMillis"] = self._now_millis()
+                    event_record = dict(record)
+                    event_type = "operation.cancel-denied"
                 else:
                     now = self._now_millis()
                     record.update(
@@ -372,11 +597,12 @@ class DurableOperationStore:
                         error=None,
                     )
                     event_record = dict(record)
+                    event_type = "operation.cancelled"
                 self._persist_locked()
                 self._condition.notify_all()
             public = self._public_record(record)
-        if event_record is not None:
-            self._emit("operation.cancelled", event_record)
+        if event_record is not None and event_type is not None:
+            self._emit(event_type, event_record)
         return public
 
     def close(self) -> None:
@@ -422,6 +648,20 @@ class DurableOperationStore:
                 if record.get("kind") == SIMULATED_OPERATION_KIND:
                     changed = self._refresh_simulated_locked(record) or changed
                     continue
+                # Any non-terminal operation loaded into a new process must
+                # wait for the host execution lane to become ready.  This is
+                # the durable hand-over marker that closes the Application /
+                # ForegroundService startup race.
+                if record.get("status") == QUEUED:
+                    # Every queued record loaded from disk belongs to the
+                    # previous process. Mark it as a hand-over record; fresh
+                    # submissions made after this constructor returns do not
+                    # receive this marker and retain fail-fast semantics.
+                    if not record.get("recoveryPending"):
+                        record["recoveryPending"] = True
+                        record["hostReadyObserved"] = False
+                        changed = True
+                    continue
                 if record.get("status") != RUNNING:
                     continue
                 now = self._now_millis()
@@ -442,6 +682,8 @@ class DurableOperationStore:
                         status=QUEUED,
                         startedAtMillis=None,
                         updatedAtMillis=now,
+                        recoveryPending=True,
+                        hostReadyObserved=False,
                     )
                 changed = True
             if changed:
@@ -513,6 +755,13 @@ class DurableOperationStore:
                     startedAtMillis=now,
                     updatedAtMillis=now,
                     progress=max(1, int(record.get("progress") or 0)),
+                    hostReadyObserved=self._runner_gate_value_locked(
+                        str(record.get("kind") or "")
+                    ),
+                    # Keep the recovery marker for the entire attempt. If the
+                    # host owner disappears between gate selection and the
+                    # first request, the operation can be re-queued safely.
+                    recoveryPending=bool(record.get("recoveryPending")),
                 )
                 self._persist_locked()
                 operation_id = str(record["operationId"])
@@ -530,8 +779,23 @@ class DurableOperationStore:
                 self._finish_cancelled(operation_id, str(error))
             except OperationUncertainError as error:
                 self._finish_uncertain(operation_id, str(error), error.details)
+            except OperationKnownFailureError as error:
+                self._finish_known_failure(
+                    operation_id,
+                    str(error),
+                    error.code,
+                    error.details,
+                )
+            except OperationDeferredError as error:
+                self._defer_operation(operation_id, str(error))
             except Exception as error:
-                self._finish_exception(operation_id, error)
+                if self._should_defer_after_exception(operation_id):
+                    self._defer_operation(
+                        operation_id,
+                        str(error) or error.__class__.__name__,
+                    )
+                else:
+                    self._finish_exception(operation_id, error)
             else:
                 self._finish_success(operation_id, result)
 
@@ -545,6 +809,7 @@ class DurableOperationStore:
             if record.get("accountRef") == account_ref
             and record.get("status") == QUEUED
             and str(record.get("kind") or "") in self._runners
+            and self._runner_is_ready_locked(record)
         ]
         if not candidates:
             return None
@@ -555,6 +820,101 @@ class DurableOperationStore:
                 str(record.get("operationId") or ""),
             ),
         )
+
+    def _runner_gate_value_locked(self, kind: str) -> bool:
+        gate = self._runner_gates.get(kind)
+        if gate is None:
+            return True
+        try:
+            return bool(gate())
+        except Exception:
+            return False
+
+    def _runner_is_ready_locked(self, record: Dict[str, Any]) -> bool:
+        kind = str(record.get("kind") or "")
+        gate = self._runner_gates.get(kind)
+        if gate is None:
+            return True
+        # Fresh submissions retain the historical fail-fast behaviour when the
+        # owner is currently absent. Records explicitly marked as a process
+        # hand-over wait for the foreground lane instead.
+        if not bool(record.get("recoveryPending")):
+            return True
+        return self._runner_gate_value_locked(kind)
+
+    def _host_ready_observed(self, operation_id: str) -> bool:
+        with self._lock:
+            record = self._records.get(str(operation_id))
+            return bool(record and record.get("hostReadyObserved"))
+
+    def _should_defer_after_exception(self, operation_id: str) -> bool:
+        """Classify a host disappearing during I/O as a safe deferral.
+
+        The gate is checked once before a lane starts, but Android can revoke
+        the service/network between that check and a read-only transport call.
+        If the mutation boundary has not been crossed, retrying the same
+        durable operation is safe and preserves its idempotency key.
+        """
+
+        with self._lock:
+            record = self._records.get(str(operation_id))
+            if not record or record.get("status") != RUNNING:
+                return False
+            if record.get("requestSent") or not record.get("recoveryPending"):
+                return False
+            kind = str(record.get("kind") or "")
+            if kind not in self._runner_gates:
+                return False
+            return not self._runner_gate_value_locked(kind)
+
+    def _defer_operation(self, operation_id: str, message: str) -> None:
+        with self._condition:
+            record = self._records.get(operation_id)
+            if record is None or record.get("status") == CANCELLED:
+                return
+            if record.get("operationType") == MUTATION and record.get("requestSent"):
+                uncertain = True
+                event_record = None
+            elif bool(record.get("recoveryPending")) or bool(
+                record.get("hostReadyObserved")
+            ):
+                uncertain = False
+                now = self._now_millis()
+                record.update(
+                    status=QUEUED,
+                    startedAtMillis=None,
+                    updatedAtMillis=now,
+                    completedAtMillis=None,
+                    result=None,
+                    error=None,
+                    recoveryPending=True,
+                    hostReadyObserved=False,
+                    deferredAtMillis=now,
+                    deferredReason=str(message or "host capability unavailable")[:500],
+                    deferredCount=int(record.get("deferredCount") or 0) + 1,
+                )
+                self._persist_locked()
+                self._condition.notify_all()
+                event_record = dict(record)
+            else:
+                uncertain = False
+                event_record = None
+        if uncertain:
+            self._finish_uncertain(
+                operation_id,
+                message or "host capability disappeared after request send",
+                {"reason": "host-capability-deferred-after-request-sent"},
+            )
+            return
+        if event_record is not None:
+            self._emit("operation.deferred", event_record)
+        else:
+            self._finish_known_failure(
+                operation_id,
+                message or "host capability unavailable",
+                "EXECUTION_OWNER_UNAVAILABLE",
+                {"deferred": False},
+            )
 
     def _finish_success(
         self,
@@ -628,6 +988,37 @@ class DurableOperationStore:
             self._condition.notify_all()
             event_record = dict(record)
         self._emit("operation.uncertain", event_record)
+
+    def _finish_known_failure(
+        self,
+        operation_id: str,
+        message: str,
+        code: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        event_record: Optional[Dict[str, Any]] = None
+        with self._condition:
+            record = self._records.get(operation_id)
+            if record is None or record.get("status") == CANCELLED:
+                return
+            now = self._now_millis()
+            record.update(
+                status=FAILED,
+                updatedAtMillis=now,
+                completedAtMillis=now,
+                error={
+                    "code": str(code or "OPERATION_FAILED"),
+                    "message": str(message or "operation failed"),
+                    "details": self._json_object(
+                        details or {},
+                        "failure details",
+                    ),
+                },
+            )
+            self._persist_locked()
+            self._condition.notify_all()
+            event_record = dict(record)
+        self._emit("operation.failed", event_record)
 
     def _finish_exception(self, operation_id: str, error: Exception) -> None:
         with self._condition:
@@ -716,7 +1107,15 @@ class DurableOperationStore:
                 ),
                 updatedAtMillis=self._now_millis(),
             )
-            self._persist_locked()
+            # Deliberately not persisted.  Progress is a hint for the live UI,
+            # not a fact anything recovers from: status, the send-boundary
+            # markers and the result are what a restart reads, and those are
+            # written on their own transitions.  This was the highest-frequency
+            # write in the system - a workflow publishes progress many times per
+            # tick and each call re-serialised the whole ledger - which is most
+            # of why the process burned enough CPU with the screen off for MIUI
+            # to kill it as a runaway.  The record stays current in memory, so
+            # status reads and event subscribers are unaffected.
             event_record = dict(record)
         self._emit("operation.progress", event_record)
 
@@ -765,26 +1164,73 @@ class DurableOperationStore:
         )
         return True
 
+    def _prune_locked(self) -> None:
+        """Drop the oldest definitively-closed operations, newest kept.
+
+        Called before every write, so the file cannot grow without bound no
+        matter how long the process runs.  Anything still open, uncertain or
+        failed is never touched: only records that can no longer inform a
+        recovery decision are eligible.
+        """
+
+        closed = [
+            (int(record.get("updatedAtMillis") or 0), operation_id)
+            for operation_id, record in self._records.items()
+            if str(record.get("status") or "") in PRUNABLE_STATES
+        ]
+        closed.sort()
+        # Newest first are left whole; only what has aged past the read window
+        # is compacted, and only what is past the retention bound is dropped.
+        for _updated_at, operation_id in closed[:-UNCOMPACTED_CLOSED_OPERATIONS]:
+            record = self._records.get(operation_id)
+            if record is not None:
+                _compact_closed_result(record)
+        excess = len(closed) - MAX_RETAINED_CLOSED_OPERATIONS
+        if excess <= 0:
+            return
+        for _updated_at, operation_id in closed[:excess]:
+            self._records.pop(operation_id, None)
+
     def _persist_locked(self) -> None:
         if self._path is None:
             return
+        self._prune_locked()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schemaVersion": OPERATION_STORE_SCHEMA,
             "operations": list(self._records.values()),
         }
-        temporary = self._path.with_name(f"{self._path.name}.tmp")
+        # A store can briefly have more than one writer during process handover
+        # or while an integration test imports the desktop host.  A fixed
+        # ``.tmp`` name lets one writer replace the other writer's temporary
+        # file, making the loser fail with FileNotFoundError.  Keep the final
+        # replace atomic, but give every write its own staging path.
+        temporary = self._path.with_name(
+            (
+                f"{self._path.name}.tmp."
+                f"{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}"
+            )
+        )
         encoded = json.dumps(
             payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        with temporary.open("wb") as output:
-            output.write(encoded)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(self._path)
+        try:
+            with temporary.open("wb") as output:
+                output.write(encoded)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.replace(self._path)
+        finally:
+            # replace() removes the staging path on success.  On a failed
+            # write/replace, remove only this writer's uniquely named file;
+            # never touch another process's in-flight temporary file.
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
     def _find_idempotent_locked(
         self,
@@ -857,6 +1303,9 @@ class DurableOperationStore:
             "accountRef": record.get("accountRef"),
             "status": record.get("status"),
             "progress": record.get("progress"),
+            "progressDetails": record.get("progressDetails"),
+            "requestSent": bool(record.get("requestSent")),
+            "cancellationDenied": record.get("cancellationDenied"),
             "updatedAtMillis": record.get("updatedAtMillis"),
             "error": record.get("error"),
         }

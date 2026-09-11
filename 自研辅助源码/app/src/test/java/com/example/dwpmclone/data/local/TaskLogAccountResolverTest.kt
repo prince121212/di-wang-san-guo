@@ -48,36 +48,4 @@ class TaskLogAccountResolverTest {
         assertEquals(listOf("second", "third"), entries.filter { it.id > 1_000L }.map { it.message })
     }
 
-    @Test
-    fun successRecordsPreferStructuredFactsAndNeverUseGenericSuccessWords() {
-        val structured = TaskLogEntry(
-            timeMillis = 1L,
-            tag = "task",
-            message = "任务内部记录",
-            accountId = 77L,
-            id = 1L,
-            successCategory = "刷黄",
-            successMessage = "编队1 > 10级山贼(91，26)"
-        )
-
-        assertEquals("刷黄", TaskSuccessRecordPolicy.resolve(structured)?.category)
-        assertEquals(
-            null,
-            TaskSuccessRecordPolicy.fromLegacyMessage("常规-日常保存成功：已开启自动签到")
-        )
-        assertEquals(
-            null,
-            TaskSuccessRecordPolicy.fromLegacyMessage("自动捐献完成：铜钱成功、粮食失败、科技积分成功")
-        )
-        assertEquals(
-            "领币",
-            TaskSuccessRecordPolicy.fromLegacyMessage("领竞技币完成：服务器确认成功")?.category
-        )
-        assertEquals(
-            "编队2 > 第四章第5关",
-            TaskSuccessRecordPolicy.fromLegacyMessage(
-                "副本第 1 轮第 2 条完成：将领甲 → 第四章第5关，开箱成功"
-            )?.message
-        )
-    }
 }

@@ -8,9 +8,6 @@ import com.example.dwpmclone.domain.model.LosslessRule
 import com.example.dwpmclone.domain.protocol.TaskContext
 import com.example.dwpmclone.domain.protocol.TaskDecision
 import com.example.dwpmclone.domain.protocol.TaskType
-import com.example.dwpmclone.domain.protocol.GameProtocolClient
-import com.example.dwpmclone.domain.protocol.ProtocolResult
-import com.example.dwpmclone.domain.protocol.StepResult
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -75,7 +72,7 @@ class LosslessTaskMigrationTest {
     }
 
     @Test
-    fun missingRealProtocolFailsClosedWithoutPretendingSuccess() {
+    fun retiredKotlinLosslessTaskAlwaysFailsClosed() {
         val task = LosslessTask(77L, config())
         val context = TaskContext(
             session = GameSession(77L, "token", null, emptyMap(), 1),
@@ -86,52 +83,9 @@ class LosslessTaskMigrationTest {
         val prepare = SuspendRunner.run { task.prepare(context) }
         val step = SuspendRunner.run { task.step(context) }
 
-        assertEquals(TaskDecision.Continue, prepare)
-        assertEquals(TaskDecision.Stop("无损真实协议尚未完整迁移，已禁止执行"), step)
-    }
-
-    @Test
-    fun pollingAndRerollDoNotConsumeDailyAttemptOrSuppressSettlementPolling() {
-        var calls = 0
-        val protocol = object : GameProtocolClient by MockGameProtocolClient() {
-            override suspend fun runLossless(
-                session: GameSession,
-                config: LosslessConfig
-            ): ProtocolResult<StepResult> {
-                calls++
-                return when (calls) {
-                    1 -> ProtocolResult.Ok(StepResult(
-                        true, "冷却中",
-                        mapOf("phase" to "cooldown", "attemptConsumed" to "false")
-                    ))
-                    2 -> ProtocolResult.Ok(StepResult(
-                        true, "阵容已刷新",
-                        mapOf("phase" to "lineup-rerolled", "attemptConsumed" to "false")
-                    ))
-                    3 -> ProtocolResult.Ok(StepResult(
-                        true, "已出征",
-                        mapOf("phase" to "fighting", "attemptConsumed" to "true", "consumedTimes" to "1")
-                    ))
-                    else -> ProtocolResult.Ok(StepResult(
-                        true, "待结算轮询",
-                        mapOf("phase" to "settled", "attemptConsumed" to "false")
-                    ))
-                }
-            }
-        }
-        val task = LosslessTask(77L, config().copy(dailyLimit = 1))
-        val context = TaskContext(
-            session = GameSession(77L, "token", null, emptyMap(), 0),
-            protocol = protocol,
-            nowMillis = 1_000L
-        )
-
-        repeat(3) {
-            assertEquals(TaskDecision.Sleep(60_000), SuspendRunner.run { task.step(context) })
-        }
-        assertEquals(TaskDecision.Sleep(60_000), SuspendRunner.run { task.step(context) })
-
-        assertEquals(4, calls)
+        val expected = TaskDecision.Stop("无损 已由共享 Python 常驻核心执行，Kotlin 任务不得发包")
+        assertEquals(expected, prepare)
+        assertEquals(expected, step)
     }
 
     private fun config() = LosslessConfig(

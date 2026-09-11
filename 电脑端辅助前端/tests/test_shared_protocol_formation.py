@@ -16,6 +16,7 @@ if str(CORE_SOURCE) not in sys.path:
     sys.path.insert(0, str(CORE_SOURCE))
 
 from dwpm_core.features.formation import (
+    assignment_receipt_matches_plan,
     build_assign_troops_payload,
     build_heal_all_payloads,
     build_refill_payload,
@@ -23,6 +24,7 @@ from dwpm_core.features.formation import (
     parse_heal_preinfo_response,
     parse_heal_response,
     parse_refill_response,
+    plan_heal_wounded,
     soldier_type_code,
     soldier_type_name,
 )
@@ -64,6 +66,25 @@ class SharedFormationProtocolTests(unittest.TestCase):
         self.assertEqual(SERVER.parse_assign_troops_response(receipt_bytes), shared)
         self.assertTrue(shared["success"])
 
+    def test_unassign_receipt_accepts_server_no_troops_sentinel(self) -> None:
+        receipt = parse_assign_troops_response(
+            struct.pack(">bqhhhh", 1, 7, 9, 500, -1, 0)
+        )
+        plan = {
+            "generalId": 7,
+            "soldierTypeCode": 9,
+            "effectiveCount": 0,
+        }
+
+        self.assertTrue(receipt["success"])
+        self.assertEqual(receipt["message"], "配兵成功：当前 无配兵")
+        self.assertTrue(
+            assignment_receipt_matches_plan(receipt, plan, clearing=True)
+        )
+        self.assertFalse(
+            assignment_receipt_matches_plan(receipt, plan, clearing=False)
+        )
+
     def test_refill_fixture_runs_directly_in_the_shared_core(self) -> None:
         fixture = self.fixtures["formationRefill1229"]
         general_ids = [f"{value:016x}" for value in fixture["generalIds"]]
@@ -92,6 +113,29 @@ class SharedFormationProtocolTests(unittest.TestCase):
             SERVER.parse_heal_response(action_response),
             parse_heal_response(action_response),
         )
+
+    def test_heal_all_does_not_require_an_assigned_soldier_type(self) -> None:
+        plan = plan_heal_wounded(
+            [{
+                "id": 7,
+                "fiefId": 176,
+                "soldierTypeCode": -1,
+                "soldierType": "无配兵",
+                "soldierCount": 0,
+                "woundedCount": None,
+            }],
+            {"generalId": 7},
+            allow_all_if_count_unknown=True,
+        )
+
+        self.assertTrue(plan["ready"])
+        self.assertTrue(plan["healAll"])
+        self.assertEqual(plan["fiefId"], 176)
+        self.assertEqual(plan["soldierTypeCode"], 0)
+        self.assertEqual(plan["woundedCount"], -1)
+        preflight, action = build_heal_all_payloads(176)
+        self.assertEqual(plan["preInfoPayloadHex"], preflight.hex())
+        self.assertEqual(plan["healPayloadHex"], action.hex())
 
     def test_soldier_dictionary_has_one_shared_owner(self) -> None:
         self.assertEqual(soldier_type_code("轻骑兵"), 3)

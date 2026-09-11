@@ -88,6 +88,7 @@ ALLOWED_PERMISSIONS = {
     "android.permission.ACCESS_NETWORK_STATE",
     "android.permission.WAKE_LOCK",
     "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    "android.permission.SCHEDULE_EXACT_ALARM",
     "android.permission.RECEIVE_BOOT_COMPLETED",
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.VIBRATE",
@@ -148,6 +149,7 @@ def main() -> int:
     operations = read(SRC / "ui/web/LocalProtocolOperationService.kt")
     operation_runner = read(SRC / "ui/web/LocalProtocolOperationRunner.kt")
     bridge = read(SRC / "ui/web/AssistantWebBridge.kt")
+    execution_lanes = read(SRC / "ui/web/AssistantApiExecutionLanes.kt")
     service = read(SRC / "service/AssistantForegroundService.kt")
     scheduler_factory = read(SRC / "domain/scheduler/SavedConfigTaskPlanFactory.kt")
     task_factory = read(SRC / "domain/scheduler/TaskFactory.kt")
@@ -160,8 +162,18 @@ def main() -> int:
     keystore_store = read(SRC / "data/local/KeystoreAesGcmStore.kt")
     redactor = read(SRC / "data/local/SensitiveDataRedactor.kt")
     task_logs = read(SRC / "data/local/TaskLogRepository.kt")
-    success_policy = read(SRC / "data/local/TaskSuccessRecordPolicy.kt")
-    lifecycle_policy = read(SRC / "domain/protocol/AccountLifecyclePresentation.kt")
+    shared_local_views = read(
+        ROOT.parent / "shared_core/python/dwpm_core/local_views.py"
+    )
+    shared_settings = read(
+        ROOT.parent / "shared_core/python/dwpm_core/settings.py"
+    )
+    lifecycle_policy = read(
+        ROOT.parent / "shared_core/python/dwpm_core/account/lifecycle.py"
+    )
+    shared_login = read(
+        ROOT.parent / "shared_core/python/dwpm_core/account/login.py"
+    )
     account_lock = read(SRC / "domain/state/AccountOperationLockRegistry.kt")
     permission_coordinator = read(SRC / "ui/hosting/BackgroundHostingPermissionCoordinator.kt")
     notification_text = read(SRC / "domain/scheduler/HostingNotificationText.kt")
@@ -203,9 +215,14 @@ def main() -> int:
         "LocalAssetWebViewClient + restricted WebSettings",
     )
     add(
-        "本机桥异步串行执行，页面线程不访问仓库",
-        "newSingleThreadExecutor" in bridge and "webView.post" in bridge,
-        "AssistantWebBridge single worker",
+        "本机桥按本地读/写与账号网络分通道，页面线程不访问仓库",
+        "AssistantApiExecutionLanes" in bridge
+        and "executionLanes.execute(request" in bridge
+        and "webView.post" in bridge
+        and "LOCAL_READ" in execution_lanes
+        and "LOCAL_WRITE" in execution_lanes
+        and "NETWORK_OPERATION" in execution_lanes,
+        "lane-aware async bridge + UI-only response delivery",
     )
 
     local_route_sources = controller + "\n" + operations
@@ -231,9 +248,9 @@ def main() -> int:
         'new Set(["抢城", "押镖", "寻宝", "连体物品"])' in front_app
         and "feature-deferred" in front_app
         and "aria-disabled" in front_app
-        and '"common.chain" -> throw IllegalArgumentException' in settings_mapper
-        and "当前版本暂不实现，设置未保存" in settings_mapper,
-        "抢城/押镖/寻宝/连体物品：UI disabled + settings mapper rejection",
+        and 'else True if scope == "common.chain"' in shared_settings
+        and 'configs["chain_inventory"]' in shared_settings,
+        "抢城/押镖/寻宝/连体物品：UI disabled + shared plan cannot activate network work",
     )
 
     add(
@@ -245,12 +262,18 @@ def main() -> int:
         "specialUse AssistantForegroundService",
     )
     add(
-        "后台调度按任务期限唤醒并在长等待时释放 WakeLock",
+        "后台调度使用短时 WakeLock、双通道截止时间与执行窗口恢复看门狗",
         "SchedulerTickPolicy" in service
+        and "handler.postDelayed(tickRunnable, requestedDelay)" in service
+        and "setExactAndAllowWhileIdle" in service
         and "setAndAllowWhileIdle" in service
-        and "releaseWakeLock()" in service
+        and "shouldArmAlarmWatchdog" in service
+        and "consumeAndRunScheduledTick" in service
+        and "ACTION_EXECUTION_WATCHDOG" in service
+        and "armExecutionWatchdog" in service
+        and "TICK_WAKELOCK_TIMEOUT_MILLIS" in service
         and "TICK_INTERVAL_MS" not in service,
-        "adaptive deadline + inexact wakeup alarm",
+        "adaptive deadline + short execution WakeLock + exact/inexact alarm watchdog + execution-window recovery watchdog",
     )
     add(
         "正式调度只接受启用的真实 Session",
@@ -349,7 +372,8 @@ def main() -> int:
         and "credentialConsent" not in front_app
         and "credentialConsent" not in controller
         and "credentialVault.hasPassword(account.id)" in controller
-        and "credentials.savePassword(account.id, password)" in read(SRC / "data/account/LocalAccountLoginService.kt")
+        and "credentialVault.savePassword(accountId, password)" in controller
+        and "fun savePassword(accountRef: String, password: String)" in read(SRC / "host/AndroidSharedCorePortBridge.kt")
         and 'document.getElementById("loginPassword").value = ""' in front_app,
         "automatic local persistence + password field clearing + relogin availability gate",
     )
@@ -372,9 +396,12 @@ def main() -> int:
         "requestForStartedHosting" in permission_coordinator
         and "Manifest.permission.POST_NOTIFICATIONS" in permission_coordinator
         and "ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" in permission_coordinator
+        and "ACTION_REQUEST_SCHEDULE_EXACT_ALARM" in permission_coordinator
         and "runCatching { onHostingStarted() }" in controller
-        and "hostingPermissions.requestForStartedHosting()" in activity,
-        "startAccount callback -> normal Android permission/settings flows",
+        and "hostingPermissions::requestForStartedHosting" in activity
+        and 'id="backgroundSettingsGuide"' in front_index
+        and '"/api/background/permissions"' in front_app,
+        "start callback + guide status page -> normal Android permission/settings flows",
     )
     add(
         "前台通知显示账号与当前任务并保留停止入口",
@@ -405,17 +432,19 @@ def main() -> int:
         and "TaskType.SIX_MINISTRIES" in production_source
         and "withdrawDefense = false" not in scheduler_factory
         and "REAL_WITHDRAW_MINE_RESPONSE_MISSING" in session_client
-        and 'put("supportedEnabled", supported)' in settings_mapper
-        and "MinistryProtocolCrop.VERIFIED_NAME" in settings_mapper
+        and "def _ministry_write_plan(" in shared_settings
+        and '"supportedEnabled": supported' in shared_settings
+        and "MinistryProtocolCrop.VERIFIED_NAME" in task_factory
         and "mobileDisabled" not in front_app
         and "金银花种植按已确认协议执行" in front_app,
         "verified ministry planting/read-only scan scheduled locally; withdrawal still requires an exact receipt",
     )
     add(
         "账号关闭语义与持久化 Session 分离",
-        "fun mayUseLiveSession" in lifecycle_policy
-        and "internal restart credential" in lifecycle_policy
-        and "AccountLifecyclePresentationPolicy.mayUseLiveSession" in operation_runner
+        "def snapshot(" in lifecycle_policy
+        and '"mayUseLiveSession": usable' in lifecycle_policy
+        and "started_requires_execution_owner" in lifecycle_policy
+        and "sharedPythonCore.accountLifecycleDecision(" in operation_runner
         and '"LOCAL_ACCOUNT_NOT_RUNNING"' in operation_runner,
         "stopped/offline accounts may retain reconnect state but cannot expose or execute it",
     )
@@ -435,19 +464,22 @@ def main() -> int:
         and "MAX_LOGS = 1_500" in task_logs
         and "TaskLogCursorPolicy.nextId" in task_logs
         and "successCategory" in task_logs
-        and "generic words" in success_policy
-        and "TaskSuccessRecordPolicy.resolve" in controller,
+        and "def resolve_success_record(" in shared_local_views
+        and "def project_success_records(" in shared_local_views
+        and "TaskSuccessRecordPolicy" not in controller,
         "bounded append-only log + monotonic id + explicit successCategory/successMessage",
     )
-    recommended_center_source = operations[
-        operations.find("private fun recommendedBrushCenter"):operations.find("private fun mineSearch")
+    recommended_center_source = controller[
+        controller.find("private fun brushRecommendedCenter"):controller.find("private fun localMap")
     ]
     add(
         "刷黄推荐中心来自登录封地坐标且禁止假默认值",
-        "ownedFiefLocations" in real_protocol
-        and "BrushCenterRecommendationPolicy.recommend" in recommended_center_source
-        and "login-owned-fief-cache" in recommended_center_source
-        and "?: 91" not in recommended_center_source,
+        '"ownedFiefs": owned_fiefs' in shared_login
+        and "def recommend_brush_center(" in shared_local_views
+        and "login-owned-fief-cache" in shared_local_views
+        and 'dispatchSharedLocal(' in recommended_center_source
+        and '"/api/brush/recommended-center"' in recommended_center_source
+        and "?: 91" not in shared_local_views,
         "0x1310/0x8310 login cache + majority-fief policy; missing coordinates fail",
     )
     add(
@@ -508,7 +540,14 @@ def main() -> int:
         rc, apk_manifest = command(["apkanalyzer", "manifest", "print", str(APK)])
         manifest_evidence = re.sub(r"\s+", " ", apk_manifest[:400]).strip() if apk_manifest else "apkanalyzer failed"
         add("APK Manifest 可解析", rc == 0, manifest_evidence)
-        add("APK 版本标识为 V0.0.15", 'android:versionName="V0.0.15"' in apk_manifest, "versionName=V0.0.15")
+        version_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+        expected_version = version_match.group(1) if version_match else ""
+        add(
+            "APK 版本标识与 Gradle 一致",
+            bool(expected_version)
+            and f'android:versionName="{expected_version}"' in apk_manifest,
+            f"expected={expected_version or 'unknown'}",
+        )
         add("APK 启动 Activity 为本地容器", "com.example.dwpmclone.AssistantWebActivity" in apk_manifest, "AssistantWebActivity")
 
     tests, failures, errors, skipped = unit_test_summary()

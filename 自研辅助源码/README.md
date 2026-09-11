@@ -30,7 +30,7 @@ SessionAwareGameProtocolClient
 - `data/account/*`：真实登录、Session 失效重登和网络切换恢复。
 - `data/local/CredentialVault.kt`：Android Keystore + AES-GCM 凭据封装。
 - `service/AssistantForegroundService.kt`：锁屏后继续运行的 `specialUse` 前台服务。
-- `domain/scheduler/SchedulerTickPolicy.kt`：按任务期限自适应调度；60 秒内的紧迫任务保持 CPU，长等待改用系统合并唤醒并释放 WakeLock。
+- `domain/scheduler/SchedulerTickPolicy.kt`：按任务期限自适应调度；空闲期间不持有 WakeLock，单次执行窗口使用有超时短锁，并由 Handler、系统截止时间闹钟和执行窗口恢复看门狗共同兜底。
 - `domain/protocol/ExpeditionPreflight.kt`：所有出征共用的 Session、将领、体力、忠诚、兵种和兵力检查。
 - `data/local/ExpeditionTransactionRepository.kt`：出征发送前同步落盘的事务账本，防止回执不明时重发。
 - `domain/localmap/LocalTargetCache.kt`：有界的内存热缓存。
@@ -66,7 +66,7 @@ SessionAwareGameProtocolClient
 
 ## 构建与测试
 
-环境：Gradle 8.10.2、Android Gradle Plugin 8.7.3、Kotlin 1.9.24、JDK 17、targetSdk 36。当前版本标识为 `V0.0.15`。
+环境：Gradle 8.10.2、Android Gradle Plugin 8.7.3、Kotlin 1.9.24、JDK 17、targetSdk 36。当前版本标识为 `V0.0.19`。
 
 ```bash
 cd "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/自研辅助源码"

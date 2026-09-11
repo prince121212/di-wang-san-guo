@@ -102,6 +102,42 @@ class BanditSQLiteTests(unittest.TestCase):
         self.assertNotIn(b"raw-response-must-not-be-stored", database_bytes)
         self.assertFalse(list(SERVER.SHARED_MAP_DIR.glob("*_bandit_responses.jsonl")))
 
+    def test_shared_python_snapshot_port_projects_into_bandit_database(self) -> None:
+        old_sessions = SERVER.SESSIONS
+        SERVER.SESSIONS = {"account-a": self.sess}
+        try:
+            SERVER._desktop_save_map_snapshot({
+                "accountRef": "account-a",
+                "kind": "BANDIT",
+                "fingerprint": "18,12|SHAN_ZEI",
+                "scannedAtMillis": SERVER.now_ms(),
+                "targets": [{
+                    "targetId": 123,
+                    "x": 20,
+                    "y": 13,
+                    "scanX": 18,
+                    "scanY": 12,
+                    "type": "山贼",
+                    "level": 9,
+                    "filterFields": {
+                        "idHex": "000000000000007b",
+                        "name": "9级山贼",
+                        "kind": "山贼",
+                        "resource": "大批资源,",
+                        "dropCategories": '["资源"]',
+                        "lootIds": "[1067]",
+                        "compositionCode": "1210",
+                    },
+                }],
+            })
+        finally:
+            SERVER.SESSIONS = old_sessions
+
+        public = SERVER.public_bandit_map(self.sess)
+        self.assertEqual(len(public["points"]), 1)
+        self.assertEqual(public["points"][0]["idHex"], "000000000000007b")
+        self.assertEqual(public["points"][0]["compositionCode"], "1210")
+
     def test_overlapping_regions_keep_target_until_all_relations_disappear(self) -> None:
         target = bandit(123)
         self.record(18, 12, [target])

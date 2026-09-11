@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..contracts import load_behavior_contract
 from ..protocol.wire import printable, read_utf
+from .expedition import parse_dispatch_response
 
 
 DUNGEON_CONTRACT = load_behavior_contract()["dungeon"]
@@ -427,6 +428,8 @@ def parse_dungeon_state(payload: bytes) -> Dict[str, Any]:
         "active": False,
     }
     if not payload:
+        output["phase"] = "error"
+        output["parseError"] = "0x8938 数据为空"
         return output
     status = payload[0]
     output["status"] = int(status)
@@ -441,9 +444,108 @@ def parse_dungeon_state(payload: bytes) -> Dict[str, Any]:
             }
         )
     elif status == 0:
+        output["phase"] = "idle"
         output["message"] = "无副本战斗"
+    elif status == 3:
+        output["phase"] = "pending_settlement"
+        output["message"] = "副本战斗已结束，等待结算/开箱"
     elif status == 4:
+        output["phase"] = "settlement"
         output["message"] = "副本战斗已结束/可结算"
     else:
+        output["phase"] = "unknown"
         output["message"] = f"副本状态={status}"
+    if status == 1:
+        output["phase"] = "fighting" if output.get("active") else "error"
+        if not output.get("active"):
+            output["parseError"] = "0x8938 战斗中字段不足"
+    return output
+
+
+def parse_dungeon_reward_state(payload: bytes) -> Dict[str, Any]:
+    output: Dict[str, Any] = {
+        "rawHex": payload.hex(),
+        "status": None,
+        "textPreview": printable(payload, 1200),
+    }
+    if not payload:
+        output["parseError"] = "0x893d 数据为空"
+        return output
+    status = int(payload[0])
+    output["status"] = status
+    if status == 1:
+        if len(payload) < 9:
+            output["parseError"] = "0x893d battleId 字段不足"
+            return output
+        battle_id = struct.unpack(">q", payload[1:9])[0]
+        output["battleId"] = battle_id
+        output["battleIdHex"] = f"{battle_id:016x}"
+    if len(payload) > 9:
+        output["tailHex"] = payload[9:].hex()
+    return output
+
+
+def build_dungeon_battle_poll_payload(first_poll: bool, battle_id: int) -> bytes:
+    if int(battle_id) <= 0:
+        raise RuntimeError("副本战斗轮询缺少有效 battleId")
+    return bytes([2 if first_poll else 1]) + struct.pack(">q", int(battle_id))
+
+
+def parse_dungeon_launch_response(payload: bytes) -> Dict[str, Any]:
+    """Preserve desktop launch evidence: marker or exact 0x8522 battle receipt."""
+
+    text = printable(payload, 2000)
+    dispatch = parse_dispatch_response(payload)
+    marker = next(
+        (
+            str(value)
+            for value in DUNGEON_CONTRACT["launchSuccessMarkers"]
+            if str(value) and str(value) in text
+        ),
+        "",
+    )
+    success = bool(marker) or bool(dispatch.get("success"))
+    status = dispatch.get("status")
+    explicit_failure = bool(
+        not success
+        and (
+            (status is not None and int(status) != 0)
+            or bool(text.strip())
+        )
+    )
+    return {
+        "success": success,
+        "status": status,
+        "battleId": int(dispatch.get("battleId") or 0),
+        "battleIdHex": dispatch.get("battleIdHex"),
+        "message": str(dispatch.get("message") or text).strip(),
+        "textPreview": text,
+        "successMarker": marker,
+        "explicitFailure": explicit_failure,
+        "dispatch": dispatch,
+        "rawHex": payload.hex(),
+    }
+
+
+def build_dungeon_chest_payload(position: int) -> bytes:
+    index = dungeon_chest_index(position)
+    return bytes([index])
+
+
+def parse_dungeon_chest_response(payload: bytes) -> Dict[str, Any]:
+    output: Dict[str, Any] = {
+        "rawHex": payload.hex(),
+        "status": None,
+        "success": False,
+        "textPreview": printable(payload, 2000),
+    }
+    if not payload:
+        output["parseError"] = "0x893e 数据为空"
+        return output
+    status = int(payload[0])
+    output.update({
+        "status": status,
+        "success": status != 0xFF,
+        "message": printable(payload, 2000),
+    })
     return output

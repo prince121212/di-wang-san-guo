@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import struct
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from ..protocol.wire import normalize_hex_id, printable, read_utf
 
@@ -46,6 +46,191 @@ def soldier_type_name(code: Any) -> str:
     if normalized == -1:
         return "无配兵"
     return SOLDIER_CODE_NAMES.get(normalized, f"兵种{normalized}")
+
+
+def strict_soldier_type(value: Any) -> Tuple[int, str]:
+    """Normalize an API soldier type without the legacy silent cavalry fallback."""
+
+    if isinstance(value, bool):
+        raise ValueError("兵种无效")
+    if isinstance(value, int):
+        code = int(value)
+    else:
+        text = str(value or "").strip()
+        if text in SOLDIER_TYPE_CODES:
+            code = SOLDIER_TYPE_CODES[text]
+        else:
+            try:
+                code = int(text, 10)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"未知兵种：{text or '空'}") from error
+    if code not in SOLDIER_CODE_NAMES:
+        raise ValueError(f"未知兵种代码：{code}")
+    return code, SOLDIER_CODE_NAMES[code]
+
+
+def positive_game_id(value: Any, field: str = "ID") -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} 无效")
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"缺少{field}")
+    try:
+        if text.lower().startswith("0x"):
+            result = int(text[2:], 16)
+        elif any(character in "abcdefABCDEF" for character in text):
+            result = int(text, 16)
+        else:
+            result = int(text, 10)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} 无效：{text}") from error
+    if not 0 < result <= 0x7FFFFFFFFFFFFFFF:
+        raise ValueError(f"{field} 超出范围：{text}")
+    return result
+
+
+def plan_troop_assignment(
+    generals: Sequence[Mapping[str, Any]],
+    army_rows: Sequence[Mapping[str, Any]],
+    request: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Own the safety checks which previously diverged between Python and Kotlin."""
+
+    general_id = positive_game_id(request.get("generalId"), "将领 ID")
+    target_code, target_name = strict_soldier_type(
+        request.get("soldierTypeCode", request.get("soldierType"))
+    )
+    try:
+        requested_count = int(request.get("soldierCount"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("配兵数量无效") from error
+    if not 0 <= requested_count <= 0x7FFFFFFF:
+        raise ValueError("配兵数量必须在 0..2147483647 之间")
+    try:
+        group = int(request.get("group") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError("配兵分组无效") from error
+    if not -128 <= group <= 127:
+        raise ValueError("配兵分组必须在 -128..127 之间")
+
+    general = next(
+        (
+            dict(row)
+            for row in generals
+            if positive_game_id(row.get("id"), "将领 ID") == general_id
+        ),
+        None,
+    )
+    if general is None:
+        raise ValueError(f"未找到配兵将领：{general_id}")
+    idle_status = int(contract.get("idleGeneralStatus") or 0)
+    try:
+        status = int(general.get("status"))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"无法确认将领{general.get('name') or general_id}状态") from error
+    if status != idle_status:
+        raise ValueError(
+            f"将领{general.get('name') or general_id}当前不是空闲状态，未执行配兵"
+        )
+    try:
+        troop_limit = max(0, int(general.get("troopLimit") or 0))
+    except (TypeError, ValueError):
+        troop_limit = 0
+    effective_count = requested_count
+    if bool(contract.get("clampCountToTroopLimit")) and troop_limit > 0:
+        effective_count = min(requested_count, troop_limit)
+    try:
+        current_code = int(general.get("soldierTypeCode"))
+    except (TypeError, ValueError):
+        current_code = -1
+    try:
+        current_count = max(
+            0,
+            int(
+                general.get(
+                    "soldierCount",
+                    general.get("currentSoldierCount", 0),
+                )
+                or 0
+            ),
+        )
+    except (TypeError, ValueError):
+        current_count = 0
+    already_satisfied = (
+        current_code == target_code and current_count == effective_count
+    )
+
+    idle_counts: Dict[int, int] = {}
+    for raw in army_rows:
+        try:
+            code = int(raw.get("soldierTypeCode"))
+            amount = int(
+                raw.get("idleCount", raw.get("count", raw.get("amount", 0)))
+                or 0
+            )
+        except (TypeError, ValueError):
+            continue
+        if code in SOLDIER_CODE_NAMES and amount > 0:
+            idle_counts[code] = idle_counts.get(code, 0) + amount
+    already_carrying_target = current_count if current_code == target_code else 0
+    available = idle_counts.get(target_code, 0) + already_carrying_target
+    if (
+        bool(contract.get("precheckIdleSoldierInventory"))
+        and not already_satisfied
+        and effective_count > available
+    ):
+        raise ValueError(
+            f"{general.get('name') or general_id}缺少"
+            f"{effective_count - available}{target_name}；目标{effective_count}，"
+            f"可用{available}，已保持原配兵不变"
+        )
+    return {
+        "generalId": general_id,
+        "generalIdHex": f"{general_id:016x}",
+        "generalName": str(general.get("name") or general_id),
+        "soldierType": target_name,
+        "soldierTypeCode": target_code,
+        "requestedCount": requested_count,
+        "effectiveCount": effective_count,
+        "troopLimit": troop_limit,
+        "group": group,
+        "currentSoldierTypeCode": current_code,
+        "currentSoldierCount": current_count,
+        "availableTargetCount": available,
+        "alreadySatisfied": already_satisfied,
+    }
+
+
+def select_refill_generals(
+    generals: Sequence[Mapping[str, Any]],
+    requested_ids: Sequence[Any],
+) -> List[Dict[str, Any]]:
+    if not isinstance(requested_ids, (list, tuple)) or not requested_ids:
+        raise ValueError("批量补兵至少需要一名将领")
+    normalized: List[int] = []
+    for value in requested_ids:
+        general_id = positive_game_id(value, "将领 ID")
+        if general_id not in normalized:
+            normalized.append(general_id)
+    if len(normalized) > 0xFF:
+        raise ValueError("批量补兵将领数量超过 255")
+    by_id = {
+        positive_game_id(row.get("id"), "将领 ID"): dict(row)
+        for row in generals
+        if row.get("id") not in (None, "")
+    }
+    selected = []
+    for general_id in normalized:
+        row = by_id.get(general_id)
+        if row is None:
+            raise ValueError(f"未找到补兵将领：{general_id}")
+        selected.append({
+            "id": general_id,
+            "idHex": f"{general_id:016x}",
+            "name": str(row.get("name") or general_id),
+        })
+    return selected
 
 
 def build_refill_payload(general_chunks: List[str]) -> bytes:
@@ -211,6 +396,41 @@ def parse_assign_troops_response(payload: bytes) -> Dict[str, Any]:
     return output
 
 
+def assignment_receipt_matches_plan(
+    receipt: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    *,
+    clearing: bool = False,
+) -> bool:
+    """Validate a 0x8226 receipt according to the requested operation.
+
+    Normal assignment echoes the requested troop type and count.  Clearing is
+    a different server operation even though it uses the same wire command:
+    the server deliberately represents an unassigned general as
+    ``assignedSoldierTypeCode=-1`` and ``assignedSoldierCount=0``.  Treating
+    that sentinel as a normal assignment mismatch is what caused successful
+    one-click clearing to be reported as a failure.
+    """
+
+    try:
+        general_id = int(receipt.get("generalId") or 0)
+        expected_general_id = int(plan.get("generalId") or 0)
+        assigned_type = int(receipt.get("assignedSoldierTypeCode"))
+        assigned_count = int(receipt.get("assignedSoldierCount"))
+    except (TypeError, ValueError):
+        return False
+    if general_id != expected_general_id:
+        return False
+    if clearing:
+        return assigned_type == -1 and assigned_count == 0
+    try:
+        expected_type = int(plan.get("soldierTypeCode"))
+        expected_count = int(plan.get("effectiveCount"))
+    except (TypeError, ValueError):
+        return False
+    return assigned_type == expected_type and assigned_count == expected_count
+
+
 def build_heal_preinfo_payload(
     fief_id: Any,
     soldier_code: int,
@@ -241,6 +461,154 @@ def build_heal_all_payloads(fief_id: Any) -> Tuple[bytes, bytes]:
         build_heal_preinfo_payload(fief_id, -1, -1),
         build_heal_payload(fief_id, 2, 0, -1, use_gold=False),
     )
+
+
+def plan_heal_wounded(
+    generals: Sequence[Mapping[str, Any]],
+    request: Mapping[str, Any],
+    *,
+    allow_all_if_count_unknown: bool = True,
+) -> Dict[str, Any]:
+    """Create the one canonical, auditable heal plan for both hosts."""
+
+    raw_general_id = request.get("generalId")
+    general_id = (
+        positive_game_id(raw_general_id, "将领 ID")
+        if raw_general_id not in (None, "")
+        else None
+    )
+    general = next(
+        (
+            dict(row)
+            for row in generals
+            if general_id is not None
+            and positive_game_id(row.get("id"), "将领 ID") == general_id
+        ),
+        {},
+    )
+    fief_id_value = (
+        request.get("fiefId")
+        or request.get("placeID")
+        or request.get("placeId")
+        or general.get("fiefId")
+        or general.get("placeID")
+        or general.get("placeId")
+    )
+    soldier_value = request.get("soldierTypeCode")
+    if soldier_value in (None, ""):
+        soldier_value = request.get("soldierType")
+    if soldier_value in (None, ""):
+        soldier_value = general.get("soldierTypeCode")
+    if soldier_value in (None, ""):
+        soldier_value = general.get("soldierType")
+    if soldier_value in (None, ""):
+        soldier_value = "轻骑兵"
+    wounded_count = request.get("woundedCount")
+    if wounded_count in (None, ""):
+        wounded_count = general.get("woundedCount")
+    if wounded_count in (None, ""):
+        wounded_count = general.get("hurtSoldierCount")
+    try:
+        soldier_group = int(
+            request.get("soldierGroup", request.get("healGroup", 2)) or 2
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("治疗兵组无效") from error
+    if not -128 <= soldier_group <= 127:
+        raise ValueError("治疗兵组必须在 -128..127 之间")
+    # "Heal all" uses the protocol's fixed sentinel payload (soldier type 0,
+    # count -1), so it does not require the representative general to carry a
+    # concrete troop type. Fresh state legitimately reports -1 for an
+    # unassigned general; validating it before this branch blocked maintenance
+    # before any request was sent.
+    if wounded_count in (None, "") and allow_all_if_count_unknown:
+        if not fief_id_value:
+            return {
+                "ready": False,
+                "reason": "缺少 fiefId/placeID，暂不发送治疗包",
+                "opcode": "0x1230/0x1231",
+                "generalId": general_id,
+                "soldierType": soldier_type_name(0),
+                "soldierTypeCode": 0,
+            }
+        fief_id = positive_game_id(fief_id_value, "封地 ID")
+        pre_payload, heal_payload = build_heal_all_payloads(fief_id)
+        return {
+            "ready": True,
+            "healAll": True,
+            "reason": "未取得精确伤兵数量，使用客户端“治疗全部”语义",
+            "opcode": "0x1230/0x1231",
+            "generalId": general_id,
+            "fiefId": fief_id,
+            "soldierGroup": 2,
+            "soldierType": soldier_type_name(0),
+            "soldierTypeCode": 0,
+            "woundedCount": -1,
+            "preInfoPayloadHex": pre_payload.hex(),
+            "healPayloadHex": heal_payload.hex(),
+        }
+    soldier_code, soldier_name = strict_soldier_type(soldier_value)
+    if not fief_id_value:
+        return {
+            "ready": False,
+            "reason": "缺少 fiefId/placeID，暂不发送治疗包",
+            "opcode": "0x1230/0x1231",
+            "generalId": general_id,
+            "soldierType": soldier_name,
+            "soldierTypeCode": soldier_code,
+        }
+    fief_id = positive_game_id(fief_id_value, "封地 ID")
+    if wounded_count in (None, ""):
+        return {
+            "ready": False,
+            "reason": "缺少当前伤兵数量，暂不发送治疗包",
+            "opcode": "0x1230/0x1231",
+            "generalId": general_id,
+            "fiefId": fief_id,
+            "soldierGroup": soldier_group,
+            "soldierType": soldier_name,
+            "soldierTypeCode": soldier_code,
+            "preInfoPayloadHexIfCountKnown": build_heal_preinfo_payload(
+                fief_id,
+                soldier_code,
+                0,
+            ).hex(),
+        }
+    try:
+        count = int(wounded_count)
+    except (TypeError, ValueError) as error:
+        raise ValueError("伤兵数量无效") from error
+    if count <= 0:
+        return {
+            "ready": False,
+            "noWounded": True,
+            "reason": "当前无伤兵需要治疗",
+            "generalId": general_id,
+            "fiefId": fief_id,
+            "soldierType": soldier_name,
+            "soldierTypeCode": soldier_code,
+            "woundedCount": count,
+        }
+    pre_payload = build_heal_preinfo_payload(fief_id, soldier_code, count)
+    heal_payload = build_heal_payload(
+        fief_id,
+        soldier_group,
+        soldier_code,
+        count,
+        use_gold=False,
+    )
+    return {
+        "ready": True,
+        "healAll": False,
+        "generalId": general_id,
+        "fiefId": fief_id,
+        "soldierGroup": soldier_group,
+        "soldierType": soldier_name,
+        "soldierTypeCode": soldier_code,
+        "woundedCount": count,
+        "preInfoPayloadHex": pre_payload.hex(),
+        "healPayloadHex": heal_payload.hex(),
+    }
 
 
 def parse_heal_preinfo_response(payload: bytes) -> Dict[str, Any]:

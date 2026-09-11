@@ -13,13 +13,24 @@ internal data class LocalTaskPresentationSpec(
 
 /** Shared-Web presentation vocabulary for persisted Android scheduler states. */
 internal object LocalTaskPresentation {
+    private val retiredRuntimeTypes = setOf(
+        TaskType.BANDIT_PREFETCH,
+        TaskType.MINE_PREFETCH,
+        TaskType.STATE_REFRESH,
+        TaskType.FOOD_TO_COPPER,
+        TaskType.FORMATION,
+    )
+
     val residentSpecs = listOf(
         LocalTaskPresentationSpec("mine", "打矿", "resident"),
         LocalTaskPresentationSpec("lossless", "无损", "resident"),
         LocalTaskPresentationSpec("brushYellow", "刷黄", "resident"),
         LocalTaskPresentationSpec("raid", "掠夺", "resident"),
         LocalTaskPresentationSpec("dungeon", "副本", "resident"),
-        LocalTaskPresentationSpec("ministry", "六部", "resident")
+        LocalTaskPresentationSpec("general", "将领维护", "resident"),
+        LocalTaskPresentationSpec("ministry", "六部", "resident"),
+        LocalTaskPresentationSpec("domestic", "自动内政", "resident"),
+        LocalTaskPresentationSpec("inventory", "背包整理", "resident")
     )
 
     val dailySpecs = listOf(
@@ -50,10 +61,10 @@ internal object LocalTaskPresentation {
         TaskType.SIX_MINISTRIES -> resident("ministry")
         TaskType.STATE_REFRESH -> LocalTaskPresentationSpec("stateRefresh", "角色军情刷新", "other")
         TaskType.FORMATION -> LocalTaskPresentationSpec("formations", "配兵", "military")
-        TaskType.GENERAL -> LocalTaskPresentationSpec("generalMaintenance", "将领维护", "daily")
+        TaskType.GENERAL -> resident("general")
         TaskType.FOOD_TO_COPPER -> LocalTaskPresentationSpec("foodToCopper", "粮食转铜", "daily")
-        TaskType.INTERNAL -> LocalTaskPresentationSpec("autoDomestic", "自动内政", "daily")
-        TaskType.INVENTORY -> LocalTaskPresentationSpec("inventory", "背包整理", "daily")
+        TaskType.INTERNAL -> resident("domestic")
+        TaskType.INVENTORY -> resident("inventory")
         TaskType.ALARM -> LocalTaskPresentationSpec("alarm", "警报/军情", "other")
         TaskType.DAILY -> LocalTaskPresentationSpec("daily", "日常任务", "daily")
     }
@@ -61,10 +72,14 @@ internal object LocalTaskPresentation {
     fun schedulerState(
         status: TaskRuntimeStatus?,
         completed: Boolean = false,
+        schedulerActive: Boolean = true,
         nowMillis: Long = System.currentTimeMillis()
     ): String = when {
         status == null -> if (completed) "daily_done" else "idle"
-        completed && status.state == TaskRuntimeState.SLEEPING -> "daily_done"
+        status.skipped -> "daily_done"
+        completed -> "daily_done"
+        !schedulerActive || isRetiredRuntimeType(status.type) ->
+            if (completed) "daily_done" else "stopped"
         status.state == TaskRuntimeState.WAITING -> "queued"
         status.state == TaskRuntimeState.RUNNING -> "running"
         status.state == TaskRuntimeState.SLEEPING -> if (
@@ -79,11 +94,23 @@ internal object LocalTaskPresentation {
         else -> "queued"
     }
 
-    fun isActive(status: TaskRuntimeStatus?): Boolean = status != null && status.state !in setOf(
-        TaskRuntimeState.STOPPED,
-        TaskRuntimeState.SERVICE_STOPPED,
-        TaskRuntimeState.ERROR
-    )
+    fun isActive(
+        status: TaskRuntimeStatus?,
+        schedulerActive: Boolean = true,
+    ): Boolean = schedulerActive && status != null &&
+        !isRetiredRuntimeType(status.type) && status.state !in setOf(
+            TaskRuntimeState.STOPPED,
+            TaskRuntimeState.SERVICE_STOPPED,
+            TaskRuntimeState.ERROR
+        )
+
+    fun schedulerActive(
+        accountEnabled: Boolean,
+        savedTasksStarted: Boolean,
+        executionOwnerActive: Boolean,
+    ): Boolean = accountEnabled && savedTasksStarted && executionOwnerActive
+
+    fun isRetiredRuntimeType(type: TaskType): Boolean = type in retiredRuntimeTypes
 
     /** Desktop task stack contains only active instructions, never today's completed rows. */
     fun isTaskStackVisible(
@@ -92,19 +119,9 @@ internal object LocalTaskPresentation {
         schedulerActive: Boolean = true,
         nowMillis: Long = System.currentTimeMillis()
     ): Boolean =
-        schedulerActive && !completed &&
+        schedulerActive && !completed && status?.skipped != true &&
             status?.let {
-                if (it.type in setOf(
-                        TaskType.STATE_REFRESH,
-                        TaskType.BANDIT_PREFETCH,
-                        TaskType.MINE_PREFETCH
-                    )
-                ) return@let false
-                // 配兵是一次性前置动作。成功后调度器用长 Sleep 防止重复配兵，
-                // 但电脑端此时已经把该指令移出任务栈，不能展示成数千小时冷却。
-                if (it.type == TaskType.FORMATION && it.state == TaskRuntimeState.SLEEPING) {
-                    return@let false
-                }
+                if (isRetiredRuntimeType(it.type)) return@let false
                 when (it.state) {
                     TaskRuntimeState.WAITING,
                     TaskRuntimeState.RUNNING,
@@ -123,8 +140,23 @@ internal object LocalTaskPresentation {
     fun taskStackStatus(status: TaskRuntimeStatus): String =
         if (status.state == TaskRuntimeState.RUNNING) "running" else "queued"
 
+    /**
+     * Persisted rows remain available for restart recovery, but the live queue may only project
+     * rows written by the current foreground execution owner. This keeps an earlier Kotlin run
+     * from copying one stale error onto unrelated shared-core tasks.
+     */
+    fun forExecutionGeneration(
+        statuses: List<TaskRuntimeStatus>,
+        executionGeneration: String?,
+    ): List<TaskRuntimeStatus> = if (executionGeneration.isNullOrBlank()) {
+        statuses
+    } else {
+        statuses.filter { it.executionGeneration == executionGeneration }
+    }
+
     fun latestByKey(statuses: List<TaskRuntimeStatus>): Map<String, TaskRuntimeStatus> =
-        statuses.groupBy { spec(it.type).key }.mapValues { (_, values) ->
+        statuses.filterNot { isRetiredRuntimeType(it.type) }
+            .groupBy { spec(it.type).key }.mapValues { (_, values) ->
             values.maxBy { it.updatedAtMillis }
         }
 

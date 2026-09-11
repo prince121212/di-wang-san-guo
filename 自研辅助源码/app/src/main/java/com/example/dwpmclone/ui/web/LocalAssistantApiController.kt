@@ -6,23 +6,28 @@ import com.example.dwpmclone.data.account.AccountLoginState
 import com.example.dwpmclone.data.account.AccountStateEvents
 import com.example.dwpmclone.data.account.AccountTransitionDetails
 import com.example.dwpmclone.data.account.AccountTransitionInput
-import com.example.dwpmclone.data.account.LocalAccountLoginService
 import com.example.dwpmclone.data.local.KeystoreCredentialVault
 import com.example.dwpmclone.data.local.DismissedNoticeRepository
 import com.example.dwpmclone.data.local.ExpeditionTransactionRepository
 import com.example.dwpmclone.data.local.AssistantBehaviorContractAssetLoader
 import com.example.dwpmclone.data.local.LocalAccountRepository
 import com.example.dwpmclone.data.local.LocalConfigRepository
+import com.example.dwpmclone.data.local.LogAudience
 import com.example.dwpmclone.data.local.LocalDailySuccessStatsRepository
+import com.example.dwpmclone.data.local.HostingInterruptionReport
+import com.example.dwpmclone.data.local.LocalGuideRepository
+import com.example.dwpmclone.data.local.LocalHostingRuntimeRepository
 import com.example.dwpmclone.data.local.LocalMapRepository
+import com.example.dwpmclone.data.local.ProcessExitReader
 import com.example.dwpmclone.data.local.RequestHealthRepository
 import com.example.dwpmclone.data.local.SessionReconnectRepository
 import com.example.dwpmclone.data.local.TaskLogEntry
 import com.example.dwpmclone.data.local.TaskLogRepository
-import com.example.dwpmclone.data.local.TaskSuccessRecordPolicy
 import com.example.dwpmclone.data.local.TaskRuntimeStatusRepository
 import com.example.dwpmclone.domain.model.GameAccount
 import com.example.dwpmclone.domain.model.GameSession
+import com.example.dwpmclone.domain.model.Channel
+import com.example.dwpmclone.domain.model.GameVersion
 import com.example.dwpmclone.domain.localmap.LocalMapKind
 import com.example.dwpmclone.domain.protocol.AssistantBehaviorContract
 import com.example.dwpmclone.domain.protocol.ExpeditionTransactionState
@@ -30,13 +35,12 @@ import com.example.dwpmclone.data.protocol.RealGameProtocolClient
 import com.example.dwpmclone.domain.protocol.State8004GeneralEvidenceParser
 import com.example.dwpmclone.domain.protocol.TaskType
 import com.example.dwpmclone.domain.protocol.UserFacingTextLocalizer
-import com.example.dwpmclone.domain.scheduler.HostingStartPolicy
 import com.example.dwpmclone.domain.scheduler.ResidentTaskActivationPolicy
-import com.example.dwpmclone.domain.scheduler.SavedConfigTaskPlanFactory
 import com.example.dwpmclone.domain.scheduler.SchedulerTaskOrdering
 import com.example.dwpmclone.domain.scheduler.TaskRuntimeState
 import com.example.dwpmclone.host.SharedPythonCoreHost
 import com.example.dwpmclone.service.AssistantForegroundService
+import com.example.dwpmclone.ui.hosting.BackgroundHostingPermissionState
 import java.net.URLDecoder
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -47,7 +51,8 @@ import org.json.JSONObject
 /** Small allow-listed adapter from the shared Web UI contract to on-device repositories. */
 class LocalAssistantApiController(
     context: Context,
-    private val onHostingStarted: () -> Unit = {}
+    private val onBackgroundPermissionAction: (String) -> Boolean = { false },
+    private val onHostingStarted: () -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val sharedPythonCore = SharedPythonCoreHost.get(appContext)
@@ -62,25 +67,45 @@ class LocalAssistantApiController(
     private val expeditionTransactions = ExpeditionTransactionRepository(appContext)
     private val dismissedNotices = DismissedNoticeRepository(appContext)
     private val localMaps = LocalMapRepository(appContext)
+    private val guideAssets = LocalGuideRepository(appContext)
     private val behaviorContract = AssistantBehaviorContractAssetLoader.load(appContext)
-    private val loginService = LocalAccountLoginService(
-        accounts = accounts,
-        credentials = credentialVault,
-        logs = logs
-    )
     private val localOperations = LocalProtocolOperationService(
-        context = appContext,
         accounts = accounts,
-        logs = logs,
-        requestHealth = requestHealth,
         dailyStats = dailyStats,
-        localMaps = localMaps,
         taskOverviewProvider = { accountId -> taskOverview(accountId) }
     )
 
     fun handle(request: AssistantApiRequest): AssistantApiResponse = runCatching {
         val route = request.path.substringBefore('?')
-        if (request.method == "GET" && route == "/api/military/intel") {
+        if ((request.method == "GET" &&
+                route in setOf("/api/military/intel", "/api/state/refresh", "/api/heartbeat")) ||
+            (request.method == "POST" &&
+                route in setOf(
+                    "/api/daily/general-visit/candidates",
+                    "/api/raid/fiefs",
+                    "/api/formations/unassign-all",
+                    "/api/troops/assign",
+                    "/api/troops/refill",
+                    "/api/troops/heal",
+                    "/api/inventory/open-one",
+                    "/api/brush/search",
+                    "/api/brush/execute",
+                    "/api/mine/search",
+                    "/api/mine/execute",
+                    "/api/liubu/hubu/query",
+                    "/api/liubu/hubu/plant",
+                    "/api/daily/sign-in/claim",
+                    "/api/daily/arena-coins/claim",
+                    "/api/daily/donate/claim",
+                    "/api/daily/donate/custom",
+                    "/api/daily/salary/claim",
+                    "/api/daily/national-collect/claim",
+                    "/api/daily/city-lord-collect/claim",
+                    "/api/daily/general-visit/claim",
+                    "/api/domestic/query",
+                    "/api/domestic/action"
+                ))
+        ) {
             return@runCatching submitSharedNetworkOperation(request, route)
         }
         localOperations.tryHandle(request)?.let { return@runCatching it }
@@ -90,26 +115,30 @@ class LocalAssistantApiController(
             "GET" to "/api/core/operations/status" -> sharedCoreOperationStatus(request)
             "GET" to "/api/core/verification/protocol" -> sharedCoreProtocolVerification(request)
             "GET" to "/api/accounts" -> sharedCoreAccounts(request)
-            "GET" to "/api/areas" -> ok(request, JSONObject().put("areas", JSONArray()).put("updatedAt", System.currentTimeMillis()))
+            "GET" to "/api/areas" -> areaCatalog(request)
+            "GET" to "/api/reference/guide" -> referenceGuide(request)
+            "GET" to "/api/background/permissions" -> backgroundPermissions(request)
             "GET" to "/api/accounts/settings" -> accountSettings(request)
             "GET" to "/api/logs/system" -> systemLogs(request)
             "GET" to "/api/logs/account" -> accountLogs(request)
             "GET" to "/api/automation/status" -> automationStatus(request)
-            "GET" to "/api/state/refresh" -> stateRefresh(request)
             "GET" to "/api/success-records" -> successRecords(request)
             "GET" to "/api/maps/bandits" -> localMap(request, LocalMapKind.BANDIT)
             "GET" to "/api/maps/mines" -> localMap(request, LocalMapKind.MINE)
             "POST" to "/api/logs/account" -> appendAccountLog(request)
             "POST" to "/api/logs/system/clear" -> clearLogs(request)
             "POST" to "/api/notices/dismiss" -> dismissNotice(request)
+            "POST" to "/api/background/permissions/open" -> openBackgroundPermission(request)
+            "POST" to "/api/brush/recommended-center" -> brushRecommendedCenter(request)
+            "POST" to "/api/formations/apply" -> submitSharedNetworkOperation(request, route)
             "POST" to "/api/accounts/add" -> addAccount(request)
             "POST" to "/api/accounts/start" -> startAccount(request)
             "POST" to "/api/accounts/stop" -> stopAccount(request)
             "POST" to "/api/accounts/delete" -> deleteAccount(request)
             "POST" to "/api/core/operations/simulate" -> submitSimulatedCoreOperation(request)
-            "POST" to "/api/core/operations/cancel" -> cancelSimulatedCoreOperation(request)
+            "POST" to "/api/core/operations/cancel" -> cancelCoreOperation(request)
             "POST" to "/api/automation/start-saved" -> startSavedTasks(request)
-            "POST" to "/api/automation/stop" -> stopAccount(request)
+            "POST" to "/api/automation/stop" -> stopAutomation(request)
             "POST" to "/api/formations/save",
             "POST" to "/api/raid/execute",
             "POST" to "/api/mine/save",
@@ -138,13 +167,21 @@ class LocalAssistantApiController(
         )
         val status = dispatched.optInt("status", 500)
         val health = (dispatched.optJSONObject("body") ?: JSONObject())
+        val migratedRoutes = health.optJSONArray("migratedRoutes") ?: JSONArray()
+        health
             .put("apiVersion", AssistantApiResponse.API_VERSION)
-            .put("androidBusinessOwner", "mixed-by-route-contract")
-            .put("androidLegacyBusinessOwner", "android-kotlin")
-            .put("sharedPythonMigratedRoute", "GET /api/health")
-            .put("sharedPythonMigratedRoutes", JSONArray()
-                .put("GET /api/health")
-                .put("GET /api/accounts"))
+            .put(
+                "androidBusinessOwner",
+                "shared-python",
+            )
+            .put("androidRouteBusinessOwner", "shared-python")
+            .put("androidLegacyBusinessOwner", "none")
+            .put(
+                "androidRemainingKotlinBackgroundOwners",
+                JSONArray(),
+            )
+            .put("sharedPythonMigratedRoute", migratedRoutes.optString(0))
+            .put("sharedPythonMigratedRoutes", migratedRoutes)
             .put("androidPythonHost", sharedPythonCore.metrics())
         return AssistantApiResponse(request.id, status, health)
     }
@@ -164,16 +201,152 @@ class LocalAssistantApiController(
         )
     }
 
+    private fun areaCatalog(request: AssistantApiRequest): AssistantApiResponse {
+        val platform = query(request.path)["platform"].orEmpty()
+        return dispatchSharedLocal(
+            request,
+            "/api/areas",
+            JSONObject()
+                .put("platform", platform)
+                .put("areas", JSONArray())
+        )
+    }
+
+    private fun referenceGuide(request: AssistantApiRequest): AssistantApiResponse {
+        val params = query(request.path)
+        val resource = params["resource"].orEmpty()
+        val body = JSONObject().put("resource", resource)
+        when (resource) {
+            "famous-generals" -> body.put(
+                "sourceText",
+                guideAssets.readFamousGeneralsSource()
+            )
+            "article" -> {
+                val articleId = params["id"].orEmpty()
+                body.put("id", articleId)
+                guideAssets.readGuideArticleSource(articleId)?.let { source ->
+                    body.put("sourceText", source)
+                }
+            }
+            "open-server-calculation" -> body
+                .put("versionIndex", params["versionIndex"].orEmpty())
+                .put("server", params["server"].orEmpty())
+        }
+        return dispatchSharedLocal(request, "/api/reference/guide", body)
+    }
+
+    private fun backgroundPermissions(request: AssistantApiRequest): AssistantApiResponse =
+        ok(
+            request,
+            BackgroundHostingPermissionState.read(appContext).toJson()
+                // Surfaced next to the permission checklist on purpose: the page
+                // a user opens after "it stopped overnight" should also answer
+                // how long it was down and whether a setting explains it.
+                .put("lastInterruption", lastInterruptionJson()),
+        )
+
+
+    private fun lastInterruptionJson(): Any = runCatching {
+        HostingInterruptionReport.of(
+            runtime = LocalHostingRuntimeRepository(appContext).snapshot(),
+            exits = ProcessExitReader.read(appContext),
+            nowMillis = System.currentTimeMillis(),
+            mainProcessName = appContext.packageName,
+            lastUpdateTimeMillis = ProcessExitReader.lastUpdateTimeMillis(appContext),
+        ).toJson()
+    }.getOrDefault(JSONObject.NULL)
+
+    private fun openBackgroundPermission(request: AssistantApiRequest): AssistantApiResponse {
+        val action = request.body?.optString("action").orEmpty().trim()
+        if (action.isBlank()) return failure(request, 400, "缺少权限设置类型")
+        if (!onBackgroundPermissionAction(action)) {
+            return failure(request, 400, "不支持的权限设置：$action")
+        }
+        return ok(
+            request,
+            JSONObject()
+                .put("accepted", true)
+                .put("action", action),
+        )
+    }
+
     private fun submitSharedNetworkOperation(
         request: AssistantApiRequest,
         route: String
     ): AssistantApiResponse {
-        val accountId = query(request.path)["sessionId"]?.toLongOrNull()
+        val body = JSONObject(request.body?.toString() ?: "{}")
+        val query = query(request.path)
+        val accountId = sequenceOf(
+            query["sessionId"],
+            body.optString("accountRef"),
+            body.optString("sessionId")
+        ).mapNotNull { it?.toLongOrNull() }.firstOrNull { it > 0L }
             ?: return failure(request, 400, "缺少账号")
+        if (route == "/api/state/refresh") {
+            body.put("scope", query["scope"].orEmpty().ifBlank { "all" })
+        }
+        if (route == "/api/troops/heal") {
+            val general = configs.loadFeatureConfig(
+                accountId,
+                LocalSettingsConfigMapper.GENERAL
+            )?.optJSONObject("values") ?: JSONObject()
+            val brush = configs.loadFeatureConfig(
+                accountId,
+                LocalSettingsConfigMapper.BRUSH
+            )?.optJSONObject("values") ?: JSONObject()
+            if (!body.has("foodToCopper")) {
+                body.put(
+                    "foodToCopper",
+                    if (general.has("foodToCopper")) {
+                        general.optBoolean("foodToCopper", false)
+                    } else {
+                        brush.optBoolean("foodToCopper", false)
+                    }
+                )
+            }
+            if (!body.has("copperFloorWan")) {
+                body.put(
+                    "copperFloorWan",
+                    if (general.has("copperFloorWan")) {
+                        general.optInt("copperFloorWan", 1)
+                    } else {
+                        brush.optInt("copperFloorWan", 1)
+                    }
+                )
+            }
+            if (!body.has("healAllIfCountUnknown") &&
+                general.has("healAllIfCountUnknown")
+            ) {
+                body.put(
+                    "healAllIfCountUnknown",
+                    general.optBoolean("healAllIfCountUnknown", true)
+                )
+            }
+        }
+        if (route == "/api/brush/execute" || route == "/api/mine/execute") {
+            // The shared expedition workflow owns preflight, formation selection,
+            // healing/energy/loyalty preparation and dispatch success semantics.
+            // Android only supplies the saved platform facts; it must not rebuild
+            // a second set of those rules in Kotlin or require the page to send them.
+            val habits = accountHabits(accountId)
+            val config = habits.optJSONObject("config") ?: JSONObject()
+            val formations = habits.optJSONArray("formations") ?: JSONArray()
+            body.put(
+                "hostSettings",
+                JSONObject()
+                    .put("formations", JSONArray(formations.toString()))
+                    .put("config", JSONObject(config.toString()))
+                    .put("healWounded", config.optBoolean("healWounded", true))
+                    .put("autoEnergy", config.optBoolean("autoEnergy", true))
+                    .put("energyThreshold", config.optInt("energyThreshold", 20))
+                    .put("foodToCopper", config.optBoolean("foodToCopper", false))
+                    .put("copperFloorWan", config.optInt("copperFloorWan", 1))
+            )
+        }
         val dispatched = sharedPythonCore.dispatch(
             request.method,
             route,
-            JSONObject()
+            body
                 .put("accountRef", accountId.toString())
                 .put("sessionId", accountId.toString()),
             JSONObject()
@@ -252,7 +425,7 @@ class LocalAssistantApiController(
         )
     }
 
-    private fun cancelSimulatedCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
+    private fun cancelCoreOperation(request: AssistantApiRequest): AssistantApiResponse {
         val operationId = request.body?.optString("operationId").orEmpty()
         if (operationId.isBlank()) return failure(request, 400, "缺少 operationId")
         val result = sharedPythonCore.cancelOperation(operationId)
@@ -268,15 +441,80 @@ class LocalAssistantApiController(
 
     private fun addAccount(request: AssistantApiRequest): AssistantApiResponse {
         val body = request.body ?: return failure(request, 400, "缺少账号信息")
-        val username = body.optString("username").trim()
         val password = body.optString("password")
-        val serverQuery = body.optString("serverQuery").trim()
-        val platform = body.optString("platform")
-        if (platform.contains("当乐", ignoreCase = true)) {
-            return failure(request, 400, "手机 V1 当前只开放已验证的热血三国联盟登录链路")
+        val prepareBody = JSONObject(body.toString()).apply {
+            remove("password")
+            put("passwordPresent", password.isNotEmpty())
+            put(
+                "supportedPlatformKeys",
+                JSONArray().put("sglm").put("downjoy")
+            )
         }
-        val account = loginService.loginAndPersist(username, password, serverQuery)
-        return ok(request, JSONObject().put("account", accountJson(account)))
+        val prepared = sharedPythonCore.prepareAccountAdd(prepareBody)
+        if (!prepared.optBoolean("ok", false)) {
+            return failure(
+                request,
+                400,
+                prepared.optJSONObject("error")?.optString("message")
+                    ?: prepared.optString("error").ifBlank { "共享账号核心拒绝添加" }
+            )
+        }
+        val plan = prepared.getJSONObject("plan")
+        check(!plan.optBoolean("networkRequired", true)) {
+            "账号草稿与密码落盘不得等待游戏网络"
+        }
+        val record = plan.getJSONObject("record")
+        val accountId = record.getString("accountRef").toLongOrNull()
+            ?.takeIf { it > 0L }
+            ?: throw IllegalStateException("共享账号草稿 ID 无效")
+        credentialVault.savePassword(accountId, password)
+        if (accounts.get(accountId) == null) {
+            runCatching {
+                accounts.upsert(
+                    GameAccount(
+                        id = accountId,
+                        displayName = record.optString("displayName").ifBlank { null },
+                        username = record.getString("username"),
+                        serverName = record.getString("serverName"),
+                        serverId = record.optString("serverId").ifBlank { null },
+                        gameVersion = runCatching {
+                            GameVersion.valueOf(record.getString("gameVersion"))
+                        }.getOrDefault(GameVersion.OTHER),
+                        channel = runCatching {
+                            Channel.valueOf(record.getString("channel"))
+                        }.getOrDefault(Channel.UNKNOWN),
+                        session = null,
+                        enabled = false,
+                        monarchName = null,
+                        nation = null,
+                        loginState = AccountLoginState.STOPPED,
+                        gameAuthSignEvidence = null,
+                        platform = record.getString("platform"),
+                        platformKey = record.getString("platformKey"),
+                        serial = record.optString("serial", "0"),
+                        serverQuery = record.getString("serverQuery")
+                    )
+                )
+            }.onFailure {
+                credentialVault.delete(accountId)
+            }.getOrThrow()
+        }
+        val dispatched = sharedPythonCore.dispatch(
+            "POST",
+            "/api/accounts/add",
+            JSONObject()
+                .put("accountRef", accountId.toString())
+                .put("sessionId", accountId.toString()),
+            JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+                .put("platform", "android")
+        )
+        return AssistantApiResponse(
+            request.id,
+            dispatched.optInt("status", 500),
+            dispatched.optJSONObject("body") ?: JSONObject()
+        )
     }
 
     private fun startAccount(request: AssistantApiRequest): AssistantApiResponse {
@@ -284,46 +522,59 @@ class LocalAssistantApiController(
         if (!credentialVault.hasPassword(account.id)) {
             return failure(request, 409, "该账号没有可用于自动重登的 Keystore 凭据，请删除后重新添加")
         }
-        accounts.setEnabled(account.id, true, AccountLoginState.CHECKING)
-        if (behaviorContract.accountLifecycle.startRunsFreshLogin) {
-            // A fresh login replaces network credentials but must retain the computer-helper
-            // equivalent of currentDungeonStage/pending settlement metadata.
-            runCatching { loginService.relogin(account, preserveTaskRuntime = true) }
-                .onFailure { error ->
-                    accounts.setEnabled(account.id, false, AccountLoginState.OFFLINE)
-                    logs.append(
-                        "账号 ${account.id} 启动真实登录失败：${error.message}",
-                        "account",
-                        account.id
-                    )
-                }
-                .getOrElse { error ->
-                    return failure(request, 409, "真实登录失败：${error.message ?: error::class.java.simpleName}")
-                }
-        } else {
-            accounts.setEnabled(account.id, true, AccountLoginState.ONLINE)
-        }
-        val decision = HostingStartPolicy.evaluate(accounts.listAccounts())
-        if (!decision.allowed) {
-            accounts.setEnabled(account.id, false, AccountLoginState.STOPPED)
-            return failure(request, 409, decision.message)
-        }
-        AssistantForegroundService.start(appContext)
-        runCatching { onHostingStarted() }
-        logs.append("账号 ${account.id} 已从手机本地界面启动", "account", account.id)
-        return ok(request, JSONObject().put("account", accountJson(accounts.get(account.id)!!)))
+        val dispatched = sharedPythonCore.dispatch(
+            "POST",
+            "/api/accounts/start",
+            JSONObject()
+                .put("accountRef", account.id.toString())
+                .put("sessionId", account.id.toString()),
+            JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+                .put("platform", "android")
+        )
+        return AssistantApiResponse(
+            request.id,
+            dispatched.optInt("status", 500),
+            dispatched.optJSONObject("body") ?: JSONObject()
+        )
     }
 
     private fun stopAccount(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)
+        val planned = dispatchSharedLocal(
+            request,
+            "/api/accounts/stop",
+            JSONObject(request.body?.toString() ?: "{}")
+                .put("accountRef", account.id.toString())
+        )
+        if (planned.status !in 200..299) return planned
+        val plan = planned.body.optJSONObject("plan")
+            ?: throw IllegalStateException("共享停止账号计划缺失")
+        check(!plan.optBoolean("networkRequired", true)) {
+            "停止账号不得等待游戏网络"
+        }
+        val write = plan.getJSONObject("write")
+        check(write.optString("accountRef") == account.id.toString()) {
+            "共享停止账号计划账号不匹配"
+        }
         // “停止” and “仅退出当前页面” are different operations. Persist the explicit stop so
         // a later account login cannot silently restore resident brush/dungeon tasks.
-        setSavedTasksStarted(account.id, false)
-        accounts.setEnabled(account.id, false, AccountLoginState.STOPPED)
+        setSavedTasksStarted(
+            account.id,
+            write.optBoolean("savedTasksStarted", false)
+        )
+        accounts.setEnabled(
+            account.id,
+            write.optBoolean("enabled", false),
+            write.optString("loginState", AccountLoginState.STOPPED)
+        )
         runtimeStatuses.markAccountStopped(
             account.id,
             System.currentTimeMillis(),
-            "用户已停止该账号的手机本地托管"
+            write.optString("runtimeReason").ifBlank {
+                "用户已停止该账号的手机本地托管"
+            }
         )
         if (accounts.listAccounts().none { it.enabled && it.session?.sourceMode == 1 }) {
             AssistantForegroundService.stop(appContext)
@@ -336,6 +587,22 @@ class LocalAssistantApiController(
 
     private fun deleteAccount(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)
+        val planned = dispatchSharedLocal(
+            request,
+            "/api/accounts/delete",
+            JSONObject(request.body?.toString() ?: "{}")
+                .put("accountRef", account.id.toString())
+        )
+        if (planned.status !in 200..299) return planned
+        val plan = planned.body.optJSONObject("plan")
+            ?: throw IllegalStateException("共享删除账号计划缺失")
+        check(!plan.optBoolean("networkRequired", true)) {
+            "删除账号不得等待游戏网络"
+        }
+        val write = plan.getJSONObject("write")
+        check(write.optBoolean("deleteCredentialFirst", false)) {
+            "共享删除账号计划必须先删凭据"
+        }
         // Delete encrypted authentication material first. If a later metadata write fails, the
         // safer recoverable state is an account that needs to be re-added, never an orphan secret.
         credentialVault.delete(account.id)
@@ -355,105 +622,246 @@ class LocalAssistantApiController(
     }
 
     private fun startSavedTasks(request: AssistantApiRequest): AssistantApiResponse {
-        var account = requireAccount(request.body)
-        val alreadyStarted = account.session?.channelExtra?.get("savedTasksStarted")
-            .equals("true", ignoreCase = true) &&
-            account.enabled && AssistantForegroundService.isExecutionOwnerActive()
-        if (alreadyStarted) {
-            return ok(
-                request,
-                JSONObject()
-                    .put("alreadyStarted", true)
-                    .put("result", JSONObject().put("resumed", JSONObject()).put("errors", JSONObject()))
-                    .put("taskOverview", taskOverview(account.id))
+        val account = requireAccount(request.body)
+        val backgroundPermissions = BackgroundHostingPermissionState.read(appContext)
+        if (!backgroundPermissions.reliableHostingReady) {
+            runCatching { onHostingStarted() }
+            return AssistantApiResponse(
+                request.id,
+                428,
+                backgroundPermissions.toJson()
+                    .put("ok", false)
+                    .put("code", "BACKGROUND_PERMISSION_REQUIRED")
+                    .put(
+                        "error",
+                        backgroundPermissions.blockingIssueMessage(
+                            prefix = "为了保证息屏后任务不中断"
+                        ) ?: "为了保证息屏后任务不中断，请完成后台运行设置；" +
+                            "可在攻略-后台运行设置中查看",
+                    ),
             )
         }
-        if (!account.enabled || account.loginState != AccountLoginState.ONLINE) {
-            val started = startAccount(request)
-            if (started.status !in 200..299) return started
-            account = accounts.get(account.id) ?: return failure(request, 404, "账号不存在")
-        }
-        val plan = SavedConfigTaskPlanFactory.planForRealAccount(
-            account,
-            configs.exportAll(),
-            behaviorContract
+        val savedTasksStarted = account.session?.channelExtra
+            ?.get("savedTasksStarted")
+            .equals("true", ignoreCase = true)
+        val planned = dispatchSharedLocal(
+            request,
+            "/api/automation/start-saved",
+            JSONObject(request.body?.toString() ?: "{}")
+                .put("accountRef", account.id.toString())
+                .put("accountEnabled", account.enabled)
+                .put("loginState", account.loginState)
+                .put("hasLiveSession", account.session?.sourceMode == 1)
+                .put("savedTasksStarted", savedTasksStarted)
+                .put(
+                    "executionOwnerActive",
+                    AssistantForegroundService.isExecutionOwnerActive()
+                )
         )
-        val residentSpecs = plan?.tasks
-            ?.map { LocalTaskPresentation.spec(it.type) }
-            ?.filter { it.category == "resident" }
-            ?.distinctBy { it.key }
-            .orEmpty()
-        setSavedTasksStarted(account.id, true, residentSpecs.map { it.key }.toSet())
-        AssistantForegroundService.start(appContext)
-        runCatching { onHostingStarted() }
-        val resumed = JSONObject().apply {
-            residentSpecs.forEach { put(it.key, true) }
+        if (planned.status !in 200..299) return planned
+        val plan = planned.body.optJSONObject("plan")
+            ?: throw IllegalStateException("共享开始任务计划缺失")
+        check(!plan.optBoolean("networkRequired", true)) {
+            "开始保存任务不得等待登录或游戏网络"
         }
-        logs.append("用户已开始执行保存的常驻任务", "account", account.id)
+        val write = plan.getJSONObject("write")
+        val activateNow = write.optBoolean("activateNow", false)
+        // This route only persists the user's "run all saved resident tasks"
+        // intent. The foreground scheduler will materialize configured tasks;
+        // the page request must not rebuild the task plan or wait for login.
+        val residentKeys = behaviorContract.scheduler.residentPriority.keys
+        setSavedTasksStarted(
+            account.id,
+            write.optBoolean("savedTasksStarted", true),
+            residentKeys
+        )
+        if (activateNow) {
+            AssistantForegroundService.start(appContext)
+            runCatching { onHostingStarted() }
+        }
+        val resumed = JSONObject().apply {
+            if (activateNow) residentKeys.forEach { put(it, true) }
+        }
+        logs.append(
+            if (activateNow) {
+                "用户已开始执行保存的常驻任务"
+            } else {
+                "已保存开始任务意图，等待账号启动后执行"
+            },
+            "account",
+            account.id
+        )
+        val responsePlan = plan.optJSONObject("response") ?: JSONObject()
         return ok(
             request,
             JSONObject()
-                .put("alreadyStarted", false)
+                .put("alreadyStarted", responsePlan.optBoolean("alreadyStarted"))
+                .put(
+                    "waitingForAccountStart",
+                    responsePlan.optBoolean("waitingForAccountStart")
+                )
                 .put("result", JSONObject().put("resumed", resumed).put("errors", JSONObject()))
                 .put("taskOverview", taskOverview(account.id))
         )
     }
 
+    private fun stopAutomation(request: AssistantApiRequest): AssistantApiResponse {
+        val body = JSONObject(request.body?.toString() ?: "{}")
+        val accountId = body.optString("sessionId").toLongOrNull()
+        if (accountId != null) body.put("accountRef", accountId.toString())
+        val planned = dispatchSharedLocal(
+            request,
+            "/api/automation/stop",
+            body
+        )
+        if (planned.status !in 200..299) return planned
+        val plan = planned.body.optJSONObject("plan")
+            ?: throw IllegalStateException("共享停止任务计划缺失")
+        check(!plan.optBoolean("networkRequired", true)) {
+            "停止任务不得等待游戏网络"
+        }
+        val write = plan.getJSONObject("write")
+        val stopped = JSONArray()
+        if (write.optString("scope") == "account") {
+            val resolvedAccountId = write.optString("accountRef").toLongOrNull()
+                ?: throw IllegalArgumentException("停止任务账号无效")
+            check(accounts.get(resolvedAccountId) != null) { "账号不存在" }
+            setSavedTasksStarted(
+                resolvedAccountId,
+                write.optBoolean("savedTasksStarted", false)
+            )
+            runtimeStatuses.markAccountStopped(
+                resolvedAccountId,
+                System.currentTimeMillis(),
+                "用户已停止该账号的自动任务，账号保持在线"
+            )
+            stopped.put("android-$resolvedAccountId-all")
+            logs.append(
+                "用户已停止自动任务，账号保持在线",
+                "account",
+                resolvedAccountId
+            )
+        } else {
+            write.optString("taskId").takeIf(String::isNotBlank)?.let(stopped::put)
+        }
+        if (AssistantForegroundService.isExecutionOwnerActive()) {
+            AssistantForegroundService.refresh(appContext)
+        }
+        return ok(request, JSONObject().put("stopped", stopped))
+    }
+
     private fun saveMappedSettings(request: AssistantApiRequest, route: String): AssistantApiResponse {
         val account = requireAccount(request.body)
         val body = request.body ?: throw IllegalArgumentException("缺少设置内容")
-        val sharedPlan = if (route in setOf(
-                "/api/military/future/save",
-                "/api/liubu/save",
-                "/api/formations/save"
-            )
-        ) {
-            val planningBody = if (route == "/api/formations/save") {
+        val planningBody = when (route) {
+            "/api/formations/save",
+            "/api/mine/save",
+            "/api/raid/execute",
+            "/api/lossless/execute",
+            "/api/dungeon/execute" ->
                 JSONObject(body.toString()).put(
                     "knownGenerals",
                     jsonArray(account.session?.channelExtra?.get("generalsJson"))
                 )
-            } else {
-                body
+            "/api/settings/save" -> {
+                val habits = accountHabits(account.id)
+                val sessionFacts = sessionJson(account)
+                JSONObject(body.toString())
+                    .put("oldConfig", habits.optJSONObject("config") ?: JSONObject())
+                    .put("session", JSONObject()
+                        .put("sessionId", account.id.toString())
+                        .put("role", sessionFacts.optJSONObject("role") ?: JSONObject())
+                        .put("roleState", sessionFacts.optJSONObject("roleState") ?: JSONObject()))
+                    .put("knownGenerals", sessionFacts.optJSONArray("generals") ?: JSONArray())
+                    .put("savedFormations", habits.optJSONArray("formations") ?: JSONArray())
+                    .put("roleLevel", sessionFacts.optJSONObject("role")?.optInt("level", 0) ?: 0)
             }
-            val dispatched = sharedPythonCore.dispatch(
-                request.method,
-                route,
-                planningBody,
-                JSONObject()
-                    .put("requestId", request.id)
-                    .put("source", "android-webview")
-                    .put("platform", "android")
-            )
-            val planned = dispatched.optJSONObject("body") ?: JSONObject()
-            check(dispatched.optInt("status", 500) == 200 && planned.optBoolean("ok", false)) {
+            else -> body
+        }
+        val dispatched = sharedPythonCore.dispatch(
+            request.method,
+            route,
+            planningBody,
+            JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+                .put("platform", "android")
+        )
+        val planned = dispatched.optJSONObject("body") ?: JSONObject()
+        if (
+            dispatched.optInt("status", 500) != 200 ||
+            !planned.optBoolean("ok", false)
+        ) {
+            throw IllegalArgumentException(
                 planned.optString("error").ifBlank {
                     "共享设置核心拒绝保存"
                 }
-            }
-            planned.getJSONObject("plan")
-        } else {
-            null
+            )
         }
-        val mapping = sharedPlan?.let(::settingsMappingFromSharedPlan)
-            ?: LocalSettingsConfigMapper.map(route, body)
-        val activationAllowed = sharedPlan?.optBoolean(
+        val sharedPlan = planned.getJSONObject("plan")
+        val mapping = settingsMappingFromSharedPlan(sharedPlan)
+        val activationAllowed = sharedPlan.optBoolean(
             "activationAllowed",
             !mapping.disabled
-        ) ?: !mapping.disabled
+        )
         val executionAccepted = activationAllowed && route != "/api/formations/save"
+        val executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive()
+        val executionDecision = LocalSettingsExecutionPolicy.decide(
+            accountEnabled = account.enabled,
+            accountRunnable = account.loginState == AccountLoginState.ONLINE,
+            executionOwnerActive = executionOwnerActive,
+            executionRequested = executionAccepted,
+        )
         mapping.configs.forEach { (featureId, values) ->
             configs.saveFeatureConfig(account.id, featureId, JSONObject().put("values", values))
+        }
+        val defeatPauseAcknowledgement = if (
+            route == "/api/dungeon/execute" &&
+            sharedPlan.optBoolean("acknowledgeDefeatOnSave", false)
+        ) {
+            runCatching {
+                sharedPythonCore.acknowledgeDungeonDefeat(account.id.toString())
+            }.getOrElse { error ->
+                JSONObject()
+                    .put("ok", false)
+                    .put("acknowledged", false)
+                    .put("reason", error.message ?: error.javaClass.simpleName)
+            }
+        } else {
+            JSONObject()
+                .put("ok", true)
+                .put("acknowledged", false)
+                .put("reason", "dungeon-config-disabled")
         }
         if (account.enabled) residentTaskActivation(route, mapping, body)?.let { (key, active) ->
             setResidentTaskActive(account.id, key, active)
         }
+        // The foreground adapter always synchronizes the latest persisted habits
+        // immediately before its next shared tick. Doing the same CPython write here
+        // makes a local settings click wait behind the operation ledger and can also
+        // revive stale execution intent. Commit locally, then let an already-running
+        // owner refresh asynchronously (or defer until the next explicit account start).
+        val residentAutomationSync = JSONObject()
+            .put("ok", true)
+            .put("changed", false)
+            .put("deferred", true)
+            .put(
+                "reason",
+                if (executionOwnerActive) {
+                    "foreground-owner-refresh"
+                } else {
+                    "next-explicit-account-start"
+                },
+            )
         val featureNames = mapping.configs.keys.joinToString(",")
         logs.append("手机本地设置已保存：features=$featureNames", "config", account.id)
-        if (account.enabled) AssistantForegroundService.refresh(appContext)
+        if (executionDecision.shouldRefreshExecutionOwner) {
+            AssistantForegroundService.refresh(appContext)
+        }
 
         val data = JSONObject()
             .put("saved", true)
+            .put("localWriteCommitted", true)
             .put("disabled", mapping.disabled)
             .put("accountHabits", accountHabits(account.id))
             .put("taskOverview", taskOverview(account.id))
@@ -462,28 +870,93 @@ class LocalAssistantApiController(
                 .put("militaryFile", "手机本地存储/account-config.json")
                 .put("ministryFile", "手机本地存储/account-config.json"))
             .put("stoppedTaskIds", JSONArray())
-            .put("waitingForMilitaryStart", executionAccepted && !account.enabled)
+            .put("waitingForMilitaryStart", executionDecision.waitingForAccountStart)
+            .put("residentAutomationSync", residentAutomationSync)
 
-        val taskStarted = executionAccepted && account.enabled
+        val taskStarted = executionDecision.taskStarted
         data.put(
             "execution",
             JSONObject()
                 .put("accepted", executionAccepted)
                 .put("started", taskStarted)
-                .put("waitingForAccountStart", executionAccepted && !account.enabled)
+                .put("waitingForAccountStart", executionDecision.waitingForAccountStart)
                 .put("owner", "android-local-scheduler")
         )
-        sharedPlan?.optJSONObject("response")?.let { response ->
+        sharedPlan.optJSONObject("response")?.let { response ->
             response.keys().forEach { key -> data.put(key, response.opt(key)) }
         }
 
         when (route) {
             "/api/formations/save" -> {
-                data.put("applyTask", JSONObject()
-                    .put("started", false)
-                    .put("reason", data.optString("applyReason").ifBlank {
-                        "设置已保存；配兵应用将作为独立网络任务执行"
-                    }))
+                val formationExecution = LocalSettingsExecutionPolicy.decide(
+                    accountEnabled = account.enabled,
+                    accountRunnable = account.loginState == AccountLoginState.ONLINE,
+                    executionOwnerActive = executionOwnerActive,
+                    executionRequested = activationAllowed,
+                )
+                val applyTask = when {
+                    !activationAllowed -> JSONObject()
+                        .put("started", false)
+                        .put("reason", data.optString("applyReason").ifBlank {
+                            "当前没有可执行的配兵规则"
+                        })
+                    !formationExecution.taskStarted -> JSONObject()
+                        .put("started", false)
+                        .put("waitingForAccountStart", true)
+                        .put("reason", "配兵规则已保存，等待账号启动后执行")
+                    else -> {
+                        val apply = sharedPythonCore.dispatch(
+                            "POST",
+                            "/api/formations/apply",
+                            JSONObject()
+                                .put("accountRef", account.id.toString())
+                                .put("sessionId", account.id.toString())
+                                .put("confirm", "apply-formations")
+                                .put(
+                                    "formations",
+                                    data.optJSONArray("normalizedFormations") ?: JSONArray()
+                                )
+                                .put(
+                                    "formationOptions",
+                                    data.optJSONObject("formationOptions") ?: JSONObject()
+                                ),
+                            JSONObject()
+                                .put("requestId", "${request.id}-apply-formations")
+                                .put("source", "android-settings-follow-up")
+                                .put("platform", "android")
+                        )
+                        val accepted = apply.optJSONObject("body") ?: JSONObject()
+                        if (apply.optInt("status", 500) == 202 &&
+                            accepted.optBoolean("accepted", false)
+                        ) {
+                            JSONObject()
+                                .put("started", true)
+                                .put("operationId", accepted.optString("operationId"))
+                                .put("status", accepted.optString("status", "QUEUED"))
+                                .put("deduplicated", accepted.optBoolean("deduplicated"))
+                                .put("message", "配兵 operation 已受理，等待服务器真实回执")
+                        } else {
+                            JSONObject()
+                                .put("started", false)
+                                .put("activationError", accepted.optString("error").ifBlank {
+                                    "配兵 operation 受理失败"
+                                })
+                                .put("reason", "设置已保存，但实际配兵未受理")
+                        }
+                    }
+                }
+                data.put("applyTask", applyTask)
+                data.put(
+                    "execution",
+                    JSONObject()
+                        .put("accepted", applyTask.optBoolean("started"))
+                        .put("started", applyTask.optBoolean("started"))
+                        .put(
+                            "waitingForAccountStart",
+                            applyTask.optBoolean("waitingForAccountStart")
+                        )
+                        .put("owner", "shared-python-operation")
+                )
             }
             "/api/raid/execute" -> data.put("raidTask", schedulerTaskState(
                 taskStarted,
@@ -522,6 +995,7 @@ class LocalAssistantApiController(
                 val values = mapping.configs.getValue(LocalSettingsConfigMapper.DUNGEON)
                 data.put("rows", values.optJSONArray("rows") ?: JSONArray())
                     .put("mode", values.optString("mode", "loop"))
+                    .put("defeatPauseAcknowledgement", defeatPauseAcknowledgement)
                     .put("dungeonTask", schedulerTaskState(
                         taskStarted,
                         mapping.disabled,
@@ -575,39 +1049,69 @@ class LocalAssistantApiController(
     }
 
     private fun appendAccountLog(request: AssistantApiRequest): AssistantApiResponse {
-        val message = request.body?.optString("message")?.trim().orEmpty()
-        if (message.isBlank()) return failure(request, 400, "日志内容不能为空")
-        val accountId = request.body?.optString("sessionId")?.toLongOrNull()
-        logs.append(message.take(2_000), request.body?.optString("source").orEmpty().ifBlank { "frontend" }, accountId)
+        val planned = dispatchSharedLocal(
+            request,
+            "/api/logs/account",
+            request.body ?: JSONObject()
+        )
+        if (planned.status !in 200..299) return planned
+        val write = planned.body.optJSONObject("plan")
+            ?.optJSONObject("write")
+            ?: throw IllegalStateException("共享日志写入计划缺少 write")
+        val message = write.optString("message")
+        check(message.isNotBlank()) { "共享日志写入计划缺少 message" }
+        logs.append(
+            message,
+            write.optString("source").ifBlank { "frontend" },
+            write.optString("accountRef").toLongOrNull()
+        )
         return ok(request)
     }
 
     private fun clearLogs(request: AssistantApiRequest): AssistantApiResponse {
+        val planned = dispatchSharedLocal(request, "/api/logs/system/clear", request.body ?: JSONObject())
+        if (planned.status !in 200..299) return planned
         logs.clear()
-        return ok(request)
+        return ok(request, JSONObject().put("cleared", true))
     }
 
     private fun systemLogs(request: AssistantApiRequest): AssistantApiResponse {
         val query = query(request.path)
         val limit = query["limit"]?.toIntOrNull()?.coerceIn(1, 1_500) ?: 200
-        val afterId = query["afterId"]?.toLongOrNull() ?: 0L
-        val entries = logs.recent(limit).asReversed().filter { it.id > afterId }
-        val payload = JSONArray().apply {
-            entries.forEach { entry -> put(logJson(entry, entry.id, system = true)) }
+        val afterId = query["afterId"]?.toLongOrNull()
+        val entries = logs.recent(1_500)
+        val body = JSONObject()
+            .put("limit", limit)
+            .put("maxLines", 1_500)
+            .put("latestId", entries.maxOfOrNull { it.id } ?: 0L)
+            .put("storage", "android-jsonl")
+            .put("entries", JSONArray().apply {
+                entries.forEach { entry -> put(rawLogJson(entry)) }
+            })
+        if (afterId != null) {
+            body.put("afterId", afterId)
         }
-        val latest = entries.lastOrNull()?.id ?: afterId
-        return ok(request, JSONObject().put("entries", payload).put("cursorId", latest).put("latestId", latest))
+        return dispatchSharedLocal(request, "/api/logs/system", body)
     }
 
     private fun accountLogs(request: AssistantApiRequest): AssistantApiResponse {
         val query = query(request.path)
         val accountId = query["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
-        val limit = query["limit"]?.toIntOrNull()?.coerceIn(1, 200) ?: 100
-        val entries = logs.recent(200).filter { it.accountId == accountId }.take(limit).asReversed()
-        return ok(request, JSONObject().put("entries", JSONArray().apply {
-            entries.forEach { entry -> put(logJson(entry, entry.id, system = false)) }
-        }))
+        val limit = query["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 100
+        return dispatchSharedLocal(
+            request,
+            "/api/logs/account",
+            JSONObject()
+                .put("accountRef", accountId.toString())
+                .put("accountKey", accountId.toString())
+                .put("limit", limit)
+                .put("maxLines", 100)
+                .put("entries", JSONArray().apply {
+                    // 运行日志 is an operator surface; diagnostics stay on the system-log side.
+                    logs.recent(600, LogAudience.USER).forEach { entry -> put(rawLogJson(entry)) }
+                })
+        )
     }
 
     private fun successRecords(request: AssistantApiRequest): AssistantApiResponse {
@@ -616,38 +1120,26 @@ class LocalAssistantApiController(
             ?: return failure(request, 400, "缺少账号")
         val limit = params["limit"]?.toIntOrNull()?.coerceIn(1, 50) ?: 50
         val category = params["category"].orEmpty().trim()
-        val entries = logs.recent(1_500)
-            .asSequence()
-            .filter { it.accountId == accountId }
-            .mapNotNull { entry -> TaskSuccessRecordPolicy.resolve(entry)?.let { entry to it } }
-            .filter { (_, record) -> category.isBlank() || record.category == category }
-            .take(limit)
-            .toList()
-        return ok(request, JSONObject()
-            .put("accountKey", accountId.toString())
-            .put("limit", limit)
-            .put("category", category)
-            .put("maxLines", 50)
-            .put("entries", JSONArray().apply {
-            entries.forEach { (entry, record) ->
-                put(JSONObject()
-                    .put("id", entry.id)
-                    .put("time", entry.timeMillis)
-                    .put("timeText", formatTime(entry.timeMillis))
-                    .put("sessionId", accountId.toString())
-                    .put("accountKey", accountId.toString())
-                    .put("category", record.category)
-                    .put("message", record.message)
-                    .put("source", entry.tag))
-            }
-        }))
+        return dispatchSharedLocal(
+            request,
+            "/api/success-records",
+            JSONObject()
+                .put("accountRef", accountId.toString())
+                .put("accountKey", accountId.toString())
+                .put("limit", limit)
+                .put("category", category)
+                .put("logEntries", JSONArray().apply {
+                    logs.recent(1_500).forEach { entry -> put(rawLogJson(entry)) }
+                })
+        )
     }
 
     private fun automationStatus(request: AssistantApiRequest): AssistantApiResponse {
         val accountId = query(request.path)["sessionId"]?.toLongOrNull()
             ?: return failure(request, 400, "缺少账号")
-        return ok(
+        return dispatchSharedLocal(
             request,
+            "/api/automation/status",
             JSONObject()
                 .put("tasks", automationTasks(accountId))
                 .put("assistantOperations", assistantOperations(accountId))
@@ -657,18 +1149,38 @@ class LocalAssistantApiController(
 
     private fun dismissNotice(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)
-        val key = request.body?.optString("noticeKey")?.trim().orEmpty()
-        if (key.isBlank()) return failure(request, 400, "缺少提示标识")
+        val planned = dispatchSharedLocal(
+            request,
+            "/api/notices/dismiss",
+            request.body ?: JSONObject()
+        )
+        if (planned.status !in 200..299) return planned
+        val key = planned.body.optJSONObject("plan")
+            ?.optJSONObject("write")
+            ?.optString("noticeKey")
+            .orEmpty()
         dismissedNotices.dismiss(account.id, key)
         return ok(request, JSONObject().put("taskOverview", taskOverview(account.id)))
     }
 
-    private fun stateRefresh(request: AssistantApiRequest): AssistantApiResponse {
-        val accountId = query(request.path)["sessionId"]?.toLongOrNull()
-            ?: return failure(request, 400, "缺少账号")
-        val account = accounts.getPublic(accountId) ?: return failure(request, 404, "账号不存在")
-        val session = sessionJson(account)
-        return ok(request, session)
+    private fun brushRecommendedCenter(
+        request: AssistantApiRequest
+    ): AssistantApiResponse {
+        val body = request.body ?: return failure(request, 400, "缺少刷黄推荐中心参数")
+        val account = requireAccount(body)
+        val extra = account.session?.channelExtra.orEmpty()
+        val roleLevel = extra["level"]?.toIntOrNull()
+            ?: jsonObject(extra["roleStateJson"]).optInt("level", 0)
+        return dispatchSharedLocal(
+            request,
+            "/api/brush/recommended-center",
+            JSONObject()
+                .put("generalIds", body.optJSONArray("generalIds") ?: JSONArray())
+                .put("generals", resolvedGenerals(account, extra))
+                .put("fiefs", jsonArray(extra["ownedFiefLocationsJson"]))
+                .put("roleLevel", roleLevel)
+                .put("enforceRoleLevel", true)
+        )
     }
 
     private fun localMap(request: AssistantApiRequest, kind: LocalMapKind): AssistantApiResponse {
@@ -680,11 +1192,23 @@ class LocalAssistantApiController(
             ?: account.serverName.takeIf { it.isNotBlank() }
             ?: return failure(request, 409, "当前账号没有可识别的区服")
         val records = localMaps.list(accountId, serverId, kind)
-        val data = when (kind) {
-            LocalMapKind.BANDIT -> LocalMapApiMapper.bandits(serverId, records, System.currentTimeMillis())
-            LocalMapKind.MINE -> LocalMapApiMapper.mines(serverId, records, System.currentTimeMillis())
+        val route = when (kind) {
+            LocalMapKind.BANDIT -> "/api/maps/bandits"
+            LocalMapKind.MINE -> "/api/maps/mines"
         }
-        return ok(request, data)
+        return dispatchSharedLocal(
+            request,
+            route,
+            JSONObject()
+                .put("serverKey", serverId)
+                .put(
+                    "updatedAt",
+                    records.maxOfOrNull { it.lastValidatedAtMillis } ?: 0L
+                )
+                .put("records", JSONArray().apply {
+                    records.forEach { put(rawLocalMapJson(it)) }
+                })
+        )
     }
 
     private fun accountSettings(request: AssistantApiRequest): AssistantApiResponse {
@@ -914,13 +1438,25 @@ class LocalAssistantApiController(
     private fun taskOverview(accountId: Long): JSONObject {
         val account = accounts.getPublic(accountId)
         val nowMillis = System.currentTimeMillis()
-        val schedulerActive = account?.enabled == true &&
-            AssistantForegroundService.isExecutionOwnerActive()
+        val savedTasksStarted = account?.session?.channelExtra
+            ?.get("savedTasksStarted")
+            .equals("true", ignoreCase = true)
+        val schedulerActive = LocalTaskPresentation.schedulerActive(
+            accountEnabled = account?.enabled == true,
+            savedTasksStarted = savedTasksStarted,
+            executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive(),
+        )
         val statuses = SchedulerTaskOrdering.orderValues(
-            runtimeStatuses.list(accountId),
+            currentRuntimeStatuses(accountId),
             behaviorContract.scheduler
         ) { it.type }
         val latestByKey = LocalTaskPresentation.latestByKey(statuses)
+        val compactDailyStatus = jsonObject(
+            account?.session?.channelExtra?.get("residentDailyTaskStatusJson")
+        ).optJSONObject("daily")
+        val sharedDailyState = jsonObject(
+            account?.session?.channelExtra?.get("residentAutomationStateJson")
+        ).optJSONObject("daily")
         val stack = JSONArray()
         val resident = JSONArray()
         val daily = JSONArray()
@@ -960,16 +1496,21 @@ class LocalAssistantApiController(
             .sortedByDescending { behaviorContract.scheduler.residentPriority[it.key] ?: 0 }
             .forEach { spec ->
                 val status = latestByKey[spec.key]
-                val state = LocalTaskPresentation.schedulerState(status)
+                val state = LocalTaskPresentation.schedulerState(
+                    status,
+                    schedulerActive = schedulerActive,
+                    nowMillis = nowMillis,
+                )
+                val active = LocalTaskPresentation.isActive(status, schedulerActive)
                 resident.put(JSONObject()
                     .put("key", spec.key)
                     .put("name", spec.name)
-                    .put("running", LocalTaskPresentation.isActive(status))
-                    .put("status", if (LocalTaskPresentation.isActive(status)) "running" else "idle")
+                    .put("running", active)
+                    .put("status", if (active) "running" else if (status == null) "idle" else "stopped")
                     .put("schedulerState", state)
                     .put("schedulerMessage", UserFacingTextLocalizer.localize(status?.message.orEmpty()))
                     .put("schedulerPriority", behaviorContract.scheduler.residentPriority[spec.key] ?: 0)
-                    .put("schedulerRunnable", status?.state == TaskRuntimeState.RUNNING)
+                    .put("schedulerRunnable", schedulerActive && status?.state == TaskRuntimeState.RUNNING)
                     .put("schedulerNextCheckAt", status?.nextRunAtMillis ?: JSONObject.NULL)
                     .put("taskId", status?.let { "android-$accountId-${spec.key}" } ?: JSONObject.NULL)
                     .put("updatedAt", status?.updatedAtMillis ?: JSONObject.NULL))
@@ -978,15 +1519,60 @@ class LocalAssistantApiController(
             val status = latestByKey[spec.key]
             val completionKey = requireNotNull(spec.completionKey)
             val completed = dailyStats.isCompleted(accountId, completionKey)
+            val compactState = compactDailyStatus?.optJSONObject(spec.key)
+            val sharedState = sharedDailyState?.optJSONObject(spec.key)
+            val sharedSkipped = (compactState ?: sharedState)
+                ?.optBoolean("skipped", false) == true &&
+                (compactState ?: sharedState)?.optString("lastState") == "completed"
+            val skipped = status?.skipped == true || sharedSkipped
+            val sharedStatusText = (compactState ?: sharedState)?.optString("statusText")
+                ?.takeIf(String::isNotBlank)
+            val sharedSkipReason = (compactState ?: sharedState)?.optString("skipReason")
+                ?.takeIf(String::isNotBlank)
+            val sharedMessage = (compactState ?: sharedState)?.optString("lastMessage")
+                ?.takeIf(String::isNotBlank)
+            val sharedNextRunAt = (compactState ?: sharedState)?.optLong("nextWakeAtMillis")
+                ?.takeIf { value ->
+                    (compactState ?: sharedState)?.has("nextWakeAtMillis") == true &&
+                        (compactState ?: sharedState)?.isNull("nextWakeAtMillis") != true &&
+                        value > 0L
+                }
+            val terminal = completed || skipped
             daily.put(
                 JSONObject()
                     .put("key", spec.key)
                     .put("name", spec.name)
-                    .put("completed", completed)
-                    .put("statusText", if (completed) "已做" else "未做")
-                    .put("state", LocalTaskPresentation.schedulerState(status, completed))
-                    .put("message", UserFacingTextLocalizer.localize(status?.message.orEmpty()))
-                    .put("nextRunAt", status?.nextRunAtMillis ?: JSONObject.NULL)
+                    .put("completed", completed || skipped)
+                    .put(
+                        "statusText",
+                        status?.statusText?.takeIf(String::isNotBlank)
+                            ?: sharedStatusText
+                            ?: if (completed) "已做" else "未做"
+                    )
+                    .put("skipped", skipped)
+                    .put(
+                        "skipReason",
+                        status?.skipReason ?: sharedSkipReason ?: JSONObject.NULL
+                    )
+                    .put(
+                        "state",
+                        LocalTaskPresentation.schedulerState(
+                            status,
+                            terminal,
+                            schedulerActive = schedulerActive,
+                            nowMillis = nowMillis,
+                        ),
+                    )
+                    .put("message", UserFacingTextLocalizer.localize(
+                        status?.statusText?.takeIf(String::isNotBlank)
+                            ?: sharedStatusText
+                            ?: sharedMessage
+                            ?: status?.message.orEmpty()
+                    ))
+                    .put(
+                        "nextRunAt",
+                        status?.nextRunAtMillis ?: sharedNextRunAt ?: JSONObject.NULL
+                    )
                     .put("updatedAt", status?.updatedAtMillis ?: JSONObject.NULL)
             )
         }
@@ -995,10 +1581,7 @@ class LocalAssistantApiController(
             .put("updatedAt", nowMillis)
             .put(
                 "savedTasksStarted",
-                account?.enabled == true &&
-                    account.session?.channelExtra?.get("savedTasksStarted")
-                        .equals("true", ignoreCase = true) &&
-                    AssistantForegroundService.isExecutionOwnerActive()
+                schedulerActive
             )
             .put("taskStack", stack)
             .put("resident", resident)
@@ -1007,20 +1590,42 @@ class LocalAssistantApiController(
     }
 
     private fun automationTasks(accountId: Long): JSONArray {
-        val taskLogs = logs.recent(40)
+        val taskLogs = logs.recent(400, LogAudience.USER)
             .filter { it.accountId == accountId }
+            .take(40)
             .asReversed()
             .map {
+                // No localization pass here: a USER line was already written as a
+                // sentence by whoever knew what happened. Rewriting it by substring
+                // can only damage it -- that rule set turns "examine mineral vein"
+                // into "exa打矿 打矿ral vein".
                 "[${SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(Date(it.timeMillis))}] " +
-                    UserFacingTextLocalizer.localize(it.message)
+                    it.message
             }
-        val statuses = runtimeStatuses.list(accountId).sortedByDescending { it.updatedAtMillis }
+        val account = accounts.getPublic(accountId)
+        val schedulerActive = LocalTaskPresentation.schedulerActive(
+            accountEnabled = account?.enabled == true,
+            savedTasksStarted = account?.session?.channelExtra
+                ?.get("savedTasksStarted")
+                .equals("true", ignoreCase = true),
+            executionOwnerActive = AssistantForegroundService.isExecutionOwnerActive(),
+        )
+        val statuses = currentRuntimeStatuses(accountId)
+            .filterNot { LocalTaskPresentation.isRetiredRuntimeType(it.type) }
+            .sortedByDescending { it.updatedAtMillis }
         return JSONArray().apply {
             statuses.forEach { status ->
                 val spec = LocalTaskPresentation.spec(status.type)
-                val publicStatus = when (status.state) {
-                    TaskRuntimeState.STOPPED, TaskRuntimeState.SERVICE_STOPPED -> "stopped"
-                    TaskRuntimeState.ERROR, TaskRuntimeState.NEED_RELOGIN -> "error"
+                val publicStatus = when {
+                    !schedulerActive -> "stopped"
+                    status.state in setOf(
+                        TaskRuntimeState.STOPPED,
+                        TaskRuntimeState.SERVICE_STOPPED,
+                    ) -> "stopped"
+                    status.state in setOf(
+                        TaskRuntimeState.ERROR,
+                        TaskRuntimeState.NEED_RELOGIN,
+                    ) -> "error"
                     else -> "running"
                 }
                 put(
@@ -1030,7 +1635,13 @@ class LocalAssistantApiController(
                         .put("type", spec.key)
                         .put("name", spec.name)
                         .put("status", publicStatus)
-                        .put("schedulerState", LocalTaskPresentation.schedulerState(status))
+                        .put(
+                            "schedulerState",
+                            LocalTaskPresentation.schedulerState(
+                                status,
+                                schedulerActive = schedulerActive,
+                            ),
+                        )
                         .put("message", UserFacingTextLocalizer.localize(status.message))
                         .put("createdAt", status.updatedAtMillis)
                         .put("updatedAt", status.updatedAtMillis)
@@ -1087,11 +1698,21 @@ class LocalAssistantApiController(
         }
     }
 
+    private fun currentRuntimeStatuses(
+        accountId: Long,
+    ): List<com.example.dwpmclone.domain.scheduler.TaskRuntimeStatus> =
+        LocalTaskPresentation.forExecutionGeneration(
+            runtimeStatuses.list(accountId),
+            AssistantForegroundService.currentExecutionGeneration(),
+        )
+
     private fun runtimeNotices(
         accountId: Long,
-        statuses: List<com.example.dwpmclone.domain.scheduler.TaskRuntimeStatus> = runtimeStatuses.list(accountId)
+        statuses: List<com.example.dwpmclone.domain.scheduler.TaskRuntimeStatus>
     ): JSONArray = JSONArray().apply {
-        statuses.filter {
+        statuses.filterNot {
+            LocalTaskPresentation.isRetiredRuntimeType(it.type)
+        }.filter {
             it.state in setOf(
                 TaskRuntimeState.STOPPED,
                 TaskRuntimeState.ERROR,
@@ -1115,7 +1736,7 @@ class LocalAssistantApiController(
             }
         }
         accountConnectionNotice(accountId)?.let(::put)
-        logDerivedNotices(accountId).forEach(::put)
+        logDerivedNotices(accountId, statuses).forEach(::put)
     }
 
     private fun accountConnectionNotice(accountId: Long): JSONObject? {
@@ -1147,7 +1768,10 @@ class LocalAssistantApiController(
             .put("updatedAt", occurrence)
     }
 
-    private fun logDerivedNotices(accountId: Long): List<JSONObject> {
+    private fun logDerivedNotices(
+        accountId: Long,
+        statuses: List<com.example.dwpmclone.domain.scheduler.TaskRuntimeStatus>,
+    ): List<JSONObject> {
         val active = linkedMapOf<String, Pair<LocalTaskPresentationSpec, TaskLogEntry>>()
         logs.recent(200)
             .filter { it.accountId == accountId }
@@ -1161,7 +1785,8 @@ class LocalAssistantApiController(
                         active.remove(spec.key)
                 }
             }
-        val terminalKeys = runtimeStatuses.list(accountId)
+        val terminalKeys = statuses
+            .filterNot { LocalTaskPresentation.isRetiredRuntimeType(it.type) }
             .filter { it.state in setOf(TaskRuntimeState.STOPPED, TaskRuntimeState.ERROR, TaskRuntimeState.NEED_RELOGIN) }
             .map { LocalTaskPresentation.spec(it.type).key }
             .toSet()
@@ -1211,8 +1836,8 @@ class LocalAssistantApiController(
                     "dungeon" -> "DUNGEON"
                     "ministry" -> "SIX_MINISTRIES"
                     "formations" -> "FORMATION"
-                    "generalMaintenance" -> "GENERAL"
-                    "autoDomestic" -> "INTERNAL"
+                    "general" -> "GENERAL"
+                    "domestic" -> "INTERNAL"
                     "inventory" -> "INVENTORY"
                     else -> spec.key.uppercase(Locale.ROOT)
                 }
@@ -1250,8 +1875,20 @@ class LocalAssistantApiController(
         }
     }
 
-    private fun dailyStatsJson(accountId: Long): JSONObject = dailyStats.stats(accountId).let {
-        JSONObject().put("brushYellowCount", it.brushYellowCount).put("dungeonCount", it.dungeonCount)
+    private fun dailyStatsJson(accountId: Long): JSONObject {
+        val fallback = dailyStats.stats(accountId)
+        val extra = accounts.getPublic(accountId)?.session?.channelExtra.orEmpty()
+        val projected = SharedResidentDailyCountProjection.project(
+            residentDailyCountsJson = extra["residentDailyCountsJson"],
+            residentConfigJson = extra["residentAutomationConfigJson"],
+            residentStateJson = extra["residentAutomationStateJson"],
+            fallbackBrushYellowCount = fallback.brushYellowCount,
+            fallbackDungeonCount = fallback.dungeonCount,
+            nowMillis = System.currentTimeMillis(),
+        )
+        return JSONObject()
+            .put("brushYellowCount", projected.brushYellowCount)
+            .put("dungeonCount", projected.dungeonCount)
     }
 
     private fun setSavedTasksStarted(
@@ -1304,10 +1941,16 @@ class LocalAssistantApiController(
             mapping.configs[LocalSettingsConfigMapper.MINISTRIES]
                 ?.optBoolean("supportedEnabled", false) == true
             )
-        "/api/settings/save" -> if (body.optString("scope") == "brush") {
-            "brushYellow" to !mapping.disabled
-        } else {
-            null
+        "/api/settings/save" -> when (body.optString("scope")) {
+            "brush" -> "brushYellow" to !mapping.disabled
+            "common.alarm" -> {
+                val alarm = mapping.configs[LocalSettingsConfigMapper.ALARM]
+                "alarm" to (
+                    alarm?.optBoolean("incomingEnabled", false) == true ||
+                        alarm?.optBoolean("militaryEnabled", false) == true
+                    )
+            }
+            else -> null
         }
         else -> null
     }
@@ -1318,18 +1961,55 @@ class LocalAssistantApiController(
         return accounts.get(id) ?: throw IllegalArgumentException("账号不存在")
     }
 
-    private fun logJson(entry: TaskLogEntry, id: Long, system: Boolean): JSONObject {
-        val message = UserFacingTextLocalizer.localize(entry.message)
+    private fun dispatchSharedLocal(
+        request: AssistantApiRequest,
+        route: String,
+        body: JSONObject
+    ): AssistantApiResponse {
+        val dispatched = sharedPythonCore.dispatch(
+            request.method,
+            route,
+            body,
+            JSONObject()
+                .put("requestId", request.id)
+                .put("source", "android-webview")
+                .put("platform", "android")
+        )
+        return AssistantApiResponse(
+            request.id,
+            dispatched.optInt("status", 500),
+            dispatched.optJSONObject("body") ?: JSONObject()
+        )
+    }
+
+    /** Raw local facts only; filtering, localization and success recognition belong to Python. */
+    private fun rawLogJson(entry: TaskLogEntry): JSONObject {
         return JSONObject()
-            .put("id", id)
+            .put("id", entry.id)
             .put("time", entry.timeMillis)
             .put("timeText", formatTime(entry.timeMillis))
-            .put("level", if (message.contains("失败") || message.contains("异常") || message.contains("错误")) "error" else "info")
-            .put("source", entry.tag)
-            .put("sessionId", entry.accountId?.toString() ?: "")
-            .put("accountKey", if (system) entry.accountId?.let { "账号$it" }.orEmpty() else "")
-            .put("message", message)
+            .put("tag", entry.tag)
+            .put("message", entry.message)
+            .put("accountId", entry.accountId ?: JSONObject.NULL)
+            .put("successCategory", entry.successCategory ?: JSONObject.NULL)
+            .put("successMessage", entry.successMessage ?: JSONObject.NULL)
     }
+
+    /** Storage facts only; TTL, filtering, labels and public fields belong to Python. */
+    private fun rawLocalMapJson(
+        record: com.example.dwpmclone.domain.localmap.LocalMapTargetRecord
+    ): JSONObject = JSONObject()
+        .put("targetId", record.targetId)
+        .put("x", record.coordinate.x)
+        .put("y", record.coordinate.y)
+        .put("type", record.type)
+        .put("level", record.level ?: JSONObject.NULL)
+        .put("filterFields", JSONObject(record.filterFields))
+        .put("firstDiscoveredAtMillis", record.firstDiscoveredAtMillis)
+        .put("lastValidatedAtMillis", record.lastValidatedAtMillis)
+        .put("invalidatedAtMillis", record.invalidatedAtMillis ?: JSONObject.NULL)
+        .put("invalidReason", record.invalidReason ?: JSONObject.NULL)
+        .put("active", record.active)
 
     private fun formatTime(timeMillis: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date(timeMillis))

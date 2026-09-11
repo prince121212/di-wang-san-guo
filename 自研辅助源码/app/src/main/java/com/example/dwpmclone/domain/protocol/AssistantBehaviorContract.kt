@@ -118,12 +118,39 @@ data class AssistantBehaviorContract(
                         scheduler.getBoolean("waitStatePersistsAcrossProcess"),
                     dayBoundaryUsesContractTimezone =
                         scheduler.getBoolean("dayBoundaryUsesContractTimezone"),
-                    ministryPollMillis = scheduler.getLong("ministryPollMillis")
+                    ministryPollMillis = scheduler.getLong("ministryPollMillis"),
+                    generalMaintenancePollMillis =
+                        scheduler.getLong("generalMaintenancePollMillis"),
+                    domesticPollMillis = scheduler.getLong("domesticPollMillis"),
+                    inventoryPollMillis = scheduler.getLong("inventoryPollMillis"),
+                    inventoryActionDelayMillis = scheduler.getLong("inventoryActionDelayMillis"),
+                    inventoryVerificationRetryMillis = scheduler.getLong("inventoryVerificationRetryMillis"),
+                    inventoryVerificationTimeoutMillis = scheduler.getLong("inventoryVerificationTimeoutMillis"),
+                    inventoryMaxActionsPerCycle = scheduler.getInt("inventoryMaxActionsPerCycle"),
+                    inventoryMaxOpenPerCycle = scheduler.getInt("inventoryMaxOpenPerCycle"),
+                    alarmPollMillis = scheduler.getLong("alarmPollMillis"),
+                    alarmNotificationRetryMillis = scheduler.getLong("alarmNotificationRetryMillis"),
+                    alarmFingerprintLimit = scheduler.getInt("alarmFingerprintLimit"),
+                    alarmErrorDedupeMillis = scheduler.getLong("alarmErrorDedupeMillis")
                 ).also { it.validate() },
                 accountLifecycle = AccountLifecycleBehaviorContract(
                     startedRequiresExecutionOwner = accountLifecycle.getBoolean("startedRequiresExecutionOwner"),
                     startRunsFreshLogin = accountLifecycle.getBoolean("startRunsFreshLogin"),
                     heartbeatIntervalMillis = accountLifecycle.getLong("heartbeatIntervalMillis"),
+                    sessionValidationIntervalMillis =
+                        accountLifecycle.getLong("sessionValidationIntervalMillis"),
+                    sessionProbeReadTimeoutMillis =
+                        accountLifecycle.getLong("sessionProbeReadTimeoutMillis"),
+                    sessionStateFallbackReadTimeoutMillis =
+                        accountLifecycle.getLong("sessionStateFallbackReadTimeoutMillis"),
+                    probeFailurePauseThreshold =
+                        accountLifecycle.getInt("probeFailurePauseThreshold"),
+                    probeFailureReloginThreshold =
+                        accountLifecycle.getInt("probeFailureReloginThreshold"),
+                    degradedProbeRetryMillis =
+                        accountLifecycle.getLong("degradedProbeRetryMillis"),
+                    successfulResponseRefreshMinIntervalMillis =
+                        accountLifecycle.getLong("successfulResponseRefreshMinIntervalMillis"),
                     statusText = accountStatusText.keys().asSequence().associateWith(accountStatusText::getString)
                 ).also { it.validate() },
                 dailySchedule = DailyScheduleBehaviorContract(
@@ -252,6 +279,12 @@ data class AssistantBehaviorContract(
                     fullRequestLimit = mapSearch.getInt("fullRequestLimit"),
                     preparationBatchSize = mapSearch.getInt("preparationBatchSize"),
                     idleScanBatchSize = mapSearch.getInt("idleScanBatchSize"),
+                    interRequestDelayMillis = mapSearch.getLong("interRequestDelayMillis"),
+                    interRequestJitterMillis = mapSearch.getLong("interRequestJitterMillis"),
+                    readOnlyRequestTimeoutMillis = mapSearch.getLong("readOnlyRequestTimeoutMillis"),
+                    readOnlyTransportMaxAttempts = mapSearch.getInt("readOnlyTransportMaxAttempts"),
+                    readOnlyRetryBaseDelayMillis = mapSearch.getLong("readOnlyRetryBaseDelayMillis"),
+                    readOnlyRetryJitterMillis = mapSearch.getLong("readOnlyRetryJitterMillis"),
                     scanCoordinateCacheTtlMillis = mapSearch.getLong("scanCoordinateCacheTtlMillis"),
                     targetCacheTtlMillis = mapSearch.getLong("targetCacheTtlMillis"),
                     filters = mapSearch.getJSONArray("filters").stringList()
@@ -477,7 +510,19 @@ data class SchedulerBehaviorContract(
     val observationRefreshMayRunBetweenLanes: Boolean,
     val waitStatePersistsAcrossProcess: Boolean,
     val dayBoundaryUsesContractTimezone: Boolean,
-    val ministryPollMillis: Long
+    val ministryPollMillis: Long,
+    val generalMaintenancePollMillis: Long,
+    val domesticPollMillis: Long,
+    val inventoryPollMillis: Long,
+    val inventoryActionDelayMillis: Long,
+    val inventoryVerificationRetryMillis: Long,
+    val inventoryVerificationTimeoutMillis: Long,
+    val inventoryMaxActionsPerCycle: Int,
+    val inventoryMaxOpenPerCycle: Int,
+    val alarmPollMillis: Long,
+    val alarmNotificationRetryMillis: Long,
+    val alarmFingerprintLimit: Int,
+    val alarmErrorDedupeMillis: Long
 ) {
     fun residentKey(type: TaskType): String? = when (type) {
         TaskType.AUTO_MINING, TaskType.MINE_SEARCH, TaskType.MINE_PREFETCH -> "mine"
@@ -485,7 +530,11 @@ data class SchedulerBehaviorContract(
         TaskType.SHUA_HUANG, TaskType.BANDIT_PREFETCH -> "brushYellow"
         TaskType.AUTO_LOOT -> "raid"
         TaskType.DUNGEON -> "dungeon"
+        TaskType.GENERAL -> "general"
         TaskType.SIX_MINISTRIES -> "ministry"
+        TaskType.INTERNAL -> "domestic"
+        TaskType.INVENTORY -> "inventory"
+        TaskType.ALARM -> "alarm"
         else -> null
     }
 
@@ -503,8 +552,8 @@ data class SchedulerBehaviorContract(
         require(!formationPrerequisiteRunsFirst) {
             "global formation batch must stay disabled; expedition preparation is task-scoped"
         }
-        require(!dailyFeaturesRunBeforeResidents) {
-            "daily features must not delay due military work"
+        require(dailyFeaturesRunBeforeResidents) {
+            "daily features must run before resident work"
         }
         require(militaryLaneRunsBeforeIdleLane) { "military lane must run before idle lane" }
         require(expeditionPreparationIsTaskScoped) {
@@ -519,33 +568,70 @@ data class SchedulerBehaviorContract(
         require(waitStatePersistsAcrossProcess) { "scheduler wait state must survive process restart" }
         require(dayBoundaryUsesContractTimezone) { "scheduler day boundary must use contract timezone" }
         require(ministryPollMillis > 0L) { "scheduler ministry poll interval must be positive" }
+        require(generalMaintenancePollMillis > 0L) {
+            "scheduler general-maintenance poll interval must be positive"
+        }
+        require(domesticPollMillis > 0L) {
+            "scheduler domestic poll interval must be positive"
+        }
+        require(inventoryPollMillis > 0L && inventoryActionDelayMillis > 0L) {
+            "scheduler inventory intervals must be positive"
+        }
+        require(inventoryVerificationRetryMillis > 0L &&
+            inventoryVerificationTimeoutMillis >= inventoryVerificationRetryMillis
+        ) { "scheduler inventory verification interval is invalid" }
+        require(inventoryMaxActionsPerCycle > 0 && inventoryMaxOpenPerCycle > 0) {
+            "scheduler inventory cycle limits must be positive"
+        }
+        require(alarmPollMillis > 0L && alarmNotificationRetryMillis > 0L) {
+            "scheduler alarm intervals must be positive"
+        }
+        require(alarmFingerprintLimit > 0 && alarmErrorDedupeMillis > 0L) {
+            "scheduler alarm dedupe limits must be positive"
+        }
     }
 
     companion object {
         private val REQUIRED_RESIDENTS = setOf(
-            "mine", "lossless", "brushYellow", "raid", "dungeon", "ministry"
+            "mine", "lossless", "brushYellow", "raid", "dungeon", "general", "ministry", "domestic", "inventory", "alarm"
         )
 
         fun defaults(): SchedulerBehaviorContract = SchedulerBehaviorContract(
             residentPriority = linkedMapOf(
-                "mine" to 400,
-                "lossless" to 300,
-                "brushYellow" to 200,
+                "lossless" to 400,
+                "mine" to 300,
+                "dungeon" to 200,
+                "brushYellow" to 150,
                 "raid" to 125,
-                "dungeon" to 100,
-                "ministry" to 50
+                "general" to 75,
+                "ministry" to 50,
+                "domestic" to 40,
+                "inventory" to 25,
+                "alarm" to 20
             ),
             sameGeneralMutualExclusionRequired = true,
             onlyRunnableResidentBlocksLowerPriority = true,
             formationPrerequisiteRunsFirst = false,
-            dailyFeaturesRunBeforeResidents = false,
+            dailyFeaturesRunBeforeResidents = true,
             militaryLaneRunsBeforeIdleLane = true,
             expeditionPreparationIsTaskScoped = true,
             idleLaneMustYieldToDueMilitaryWork = true,
             observationRefreshMayRunBetweenLanes = true,
             waitStatePersistsAcrossProcess = true,
             dayBoundaryUsesContractTimezone = true,
-            ministryPollMillis = 600_000L
+            ministryPollMillis = 600_000L,
+            generalMaintenancePollMillis = 600_000L,
+            domesticPollMillis = 600_000L,
+            inventoryPollMillis = 3_600_000L,
+            inventoryActionDelayMillis = 1_000L,
+            inventoryVerificationRetryMillis = 10_000L,
+            inventoryVerificationTimeoutMillis = 60_000L,
+            inventoryMaxActionsPerCycle = 50,
+            inventoryMaxOpenPerCycle = 50,
+            alarmPollMillis = 30_000L,
+            alarmNotificationRetryMillis = 30_000L,
+            alarmFingerprintLimit = 200,
+            alarmErrorDedupeMillis = 300_000L
         )
     }
 }
@@ -554,11 +640,33 @@ data class AccountLifecycleBehaviorContract(
     val startedRequiresExecutionOwner: Boolean,
     val startRunsFreshLogin: Boolean,
     val heartbeatIntervalMillis: Long,
+    val sessionValidationIntervalMillis: Long,
+    val sessionProbeReadTimeoutMillis: Long,
+    val sessionStateFallbackReadTimeoutMillis: Long,
+    val probeFailurePauseThreshold: Int,
+    val probeFailureReloginThreshold: Int,
+    val degradedProbeRetryMillis: Long,
+    val successfulResponseRefreshMinIntervalMillis: Long,
     val statusText: Map<String, String>
 ) {
     fun validate() {
         require(heartbeatIntervalMillis > 0L) {
             "account lifecycle heartbeat interval must be positive"
+        }
+        require(sessionValidationIntervalMillis >= heartbeatIntervalMillis) {
+            "session validation interval must not be shorter than heartbeat"
+        }
+        require(sessionProbeReadTimeoutMillis > 0L && sessionStateFallbackReadTimeoutMillis > 0L) {
+            "session probe timeouts must be positive"
+        }
+        require(probeFailurePauseThreshold >= 2 && degradedProbeRetryMillis > 0L) {
+            "session probe degradation policy is invalid"
+        }
+        require(probeFailureReloginThreshold > probeFailurePauseThreshold) {
+            "persistent probe failure relogin threshold must exceed pause threshold"
+        }
+        require(successfulResponseRefreshMinIntervalMillis > 0L) {
+            "successful response refresh interval must be positive"
         }
         require(statusText.keys.containsAll(REQUIRED_STATUSES)) {
             "account lifecycle statusText must define ${REQUIRED_STATUSES.joinToString()}"
@@ -575,6 +683,13 @@ data class AccountLifecycleBehaviorContract(
             startedRequiresExecutionOwner = true,
             startRunsFreshLogin = true,
             heartbeatIntervalMillis = 20_000L,
+            sessionValidationIntervalMillis = 60_000L,
+            sessionProbeReadTimeoutMillis = 8_000L,
+            sessionStateFallbackReadTimeoutMillis = 20_000L,
+            probeFailurePauseThreshold = 3,
+            probeFailureReloginThreshold = 4,
+            degradedProbeRetryMillis = 5_000L,
+            successfulResponseRefreshMinIntervalMillis = 5_000L,
             statusText = mapOf(
                 "online" to "开启",
                 "checking" to "检测中",
@@ -888,6 +1003,12 @@ data class MapSearchBehaviorContract(
     val fullRequestLimit: Int,
     val preparationBatchSize: Int,
     val idleScanBatchSize: Int,
+    val interRequestDelayMillis: Long,
+    val interRequestJitterMillis: Long,
+    val readOnlyRequestTimeoutMillis: Long,
+    val readOnlyTransportMaxAttempts: Int,
+    val readOnlyRetryBaseDelayMillis: Long,
+    val readOnlyRetryJitterMillis: Long,
     val scanCoordinateCacheTtlMillis: Long,
     val targetCacheTtlMillis: Long,
     val filters: List<String>
@@ -908,6 +1029,15 @@ data class MapSearchBehaviorContract(
         }
         require(preparationBatchSize in 1..nearbyRequestLimit && idleScanBatchSize in 1..preparationBatchSize) {
             "map-search batch sizes are invalid"
+        }
+        require(interRequestDelayMillis >= 0L && interRequestJitterMillis >= 0L) {
+            "map-search pacing values must not be negative"
+        }
+        require(readOnlyRequestTimeoutMillis > 0L && readOnlyTransportMaxAttempts in 1..3) {
+            "map-search read-only retry limits are invalid"
+        }
+        require(readOnlyRetryBaseDelayMillis >= 0L && readOnlyRetryJitterMillis >= 0L) {
+            "map-search retry delays must not be negative"
         }
         require(scanCoordinateCacheTtlMillis > 0L && targetCacheTtlMillis >= scanCoordinateCacheTtlMillis) {
             "map-search cache TTL values are invalid"
@@ -930,8 +1060,14 @@ data class MapSearchBehaviorContract(
             world = MapWorldBehaviorContract.defaults(),
             nearbyRequestLimit = 80,
             fullRequestLimit = 384,
-            preparationBatchSize = 10,
+            preparationBatchSize = 5,
             idleScanBatchSize = 1,
+            interRequestDelayMillis = 200L,
+            interRequestJitterMillis = 150L,
+            readOnlyRequestTimeoutMillis = 12_000L,
+            readOnlyTransportMaxAttempts = 2,
+            readOnlyRetryBaseDelayMillis = 750L,
+            readOnlyRetryJitterMillis = 500L,
             scanCoordinateCacheTtlMillis = 120_000L,
             targetCacheTtlMillis = 1_800_000L,
             filters = REQUIRED_FILTERS.toList()

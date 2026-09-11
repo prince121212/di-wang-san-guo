@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dwpm-cloud-shared-data",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none"
+  },
+  "routes": [
+    {
+      "pattern": "dwpm-data.292828.xyz",
+      "custom_domain": true
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "SHARED_ACCOUNT_THRESHOLD": "2",
+    "PRESENCE_TTL_MILLIS": "90000",
+    "SCAN_FRESH_MILLIS": "120000",
+    "SCAN_LEASE_MILLIS": "45000",
+    "TARGET_LEASE_MILLIS": "600000",
+    "REJECT_RETRY_MILLIS": "120000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dwpm-cloud-shared-data",
+      "database_id": "79d65a8e-4559-4745-a9fd-d5c017cd6dd2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

@@ -4,7 +4,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ResidentTaskActivationPolicyTest {
-    private val residents = setOf("mine", "lossless", "brushYellow", "raid", "dungeon", "ministry")
+    private val residents = setOf(
+        "mine", "lossless", "brushYellow", "raid", "dungeon",
+        "general", "ministry", "domestic",
+    )
 
     @Test
     fun legacyStartedSessionWithoutExplicitFieldRestoresAllResidents() {

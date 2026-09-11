@@ -6,7 +6,7 @@
     content="default-src 'self'; object-src 'none'; base-uri 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'" />
   <meta id="viewportMeta" name="viewport" content="width=1080, maximum-scale=3.0, user-scalable=yes" />
   <title>帝王三国电脑端辅助</title>
-  <link rel="stylesheet" href="./styles.css?v=V0.0.15" />
+  <link rel="stylesheet" href="./styles.css?v=V0.0.19" />
 </head>
 <body>
   <div class="desktop-toolbar" id="desktopToolbar">
@@ -79,6 +79,16 @@
                 <div class="request-health-dots" id="requestHealthDots" aria-label="当前账号最近30次游戏请求状态"></div>
               </section>
 
+              <!-- Operation tracking stays active, but this internal status tray is not user-facing. -->
+              <section id="networkOperationTray" class="network-operation-tray page-hidden" hidden
+                aria-hidden="true" aria-live="polite" aria-label="网络操作状态">
+                <header>
+                  <b>网络操作</b>
+                  <span id="networkOperationSummary"></span>
+                </header>
+                <div id="networkOperationList" class="network-operation-list"></div>
+              </section>
+
               <nav class="top-tabs" id="topTabs"></nav>
 
               <section class="workspace">
@@ -135,6 +145,14 @@
                   <span class="other-entry-copy">
                     <b>副本攻略</b>
                     <small>出征条件、开箱说明与 7 章 86 关完整目录</small>
+                  </span>
+                  <span class="other-entry-arrow" aria-hidden="true">›</span>
+                </button>
+                <button class="other-entry-button page-hidden" id="openBackgroundSettingsGuideBtn" type="button">
+                  <span class="other-entry-icon background-settings-guide-icon" aria-hidden="true">权</span>
+                  <span class="other-entry-copy">
+                    <b>后台运行设置</b>
+                    <small id="backgroundPermissionEntryStatus">检查 Android 标准权限，并引导确认厂商后台策略</small>
                   </span>
                   <span class="other-entry-arrow" aria-hidden="true">›</span>
                 </button>
@@ -207,6 +225,39 @@
                   <button id="backToGuideArticleListBtn" class="reference-list-back" type="button">← 返回攻略列表</button>
                   <h3 id="guideArticleDetailTitle">攻略详情</h3>
                   <div id="guideArticleDetailBody" class="reference-article-body"></div>
+                </section>
+              </article>
+
+              <article id="backgroundSettingsGuide" class="page-hidden dungeon-guide background-settings-guide">
+                <header class="dungeon-guide-head">
+                  <button id="closeBackgroundSettingsGuideBtn" class="guide-back-button" type="button" aria-label="返回攻略页">‹</button>
+                  <div>
+                    <h2>后台运行设置</h2>
+                    <p>保证息屏后任务、网络与自动重登持续运行</p>
+                  </div>
+                </header>
+                <section class="guide-lead background-permission-lead">
+                  <span id="backgroundPermissionOverall" class="guide-status permission-status-checking">正在检测</span>
+                  <p id="backgroundPermissionSummary">正在读取这台手机的实际授权状态…</p>
+                  <button id="refreshBackgroundPermissionsBtn" class="reference-primary-button" type="button">重新检测</button>
+                </section>
+                <section class="guide-section background-permission-explanation">
+                  <h3>为什么必须设置</h3>
+                  <p>前台服务只保证进程优先级，不会自动获得 Doze 网络豁免，也不能覆盖厂商的进程清理策略。辅助按业务截止时间短时唤醒，并用持久化状态在进程重启后恢复；厂商后台策略仍需用户明确允许。</p>
+                  <p>部分系统会按时间表关闭 WLAN（小米叫“睡眠模式”）。App 无法直接读取厂商开关状态，请在上方“省电模式 / 睡眠模式”一项中点击“查看设置”并手动确认已关闭。</p>
+                </section>
+                <section id="backgroundPermissionList" class="background-permission-list" aria-live="polite">
+                  <div class="background-permission-loading">正在检测…</div>
+                </section>
+                <section class="guide-section guide-warning background-permission-steps">
+                  <h3>正式版用户设置顺序</h3>
+                  <ol class="guide-check-list">
+                    <li>允许通知，确保托管通知和“停止托管”入口可见。</li>
+                    <li>允许忽略电池优化，这是息屏后连续请求游戏服的必要条件。</li>
+                    <li>如需更准时的业务截止时间，可允许精确闹钟；未授权时仍可托管，但系统可能延迟唤醒，任务会依靠持久化状态恢复。</li>
+                    <li>如果系统提供厂商后台限制/自启动开关，请将本应用设为允许后台运行；不同品牌名称可能不同。</li>
+                    <li>返回本页点击“重新检测”，必要权限通过后再开始执行任务。</li>
+                  </ol>
                 </section>
               </article>
 
@@ -596,7 +647,7 @@
     </section>
   </main>
 
-  <script src="./assistant-api.js?v=V0.0.15"></script>
-  <script src="./app.js?v=V0.0.15"></script>
+  <script src="./assistant-api.js?v=V0.0.19"></script>
+  <script src="./app.js?v=V0.0.19"></script>
 </body>
 </html>

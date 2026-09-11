@@ -56,6 +56,10 @@ HOST_LOGIN_STATES = {
     STOPPED: "REAL_PROTOCOL_STOPPED",
 }
 
+DEFAULT_PROBE_FAILURE_PAUSE_THRESHOLD = 3
+DEFAULT_PROBE_FAILURE_RELOGIN_THRESHOLD = 4
+DEFAULT_DEGRADED_PROBE_RETRY_MILLIS = 5_000
+
 
 def reduce_account_event(
     state: Mapping[str, Any],
@@ -205,13 +209,92 @@ def reduce_account_event(
         return output
 
     if normalized_event == EVENT_PROBE_UNAVAILABLE:
+        pause_threshold = max(
+            2,
+            int(
+                observed.get("probeFailurePauseThreshold")
+                or DEFAULT_PROBE_FAILURE_PAUSE_THRESHOLD
+            ),
+        )
+        degraded_retry_millis = max(
+            1,
+            int(
+                observed.get("degradedProbeRetryMillis")
+                or DEFAULT_DEGRADED_PROBE_RETRY_MILLIS
+            ),
+        )
+        relogin_threshold = max(
+            pause_threshold + 1,
+            int(
+                observed.get("probeFailureReloginThreshold")
+                or DEFAULT_PROBE_FAILURE_RELOGIN_THRESHOLD
+            ),
+        )
+        if (
+            current_login == ONLINE
+            and session_present
+            and failure_count < pause_threshold
+        ):
+            # A timeout is absence of liveness evidence, not evidence that a
+            # previously valid Session has expired. Keep the account usable
+            # while two short confirmation attempts run; explicit Android
+            # connectivity loss still uses EVENT_NETWORK_UNAVAILABLE and
+            # pauses immediately.
+            output.update(
+                desiredStarted=True,
+                loginState=HOST_LOGIN_STATES[ONLINE],
+                liveSessionUsable=True,
+                failureKind=failure_kind,
+                failureCount=failure_count,
+                nextRetryAtMillis=now + degraded_retry_millis,
+                lastError=message,
+                nextOperation="probe-degraded",
+            )
+            return output
+        if (
+            session_present
+            and failure_kind == "network"
+            and failure_count >= relogin_threshold
+        ):
+            # Android connectivity and a reachable TCP port do not prove that
+            # an authenticated game HTTP session is still capable of serving
+            # requests. After one full paused retry also fails, probing the
+            # same half-dead session cannot create new evidence. Scheduler
+            # actions are already stopped, so a credential-backed fresh login
+            # is the only progress-making and replay-safe recovery operation.
+            output.update(
+                desiredStarted=True,
+                loginState=HOST_LOGIN_STATES[NEED_RELOGIN],
+                sessionCredentialPresent=True,
+                liveSessionUsable=False,
+                failureKind=failure_kind,
+                failureCount=failure_count,
+                nextRetryAtMillis=now + degraded_retry_millis,
+                lastError=message,
+                nextOperation="login",
+                sessionSecretAction="retain",
+            )
+            return output
+        # The first failure which actually pauses the account starts at the
+        # first network backoff step. The two degraded confirmation attempts
+        # must not turn that first pause into the old ten-minute third step.
+        pause_failure_count = max(
+            1,
+            failure_count - pause_threshold + 1,
+        )
         output.update(
             desiredStarted=True,
             loginState=HOST_LOGIN_STATES[NETWORK_PAUSED],
             liveSessionUsable=False,
             failureKind=failure_kind,
             failureCount=failure_count,
-            nextRetryAtMillis=retry_at,
+            nextRetryAtMillis=(
+                now
+                + reconnect_delay_millis(
+                    failure_kind,
+                    pause_failure_count,
+                )
+            ),
             lastError=message,
             nextOperation="probe",
         )

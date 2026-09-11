@@ -27,7 +27,7 @@ class SavedConfigTaskPlanFactoryTest {
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
         assertTrue(plan.tasks.none { it.type == TaskType.FORMATION })
-        assertEquals(listOf(TaskType.STATE_REFRESH), plan.tasks.map { it.type })
+        assertEquals(emptyList<TaskType>(), plan.tasks.map { it.type })
     }
 
     @Test
@@ -152,7 +152,7 @@ class SavedConfigTaskPlanFactoryTest {
 
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
 
-        assertEquals(listOf(TaskType.STATE_REFRESH), plan.tasks.map { it.type })
+        assertEquals(emptyList<TaskType>(), plan.tasks.map { it.type })
     }
 
     @Test
@@ -479,7 +479,7 @@ class SavedConfigTaskPlanFactoryTest {
         val plan = SavedConfigTaskPlanFactory.plan(123L, export)
 
         assertEquals(
-            listOf(TaskType.STATE_REFRESH, TaskType.SIX_MINISTRIES),
+            listOf(TaskType.SIX_MINISTRIES),
             plan.tasks.map { it.type }
         )
         val task = plan.tasks.single { it.type == TaskType.SIX_MINISTRIES } as SixMinistriesTask

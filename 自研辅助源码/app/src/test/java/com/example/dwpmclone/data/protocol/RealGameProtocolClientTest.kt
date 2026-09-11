@@ -30,29 +30,6 @@ class RealGameProtocolClientTest {
     }
 
     @Test
-    fun parseAreaLineReadsPassportFields() {
-        val line = "1`351`周年服351区(新服)`http://game.example`http://res.example`1660606`1660000`open`http://update`flag`client`qzone_351"
-
-        val area = client.parseAreaLine(line)
-
-        assertNotNull(area)
-        assertEquals("周年服351区(新服)", area!!.areaName)
-        assertEquals("qzone_351", area.serverKey)
-        assertEquals("http://game.example", area.serverUrl)
-    }
-
-    @Test
-    fun selectAreaSupportsNameAndServerKey() {
-        val areas = listOf(
-            client.parseAreaLine("1`350`周年服350区`http://g350`http://r`1`1`open`u`f`c`qzone_350")!!,
-            client.parseAreaLine("1`351`周年服351区(新服)`http://g351`http://r`1`1`open`u`f`c`qzone_351")!!
-        )
-
-        assertEquals("qzone_351", client.selectArea(areas, "周年服351区").serverKey)
-        assertEquals("周年服350区", client.selectArea(areas, "qzone_350").areaName)
-    }
-
-    @Test
     fun parse8004HeadReadsRoleStatePrefix() {
         val payload = packet8004Head()
 

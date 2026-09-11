@@ -1,4 +1,5 @@
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -7,6 +8,36 @@ plugins {
 }
 
 val generatedAssistantAssets = layout.buildDirectory.dir("generated/assistantWebAssets")
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.isFile }
+        ?.inputStream()?.use { load(it) }
+}
+fun macosCloudRuntimeToken(): String {
+    val security = file("/usr/bin/security")
+    if (!security.isFile) return ""
+    return runCatching {
+        val process = ProcessBuilder(
+            security.absolutePath,
+            "find-generic-password",
+            "-s",
+            "dwpm-cloud-shared-data-runtime-token",
+            "-w"
+        ).redirectErrorStream(true).start()
+        val value = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (process.waitFor() == 0) value else ""
+    }.getOrDefault("")
+}
+fun cloudSetting(name: String): String {
+    val configured = localProperties.getProperty(name) ?: System.getenv(name)
+    if (!configured.isNullOrBlank()) return configured.trim()
+    return when (name) {
+        "DWPM_CLOUD_SHARED_DATA_URL" -> "https://dwpm-data.292828.xyz"
+        "DWPM_CLOUD_SHARED_DATA_TOKEN" -> macosCloudRuntimeToken()
+        else -> ""
+    }
+}
+fun buildConfigString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 val sharedCoreRoot = rootProject.layout.projectDirectory.dir("../shared_core")
 val sharedPythonSource = sharedCoreRoot.dir("python")
 val generatedSharedPythonBundle = layout.buildDirectory.dir("generated/sharedPythonBundle")
@@ -93,8 +124,18 @@ android {
         applicationId = "com.example.dwpmclone"
         minSdk = 24
         targetSdk = 36
-        versionCode = 16
-        versionName = "V0.0.16"
+        versionCode = 72
+        versionName = "V0.0.72"
+        buildConfigField(
+            "String",
+            "CLOUD_SHARED_DATA_URL",
+            buildConfigString(cloudSetting("DWPM_CLOUD_SHARED_DATA_URL"))
+        )
+        buildConfigField(
+            "String",
+            "CLOUD_SHARED_DATA_TOKEN",
+            buildConfigString(cloudSetting("DWPM_CLOUD_SHARED_DATA_TOKEN"))
+        )
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
@@ -103,6 +144,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     sourceSets.getByName("main").assets.srcDir(generatedAssistantAssets)

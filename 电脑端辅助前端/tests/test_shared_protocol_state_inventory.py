@@ -22,7 +22,13 @@ from dwpm_core.features.generals import (
     parse_idle_army_from_8004,
     parse_military_intel_from_a110,
 )
-from dwpm_core.features.inventory import parse_8104_inventory
+from dwpm_core.features.inventory import (
+    AUTO_OPEN_ITEM_NAMES,
+    DEFAULT_ITEM_NAMES,
+    inventory_reward_log_text,
+    parse_8104_inventory,
+    plan_open_one_inventory,
+)
 from dwpm_core.protocol.wire import parse_response
 
 
@@ -135,6 +141,76 @@ class SharedStateInventoryProtocolTests(unittest.TestCase):
             equipment["strengthen"],
             expected["equipmentStrengthen"],
         )
+        # Weapon templates use typeCode=0; zero is valid metadata and must
+        # not be mistaken for a missing value by the fail-closed cleaner.
+        self.assertTrue(equipment["equipmentMetadataComplete"])
+
+    def test_packaged_item_catalog_and_unknown_ids_keep_fixed_alignment(self) -> None:
+        self.assertEqual(len(DEFAULT_ITEM_NAMES), 758)
+        self.assertEqual(DEFAULT_ITEM_NAMES[432], "凝魂晶石")
+        self.assertEqual(DEFAULT_ITEM_NAMES[575], "疾风符")
+        self.assertEqual(DEFAULT_ITEM_NAMES[709], "将印")
+
+        rows = [(709, 2), (1000, 3)]
+        payload = (
+            b"\x00" * 14
+            + (1256).to_bytes(2, "big")
+            + len(rows).to_bytes(2, "big")
+            + b"".join(
+                item_id.to_bytes(2, "big")
+                + count.to_bytes(2, "big")
+                + b"\x00" * 8
+                for item_id, count in rows
+            )
+            + b"\x00\x00"
+        )
+
+        inventory = parse_8104_inventory(payload)
+
+        self.assertNotIn("parseError", inventory)
+        self.assertEqual(
+            inventory["layout"],
+            "u16-id-u16-count-reserved8-table",
+        )
+        self.assertEqual(
+            [row["itemId"] for row in inventory["items"]],
+            [709, 1000],
+        )
+        self.assertEqual(
+            [row["name"] for row in inventory["items"]],
+            ["将印", "道具#1000"],
+        )
+        self.assertEqual(inventory["unknownItemIds"], [1000])
+        self.assertTrue(all(
+            row["layout"] == "u16-id-u16-count-reserved8"
+            for row in inventory["items"]
+        ))
+
+    def test_manual_open_plan_and_reward_text_are_shared(self) -> None:
+        inventory = {
+            "items": [
+                {"itemId": 58, "name": "青铜宝箱", "count": 3},
+                {"itemId": 59, "name": "青铜钥匙", "count": 1},
+            ],
+        }
+
+        plan = plan_open_one_inventory(inventory, " 青铜宝箱 ")
+
+        self.assertIn("青铜宝箱", AUTO_OPEN_ITEM_NAMES)
+        self.assertEqual(plan["itemId"], 58)
+        self.assertEqual(plan["openCount"], 1)
+        self.assertEqual(plan["requiredKey"], "青铜钥匙")
+        self.assertEqual(
+            inventory_reward_log_text("<br/>铜钱+1000;<b>粮食+2</b>;"),
+            "铜钱+1000；粮食+2",
+        )
+        with self.assertRaisesRegex(ValueError, "缺少青铜钥匙"):
+            plan_open_one_inventory(
+                {"items": [{"itemId": 58, "name": "青铜宝箱", "count": 3}]},
+                "青铜宝箱",
+            )
+        with self.assertRaisesRegex(ValueError, "不在自动开箱允许范围"):
+            plan_open_one_inventory(inventory, "未授权道具")
 
     def test_live_inventory_capture_matches_desktop_adapter(self) -> None:
         fixture = self.fixtures["inventory8104LiveCapture"]
@@ -151,6 +227,7 @@ class SharedStateInventoryProtocolTests(unittest.TestCase):
             quality_names=SERVER.EQUIPMENT_QUALITY_NAMES,
         )
         desktop = SERVER.parse_8104_inventory(payload)
+        packaged = parse_8104_inventory(payload)
 
         self.assertEqual(desktop, shared)
         self.assertEqual(
@@ -160,6 +237,27 @@ class SharedStateInventoryProtocolTests(unittest.TestCase):
         self.assertEqual(
             len(shared["equipment"]),
             fixture["expected"]["equipmentCount"],
+        )
+        self.assertNotIn("parseError", packaged)
+        self.assertEqual(
+            [
+                (row["itemId"], row["name"], row["count"])
+                for row in packaged["items"]
+            ],
+            [
+                (row["itemId"], row["name"], row["count"])
+                for row in desktop["items"]
+            ],
+        )
+        self.assertEqual(
+            [
+                (row["instanceId"], row["templateId"], row["name"])
+                for row in packaged["equipment"]
+            ],
+            [
+                (row["instanceId"], row["templateId"], row["name"])
+                for row in desktop["equipment"]
+            ],
         )
 
 

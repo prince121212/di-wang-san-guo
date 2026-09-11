@@ -18,7 +18,7 @@ class AssistantApiExecutionLanesTest {
         val contract = JSONObject(sourceContract())
         val classifier = AssistantApiLaneClassifier.fromContract(contract)
 
-        assertEquals(55, classifier.routeCount)
+        assertEquals(56, classifier.routeCount)
         assertEquals(29, classifier.networkOperationRouteCount)
         assertEquals(
             AssistantApiExecutionLane.LOCAL_READ,
@@ -29,8 +29,18 @@ class AssistantApiExecutionLanesTest {
             classifier.laneFor(request("POST", "/api/settings/save"))
         )
         assertEquals(
+            AssistantApiExecutionLane.LOCAL_WRITE,
+            classifier.laneFor(request("POST", "/api/brush/recommended-center"))
+        )
+        assertEquals(
             AssistantApiExecutionLane.NETWORK_OPERATION,
             classifier.laneFor(request("GET", "/api/military/intel?sessionId=1"))
+        )
+        assertEquals(
+            AssistantApiExecutionLane.NETWORK_OPERATION,
+            classifier.laneFor(
+                request("POST", "/api/formations/apply", "accountRef" to "1")
+            )
         )
         assertEquals(
             AssistantApiExecutionLane.NETWORK_OPERATION,

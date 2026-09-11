@@ -71,13 +71,15 @@ class SchedulerPriorityParityTest {
 
         assertEquals(
             listOf(
+                // Military lane follows the operator-requested resident
+                // priority: 无损 > 打矿 > 副本 > 刷黄 > 掠夺.
                 TaskType.FORMATION,
                 TaskType.FORMATION,
-                TaskType.AUTO_MINING,
                 TaskType.LOSSLESS,
+                TaskType.AUTO_MINING,
+                TaskType.DUNGEON,
                 TaskType.SHUA_HUANG,
                 TaskType.AUTO_LOOT,
-                TaskType.DUNGEON,
                 TaskType.STATE_REFRESH,
                 TaskType.MINE_PREFETCH,
                 TaskType.BANDIT_PREFETCH,
@@ -88,7 +90,8 @@ class SchedulerPriorityParityTest {
         )
         assertEquals(
             listOf(2L, 1L),
-            ordered.filterIsInstance<FormationUpdateTask>().map { it.config.formationId }
+            ordered.filterIsInstance<FormationPriorityStubTask>()
+                .map { it.config.formationId }
         )
     }
 
@@ -211,7 +214,7 @@ class SchedulerPriorityParityTest {
         assertTrue(reports.isEmpty())
     }
 
-    private fun formationTask(accountId: Long, formationId: Long) = FormationUpdateTask(
+    private fun formationTask(accountId: Long, formationId: Long) = FormationPriorityStubTask(
         accountId,
         FormationConfig(
             formationId = formationId,
@@ -222,6 +225,22 @@ class SchedulerPriorityParityTest {
             fillToMaxWhenAutoAssignDisabled = false
         )
     )
+}
+
+private class FormationPriorityStubTask(
+    override val accountId: Long,
+    override val config: FormationConfig,
+) : AssistantTask<FormationConfig> {
+    override val type: TaskType = TaskType.FORMATION
+
+    override suspend fun prepare(ctx: TaskContext): TaskDecision = TaskDecision.Continue
+
+    override suspend fun step(ctx: TaskContext): TaskDecision = TaskDecision.Sleep(1_000L)
+
+    override suspend fun recover(ctx: TaskContext, error: Throwable): TaskDecision =
+        TaskDecision.RetryAfter(1_000L)
+
+    override suspend fun stop(ctx: TaskContext, reason: String) = Unit
 }
 
 private class PriorityStubTask(

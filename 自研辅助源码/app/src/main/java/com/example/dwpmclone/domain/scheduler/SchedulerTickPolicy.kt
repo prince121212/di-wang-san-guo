@@ -4,8 +4,8 @@ package com.example.dwpmclone.domain.scheduler
 object SchedulerTickPolicy {
     const val MIN_DELAY_MILLIS = 1_000L
     const val ACTIVE_FALLBACK_MILLIS = 5_000L
-    const val CONTINUOUS_WAKE_THRESHOLD_MILLIS = 60_000L
     const val MAX_IDLE_DELAY_MILLIS = 5L * 60L * 1_000L
+    const val OVERDUE_LOG_THRESHOLD_MILLIS = 5_000L
 
     fun nextDelayMillis(
         nowMillis: Long,
@@ -19,6 +19,6 @@ object SchedulerTickPolicy {
         return if (ranWork) ACTIVE_FALLBACK_MILLIS else MAX_IDLE_DELAY_MILLIS
     }
 
-    fun requiresContinuousWakeLock(delayMillis: Long): Boolean =
-        delayMillis <= CONTINUOUS_WAKE_THRESHOLD_MILLIS
+    /** Every scheduled deadline, including an immediate one, gets a system watchdog. */
+    fun shouldArmAlarmWatchdog(delayMillis: Long): Boolean = delayMillis > 0L
 }

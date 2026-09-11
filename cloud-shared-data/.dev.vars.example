@@ -1,0 +1,4 @@
+CLIENT_API_TOKEN=replace-with-a-random-runtime-token
+ADMIN_USERNAME=1608600
+ADMIN_PASSWORD=replace-with-admin-password
+ADMIN_SESSION_SECRET=replace-with-at-least-32-random-characters

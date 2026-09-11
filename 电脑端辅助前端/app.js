@@ -59,11 +59,13 @@ let activeMainPage = "助手";
 let activeOtherView = "home";
 let pickerOpen = false;
 let saveSettingsInFlight = false;
+let heroTableRefreshPending = false;
 let treasureSearchQuery = "";
 let successRecordType = "military";
 let nativeFamousGenerals = null;
 let nativeGuideArticles = null;
 let nativeOpenServerVersions = null;
+let backgroundPermissionActionPending = "";
 const urlParams = new URLSearchParams(window.location.search);
 const isEmbeddedContainer = urlParams.get("embedded") === "1";
 const isMobileLocal = urlParams.get("mobile") === "1";
@@ -91,6 +93,7 @@ if (isMobileLocal) {
   // 手机端只承载一个与电脑端容器同源的辅助界面，不提供电脑端总控/地图入口或 IP 管理。
   document.getElementById("desktopToolbar")?.remove();
   document.querySelector(".proxy-line")?.remove();
+  document.getElementById("openBackgroundSettingsGuideBtn")?.classList.remove("page-hidden");
 }
 if (isStarterContainer) {
   document.body.classList.add("starter-container-mode");
@@ -147,7 +150,7 @@ const appState = {
     dailyLimit: 500, cycleDelaySec: 10, returnWaitSec: 0, healWounded: true, replenishTroops: false,
     autoEnergy: true, energyThreshold: 20, foodToCopper: true, copperFloorWan: 1,
     cleanMail: false, cleanInventory: false, discardItemNames: "",
-    discardEquipment: false, maxEquipmentQuality: "良好", maxEquipmentLevel: 20,
+    discardEquipment: false, maxEquipmentQuality: "良好", discardEquipmentQualities: ["普通", "良好"], maxEquipmentLevel: 20,
     autoOpenEnabled: false, autoOpenItemNames: [],
     domestic: {
       enabled: false, emptyBuildingType: 1, upgradeBuildings: true,
@@ -184,7 +187,16 @@ const appState = {
 };
 
 let runtimeLog = "";
+let runtimeLogLines = [];
+// Account logs can contain thousands of lines. Keep a tiny render version so
+// page navigation does not rebuild both log panes when the log did not change.
+let runtimeLogLineCount = 0;
+let accountLogRenderVersion = 0;
+let renderedAccountLogVersion = -1;
+let renderedAccountLogLineCount = -1;
 let toastTimer = null;
+const visibleNetworkOperations = new Map();
+const networkOperationCancelInFlight = new Set();
 let systemLogTimer = null;
 let systemLogHasLoaded = false;
 let systemLogCursorId = 0;
@@ -208,6 +220,22 @@ const technologyNames = [
   "铸铁技术", "甲胄制造", "药草研究", "阵法技巧", "抛射技巧", "驾驭技巧",
   "战车设计", "统帅能力", "信仰", "仓储", "安置", "格斗", "精准", "驯马", "精工", "悬赏",
 ];
+
+function replaceRuntimeLog(nextValue) {
+  const next = String(nextValue || "");
+  if (runtimeLog === next) return false;
+  runtimeLog = next;
+  runtimeLogLines = next ? next.split("\n") : [];
+  runtimeLogLineCount = runtimeLogLines.length;
+  accountLogRenderVersion += 1;
+  return true;
+}
+
+function accountLogSelectionRenderKey() {
+  return accountLogSelectionStart
+    ? `${accountLogSelectionStart.index}\u001f${accountLogSelectionStart.text}`
+    : "";
+}
 
 function updateContainerCount() {
   const el = document.getElementById("containerCount");
@@ -486,6 +514,21 @@ function fmtProgress(current, target, fallback = "-") {
 function selectedAccount() {
   return (appState.accounts || []).find(a => String(a.sessionId) === String(appState.sessionId)) || null;
 }
+function normalizeDailyCount(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
+function normalizeDailyStats(stats) {
+  return {
+    brushYellowCount: normalizeDailyCount(stats?.brushYellowCount),
+    dungeonCount: normalizeDailyCount(stats?.dungeonCount),
+  };
+}
+function dailyStatsForAccount(acc) {
+  // 每日次数属于账号本地账本的公开投影，不依赖实时游戏 session 是否存在。
+  // 顶层投影是账号级唯一事实源；session 内字段仅用于兼容旧服务响应。
+  return normalizeDailyStats(acc?.dailyStats || acc?.session?.dailyStats);
+}
 function hasLiveDisplayForCurrentAccount() {
   return !!appState.displayDataSessionId && String(appState.displayDataSessionId) === String(appState.sessionId);
 }
@@ -494,6 +537,7 @@ function applyAccountRecordMeta(acc) {
   appState.sessionId = acc.sessionId || appState.sessionId || null;
   appState.username = acc.username || appState.username || "";
   appState.area = { areaName: acc.areaName || appState.area?.areaName || "" };
+  appState.dailyStats = dailyStatsForAccount(acc);
   ensureAccountLogLoaded(appState.sessionId);
 }
 function accountStatusClass(status) {
@@ -843,6 +887,9 @@ async function loadAreaCatalog(preferred = "", platform = "") {
     const res = await fetch(`/api/areas?${query}`, { cache: "no-store" });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "区服目录读取失败");
+    if (!Array.isArray(data.areas) || !data.areas.length) {
+      throw new Error(data.error || `${selectedPlatform}云端区服目录暂不可用`);
+    }
     appState.areaCatalog = data.areas || [];
     appState.areaCatalogUpdatedAt = data.updatedAt || null;
     renderLoginAreaOptions(preferred, selectedPlatform);
@@ -1053,7 +1100,7 @@ function defaultBrushSettings() {
     dailyLimit: 500, cycleDelaySec: 10, returnWaitSec: 0, healWounded: true, replenishTroops: false,
     autoEnergy: true, energyThreshold: 20, foodToCopper: true, copperFloorWan: 1,
     cleanMail: false, cleanInventory: false, discardItemNames: "",
-    discardEquipment: false, maxEquipmentQuality: "良好", maxEquipmentLevel: 20,
+    discardEquipment: false, maxEquipmentQuality: "良好", discardEquipmentQualities: ["普通", "良好"], maxEquipmentLevel: 20,
     autoOpenEnabled: false, autoOpenItemNames: [],
     domestic: {
       enabled: false, emptyBuildingType: 1, upgradeBuildings: true,
@@ -1103,7 +1150,7 @@ function applyServerHabits(data) {
       "startHour", "reconnectDelayMinutes", "dailyLimit", "cycleDelaySec", "returnWaitSec", "healWounded", "replenishTroops",
       "autoEnergy", "energyThreshold", "foodToCopper", "copperFloorWan",
       "cleanMail", "cleanInventory", "discardItemNames",
-      "discardEquipment", "maxEquipmentQuality", "maxEquipmentLevel", "autoOpenEnabled", "autoOpenItemNames"
+      "discardEquipment", "maxEquipmentQuality", "discardEquipmentQualities", "maxEquipmentLevel", "autoOpenEnabled", "autoOpenItemNames"
     ].forEach(k => {
       if (cfg[k] !== undefined) next[k] = cfg[k];
     });
@@ -1185,7 +1232,7 @@ function applySessionData(data, { restoreUi = true } = {}) {
   appState.militaryIntel = data.militaryIntel || { events: [], statusByName: {} };
   appState.militarySnapshot = data.militarySnapshot || { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
   appState.dailyActivity = data.dailyActivity || {};
-  appState.dailyStats = data.dailyStats || { brushYellowCount: 0, dungeonCount: 0 };
+  appState.dailyStats = normalizeDailyStats(data.dailyStats);
   appState.unresolvedGeneralIds = Array.isArray(data.unresolvedGeneralIds)
     ? [...new Set(data.unresolvedGeneralIds.map(id => String(id)))]
     : [];
@@ -1223,7 +1270,7 @@ function applyAccountRecord(acc, { restoreUi = true } = {}) {
   appState.militaryIntel = { events: [], statusByName: {} };
   appState.militarySnapshot = { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
   appState.dailyActivity = {};
-  appState.dailyStats = { brushYellowCount: 0, dungeonCount: 0 };
+  appState.dailyStats = dailyStatsForAccount(acc);
   appState.roleQueueSummary = {};
   appState.generalVisitCandidates = [];
   appState.generalVisitCandidatesAccountId = null;
@@ -1244,6 +1291,17 @@ function applyAccountRecord(acc, { restoreUi = true } = {}) {
     snapshotCurrentAccountUi();
   }
   ensureAccountLogLoaded(appState.sessionId);
+}
+
+function applyAccountSnapshot(acc, { restoreUi = true } = {}) {
+  if (acc?.session) {
+    applySessionData({
+      ...acc.session,
+      dailyStats: dailyStatsForAccount(acc),
+    }, { restoreUi });
+    return;
+  }
+  applyAccountRecord(acc, { restoreUi });
 }
 
 function renderTabs() {
@@ -1383,12 +1441,33 @@ function normalizeCopperFloor(value) {
   const amount = Number(value);
   return copperFloorOptions.includes(amount) ? amount : 1;
 }
+const equipmentQualityNames = ["普通", "良好", "优秀", "卓越"];
+// The page used to expose one ceiling ("良好" meant 良好 and everything below).
+// Records saved before the set existed are expanded the same way, so an old
+// account keeps discarding exactly what it did before.
+function normalizeEquipmentQualities(selected, ceiling) {
+  if (Array.isArray(selected)) {
+    const wanted = new Set(normalizePolicyNames(selected));
+    return equipmentQualityNames.filter(name => wanted.has(name));
+  }
+  const index = equipmentQualityNames.indexOf(ceiling || "良好");
+  return equipmentQualityNames.slice(0, (index >= 0 ? index : 1) + 1);
+}
+function equipmentQualityCeiling(selected, fallback = "良好") {
+  const names = normalizeEquipmentQualities(selected, fallback);
+  return names.length ? names[names.length - 1] : fallback;
+}
 function inventoryItemNameOptions(selected = []) {
   return [...discardItemOptions];
 }
-function policyMultiSummary(selected) {
+function policyMultiSummary(selected, key = "") {
   const names = normalizePolicyNames(selected);
   if (!names.length) return "未选择";
+  if (key === "discard-equipment-qualities") {
+    // Four fixed entries: name them all rather than "等N项", which hides
+    // exactly the information this control exists to show.
+    return names.length >= equipmentQualityNames.length ? "全部品质" : names.join("、");
+  }
   if (names.length <= 2) return names.join("、");
   return `${names.slice(0, 2).join("、")} 等${names.length}项`;
 }
@@ -1403,7 +1482,7 @@ function policyMultiHtml(selected, options, key, extraClass = "") {
       </label>`).join("")
     : `<div class="policy-multi-empty">角色宝物列表为空</div>`;
   return `<div class="policy-multi ${extraClass}" data-policy="${escAttr(key)}">
-    <button class="policy-multi-summary" type="button">${escHtml(policyMultiSummary(selectedNames))}</button>
+    <button class="policy-multi-summary" type="button">${escHtml(policyMultiSummary(selectedNames, key))}</button>
     <div class="policy-multi-panel">
       <input class="policy-multi-search" type="text" placeholder="搜索物品">
       <div class="policy-multi-actions"><button class="policy-multi-all" type="button">全选</button><button class="policy-multi-clear" type="button">清除</button></div>
@@ -1642,10 +1721,10 @@ function renderCommon() {
     <div class="design-page common-design-page">
       <div class="design-card design-setting-card">
         ${designRow("丢弃物品：", policyMultiHtml(b.discardItemNames, inventoryItemNameOptions(b.discardItemNames), "discard-items"))}
-        ${designRow("丢弃装备：", `<input id="discardEquipment" class="design-check" type="checkbox" ${b.discardEquipment ? "checked" : ""}><select id="maxEquipmentQuality" class="design-select w-short">${simpleOptionsHtml(["普通","良好","优秀","卓越"], b.maxEquipmentQuality || "良好")}</select><span>等级&lt;</span><input id="maxEquipmentLevel" class="design-input num-compact" type="number" min="1" max="100" value="${escAttr(b.maxEquipmentLevel ?? 20)}">`)}
+        ${designRow("丢弃装备：", `<input id="discardEquipment" class="design-check" type="checkbox" ${b.discardEquipment ? "checked" : ""}>${policyMultiHtml(normalizeEquipmentQualities(b.discardEquipmentQualities, b.maxEquipmentQuality), equipmentQualityNames, "discard-equipment-qualities", "policy-multi-compact")}<span>等级&lt;</span><input id="maxEquipmentLevel" class="design-input num-compact" type="number" min="1" max="100" value="${escAttr(b.maxEquipmentLevel ?? 20)}">`)}
         ${designRow("自动开箱：", `<input id="autoOpenEnabled" class="design-check" type="checkbox" ${b.autoOpenEnabled ? "checked" : ""}>${policyMultiHtml(b.autoOpenItemNames, autoOpenItemOptions, "auto-open-items")}`)}
       </div>
-      ${note("不丢强化、炼魂、80级以上装备<br/>青铜宝箱和精铁宝箱需要对应钥匙")}
+      ${note("丢弃装备可多选品质；只处理宝库中未穿戴、未强化、未炼魂且低于设定等级的装备，80级以上与名将装备始终保留<br/>青铜宝箱和精铁宝箱需要对应钥匙")}
     </div>`;
   if (activeSide === "连体物品") {
     const chain = { ...defaultBrushSettings().chainInventory, ...(b.chainInventory || {}) };
@@ -2007,7 +2086,8 @@ function buildCommonSettingsPatch(side = activeSide) {
       cleanInventory: discardItemNames.length > 0 || discardEquipment,
       discardItemNames: discardItemNames.join("，"),
       discardEquipment,
-      maxEquipmentQuality: document.getElementById("maxEquipmentQuality")?.value || "良好",
+      discardEquipmentQualities: normalizeEquipmentQualities(readPolicyMultiValues("discard-equipment-qualities") || [], "良好"),
+      maxEquipmentQuality: equipmentQualityCeiling(readPolicyMultiValues("discard-equipment-qualities") || [], "良好"),
       maxEquipmentLevel: Math.max(1, Math.min(100, Number(document.getElementById("maxEquipmentLevel")?.value || 20))),
       autoOpenEnabled: !!document.getElementById("autoOpenEnabled")?.checked,
       autoOpenItemNames,
@@ -2072,13 +2152,16 @@ function saveSharedAutomationDom() {
   const autoOpenNames = readPolicyMultiValues("auto-open-items");
   const autoOpenEnabled = document.getElementById("autoOpenEnabled");
   const discardEquipment = document.getElementById("discardEquipment");
-  const maxEquipmentQuality = document.getElementById("maxEquipmentQuality");
+  const discardQualities = readPolicyMultiValues("discard-equipment-qualities");
   const maxEquipmentLevel = document.getElementById("maxEquipmentLevel");
   if (discardNames !== null) b.discardItemNames = discardNames.join("，");
   if (autoOpenNames !== null) b.autoOpenItemNames = autoOpenNames;
   if (autoOpenEnabled) b.autoOpenEnabled = !!autoOpenEnabled.checked;
   if (discardEquipment) b.discardEquipment = !!discardEquipment.checked;
-  if (maxEquipmentQuality) b.maxEquipmentQuality = maxEquipmentQuality.value || "良好";
+  if (discardQualities !== null) {
+    b.discardEquipmentQualities = normalizeEquipmentQualities(discardQualities, "良好");
+    b.maxEquipmentQuality = equipmentQualityCeiling(discardQualities, "良好");
+  }
   if (maxEquipmentLevel) b.maxEquipmentLevel = Number(maxEquipmentLevel.value || 20);
   if (discardNames !== null || discardEquipment) {
     b.cleanInventory = normalizePolicyNames(b.discardItemNames).length > 0 || !!b.discardEquipment;
@@ -2359,9 +2442,12 @@ function brushRowsForDesign() {
   }];
 }
 function formationRowsForDesign() {
-  const grouped = [];
-  const bySetting = new Map();
-  (appState.formations || []).forEach(row => {
+  // Each persisted row is an independent formation rule. Do not merge rows
+  // merely because troop type/count are equal: two different formations may
+  // intentionally use the same troops (for example 智步4/智步6 and 骑1/骑2
+  // both using 99 强弩兵). Merging them hides the second rule and makes a
+  // later save operate on a different general set than the persisted config.
+  return (appState.formations || []).map(row => {
     const normalized = {
       enabled: !!row.enabled,
       generalIds: rowGeneralIds(row),
@@ -2371,28 +2457,8 @@ function formationRowsForDesign() {
         ...(row.generalNameSnapshots || {}),
       },
     };
-    // Blank placeholders stay independent; configured rows with identical
-    // troop type/count/enabled state share one multi-general picker.
-    if (!normalized.generalIds.length) {
-      grouped.push({ ...normalized, generalId: "" });
-      return;
-    }
-    const key = `${normalized.enabled ? 1 : 0}|${normalized.soldierType}|${normalized.soldierCount}`;
-    const existing = bySetting.get(key);
-    if (existing) {
-      existing.generalIds = [...new Set([...existing.generalIds, ...normalized.generalIds])];
-      existing.generalId = existing.generalIds[0] || "";
-      existing.generalNameSnapshots = {
-        ...(existing.generalNameSnapshots || {}),
-        ...normalized.generalNameSnapshots,
-      };
-      return;
-    }
-    const next = { ...normalized, generalId: normalized.generalIds[0] || "" };
-    bySetting.set(key, next);
-    grouped.push(next);
+    return { ...normalized, generalId: normalized.generalIds[0] || "" };
   });
-  return grouped;
 }
 function discardActivePageChanges() {
   const saved = appState.accountUiState[appState.sessionId];
@@ -2447,7 +2513,7 @@ function discardActivePageChanges() {
   } else if (activeSide === "主号物品") {
     [
       "cleanInventory", "discardItemNames", "discardEquipment",
-      "maxEquipmentQuality", "maxEquipmentLevel", "autoOpenEnabled", "autoOpenItemNames"
+      "maxEquipmentQuality", "discardEquipmentQualities", "maxEquipmentLevel", "autoOpenEnabled", "autoOpenItemNames"
     ].forEach(key => { current[key] = clone(committed[key]); });
   } else if (activeSide === "连体物品") {
     current.chainInventory = clone(committed.chainInventory);
@@ -2516,7 +2582,8 @@ function buildAutoConfig({ settingsOnly = false } = {}) {
     cleanInventory: !!b.cleanInventory,
     discardItemNames: String(b.discardItemNames || ""),
     discardEquipment: !!b.discardEquipment,
-    maxEquipmentQuality: b.maxEquipmentQuality || "良好",
+    maxEquipmentQuality: equipmentQualityCeiling(b.discardEquipmentQualities, b.maxEquipmentQuality || "良好"),
+    discardEquipmentQualities: normalizeEquipmentQualities(b.discardEquipmentQualities, b.maxEquipmentQuality),
     maxEquipmentLevel: Number(b.maxEquipmentLevel || 20),
     autoOpenItemNames: normalizePolicyNames(b.autoOpenItemNames),
     autoOpenEnabled: !!b.autoOpenEnabled,
@@ -2656,7 +2723,7 @@ function renderMilitary() {
         ${designRow("满兵：", dCheck(lossless.fullTroops === true, "lossless-full-troops"))}
       </div>
       ${designTable(["", "出征将领", "无损等级", "操作"], rows, "military-table lossless-table")}${actionButtons()}
-      ${note("无损是常驻任务，每日最多5次；失败或完成都会消耗1次。按卫兵、小队长、大队长、头目、首领推进。<br/>10级卫兵会自动筛选至少3名战车敌军且投石车排在其他战车之后；共享将领按“无损 > 刷黄 > 副本”由指挥中心安排。")}
+      ${note("无损是常驻任务，每日最多5轮；每轮首次成功出征卫兵即计1次，后续是否通过小队长、大队长、头目和首领都不影响本轮计数。<br/>10级卫兵会自动筛选至少3名战车敌军且投石车排在其他战车之后；共享将领按“无损 > 刷黄 > 副本”由指挥中心安排。")}
     </div>`;
   }
   if (activeSide === "副本") {
@@ -2666,33 +2733,35 @@ function renderMilitary() {
     const sourceRows = savedRows.length
       ? savedRows
       : [{ ...defaultMilitaryFutureSettings().dungeon.rows[0], enabled: false }];
+    // 副本一次只能出征一支编队，所以这一页固定只渲染一条，并且不提供
+    // 添加/复制/删除/一键删除。共用的 actionButtons() 保持原样，刷黄、打矿、
+    // 掠夺等仍然需要多条编队。旧配置若残留多条，这里只取生效的那一条，
+    // 保存后自动归一，不会让用户面对一堆无法使用也无法删除的行。
     const enabledRowIndex = sourceRows.findIndex(row => row.enabled === true);
-    const clearModeRowIndex = dungeon.mode === "clear"
-      ? (enabledRowIndex >= 0 ? enabledRowIndex : 0)
-      : -1;
-    const rows = sourceRows.map((row, i) => {
-      let ids = rowGeneralIds(row);
-      if (!ids.length && i === 0 && appState.generals.length) ids = [String(generalIdAt(0) || "")].filter(Boolean);
-      const chapter = i === clearModeRowIndex
-        ? dungeonClearModeOption
-        : dungeonChapterMeta(row.chapterName || row.chapter || "第四章").value;
-      const stage = normalizeDungeonStage(chapter, row.stage || "5");
-      return [
-        `<input class="design-check dungeon-enabled" type="checkbox" ${i === enabledRowIndex ? "checked" : ""}>`,
-        militaryGeneralMultiHtml(ids, `dungeon-${i}`),
-        dSelect([...dungeonChapters.map(item => item.value), dungeonClearModeOption], chapter, "table-select dungeon-chapter"),
-        `<select class="design-select table-select dungeon-stage" ${dungeonClearModeSelected(chapter) ? "disabled" : ""}>${simpleOptionsHtml(dungeonStageOptions(chapter), stage)}</select>`,
-        dSelect(["左", "中", "右"], row.chest || "右", "table-select dungeon-chest"),
-        `<button class="table-btn dynamic-delete" type="button">删除</button>`
-      ];
-    });
+    const activeRowIndex = enabledRowIndex >= 0 ? enabledRowIndex : 0;
+    const activeRow = sourceRows[activeRowIndex];
+    let dungeonIds = rowGeneralIds(activeRow);
+    if (!dungeonIds.length && appState.generals.length) {
+      dungeonIds = [String(generalIdAt(0) || "")].filter(Boolean);
+    }
+    const dungeonChapter = dungeon.mode === "clear"
+      ? dungeonClearModeOption
+      : dungeonChapterMeta(activeRow.chapterName || activeRow.chapter || "第四章").value;
+    const dungeonStage = normalizeDungeonStage(dungeonChapter, activeRow.stage || "5");
+    const rows = [[
+      `<input class="design-check dungeon-enabled" type="checkbox" ${enabledRowIndex >= 0 ? "checked" : ""}>`,
+      militaryGeneralMultiHtml(dungeonIds, "dungeon-0"),
+      dSelect([...dungeonChapters.map(item => item.value), dungeonClearModeOption], dungeonChapter, "table-select dungeon-chapter"),
+      `<select class="design-select table-select dungeon-stage" ${dungeonClearModeSelected(dungeonChapter) ? "disabled" : ""}>${simpleOptionsHtml(dungeonStageOptions(dungeonChapter), dungeonStage)}</select>`,
+      dSelect(["左", "中", "右"], activeRow.chest || "右", "table-select dungeon-chest"),
+    ]];
     const pauseNote = dungeon.pausedAfterDefeat?.paused
       ? `<br><span class="daily-task-note">上次因战败已暂停：${escHtml(dungeon.pausedAfterDefeat.reason || "战败")}；重新保存本页后才会继续。</span>`
       : "";
     return h`
     <div class="design-page military-design-page dungeon-page">
-      ${designTable(["", "出征将领", "章节", "关卡", "开箱", "操作"], rows, "military-table dungeon-table")}${actionButtons()}
-      ${note(`副本编队同一时间最多启用一条；全部不勾选并保存时关闭副本任务。选择具体章节时循环刷选定关卡；在“章节”选择“${dungeonClearModeOption}”后，“关卡”会同步显示打通模式，并按服务器目录从首个未通关关卡逐关推进。每章最后一关是多人副本，单人无法挑战：关卡列表不提供该关，打通模式会自动跳到下一章第一关（打通倒数第二关会同时解锁本章末关和下一章第一关）。${pauseNote}`)}
+      ${designTable(["", "出征将领", "章节", "关卡", "开箱"], rows, "military-table dungeon-table")}
+      ${note(`副本一次只能出征一支编队，本页固定一条，不需要新增或删除；不勾选并保存时关闭副本任务。选择具体章节时循环刷选定关卡；在“章节”选择“${dungeonClearModeOption}”后，“关卡”会同步显示打通模式，并按服务器目录从首个未通关关卡逐关推进。每章最后一关是多人副本，单人无法挑战：关卡列表不提供该关，打通模式会自动跳到下一章第一关（打通倒数第二关会同时解锁本章末关和下一章第一关）。${pauseNote}`)}
     </div>`;
   }
   if (activeSide === "押镖") {
@@ -3043,12 +3112,24 @@ function renderRole() {
         ],
       };
     });
-    if (!rows.length) return table(["实时英雄数据"], [["当前账号未解析到将领，请重新登录同步"]]);
-    const headers = ["将", "态", "封地", "类", "级", "体", "忠", "统/兵", "兵种"];
+    const headers = ["态", "封地", "类", "级", "体", "忠", "统/兵", "兵种"];
+    const refreshTitle = heroTableRefreshPending
+      ? "正在重新请求英雄和封地数据"
+      : "点击刷新整张英雄表格（包括封地）";
+    const body = rows.length
+      ? rows.map(row => `<tr class="hero-data-row ${row.className}">${row.cells.map(cell => `<td>${cell}</td>`).join("")}</tr>`).join("")
+      : `<tr class="hero-data-empty"><td colspan="${headers.length + 1}">当前账号未解析到将领，可点击左上角《将》重新同步</td></tr>`;
     return `<div class="hero-table-scroll">
       <table class="grid-table hero-data-table">
-        <thead><tr>${headers.map(value => `<th>${value}</th>`).join("")}</tr></thead>
-        <tbody>${rows.map(row => `<tr class="hero-data-row ${row.className}">${row.cells.map(cell => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody>
+        <thead><tr>
+          <th class="hero-refresh-head" scope="col">
+            <button id="refreshHeroTableBtn" class="hero-refresh-head-button ${heroTableRefreshPending ? "is-refreshing" : ""}"
+              type="button" title="${refreshTitle}" aria-label="${refreshTitle}"
+              aria-busy="${heroTableRefreshPending ? "true" : "false"}" ${heroTableRefreshPending ? "disabled" : ""}>将</button>
+          </th>
+          ${headers.map(value => `<th scope="col">${value}</th>`).join("")}
+        </tr></thead>
+        <tbody>${body}</tbody>
       </table>
     </div>`;
   }
@@ -3226,6 +3307,9 @@ function renderRole() {
         <div class="success-record-list">${items || `<div class="success-record-empty">暂无起号记录</div>`}</div>
       </div>`;
     }
+    // 活血丹 is deliberately absent: spending a stock item is bookkeeping, so
+    // it belongs on 政事 next to the other resource records. "加体" stays only
+    // so records written before the two were unified keep their old tab.
     const militaryCategories = new Set([
       "刷黄", "副本", "掠夺", "无损", "打矿", "抢城", "押镖", "寻宝",
       "出征", "治疗", "加体"
@@ -3602,6 +3686,246 @@ function showToast(message, type = "success", duration = 1600) {
     el.classList.add("hidden");
   }, duration);
 }
+
+const networkOperationLabels = Object.freeze({
+  "military/intel": "军情刷新",
+  "state/refresh": "游戏状态刷新",
+  "heartbeat": "账号心跳检查",
+  "daily/general-visit/candidates": "名将拜访候选查询",
+  "raid/fiefs": "掠夺封地查询",
+  "formations/unassign-all": "一键卸兵",
+  "formations/apply": "实际配兵",
+  "troops/assign": "单将配兵",
+  "troops/refill": "补兵",
+  "troops/heal": "伤兵治疗",
+  "inventory/open-one": "打开背包物品",
+  "brush/search": "找黄",
+  "brush/execute": "刷黄出征",
+  "mine/search": "找矿",
+  "mine/execute": "打矿出征",
+  "liubu/hubu/query": "读取户部菜地",
+  "liubu/hubu/plant": "户部批量种植",
+  "daily/sign-in/claim": "每日签到",
+  "daily/arena-coins/claim": "领取竞技币",
+  "daily/donate/claim": "自动捐献",
+  "daily/donate/custom": "自定义捐献",
+  "daily/salary/claim": "领取国家俸禄",
+  "daily/national-collect/claim": "国家征收",
+  "daily/city-lord-collect/claim": "城主征收",
+  "daily/general-visit/candidates": "查询名将候选",
+  "daily/general-visit/claim": "名将拜访",
+  "domestic/query": "读取内政状态",
+  "domestic/action": "执行内政动作",
+});
+
+function networkOperationRoute(operation) {
+  const metadataPath = String(operation?.metadata?.path || "").split("?", 1)[0];
+  if (metadataPath) return metadataPath;
+  const match = /^route:[A-Z]+:(\/api\/[^?]+)/.exec(String(operation?.kind || ""));
+  return match?.[1] || "";
+}
+
+function networkOperationLabel(operation) {
+  const route = networkOperationRoute(operation);
+  const key = route.replace(/^\/api\//, "");
+  return networkOperationLabels[key] || route || "网络操作";
+}
+
+function networkOperationStatusText(operation) {
+  const status = String(operation?.status || "").toUpperCase();
+  const requestSent = operation?.requestSent === true;
+  if (status === "QUEUED") return "等待执行";
+  if (status === "RUNNING") return requestSent ? "等待回执" : "准备中";
+  if (status === "SUCCEEDED") return "已完成";
+  if (status === "FAILED") return "已失败";
+  if (status === "CANCELLED") return "已取消";
+  if (status === "UNCERTAIN") return "回执不明确";
+  if (status === "STATUS_ERROR") return "状态丢失";
+  if (status === "RECOVERING") return "恢复中";
+  return status || "处理中";
+}
+
+function networkOperationMessage(operation) {
+  const status = String(operation?.status || "").toUpperCase();
+  const errorMessage = String(operation?.error?.message || "").trim();
+  const recoveryMessage = String(operation?.recoveryMessage || "").trim();
+  const operationResult = operation?.result && typeof operation.result === "object"
+    ? operation.result
+    : {};
+  const routeResult = operationResult.result && typeof operationResult.result === "object"
+    ? operationResult.result
+    : {};
+  const resultMessage = String(routeResult.message || operationResult.message || "").trim();
+  if (status === "UNCERTAIN") {
+    return errorMessage || "游戏服务器回执不明确，不会自动重发；请先刷新游戏状态确认。";
+  }
+  if (status === "CANCELLED") return "已在发包前取消，未向游戏服务器发送请求。";
+  if (status === "FAILED" || status === "STATUS_ERROR") {
+    return errorMessage || recoveryMessage || "操作未完成。";
+  }
+  if (status === "SUCCEEDED") return resultMessage || "游戏服务器操作已确认完成。";
+  if (operation?.cancellationDenied === "request-already-sent") {
+    return "请求已发送，不能安全取消；继续等待服务器回执。";
+  }
+  if (recoveryMessage) return `页面正在恢复该操作状态：${recoveryMessage}`;
+  const details = operation?.progressDetails;
+  if (details && typeof details === "object") {
+    const detail = [details.message, details.phaseText, details.stepText, details.phase, details.step]
+      .map(value => String(value || "").trim()).find(Boolean);
+    if (detail) return detail;
+  }
+  if (operation?.requestSent === true) return "请求已发送，正在等待游戏服务器回执。";
+  if (status === "RECOVERING") return "正在从本地持久化记录恢复操作状态。";
+  return "后台正在准备请求，此时仍可安全取消。";
+}
+
+function networkOperationCssState(operation) {
+  const status = String(operation?.status || "").toUpperCase();
+  if (status === "SUCCEEDED") return "is-success";
+  if (status === "CANCELLED") return "is-cancelled";
+  if (status === "UNCERTAIN") return "is-uncertain";
+  if (status === "FAILED" || status === "STATUS_ERROR") return "is-failed";
+  return "is-running";
+}
+
+function networkOperationIsTerminal(operation) {
+  return ["SUCCEEDED", "FAILED", "CANCELLED", "UNCERTAIN", "STATUS_ERROR"]
+    .includes(String(operation?.status || "").toUpperCase());
+}
+
+function pruneVisibleNetworkOperations() {
+  if (visibleNetworkOperations.size <= 12) return;
+  const removable = [...visibleNetworkOperations.values()]
+    .filter(networkOperationIsTerminal)
+    .sort((left, right) => Number(left.updatedAtMillis || 0) - Number(right.updatedAtMillis || 0));
+  while (visibleNetworkOperations.size > 12 && removable.length) {
+    visibleNetworkOperations.delete(String(removable.shift()?.operationId || ""));
+  }
+}
+
+function renderNetworkOperationTray() {
+  const tray = document.getElementById("networkOperationTray");
+  const list = document.getElementById("networkOperationList");
+  const summary = document.getElementById("networkOperationSummary");
+  if (!tray || !list || !summary) return;
+  const operations = [...visibleNetworkOperations.values()]
+    .sort((left, right) => Number(right.updatedAtMillis || right.acceptedAt || 0)
+      - Number(left.updatedAtMillis || left.acceptedAt || 0));
+  tray.classList.toggle("page-hidden", operations.length === 0);
+  if (!operations.length) {
+    list.innerHTML = "";
+    summary.textContent = "";
+    return;
+  }
+  const activeCount = operations.filter(operation => !networkOperationIsTerminal(operation)).length;
+  summary.textContent = activeCount ? `${activeCount} 项正在处理` : "最近结果";
+  list.innerHTML = operations.map(operation => {
+    const operationId = String(operation.operationId || "");
+    const status = String(operation.status || "").toUpperCase();
+    const progress = Math.max(0, Math.min(100, Number(operation.progress || 0)));
+    const terminal = networkOperationIsTerminal(operation);
+    const canCancel = ["QUEUED", "RUNNING"].includes(status)
+      && operation.requestSent !== true
+      && operation.cancellationDenied !== "request-already-sent";
+    const action = terminal
+      ? `<button class="network-operation-action" type="button" data-network-operation-action="dismiss" data-operation-id="${escAttr(operationId)}">收起</button>`
+      : canCancel
+        ? `<button class="network-operation-action cancel" type="button" data-network-operation-action="cancel" data-operation-id="${escAttr(operationId)}" ${networkOperationCancelInFlight.has(operationId) ? "disabled" : ""}>${networkOperationCancelInFlight.has(operationId) ? "取消中…" : "取消"}</button>`
+        : `<button class="network-operation-action" type="button" disabled>${operation.requestSent === true ? "已发包" : "恢复中"}</button>`;
+    const warning = ["FAILED", "UNCERTAIN", "STATUS_ERROR"].includes(status)
+      || !!operation.recoveryMessage;
+    return `<article class="network-operation-item ${networkOperationCssState(operation)}">
+      <div class="network-operation-main">
+        <div class="network-operation-title"><b>${escHtml(networkOperationLabel(operation))}</b><span>${escHtml(networkOperationStatusText(operation))}</span></div>
+        <div class="network-operation-message ${warning ? "is-warning" : ""}">${escHtml(networkOperationMessage(operation))}</div>
+        ${terminal ? "" : `<div class="network-operation-progress"><i style="width:${progress}%"></i></div>`}
+      </div>
+      ${action}
+    </article>`;
+  }).join("");
+}
+
+function applyNetworkOperationState(detail) {
+  const operation = detail?.operation;
+  const operationId = String(operation?.operationId || "");
+  if (!operationId) return;
+  const previous = visibleNetworkOperations.get(operationId) || {};
+  visibleNetworkOperations.set(operationId, {
+    ...previous,
+    ...operation,
+    metadata: { ...(previous.metadata || {}), ...(detail?.metadata || {}) },
+    recoveryMessage: "",
+    acceptedAt: Number(previous.acceptedAt || detail?.metadata?.acceptedAt || Date.now()),
+  });
+  pruneVisibleNetworkOperations();
+  renderNetworkOperationTray();
+}
+
+function applyNetworkOperationRecovery(detail) {
+  const operationId = String(detail?.operationId || "");
+  if (!operationId) return;
+  const previous = visibleNetworkOperations.get(operationId) || {};
+  const recoverable = detail?.recoverable !== false;
+  visibleNetworkOperations.set(operationId, {
+    ...previous,
+    operationId,
+    status: recoverable ? (previous.status || "RECOVERING") : "STATUS_ERROR",
+    metadata: { ...(previous.metadata || {}), ...(detail?.metadata || {}) },
+    recoveryMessage: String(detail?.failure?.body?.error || "操作状态暂时无法读取"),
+    updatedAtMillis: Date.now(),
+    acceptedAt: Number(previous.acceptedAt || detail?.metadata?.acceptedAt || Date.now()),
+  });
+  pruneVisibleNetworkOperations();
+  renderNetworkOperationTray();
+}
+
+async function handleNetworkOperationAction(event) {
+  const button = event.target.closest?.("[data-network-operation-action]");
+  if (!button) return;
+  const operationId = String(button.dataset.operationId || "");
+  if (!operationId) return;
+  if (button.dataset.networkOperationAction === "dismiss") {
+    visibleNetworkOperations.delete(operationId);
+    renderNetworkOperationTray();
+    return;
+  }
+  if (button.dataset.networkOperationAction !== "cancel" || networkOperationCancelInFlight.has(operationId)) return;
+  const cancel = window.AssistantApi?.cancelOperation;
+  if (typeof cancel !== "function") return;
+  networkOperationCancelInFlight.add(operationId);
+  renderNetworkOperationTray();
+  try {
+    const response = await cancel(operationId);
+    const operation = response?.body?.operation;
+    if (operation?.cancellationDenied === "request-already-sent") {
+      showToast("请求已发送，不能安全取消", "info", 2600);
+    } else if (String(operation?.status || "") === "CANCELLED") {
+      showToast("操作已在发包前取消", "info", 2200);
+    } else if (Number(response?.status || 500) >= 400) {
+      throw new Error(response?.body?.error || "取消操作失败");
+    }
+  } catch (error) {
+    showToast(error?.message || "取消操作失败", "error", 2600);
+  } finally {
+    networkOperationCancelInFlight.delete(operationId);
+    renderNetworkOperationTray();
+  }
+}
+
+window.addEventListener("assistant-operation-state", event => applyNetworkOperationState(event.detail));
+window.addEventListener("assistant-operation-recovery", event => applyNetworkOperationRecovery(event.detail));
+document.getElementById("networkOperationList")?.addEventListener("click", handleNetworkOperationAction);
+
+// assistant-api.js starts its own best-effort recovery as soon as it loads. On a
+// reconstructed WebView that first event may race this page's tray listeners.
+// Re-run recovery only after the listeners exist; the API client deduplicates an
+// in-flight status read, so this cannot duplicate the operation itself.
+function recoverVisibleNetworkOperationsAfterPageLoad() {
+  const recover = window.AssistantApi?.recoverTrackedOperations;
+  if (typeof recover === "function") void recover();
+}
+recoverVisibleNetworkOperationsAfterPageLoad();
+
 function renderMainPageShell() {
   const assistant = document.getElementById("assistantPage");
   const logPage = document.getElementById("logPage");
@@ -3611,6 +3935,7 @@ function renderMainPageShell() {
   const famousGeneralGuide = document.getElementById("famousGeneralGuide");
   const openServerGuide = document.getElementById("openServerGuide");
   const guideArticlesPage = document.getElementById("guideArticlesPage");
+  const backgroundSettingsGuide = document.getElementById("backgroundSettingsGuide");
   const dungeonGuide = document.getElementById("dungeonGuide");
   const banditMapPage = document.getElementById("banditMapPage");
   const title = document.querySelector(".app-title");
@@ -3622,6 +3947,7 @@ function renderMainPageShell() {
   if (famousGeneralGuide) famousGeneralGuide.classList.toggle("page-hidden", activeOtherView !== "famous-general");
   if (openServerGuide) openServerGuide.classList.toggle("page-hidden", activeOtherView !== "open-server");
   if (guideArticlesPage) guideArticlesPage.classList.toggle("page-hidden", activeOtherView !== "guide-articles");
+  if (backgroundSettingsGuide) backgroundSettingsGuide.classList.toggle("page-hidden", activeOtherView !== "background-settings");
   if (dungeonGuide) dungeonGuide.classList.toggle("page-hidden", activeOtherView !== "dungeon-guide");
   if (banditMapPage) banditMapPage.classList.toggle("page-hidden", activeOtherView !== "bandit-map");
   if (title) {
@@ -3629,6 +3955,7 @@ function renderMainPageShell() {
       "famous-general": "查名将",
       "open-server": "查开服时间",
       "guide-articles": "查攻略",
+      "background-settings": "后台运行设置",
       "dungeon-guide": "副本攻略",
       "bandit-map": "山贼地图",
     };
@@ -3645,20 +3972,7 @@ function renderMainPageShell() {
   if (activeMainPage === "Home") renderHomeAccountOptions();
 }
 
-function nativeGuideBridgeAvailable() {
-  const bridge = window.DWPMNativeGuide;
-  return !!bridge && typeof bridge.getFamousGeneralsJson === "function";
-}
-
 async function callGuideReference(method, ...args) {
-  const bridge = window.DWPMNativeGuide;
-  if (bridge && typeof bridge[method] === "function") {
-    const raw = bridge[method](...args);
-    const payload = JSON.parse(String(raw || "{}"));
-    if (!payload.ok) throw new Error(payload.error || "本地资料读取失败");
-    return payload;
-  }
-
   const query = new URLSearchParams();
   const resourceByMethod = {
     getFamousGeneralsJson: "famous-generals",
@@ -3697,6 +4011,7 @@ function openNativeGuideView(viewName, initializer) {
     "famous-general": document.getElementById("famousGeneralGuide"),
     "open-server": document.getElementById("openServerGuide"),
     "guide-articles": document.getElementById("guideArticlesPage"),
+    "background-settings": document.getElementById("backgroundSettingsGuide"),
   };
   const view = viewByName[viewName];
   if (view) view.scrollTop = 0;
@@ -3706,6 +4021,96 @@ function openNativeGuideView(viewName, initializer) {
 function closeNativeGuideView() {
   activeOtherView = "home";
   renderMainPageShell();
+}
+
+function backgroundPermissionPresentation(item) {
+  if (item?.granted === true) {
+    return { label: "已完成", className: "granted", actionLabel: "查看设置" };
+  }
+  if (item?.granted === false) {
+    return { label: item.required ? "必须开启" : "建议开启", className: "missing", actionLabel: "去开启" };
+  }
+  return {
+    label: "需手动确认",
+    className: "manual",
+    actionLabel: item?.key === "sleep-mode" ? "查看设置" : "去设置",
+  };
+}
+
+async function renderBackgroundPermissionGuide({ silent = false } = {}) {
+  if (!isMobileLocal) return;
+  const list = document.getElementById("backgroundPermissionList");
+  const overall = document.getElementById("backgroundPermissionOverall");
+  const summary = document.getElementById("backgroundPermissionSummary");
+  const entryStatus = document.getElementById("backgroundPermissionEntryStatus");
+  if (!list || !overall || !summary) return;
+  overall.textContent = "正在检测";
+  overall.className = "guide-status permission-status-checking";
+  if (!silent) list.innerHTML = `<div class="background-permission-loading">正在检测…</div>`;
+  try {
+    const response = await fetch("/api/background/permissions", { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || "后台权限状态读取失败");
+    const items = Array.isArray(data.items) ? data.items : [];
+    const blockingCount = Array.isArray(data.blockingIssues) ? data.blockingIssues.length : 0;
+    overall.textContent = data.reliableHostingReady ? "基础权限已满足" : `还有 ${blockingCount} 项必要权限`;
+    overall.className = `guide-status ${data.reliableHostingReady ? "permission-status-ready" : "permission-status-warning"}`;
+    const manualText = data.manualReviewRequired
+      ? `${data.vendorFamily || data.manufacturer || "当前厂商"} 的后台策略和自启动没有公开可靠的查询接口，还需按下方指引人工确认。`
+      : "标准 Android 后台能力已按当前状态检测；精确闹钟属于准时性增强项，未授权时系统可能延迟唤醒，但仍会通过持久化状态恢复。";
+    summary.textContent = `${data.manufacturer || "Android"} ${data.model || ""} · Android ${data.sdkInt || "-"}。${manualText}`;
+    if (entryStatus) {
+      entryStatus.textContent = data.reliableHostingReady
+        ? (data.manualReviewRequired ? `基础权限已满足，请确认${data.vendorFamily || "厂商"}后台策略与自启动` : "后台运行基础权限已满足")
+        : `还有 ${blockingCount} 项必要权限未开启`;
+    }
+    list.innerHTML = items.map(item => {
+      const presentation = backgroundPermissionPresentation(item);
+      const pending = backgroundPermissionActionPending === String(item.action || "");
+      return `<article class="background-permission-item">
+        <div class="background-permission-copy">
+          <div class="background-permission-title-row">
+            <b>${escHtml(item.title || "后台权限")}</b>
+            <span class="background-permission-chip ${presentation.className}">${escHtml(presentation.label)}</span>
+          </div>
+          <p>${escHtml(item.detail || "")}</p>
+        </div>
+        <button class="background-permission-action ${presentation.className === "missing" ? "missing" : ""}"
+          type="button" data-background-permission-action="${escAttr(item.action || "")}" ${pending ? "disabled" : ""}>
+          ${pending ? "正在打开…" : escHtml(presentation.actionLabel)}
+        </button>
+      </article>`;
+    }).join("") || `<div class="background-permission-error">未返回可检测的权限项</div>`;
+  } catch (error) {
+    overall.textContent = "检测失败";
+    overall.className = "guide-status permission-status-warning";
+    summary.textContent = error.message || "无法读取后台权限状态";
+    list.innerHTML = `<div class="background-permission-error">${escHtml(summary.textContent)}</div>`;
+  }
+}
+
+async function openBackgroundPermissionSetting(action) {
+  const normalized = String(action || "").trim();
+  if (!normalized || backgroundPermissionActionPending) return;
+  backgroundPermissionActionPending = normalized;
+  await renderBackgroundPermissionGuide({ silent: true });
+  try {
+    const response = await fetch("/api/background/permissions/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: normalized }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || "系统设置页打开失败");
+    showToast("已打开系统设置，完成后返回重新检测", "info", 3200);
+  } catch (error) {
+    showToast(error.message || "系统设置页打开失败", "error", 3000);
+  } finally {
+    backgroundPermissionActionPending = "";
+    if (isMobileLocal && activeOtherView === "background-settings") {
+      void renderBackgroundPermissionGuide({ silent: true });
+    }
+  }
 }
 
 async function loadNativeFamousGenerals() {
@@ -4217,7 +4622,7 @@ async function persistAccountLog(message, level = "info", source = "frontend") {
 
 async function loadAccountLog(sessionId = appState.sessionId, { force = false } = {}) {
   if (!sessionId) {
-    runtimeLog = "";
+    replaceRuntimeLog("");
     appState.accountLogLoadedFor = null;
     renderLog();
     return;
@@ -4230,13 +4635,15 @@ async function loadAccountLog(sessionId = appState.sessionId, { force = false } 
     if (!data.ok) throw new Error(data.error || "账号日志读取失败");
     if (String(appState.sessionId) !== String(sessionId)) return;
     const loaded = (data.entries || []).map(formatAccountLogEntry).join("\n");
+    let nextRuntimeLog;
     if (runtimeLog !== before && runtimeLog.trim()) {
       const seen = new Set(loaded.split("\n").filter(Boolean));
-      const extra = runtimeLog.split("\n").filter(line => line && !seen.has(line)).join("\n");
-      runtimeLog = loaded + (loaded && extra ? "\n" : "") + extra;
+      const extra = runtimeLogLines.filter(line => line && !seen.has(line)).join("\n");
+      nextRuntimeLog = loaded + (loaded && extra ? "\n" : "") + extra;
     } else {
-      runtimeLog = loaded;
+      nextRuntimeLog = loaded;
     }
+    replaceRuntimeLog(nextRuntimeLog);
     appState.accountLogLoadedFor = sessionId;
     renderLog();
   } catch (_) {}
@@ -4250,13 +4657,17 @@ function ensureAccountLogLoaded(sessionId) {
 function appendLog(message) {
   const d = new Date();
   const t = `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
-  runtimeLog += `${runtimeLog ? "\n" : ""}[${t}] ${message}`;
-  renderAccountLogLines(true);
+  const line = `[${t}] ${message}`;
+  runtimeLog = runtimeLog ? `${runtimeLog}\n${line}` : line;
+  runtimeLogLines.push(line);
+  runtimeLogLineCount = runtimeLogLines.length;
+  accountLogRenderVersion += 1;
+  appendAccountLogLine(line, runtimeLogLineCount - 1, true);
   if (!/^后台[:：]/.test(String(message || ""))) persistAccountLog(message);
 }
 async function apiPost(path, data, { timeoutMs = 30000, timeoutMessage = "" } = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(path, {
       method: "POST",
@@ -4267,6 +4678,26 @@ async function apiPost(path, data, { timeoutMs = 30000, timeoutMessage = "" } = 
     const text = await res.text();
     let json;
     try { json = JSON.parse(text); } catch (_) { throw new Error(`接口返回非 JSON：HTTP ${res.status} ${text.slice(0, 120)}`); }
+    if (res.status === 202 && json.operationId) {
+      // The HTTP request has already been accepted and durably recorded. From
+      // this boundary onward the old request timeout must not misclassify a
+      // slow game-server response as a desktop/mobile core failure.
+      clearTimeout(timer);
+      timer = null;
+      const waiter = window.AssistantApi?.waitForOperation;
+      if (typeof waiter !== "function") {
+        throw new Error("网络操作已受理，但当前页面缺少 operation 状态客户端");
+      }
+      const completed = await waiter(String(json.operationId));
+      const completedStatus = Number(completed?.status || 500);
+      const completedBody = completed?.body && typeof completed.body === "object"
+        ? completed.body
+        : { ok: false, error: "网络操作返回无效终态" };
+      if (completedStatus < 200 || completedStatus >= 300 || !completedBody.ok) {
+        throw new Error(completedBody.error || `网络操作失败：${completedBody.operationStatus || completedStatus}`);
+      }
+      return completedBody;
+    }
     if (!json.ok) throw new Error(json.error || `请求失败 HTTP ${res.status}`);
     return json;
   } catch (e) {
@@ -4275,7 +4706,49 @@ async function apiPost(path, data, { timeoutMs = 30000, timeoutMessage = "" } = 
     }
     throw e;
   } finally {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function apiGet(path, { timeoutMs = 30000, timeoutMessage = "" } = {}) {
+  const controller = new AbortController();
+  let timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(path, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch (_) { throw new Error(`接口返回非 JSON：HTTP ${res.status} ${text.slice(0, 120)}`); }
+    if (res.status === 202 && json.operationId) {
+      // 电脑端共享核心也会把读操作异步受理为 operation。必须等待终态，
+      // 否则会把只有 operationId 的 202 响应误当成“数据已刷新”。
+      clearTimeout(timer);
+      timer = null;
+      const waiter = window.AssistantApi?.waitForOperation;
+      if (typeof waiter !== "function") {
+        throw new Error("网络操作已受理，但当前页面缺少 operation 状态客户端");
+      }
+      const completed = await waiter(String(json.operationId));
+      const completedStatus = Number(completed?.status || 500);
+      const completedBody = completed?.body && typeof completed.body === "object"
+        ? completed.body
+        : { ok: false, error: "网络操作返回无效终态" };
+      if (completedStatus < 200 || completedStatus >= 300 || !completedBody.ok) {
+        throw new Error(completedBody.error || `网络操作失败：${completedBody.operationStatus || completedStatus}`);
+      }
+      return completedBody;
+    }
+    if (!res.ok || !json.ok) throw new Error(json.error || `请求失败 HTTP ${res.status}`);
+    return json;
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(timeoutMessage || `请求超时：后端 ${Math.round(timeoutMs / 1000)} 秒内没有返回，请检查 server.py 是否卡住或正在重启`);
+    }
+    throw e;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 
@@ -4319,7 +4792,9 @@ async function loadGeneralVisitCandidates({ force = false } = {}) {
       ? data.generals
       : (Array.isArray(data.candidates) ? data.candidates : []);
     appState.generalVisitCandidates = candidates.map(candidate => ({ ...candidate }));
-    appState.generalVisitCandidatesNotice = data.skipped
+    appState.generalVisitCandidatesNotice = data.noTarget
+      ? (data.message || "不可拜访，国王麾下无名将")
+      : data.skipped
       ? (data.message || "国民跳过")
       : data.alreadyVisited
         ? (data.message || "本日已经完成名将拜访")
@@ -4338,16 +4813,31 @@ async function loadGeneralVisitCandidates({ force = false } = {}) {
     if (removed.length) {
       appendLog(`名将候选已更新：${removed.length}个原优先目标当前不可拜访，已从本次未保存选择中移除。`);
     }
-    appendLog(data.skipped
+    appendLog(data.noTarget
+      ? appState.generalVisitCandidatesNotice
+      : data.skipped
       ? `名将候选查询已跳过：${appState.generalVisitCandidatesNotice}`
       : data.alreadyVisited
       ? `名将候选查询完成：${appState.generalVisitCandidatesNotice}`
       : `名将候选查询完成：共${candidates.length}名，其中${availableIds.size}名当前可拜访。`);
+    if (data.noTarget) {
+      showToast(appState.generalVisitCandidatesNotice, "info", 3200);
+    }
   } catch (error) {
     if (String(appState.sessionId || "") !== sessionId) return;
+    const message = String(error?.message || "").trim();
+    if (message.includes("国王麾下无名将")) {
+      appState.generalVisitCandidates = [];
+      appState.generalVisitCandidatesUpdatedAt = Date.now();
+      appState.generalVisitCandidatesError = "";
+      appState.generalVisitCandidatesNotice = message;
+      appendLog(message);
+      showToast(message, "info", 3200);
+      return;
+    }
     appState.generalVisitCandidates = [];
     appState.generalVisitCandidatesUpdatedAt = 0;
-    appState.generalVisitCandidatesError = error.message || "名将候选查询失败";
+    appState.generalVisitCandidatesError = message || "名将候选查询失败";
     appState.generalVisitCandidatesNotice = "";
     appendLog(`名将候选查询失败：${appState.generalVisitCandidatesError}`);
     showToast("名将候选查询失败", "error");
@@ -4414,7 +4904,7 @@ async function syncAccounts({ silent = true, summary = false } = {}) {
         appState.militaryIntel = cur.session.militaryIntel || appState.militaryIntel || { events: [], statusByName: {} };
         appState.militarySnapshot = cur.session.militarySnapshot || appState.militarySnapshot || { actions: [], actionCount: 0, incomingCount: 0, responded: false, sourceOpcode: "0x1600/0x8600", updatedAt: 0 };
         appState.dailyActivity = cur.session.dailyActivity || appState.dailyActivity || {};
-        appState.dailyStats = cur.dailyStats || cur.session.dailyStats || appState.dailyStats || { brushYellowCount: 0, dungeonCount: 0 };
+        appState.dailyStats = dailyStatsForAccount(cur);
         appState.roleQueueSummary = cur.session.roleQueueSummary || appState.roleQueueSummary || {};
         appState.taskOverview = cur.session.taskOverview || appState.taskOverview || { resident: [], daily: [] };
         if (!appState.accountHabitsLoaded[appState.sessionId]) {
@@ -4426,23 +4916,15 @@ async function syncAccounts({ silent = true, summary = false } = {}) {
       } else if (cur) {
         if (hasLiveDisplayForCurrentAccount()) applyAccountRecordMeta(cur);
         else applyAccountRecord(cur, { restoreUi: true });
-      } else if (preferredSaved?.session) {
-        applySessionData(preferredSaved.session);
       } else if (preferredSaved) {
-        applyAccountRecord(preferredSaved);
-      } else if (appState.accounts[0]?.session) {
-        applySessionData(appState.accounts[0].session);
+        applyAccountSnapshot(preferredSaved);
       } else if (appState.accounts[0]) {
-        applyAccountRecord(appState.accounts[0]);
+        applyAccountSnapshot(appState.accounts[0]);
       }
-    } else if (preferredSaved?.session) {
-      applySessionData(preferredSaved.session);
     } else if (preferredSaved) {
-      applyAccountRecord(preferredSaved);
-    } else if (appState.accounts[0]?.session) {
-      applySessionData(appState.accounts[0].session);
+      applyAccountSnapshot(preferredSaved);
     } else if (appState.accounts[0]) {
-      applyAccountRecord(appState.accounts[0]);
+      applyAccountSnapshot(appState.accounts[0]);
     }
     updateAccountHeader();
     const dailyStatsChanged = previousDailyStatsSignature !== JSON.stringify(appState.dailyStats || {});
@@ -4470,8 +4952,7 @@ async function selectAccount(sessionId) {
     showToast("账号记录不存在", "error");
     return;
   }
-  if (acc.session) applySessionData(acc.session, { restoreUi: true });
-  else applyAccountRecord(acc, { restoreUi: true });
+  applyAccountSnapshot(acc, { restoreUi: true });
   saveCurrentContainerSelection(acc);
   await loadAccountLog(appState.sessionId, { force: true });
   if (activeCategory === "角色" && activeSide === "记录") {
@@ -4490,27 +4971,30 @@ async function startSelectedAccount() {
     const oldSessionId = appState.sessionId;
     appendLog(`正在启动账号：${accountLabel(selectedAccount())}；现在才执行真实登录并开启保活...`);
     const data = await apiPost("/api/accounts/start", { sessionId: oldSessionId });
-    const newSessionId = data.account?.sessionId || oldSessionId;
+    const newSessionId = data.account?.sessionId || data.accountRef || oldSessionId;
     if (newSessionId !== oldSessionId) {
       appState.accountUiState[newSessionId] = appState.accountUiState[oldSessionId] || {};
       delete appState.accountUiState[oldSessionId];
       appState.sessionId = newSessionId;
     }
-    if (data.account?.session) applySessionData(data.account.session, { restoreUi: true });
     await syncAccounts();
+    const startedAccount = selectedAccount()
+      || (appState.accounts || []).find(account => String(account.sessionId) === String(newSessionId))
+      || data.account;
+    if (startedAccount?.session) applyAccountSnapshot(startedAccount, { restoreUi: true });
     await loadProxyNodes();
-    saveCurrentContainerSelection(selectedAccount() || data.account);
+    saveCurrentContainerSelection(startedAccount);
     notifyAccountsChanged("start");
-    const startStatus = data.account?.status;
+    const startStatus = startedAccount?.status || data.status;
     const startAccepted = startStatus === "online" || startStatus === "checking";
     showToast(
       startStatus === "online" ? "账号启动成功" : (startStatus === "checking" ? "账号正在检测" : "账号疑似掉线"),
       startAccepted ? "success" : "error",
     );
-    appendLog(`账号状态：${data.account?.statusText || accountStatusText(data.account?.status)}；${data.account?.lastHeartbeat?.message || ""}`);
-    if (data.account?.session) {
-      const rs = data.account.session.roleState || {};
-      appendLog(`真实登录完成：${rs.roleName || data.account.session.role?.roleName || accountLabel(data.account)} Lv.${rs.level ?? data.account.session.role?.level ?? "-"}，将领 ${appState.generals.length} 个`);
+    appendLog(`账号状态：${startedAccount?.statusText || accountStatusText(startStatus)}；${startedAccount?.lastHeartbeat?.message || data.message || ""}`);
+    if (startedAccount?.session) {
+      const rs = startedAccount.session.roleState || {};
+      appendLog(`真实登录完成：${rs.roleName || startedAccount.session.role?.roleName || accountLabel(startedAccount)} Lv.${rs.level ?? startedAccount.session.role?.level ?? "-"}，将领 ${appState.generals.length} 个`);
     }
     render();
   } catch (e) {
@@ -4547,10 +5031,8 @@ async function deleteSelectedAccount() {
     delete appState.accountUiState[old];
     appState.accounts = data.accounts || [];
     const next = appState.accounts[0];
-    if (next?.session) {
-      applySessionData(next.session);
-    } else if (next) {
-      applyAccountRecord(next);
+    if (next) {
+      applyAccountSnapshot(next);
     } else {
       appState.sessionId = null;
       appState.displayDataSessionId = null;
@@ -4585,21 +5067,101 @@ function renderLog() {
 }
 
 function renderAccountLogLines(scrollToLatest = false, defaultLog = "") {
-  const lines = (runtimeLog || defaultLog).split("\n");
-  document.querySelectorAll("#taskLog,#taskLogPage").forEach(el => {
-    el.innerHTML = lines.map((line, index) => {
-      const selected = accountLogSelectionStart?.index === index && accountLogSelectionStart?.text === line ? " copy-start" : "";
-      return `<div class="account-log-line${selected}" data-log-index="${index}">${escHtml(line)}</div>`;
-    }).join("");
+  const containers = [...document.querySelectorAll("#taskLog,#taskLogPage")];
+  if (!containers.length) return;
+  const hasRuntime = Boolean(runtimeLog);
+  const lines = hasRuntime ? runtimeLogLines : [defaultLog];
+  const selectionKey = accountLogSelectionRenderKey();
+  const defaultKey = hasRuntime ? "" : defaultLog;
+  const currentVersion = String(accountLogRenderVersion);
+  const lineCountKey = String(lines.length);
+  const alreadyRendered = containers.every(el =>
+    el.dataset.accountLogRenderVersion === currentVersion
+      && el.dataset.accountLogLineCount === lineCountKey
+      && el.dataset.accountLogHasRuntime === (hasRuntime ? "1" : "0")
+      && el.dataset.accountLogDefault === defaultKey
+  );
+
+  if (alreadyRendered) {
+    // Selecting a range only changes one CSS class. Do not rebuild thousands
+    // of log nodes just to update that highlight.
+    if (containers.some(el => el.dataset.accountLogSelectionKey !== selectionKey)) {
+      updateAccountLogSelectionClasses(containers, lines, selectionKey);
+    }
+    if (scrollToLatest) containers.forEach(el => { el.scrollTop = el.scrollHeight; });
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  lines.forEach((line, index) => fragment.appendChild(createAccountLogLine(line, index)));
+  containers.forEach(el => {
+    el.innerHTML = "";
+    el.appendChild(fragment.cloneNode(true));
     el.onclick = handleAccountLogLineClick;
+    el.dataset.accountLogRenderVersion = currentVersion;
+    el.dataset.accountLogLineCount = lineCountKey;
+    el.dataset.accountLogHasRuntime = hasRuntime ? "1" : "0";
+    el.dataset.accountLogDefault = defaultKey;
+    el.dataset.accountLogSelectionKey = selectionKey;
     if (scrollToLatest) el.scrollTop = el.scrollHeight;
   });
+  renderedAccountLogVersion = accountLogRenderVersion;
+  renderedAccountLogLineCount = lines.length;
+}
+
+function createAccountLogLine(line, index) {
+  const el = document.createElement("div");
+  el.className = "account-log-line";
+  el.dataset.logIndex = String(index);
+  el.textContent = line;
+  if (accountLogSelectionStart?.index === index && accountLogSelectionStart?.text === line) {
+    el.classList.add("copy-start");
+  }
+  return el;
+}
+
+function updateAccountLogSelectionClasses(containers, lines, selectionKey = accountLogSelectionRenderKey()) {
+  containers.forEach(container => {
+    container.querySelectorAll(".account-log-line[data-log-index]").forEach(line => {
+      const index = Number(line.dataset.logIndex);
+      const selected = accountLogSelectionStart?.index === index
+        && accountLogSelectionStart?.text === lines[index];
+      line.classList.toggle("copy-start", selected);
+    });
+    container.dataset.accountLogSelectionKey = selectionKey;
+  });
+}
+
+function appendAccountLogLine(line, index, scrollToLatest = false) {
+  const containers = [...document.querySelectorAll("#taskLog,#taskLogPage")];
+  const previousVersion = String(Math.max(0, accountLogRenderVersion - 1));
+  const canAppend = containers.length > 0
+    && renderedAccountLogVersion === accountLogRenderVersion - 1
+    && renderedAccountLogLineCount === index
+    && containers.every(el =>
+      el.dataset.accountLogRenderVersion === previousVersion
+        && el.dataset.accountLogLineCount === String(index)
+        && el.dataset.accountLogHasRuntime === "1"
+    );
+  if (!canAppend) {
+    renderAccountLogLines(scrollToLatest);
+    return;
+  }
+  containers.forEach(el => {
+    el.appendChild(createAccountLogLine(line, index));
+    el.dataset.accountLogRenderVersion = String(accountLogRenderVersion);
+    el.dataset.accountLogLineCount = String(index + 1);
+    el.dataset.accountLogSelectionKey = accountLogSelectionRenderKey();
+    if (scrollToLatest) el.scrollTop = el.scrollHeight;
+  });
+  renderedAccountLogVersion = accountLogRenderVersion;
+  renderedAccountLogLineCount = index + 1;
 }
 
 async function handleAccountLogLineClick(event) {
   const line = event.target.closest(".account-log-line[data-log-index]");
   if (!line || !runtimeLog) return;
-  const lines = runtimeLog.split("\n");
+  const lines = runtimeLogLines;
   const index = Number(line.dataset.logIndex);
   const clicked = lines[index];
   if (!Number.isInteger(index) || clicked === undefined) return;
@@ -4876,14 +5438,9 @@ function bindDesignDynamicControls() {
     if (!tbody) return;
     const checkedRows = Array.from(tbody.querySelectorAll("tr")).filter(tr => tr.querySelector("input[type='checkbox']")?.checked);
     const srcRows = checkedRows.length ? checkedRows : Array.from(tbody.querySelectorAll("tr")).slice(0, 1);
-    srcRows.forEach(row => {
-      const clone = row.cloneNode(true);
-      if (root.classList.contains("dungeon-page")) {
-        const enabled = clone.querySelector(".dungeon-enabled");
-        if (enabled) enabled.checked = false;
-      }
-      tbody.appendChild(clone);
-    });
+    // 副本页不再提供复制按钮（一次只能出征一支编队），因此这里不需要再为它
+    // 清空勾选：那段分支永远不会执行，留着只会让人以为副本支持多条编队。
+    srcRows.forEach(row => tbody.appendChild(row.cloneNode(true)));
     bindDesignDynamicControls();
   });
   document.querySelectorAll(".dynamic-clear").forEach(btn => btn.onclick = () => {
@@ -4939,7 +5496,7 @@ function syncPolicyMultiUi(root) {
   const summaryValues = root.dataset.policy === "technology-ids"
     ? selected.map(value => technologyNames[Number(value)]).filter(Boolean)
     : selected;
-  if (summary) summary.textContent = policyMultiSummary(summaryValues);
+  if (summary) summary.textContent = policyMultiSummary(summaryValues, root.dataset.policy || "");
 }
 function bindPolicyMultiControls() {
   document.querySelectorAll(".policy-multi").forEach(root => {
@@ -5211,8 +5768,10 @@ function bindLiveControls() {
       if (data.generals) appState.generals = data.generals;
       if (data.army) appState.army = data.army;
       if (data.roleState) appState.roleState = data.roleState;
-      appendLog(`一键卸兵完成：卸下 ${data.clearedCount || 0} 名将领，跳过 ${data.skippedCount || 0} 名`);
-      showToast("一键卸兵完成", "success");
+      const serverMessage = String(data.message || "").trim()
+        || `一键卸兵完成：卸下 ${data.clearedCount || 0} 名将领，跳过 ${data.skippedCount || 0} 名`;
+      appendLog(serverMessage);
+      showToast(serverMessage, "success", 3200);
       render();
     } catch (e) {
       appendLog("一键卸兵失败：" + e.message);
@@ -5224,6 +5783,8 @@ function bindLiveControls() {
   };
   const refreshStateBtn = document.getElementById("refreshStateBtn");
   if (refreshStateBtn) refreshStateBtn.onclick = () => refreshLiveState({ silent: false, scope: "military" });
+  const refreshHeroTableBtn = document.getElementById("refreshHeroTableBtn");
+  if (refreshHeroTableBtn) refreshHeroTableBtn.onclick = () => { void refreshHeroTable(); };
   const b0525 = document.getElementById("apply0525Btn");
   if (b0525) b0525.onclick = () => { appState.brushSettings.rows = brushRowsForDesign(); const row = appState.brushSettings.rows[0] || brushPlaceholderRow(); Object.assign(row, {maxFoot:0,maxBow:5,maxCavalry:2,maxChariot:5,compositionCode:"0525"}); appState.brushSettings.rows[0]=row; appendLog("已填入步弓骑车 0525：步≤0 弓≤5 骑≤2 车≤5"); render(); };
   const b5000 = document.getElementById("apply5000Btn");
@@ -5267,9 +5828,11 @@ function bindLiveControls() {
 }
 
 async function saveFormationSettings() {
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const committedBeforeEdit = clone(appState.formations || []);
+  const committedOptionsBeforeEdit = clone(appState.formationOptions || { clearOtherGenerals: false });
   try {
     if (!appState.sessionId) throw new Error("请先添加账号");
-    if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先点击“启动”完成真实登录并同步将领数据");
     saveFormationDom();
     const formations = appState.formations.map(f => ({
       enabled: !!f.enabled,
@@ -5282,16 +5845,48 @@ async function saveFormationSettings() {
       },
     }));
     const data = await apiPost("/api/formations/save", { sessionId: appState.sessionId, formations, formationOptions: { clearOtherGenerals: false } });
-    appState.formations = data.formations || formations;
-    appState.savedFormationRules = data.normalizedFormations || data.formations || formations;
-    if (data.formationOptions) appState.formationOptions = { clearOtherGenerals: false, ...data.formationOptions };
     if (data.accountHabits) applyServerHabits(data);
+    // The save response is authoritative. Apply its normalized/persisted
+    // formation rows after the broader habits projection so a stale nested
+    // accountHabits object cannot overwrite the just-committed rule set.
+    const committedFormations = clone(data.formations || data.accountHabits?.formations || formations);
+    appState.formations = committedFormations;
+    appState.savedFormationRules = clone(data.normalizedFormations || committedFormations);
+    if (data.formationOptions) appState.formationOptions = { clearOtherGenerals: false, ...data.formationOptions };
+    // Keep the last known committed state separate from the editable DOM. If
+    // the asynchronous troop application later fails, the rule itself remains
+    // the source of truth and a subsequent failed save can restore it.
+    snapshotCurrentAccountUi();
     appendLog(`配兵规则已保存：${appState.formations.map(f => `将领=${rowGeneralIds(f).join("/")} ${f.soldierCount}${f.soldierType}`).join("；")}`);
     if (data.unresolvedGeneralIds?.length) {
       appendLog(`以下将领当前待同步，配置已保留且本次不会执行配兵：${data.unresolvedGeneralIds.join("、")}`);
     }
     if (data.savedFile) appendLog(`配兵规则文件：${data.savedFile}`);
-    if (data.task?.taskId) {
+    if (data.applyTask?.operationId) {
+      const operationId = String(data.applyTask.operationId);
+      appendLog(`配兵 operation 已受理：${operationId}；本地设置已保存，等待服务器真实回执`);
+      const waiter = window.AssistantApi?.waitForOperation;
+      if (typeof waiter === "function") {
+        void waiter(operationId).then(completed => {
+          if (Number(completed?.status || 500) >= 200 && Number(completed?.status || 500) < 300) {
+            const appliedCount = Number(completed?.body?.appliedCount || 0);
+            const skippedCount = Number(completed?.body?.skippedCount || 0);
+            if (skippedCount > 0) {
+              appendLog(`实际配兵部分完成：应用 ${appliedCount} 条规则；${skippedCount} 条因将领当前不可配兵暂未执行，规则已保存`);
+              showToast(`部分配兵完成：${appliedCount} 条已应用，${skippedCount} 条暂未执行`, "warning");
+            } else {
+              appendLog(`实际配兵已完成：应用 ${appliedCount} 条规则`);
+              showToast("实际配兵完成", "success");
+            }
+          } else {
+            appendLog(`实际配兵未完成：${completed?.body?.error || "未知错误"}`);
+            showToast("实际配兵失败", "error");
+          }
+        }).catch(error => {
+          appendLog(`实际配兵状态读取失败：${error.message || error}`);
+        });
+      }
+    } else if (data.task?.taskId) {
       appState.automation.taskId = data.task.taskId;
       appState.automation.status = data.task.status || "starting";
       appState.automation.lastLogs = [];
@@ -5308,14 +5903,21 @@ async function saveFormationSettings() {
     showToast("保存配兵设置成功", "success");
     render();
   } catch (e) {
+    // saveFormationDom() reads the editable table into appState before the
+    // request is sent. A rejected validation (such as a duplicate general)
+    // must not leave that uncommitted draft visible as if it were saved.
+    appState.formations = committedBeforeEdit;
+    appState.savedFormationRules = clone(committedBeforeEdit);
+    appState.formationOptions = committedOptionsBeforeEdit;
     appendLog("保存配兵规则失败：" + e.message);
+    appendLog("已恢复上一次成功保存的配兵规则");
     showToast("保存配兵设置失败", "error");
+    render();
   }
 }
 async function saveRaidSettings() {
   try {
     if (!appState.sessionId) throw new Error("请先添加账号");
-    if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先点击“启动”完成真实登录并同步将领数据");
     const cfg = getRaidForm();
     const enabledRows = cfg.rows.filter(r => r.enabled);
     appendLog(`保存掠夺规则：${enabledRows.map(r => `将领=${r.generalIds.join("/")} → ${r.playerName} 第${r.fiefIndex}封地`).join("；")}；满兵=${enabledRows[0]?.fullTroops ? "开启" : "关闭"}`);
@@ -5336,7 +5938,7 @@ async function saveRaidSettings() {
     } else {
       appendLog("掠夺规则已提交；当前没有返回执行任务。");
     }
-    showToast("掠夺任务已提交", "success");
+    showToast(data.execution?.started ? "掠夺任务已启动" : "掠夺设置已保存", "success");
     render();
   } catch (e) {
     appendLog("保存掠夺规则失败：" + e.message);
@@ -5426,7 +6028,6 @@ async function saveLiubuSettings() {
 async function saveLosslessSettings() {
   try {
     if (!appState.sessionId) throw new Error("请先添加账号");
-    if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先点击“启动”完成真实登录并同步将领数据");
     const cfg = getLosslessForm();
     const enabledRows = cfg.settings.rows.filter(row => row.enabled);
     appendLog(enabledRows.length
@@ -5456,7 +6057,12 @@ async function saveLosslessSettings() {
     } else {
       appendLog("无损规则已提交；当前没有返回执行任务。");
     }
-    showToast(data.disabled ? "无损任务已关闭" : "无损常驻任务已启动", "success");
+    showToast(
+      data.disabled
+        ? "无损任务已关闭"
+        : (data.execution?.started ? "无损常驻任务已启动" : "无损设置已保存"),
+      "success",
+    );
     render();
   } catch (e) {
     appendLog("保存无损规则失败：" + e.message);
@@ -5466,7 +6072,6 @@ async function saveLosslessSettings() {
 async function saveDungeonSettings() {
   try {
     if (!appState.sessionId) throw new Error("请先添加账号");
-    if (!selectedAccount()?.session) throw new Error("当前账号还未启动，请先点击“启动”完成真实登录并同步将领数据");
     const cfg = getDungeonForm();
     const enabledRows = cfg.rows.filter(r => r.enabled);
     appendLog(enabledRows.length
@@ -5678,8 +6283,25 @@ async function saveSettingsAndStart() {
         ? "保存成功，刷黄任务等待点击“开始执行任务”"
         : `保存成功，后台任务已启动：${appState.automation.taskId || "未返回任务ID"}`);
     if (data.savedFile) appendLog(`设置文件：${data.savedFile}`);
+    const dailyExecution = data.dailyExecution || {};
+    if (dailyExecution.accepted && Array.isArray(dailyExecution.queuedKeys)) {
+      const labels = {
+        autoSignIn: "自动签到",
+        arenaCoins: "领竞技币",
+        autoDonate: "自动捐献",
+        salary: "领取俸禄",
+        nationalCollect: "国家征收",
+        mayorCollect: "城主征收",
+        generalVisit: "名将拜访",
+      };
+      const queued = dailyExecution.queuedKeys
+        .map(key => labels[key] || key)
+        .join("、");
+      if (queued) appendLog(`已排队执行新开启的日常任务：${queued}`);
+    }
     const dailyResults = data.dailyResults || {};
     Object.entries(dailyResults).forEach(([key, result]) => {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return;
       const label = { autoSignIn: "自动签到", arenaCoins: "领取竞技币", autoDonate: "自动捐献" }[key] || key;
       const fallback = key === "arenaCoins"
         ? "当前不可领取：可能未到22点，或今日已经领取"
@@ -5802,6 +6424,83 @@ async function refreshRoleSide(side = activeSide, { silent = true } = {}) {
   return refreshLiveState({ silent, scope: roleSideRefreshScope(side), side });
 }
 
+function mergeHeroFiefLocations(generals, fiefs) {
+  const locations = new Map();
+  (Array.isArray(fiefs) ? fiefs : []).forEach(item => {
+    const targetId = String(item?.targetId ?? item?.fiefId ?? item?.id ?? "").trim();
+    if (targetId && targetId !== "0") locations.set(targetId, item);
+  });
+  let matched = 0;
+  const merged = (Array.isArray(generals) ? generals : []).map(general => {
+    const fiefId = String(general?.fiefId ?? general?.placeID ?? general?.placeId ?? "").trim();
+    const location = fiefId ? locations.get(fiefId) : null;
+    if (!location) return general;
+    matched += 1;
+    return {
+      ...general,
+      fiefName: String(location.fiefName || location.name || general.fiefName || ""),
+      cityName: String(location.cityName || location.city || general.cityName || ""),
+      fiefX: location.x ?? general.fiefX,
+      fiefY: location.y ?? general.fiefY,
+    };
+  });
+  return { generals: merged, matched, fiefCount: locations.size };
+}
+
+async function refreshHeroTable() {
+  if (heroTableRefreshPending) return false;
+  heroTableRefreshPending = true;
+  if (activeCategory === "角色" && activeSide === "英雄") render();
+  try {
+    // ``generals`` 会重新请求 0x1016/0x8004 并解析将领所在封地，
+    // 不使用账号列表里的旧快照。
+    const refreshed = await refreshLiveState({
+      silent: false,
+      scope: "generals",
+      side: "英雄",
+    });
+    if (!refreshed) {
+      showToast("英雄表格刷新失败", "error");
+      return false;
+    }
+
+    const playerName = String(
+      appState.roleState?.roleName
+      || appState.role?.roleName
+      || selectedAccount()?.roleName
+      || "",
+    ).trim();
+    if (!playerName) {
+      appendLog("英雄状态已刷新，但当前账号缺少角色名，无法重新请求封地名称。");
+      showToast("英雄已刷新，封地名称刷新失败", "error", 3200);
+      return false;
+    }
+
+    try {
+      const fiefData = await apiPost("/api/raid/fiefs", {
+        sessionId: appState.sessionId,
+        playerName,
+      });
+      const merged = mergeHeroFiefLocations(
+        appState.generals,
+        fiefData.fiefs || fiefData.rows || [],
+      );
+      appState.generals = merged.generals;
+      appendLog(`英雄和封地数据已刷新：将领 ${appState.generals.length} 个，封地 ${merged.fiefCount} 个，匹配 ${merged.matched} 名将领。`);
+      showToast("英雄表格及封地已刷新", "success");
+      return true;
+    } catch (error) {
+      // 将领请求已经成功，封地查询失败不能回滚为旧将领快照。
+      appendLog("英雄状态已刷新，但封地名称刷新失败：" + error.message);
+      showToast("英雄已刷新，封地名称刷新失败", "error", 3200);
+      return false;
+    }
+  } finally {
+    heroTableRefreshPending = false;
+    if (activeCategory === "角色" && activeSide === "英雄") render();
+  }
+}
+
 async function refreshTaskOverview({ silent = true } = {}) {
   return pollAutomationStatus({ silent });
 }
@@ -5877,7 +6576,17 @@ async function startSavedTasks() {
   } catch (error) {
     if (button) button.disabled = false;
     appendLog("开始执行任务失败：" + error.message);
-    showToast("开始执行任务失败", "error");
+    if (
+      isMobileLocal &&
+      /后台托管|通知权限|忽略电池优化|后台运行限制|解除系统后台/.test(
+        String(error.message || "")
+      )
+    ) {
+      openNativeGuideView("background-settings", renderBackgroundPermissionGuide);
+      showToast("请先完成后台运行权限设置", "error", 3600);
+    } else {
+      showToast("开始执行任务失败", "error");
+    }
   }
 }
 
@@ -5974,18 +6683,16 @@ document.addEventListener("click", event => {
 });
 
 async function refreshLiveState({ silent = false, scope = "all", side = activeSide } = {}) {
-  if (!appState.sessionId) return;
+  if (!appState.sessionId) return false;
   if (!selectedAccount()?.session) {
     if (!silent) appendLog("当前账号还未启动，暂无实时状态；请先点击“启动”完成真实登录。");
-    return;
+    return false;
   }
   try {
     const url = scope === "military"
       ? `/api/military/intel?sessionId=${encodeURIComponent(appState.sessionId)}`
       : `/api/state/refresh?sessionId=${encodeURIComponent(appState.sessionId)}&scope=${encodeURIComponent(scope)}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "刷新失败");
+    const data = await apiGet(url);
     appState.displayDataSessionId = appState.sessionId;
     appState.role = data.role || appState.role;
     appState.roleState = data.roleState || appState.roleState || {};
@@ -6016,8 +6723,10 @@ async function refreshLiveState({ silent = false, scope = "all", side = activeSi
       activeCategory === "角色" || activeCategory === "军情"
       || (isStarterContainer && activeCategory === "起号")
     ) render();
+    return true;
   } catch (e) {
     if (!silent) appendLog("实时状态刷新失败：" + e.message);
+    return false;
   }
 }
 
@@ -6156,6 +6865,7 @@ function render() {
     renderPickerLayer();
   }
   renderLog();
+  renderNetworkOperationTray();
   updateStateRefreshPolling();
   updateTaskCountdowns();
 }
@@ -6266,7 +6976,7 @@ if (homeAccountSelect) {
 const clearLogBtn = document.getElementById("clearLogBtn");
 if (clearLogBtn) {
   clearLogBtn.onclick = () => {
-    runtimeLog = "";
+    replaceRuntimeLog("");
     if (appState.automation) appState.automation.lastLogs = [];
     renderLog();
   };
@@ -6320,6 +7030,32 @@ if (guideArticleList) {
 }
 const backToGuideArticleListBtn = document.getElementById("backToGuideArticleListBtn");
 if (backToGuideArticleListBtn) backToGuideArticleListBtn.onclick = showGuideArticleListState;
+const openBackgroundSettingsGuideBtn = document.getElementById("openBackgroundSettingsGuideBtn");
+if (openBackgroundSettingsGuideBtn) {
+  openBackgroundSettingsGuideBtn.onclick = () => openNativeGuideView(
+    "background-settings",
+    renderBackgroundPermissionGuide,
+  );
+}
+const closeBackgroundSettingsGuideBtn = document.getElementById("closeBackgroundSettingsGuideBtn");
+if (closeBackgroundSettingsGuideBtn) closeBackgroundSettingsGuideBtn.onclick = closeNativeGuideView;
+const refreshBackgroundPermissionsBtn = document.getElementById("refreshBackgroundPermissionsBtn");
+if (refreshBackgroundPermissionsBtn) refreshBackgroundPermissionsBtn.onclick = () => {
+  void renderBackgroundPermissionGuide();
+};
+const backgroundPermissionList = document.getElementById("backgroundPermissionList");
+if (backgroundPermissionList) {
+  backgroundPermissionList.onclick = event => {
+    const button = event.target.closest("[data-background-permission-action]");
+    if (button) void openBackgroundPermissionSetting(button.dataset.backgroundPermissionAction || "");
+  };
+}
+window.addEventListener("focus", () => {
+  if (isMobileLocal && activeOtherView === "background-settings") {
+    window.setTimeout(() => { void renderBackgroundPermissionGuide({ silent: true }); }, 250);
+  }
+});
+if (isMobileLocal) void renderBackgroundPermissionGuide({ silent: true });
 const openDungeonGuideBtn = document.getElementById("openDungeonGuideBtn");
 if (openDungeonGuideBtn) {
   openDungeonGuideBtn.onclick = () => {
@@ -7496,9 +8232,7 @@ document.getElementById("loginSubmit").onclick = async () => {
       }
     }
     updateAccountHeader();
-    appendLog(isMobileLocal
-      ? `添加账号成功：${accountLabel(acc)}；手机已完成真实登录与状态同步，点击“启动”后由本地前台服务托管。`
-      : `添加账号成功：${accountLabel(acc)}；当前状态=未开启。注意：添加只保存本地记录，不会登录游戏；请在上方下拉框选中该账号后点击“启动”。`);
+    appendLog(`添加账号成功：${accountLabel(acc)}；已完成真实登录与状态同步，当前保持未启动，点击“启动”后由本地宿主托管。`);
     showToast(addingStarterAccount ? "起号账号添加成功" : "添加账号成功", "success");
     accountModal?.classList.add("hidden");
     if (accountModal) delete accountModal.dataset.mode;

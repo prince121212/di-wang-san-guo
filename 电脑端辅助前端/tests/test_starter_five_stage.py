@@ -11,6 +11,11 @@ sys.path.insert(0, str(ROOT))
 
 import server  # noqa: E402
 
+# Imported server modules now use an isolated data directory; initialize the
+# same durable schema that production main() establishes before exercising
+# five-stage action history queries.
+server.initialize_account_state_database()
+
 
 class StarterFiveStageTest(unittest.TestCase):
     def test_under_thirty_policy_uses_no_bandit_map(self):

@@ -6,7 +6,264 @@ import struct
 from typing import Any, Mapping, Sequence
 
 from ..protocol.wire import read_utf
-from .inventory import EQUIPMENT_QUALITY_NAMES, parse_8104_inventory
+from .inventory import (
+    EQUIPMENT_QUALITY_NAMES,
+    equipment_is_safe_to_discard,
+    parse_8104_inventory,
+)
+
+
+ENERGY_ITEM_ID = 12
+ENERGY_ITEM_NAME = "活血丹"
+ENERGY_ITEM_GAIN = 50
+# The dispatch gate every expedition preflight applies after maintenance: a
+# general at or below this reading cannot be sent out.  It is distinct from the
+# user's auto-top-up threshold (``minEnergy``/``energyThreshold``), which only
+# says when a 活血丹 *should* be spent.  A missing item therefore blocks nothing
+# while the reading is still above this line - the general can march as is.
+EXPEDITION_MIN_ENERGY = 20
+
+
+def plan_general_energy_use(
+    general: Mapping[str, Any],
+    inventory: Mapping[str, Any],
+    *,
+    enabled: bool,
+    threshold: int,
+    action_name: str,
+) -> dict[str, Any]:
+    """Plan at most one confirmed energy-item mutation for one general."""
+
+    normalized_threshold = max(20, min(int(threshold), 100))
+    name = str(
+        general.get("name")
+        or general.get("id")
+        or general.get("idHex")
+        or "未知将领"
+    )
+    current_raw = (
+        general.get("tili")
+        if general.get("tili") is not None
+        else general.get("energy")
+    )
+    if not bool(general.get("energyReliable")) or current_raw is None:
+        return {
+            "ready": False,
+            "actionRequired": False,
+            "reason": "energy-unreliable",
+            "message": f"{action_name}无法确认{name}体力，未使用{ENERGY_ITEM_NAME}",
+            "threshold": normalized_threshold,
+        }
+    try:
+        current = int(current_raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{action_name}将领{name}体力无效：{current_raw}") from error
+    if current >= normalized_threshold:
+        return {
+            "ready": True,
+            "actionRequired": False,
+            "reason": "energy-sufficient",
+            "generalName": name,
+            "before": current,
+            "after": current,
+            "threshold": normalized_threshold,
+        }
+    if not bool(enabled):
+        return {
+            "ready": True,
+            "actionRequired": False,
+            "reason": "auto-energy-disabled",
+            "generalName": name,
+            "before": current,
+            "after": current,
+            "threshold": normalized_threshold,
+        }
+    raw_general_id = general.get("id") or general.get("idHex")
+    try:
+        general_id = (
+            int(general["id"])
+            if general.get("id") not in (None, "")
+            else int(str(raw_general_id).removeprefix("0x").removeprefix("0X"), 16)
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{action_name}检查到{name}体力={current}，"
+            f"低于自动加体阈值{normalized_threshold}，但将领 ID 无效"
+        ) from error
+    if general_id <= 0:
+        raise ValueError(
+            f"{action_name}检查到{name}体力={current}，"
+            f"低于自动加体阈值{normalized_threshold}，但缺少有效将领 ID"
+        )
+    rows = inventory.get("items")
+    if not isinstance(rows, list):
+        raise ValueError(f"{action_name}使用{ENERGY_ITEM_NAME}前背包快照无效")
+    available = sum(
+        max(0, int(row.get("count") or 0))
+        for row in rows
+        if isinstance(row, Mapping)
+        and (
+            int(row.get("itemId") or row.get("id") or -1) == ENERGY_ITEM_ID
+            or str(row.get("name") or "") == ENERGY_ITEM_NAME
+        )
+    )
+    if available < 1:
+        raise ValueError(
+            f"{action_name}检查到{name}体力={current}，"
+            f"低于自动加体阈值{normalized_threshold}，"
+            f"但宝库没有{ENERGY_ITEM_NAME}"
+        )
+    payload = build_use_general_item_payload(
+        general_id,
+        ENERGY_ITEM_ID,
+        1,
+    )
+    return {
+        "ready": True,
+        "actionRequired": True,
+        "generalId": general_id,
+        "generalName": name,
+        "itemId": ENERGY_ITEM_ID,
+        "itemName": ENERGY_ITEM_NAME,
+        "itemCount": 1,
+        "availableItemCount": available,
+        "before": current,
+        "expectedAfter": current + ENERGY_ITEM_GAIN,
+        "threshold": normalized_threshold,
+        "payloadHex": payload.hex(),
+    }
+
+
+def apply_general_energy_receipt(
+    plan: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    *,
+    action_name: str,
+) -> dict[str, Any]:
+    if not bool(plan.get("actionRequired")):
+        return dict(plan)
+    if not bool(receipt.get("success")):
+        raise ValueError(
+            f"{action_name}活血丹使用失败："
+            f"{receipt.get('message') or '无提示'}"
+        )
+    before = int(plan["before"])
+    after = int(plan.get("expectedAfter") or before + ENERGY_ITEM_GAIN)
+    name = str(plan.get("generalName") or plan.get("generalId") or "未知将领")
+    threshold = int(plan["threshold"])
+    return {
+        **dict(plan),
+        "success": True,
+        "after": after,
+        # The caller that asked for the top-up is part of the fact: the same
+        # item is spent by 将领维护 and by every expedition preflight, and the
+        # record page has to be able to say which one spent it.
+        "actionName": str(action_name),
+        "message": (
+            f"自动加体完成：{name} 使用{ENERGY_ITEM_NAME}1个，"
+            f"体力+{ENERGY_ITEM_GAIN}，由{before}更新为{after}；"
+            f"检查来源={action_name}，设定阈值={threshold}"
+        ),
+        "receipt": dict(receipt),
+    }
+
+
+def plan_generals_full_loyalty(
+    generals: Sequence[Mapping[str, Any]],
+    *,
+    action_name: str,
+) -> list[dict[str, Any]]:
+    """Build deterministic per-general top-up plans without sending packets."""
+
+    plans = []
+    seen = set()
+    for index, general in enumerate(generals):
+        try:
+            general_id = int(general.get("id") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{action_name}满忠失败：第{index + 1}名将领 ID 无效") from error
+        if general_id <= 0 or general_id in seen:
+            raise ValueError(f"{action_name}满忠失败：将领 ID 无效或重复")
+        seen.add(general_id)
+        name = str(general.get("name") or general_id)
+        if general.get("loyalty") is None or general.get("loyaltyLimit") is None:
+            raise ValueError(
+                f"{action_name}满忠失败：{name} 的忠诚度状态不可用，"
+                "本轮暂不出征"
+            )
+        try:
+            loyalty = int(general["loyalty"])
+            loyalty_limit = int(general["loyaltyLimit"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{action_name}满忠失败：{name} 的忠诚度无效") from error
+        if loyalty_limit <= 0 or loyalty < 0 or loyalty > loyalty_limit:
+            raise ValueError(
+                f"{action_name}满忠失败：{name} 的忠诚度"
+                f"{loyalty}/{loyalty_limit}无效"
+            )
+        delta = loyalty_limit - loyalty
+        row = {
+            "sourceIndex": index,
+            "generalId": general_id,
+            "name": name,
+            "loyalty": loyalty,
+            "loyaltyLimit": loyalty_limit,
+            "delta": delta,
+            "skipped": delta == 0,
+        }
+        if delta:
+            row["payloadHex"] = build_add_loyalty_payload(
+                general_id,
+                delta,
+            ).hex()
+        plans.append(row)
+    return plans
+
+
+def apply_full_loyalty_receipt(
+    plan: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    *,
+    action_name: str,
+) -> dict[str, Any]:
+    name = str(plan.get("name") or plan.get("generalId") or "未知将领")
+    if bool(plan.get("skipped")):
+        return {**dict(plan), "success": True}
+    if not bool(receipt.get("success")):
+        raise ValueError(
+            f"{action_name}满忠失败：{name}；"
+            f"{receipt.get('message') or '未收到 0x821f 加忠成功响应'}，"
+            "本轮暂不出征"
+        )
+    general_id = int(plan["generalId"])
+    updated = next(
+        (
+            row for row in receipt.get("generals") or []
+            if isinstance(row, Mapping)
+            and int(row.get("generalId") or 0) == general_id
+        ),
+        None,
+    )
+    if updated is None:
+        raise ValueError(
+            f"{action_name}满忠失败：{name}；响应未包含该将领，"
+            "本轮暂不出征"
+        )
+    new_loyalty = int(updated.get("loyalty") or 0)
+    new_limit = int(updated.get("loyaltyLimit") or plan["loyaltyLimit"])
+    if new_loyalty < new_limit:
+        raise ValueError(
+            f"{action_name}满忠失败：{name} 加忠后仍为 "
+            f"{new_loyalty}/{new_limit}，本轮暂不出征"
+        )
+    return {
+        **dict(plan),
+        **dict(receipt),
+        "success": True,
+        "loyalty": new_loyalty,
+        "loyaltyLimit": new_limit,
+        "name": name,
+    }
 
 
 def build_add_loyalty_payload(general_id: int, delta: int) -> bytes:
@@ -289,33 +546,3 @@ def build_use_inventory_item_payload(item_id: int, count: int = 1) -> bytes:
     if not 1 <= int(count) <= 0xFFFF:
         raise RuntimeError(f"道具数量超出范围：{count}")
     return struct.pack(">HH", int(item_id), int(count))
-
-
-def equipment_is_safe_to_discard(
-    equipment: dict[str, Any],
-    *,
-    max_quality: int,
-    max_level: int,
-    quality_names: Sequence[str] = EQUIPMENT_QUALITY_NAMES,
-) -> tuple[bool, str]:
-    if int(equipment.get("instanceId") or -1) <= 0:
-        return False, "装备实例 ID 无效"
-    if bool(equipment.get("famous")):
-        return False, "名将装备"
-    if int(equipment.get("strengthen") or 0) > 0:
-        return False, "已经强化"
-    if str(equipment.get("extraText") or "").strip():
-        return False, "存在炼魂/额外描述"
-    level = int(equipment.get("level") or 0)
-    if level >= 80:
-        return False, "80级以上保护"
-    if level >= int(max_level):
-        return False, f"等级不低于{max_level}"
-    quality = int(
-        equipment.get("quality")
-        if equipment.get("quality") is not None
-        else -1
-    )
-    if quality < 0 or quality > int(max_quality):
-        return False, f"品质高于{quality_names[max_quality]}"
-    return True, ""

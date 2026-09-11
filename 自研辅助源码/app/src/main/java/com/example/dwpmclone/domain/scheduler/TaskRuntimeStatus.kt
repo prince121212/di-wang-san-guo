@@ -22,22 +22,30 @@ data class TaskRuntimeStatus(
     val updatedAtMillis: Long,
     val nextRunAtMillis: Long? = null,
     val tick: Int? = null,
+    val executionGeneration: String? = null,
+    val skipped: Boolean = false,
+    val skipReason: String? = null,
+    val statusText: String? = null,
 ) {
-    fun displayText(nowMillis: Long = System.currentTimeMillis()): String = when (state) {
-        TaskRuntimeState.WAITING -> "等待调度"
-        TaskRuntimeState.RUNNING -> "执行中"
-        TaskRuntimeState.SLEEPING -> nextRunAtMillis?.let {
+    fun displayText(nowMillis: Long = System.currentTimeMillis()): String = when {
+        skipped -> statusText?.takeIf(String::isNotBlank)
+            ?: message.takeIf(String::isNotBlank)
+            ?: "已做（跳过）"
+        state == TaskRuntimeState.WAITING -> "等待调度"
+        state == TaskRuntimeState.RUNNING -> "执行中"
+        state == TaskRuntimeState.SLEEPING -> nextRunAtMillis?.let {
             val seconds = ((it - nowMillis).coerceAtLeast(0L) + 999L) / 1_000L
             "等待 ${seconds}秒"
         } ?: "等待下次执行"
-        TaskRuntimeState.RETRYING -> nextRunAtMillis?.let {
+        state == TaskRuntimeState.RETRYING -> nextRunAtMillis?.let {
             val seconds = ((it - nowMillis).coerceAtLeast(0L) + 999L) / 1_000L
             "重试倒计时 ${seconds}秒"
         } ?: "等待重试"
-        TaskRuntimeState.STOPPED -> "已停止"
-        TaskRuntimeState.NEED_RELOGIN -> "需要重新登录"
-        TaskRuntimeState.ERROR -> "执行异常"
-        TaskRuntimeState.SERVICE_STOPPED -> "后台未运行"
+        state == TaskRuntimeState.STOPPED -> "已停止"
+        state == TaskRuntimeState.NEED_RELOGIN -> "需要重新登录"
+        state == TaskRuntimeState.ERROR -> "执行异常"
+        state == TaskRuntimeState.SERVICE_STOPPED -> "后台未运行"
+        else -> "等待调度"
     }
 }
 

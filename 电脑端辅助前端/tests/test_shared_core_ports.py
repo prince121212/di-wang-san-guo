@@ -15,7 +15,11 @@ for source in (CORE_SOURCE, DESKTOP_SOURCE):
     if str(source) not in sys.path:
         sys.path.insert(0, str(source))
 
-from desktop_adapter.shared_core_ports import create_desktop_platform_ports
+from desktop_adapter.shared_core_ports import (
+    DesktopCloudSharedDataPort,
+    DesktopRawHttpPort,
+    create_desktop_platform_ports,
+)
 from dwpm_core import CoreFacade, create_hosted_core
 from dwpm_core.host_ports import platform_ports_from_host_bridge
 
@@ -30,6 +34,7 @@ class FakeHostedBridge:
         self.logs = []
         self.notifications = []
         self.wakes = []
+        self.cloud_requests = []
 
     def savePassword(self, account_ref: str, password: str) -> None:
         self.passwords[account_ref] = password
@@ -72,8 +77,39 @@ class FakeHostedBridge:
     def publishEvent(self, payload: str) -> None:
         self.events.append(json.loads(payload))
 
+    def cloudSharedDataConfigured(self) -> bool:
+        return True
+
+    def executeCloudRequest(self, payload: str) -> str:
+        request = json.loads(payload)
+        self.cloud_requests.append(request)
+        return json.dumps({
+            "status": 200,
+            "body": {"ok": True, "mode": "LOCAL_ONLY"},
+        })
+
 
 class SharedCorePlatformPortTests(unittest.TestCase):
+    def test_desktop_authenticated_raw_http_uses_account_game_callback(self) -> None:
+        observed = []
+
+        def exchange(request):
+            observed.append(dict(request))
+            return {"status": 200, "body": b"game", "headers": {}}
+
+        port = DesktopRawHttpPort(exchange)
+        result = port.exchange({
+            "method": "POST",
+            "url": "http://game.test/kingWapServer/HttpClient",
+            "body": b"packet",
+            "accountRef": "176",
+            "requireExecutionOwner": True,
+        })
+
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["body"], b"game")
+        self.assertEqual(observed[0]["accountRef"], "176")
+
     def test_host_bridge_exposes_capabilities_without_business_rules(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bridge = FakeHostedBridge(Path(directory))
@@ -105,11 +141,56 @@ class SharedCorePlatformPortTests(unittest.TestCase):
             ports.wake.cancel("7")
             ports.logs.write({"message": "日志"})
             ports.events.publish({"type": "event"})
+            cloud_result = ports.cloud_shared_data.exchange({
+                "method": "POST",
+                "path": "/v1/presence/heartbeat",
+                "body": {"actorId": "a" * 64},
+            })
+            directory_result = ports.cloud_shared_data.exchange({
+                "method": "POST",
+                "path": "/v1/servers/directory/sync",
+                "body": {
+                    "platformKey": "sglm",
+                    "areas": [{
+                        "serverKey": "qzone_352",
+                        "areaName": "周年服352区",
+                    }],
+                },
+            })
 
             self.assertEqual(bridge.notifications[0]["message"], "通知")
             self.assertEqual(bridge.wakes, [("7", 1234), ("7", None)])
             self.assertEqual(bridge.logs[0]["message"], "日志")
             self.assertEqual(bridge.events[0]["type"], "event")
+            self.assertTrue(ports.cloud_shared_data.configured())
+            self.assertEqual(cloud_result["body"]["mode"], "LOCAL_ONLY")
+            self.assertEqual(directory_result["status"], 200)
+            self.assertEqual(
+                bridge.cloud_requests[0]["path"],
+                "/v1/presence/heartbeat",
+            )
+            self.assertEqual(
+                bridge.cloud_requests[1]["path"],
+                "/v1/servers/directory/sync",
+            )
+
+    def test_desktop_cloud_port_is_disabled_without_runtime_configuration(self) -> None:
+        self.assertFalse(DesktopCloudSharedDataPort("", "").configured())
+        self.assertFalse(
+            DesktopCloudSharedDataPort(
+                "http://public.example", "runtime-token"
+            ).configured()
+        )
+        self.assertTrue(
+            DesktopCloudSharedDataPort(
+                "https://shared.example", "runtime-token"
+            ).configured()
+        )
+        self.assertTrue(
+            DesktopCloudSharedDataPort(
+                "http://127.0.0.1:8787", "runtime-token"
+            ).configured()
+        )
 
     def test_hosted_core_publishes_operation_events_through_bridge(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

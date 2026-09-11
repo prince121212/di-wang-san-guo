@@ -130,6 +130,64 @@ def country_donation_limits(session: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def parse_daily_donation_receipt(
+    payload: bytes,
+    resource: str,
+    amount: int = 0,
+) -> dict[str, Any]:
+    """Normalize live donation receipts, including same-day idempotency.
+
+    Confirmed Android/device responses use signed status bytes. Resource
+    donation returns ``-3`` after today's quota has already been consumed;
+    technology donation returns ``-4``. Both are terminal proof that the daily
+    action is complete and must not remain in the retry queue.
+    """
+
+    key = str(resource or "")
+    if key not in {"copper", "food", "technology"}:
+        raise ValueError(f"未知捐献资源：{resource}")
+    labels = {
+        "copper": "铜钱",
+        "food": "粮食",
+        "technology": "科技积分",
+    }
+    label = labels[key]
+    if not payload:
+        return {
+            "success": False,
+            "completed": False,
+            "alreadyCompleted": False,
+            "resource": key,
+            "amount": int(amount),
+            "status": None,
+            "statusUnsigned": None,
+            "message": f"未确认{label}捐献成功（服务器回执为空）",
+        }
+    status = struct.unpack(">b", bytes(payload[:1]))[0]
+    quota_status = -4 if key == "technology" else -3
+    already_completed = status == quota_status
+    success = status == 0 or already_completed
+    if status == 0:
+        message = f"已按最高额度捐献{label}{int(amount)}"
+    elif already_completed:
+        message = f"{label}今日捐献额度已用完，按已完成处理"
+    else:
+        message = f"未确认{label}捐献成功（响应状态={status}）"
+    return {
+        "success": success,
+        "completed": success,
+        "alreadyCompleted": already_completed,
+        "completionReason": (
+            "daily-donation-quota-used" if already_completed else ""
+        ),
+        "resource": key,
+        "amount": int(amount),
+        "status": int(status),
+        "statusUnsigned": int(status) & 0xFF,
+        "message": message,
+    }
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -839,6 +897,22 @@ def general_visit_already_visited(status: Any, message: Any) -> bool:
     return int(status or 0) == int(DAILY_GENERAL_VISIT_CONTRACT["alreadyVisitedStatus"]) and any(
         marker in str(message or "")
         for marker in DAILY_GENERAL_VISIT_CONTRACT["alreadyVisitedMarkers"]
+    )
+
+
+def general_visit_has_no_candidates(status: Any, message: Any) -> bool:
+    """Return whether the server explicitly says the king has no generals.
+
+    This is a normal, actionable-empty result rather than a transport or
+    protocol failure.  Keep the status check broad because the live server's
+    business status may vary while the human-readable reason is stable.
+    """
+
+    return int(status or 0) != 0 and any(
+        marker in str(message or "")
+        for marker in DAILY_GENERAL_VISIT_CONTRACT.get(
+            "noCandidateMarkers", ["国王麾下无名将"]
+        )
     )
 
 

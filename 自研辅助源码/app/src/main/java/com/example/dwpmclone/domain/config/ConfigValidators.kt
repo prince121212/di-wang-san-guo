@@ -1,7 +1,6 @@
 package com.example.dwpmclone.domain.config
 
 import com.example.dwpmclone.domain.model.*
-import com.example.dwpmclone.domain.protocol.DungeonProtocolShapes
 
 data class ConfigValidationIssue(
     val field: String,
@@ -50,10 +49,7 @@ object ConfigValidators {
         if (config.dailyTimes <= 0) add(ConfigValidationIssue("dailyTimes", "每日刷副本次数必须为正数"))
         if (config.formationIds.isEmpty() && config.enabled) add(ConfigValidationIssue("formationIds", "自动副本需要选择出征编队", ValidationSeverity.WARNING))
         if (config.chapter !in 0..6) add(ConfigValidationIssue("chapter", "副本章节应为第1-7章"))
-        val stageCount = DungeonProtocolShapes.stageCount(config.chapter)
-        if (stageCount > 0 && config.stage !in 1..stageCount) {
-            add(ConfigValidationIssue("stage", "第${config.chapter + 1}章关卡应为1-$stageCount"))
-        }
+        if (config.stage <= 0) add(ConfigValidationIssue("stage", "副本关卡必须为正数"))
         if (config.boxPosition !in 0..2) add(ConfigValidationIssue("boxPosition", "副本宝箱位置应为左、中、右"))
     }
 

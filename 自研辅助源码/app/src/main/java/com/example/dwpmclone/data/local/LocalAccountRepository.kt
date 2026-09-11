@@ -226,6 +226,17 @@ class LocalAccountRepository(
     }
 
     private fun JSONObject.toGameAccount(): GameAccount? = runCatching {
+        val parsedChannel = runCatching {
+            Channel.valueOf(optString("channel"))
+        }.getOrDefault(Channel.UNKNOWN)
+        val rawPlatform = optString("platform").trim()
+        val platformKey = optString("platformKey").trim().ifBlank {
+            if (
+                parsedChannel == Channel.DANGLE ||
+                rawPlatform.contains("当乐", ignoreCase = true) ||
+                rawPlatform.equals("downjoy", ignoreCase = true)
+            ) "downjoy" else "sglm"
+        }
         GameAccount(
             id = optLong("id", DEFAULT_ACCOUNT_ID),
             displayName = optString("displayName").ifBlank { null },
@@ -233,7 +244,7 @@ class LocalAccountRepository(
             serverName = optString("serverName"),
             serverId = optString("serverId").ifBlank { null },
             gameVersion = runCatching { GameVersion.valueOf(optString("gameVersion")) }.getOrDefault(GameVersion.OTHER),
-            channel = runCatching { Channel.valueOf(optString("channel")) }.getOrDefault(Channel.UNKNOWN),
+            channel = parsedChannel,
             session = optJSONObject("session")?.toGameSession(),
             enabled = optBoolean("enabled", true),
             monarchName = optString("monarchName").ifBlank { null },
@@ -241,7 +252,15 @@ class LocalAccountRepository(
             loginState = optString("loginState", "NO_REAL_PROTOCOL_LOGIN"),
             gameAuthSignEvidence = optString("gameAuthSignEvidence").ifBlank {
                 optString("gameAuthSignPlaceholder")
-            }.ifBlank { null }
+            }.ifBlank { null },
+            platform = rawPlatform.ifBlank {
+                if (platformKey == "downjoy") "当乐帝王三国" else "热血三国联盟"
+            },
+            platformKey = platformKey,
+            serial = optString("serial", "0").trim().ifBlank { "0" },
+            serverQuery = optString("serverQuery").trim().ifBlank {
+                optString("serverName")
+            }
         )
     }.getOrNull()
 
@@ -259,6 +278,10 @@ class LocalAccountRepository(
         .put("nation", nation)
         .put("loginState", loginState)
         .put("gameAuthSignEvidence", gameAuthSignEvidence)
+        .put("platform", platform)
+        .put("platformKey", platformKey)
+        .put("serial", serial)
+        .put("serverQuery", serverQuery)
 
     private fun JSONObject.toGameSession(): GameSession = GameSession(
         accountId = optLong("accountId"),
@@ -295,6 +318,10 @@ class LocalAccountRepository(
         .put("nation", nation)
         .put("loginState", loginState)
         .put("gameAuthSignEvidence", gameAuthSignEvidence)
+        .put("platform", platform)
+        .put("platformKey", platformKey)
+        .put("serial", serial)
+        .put("serverQuery", serverQuery)
 
     private fun GameSession.toSharedJson(): JSONObject = JSONObject()
         .put("accountId", accountId)

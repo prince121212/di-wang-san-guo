@@ -116,7 +116,7 @@ class SharedAccountStateMachineTests(unittest.TestCase):
         self.assertEqual(server["nextRetryAtMillis"], 603_000)
         self.assertEqual(server["sessionSecretAction"], "delete")
 
-    def test_network_pause_and_session_expiry_never_expose_live_session(self) -> None:
+    def test_probe_needs_three_consecutive_failures_before_network_pause(self) -> None:
         online = {
             "desiredStarted": True,
             "loginState": "REAL_PROTOCOL_ONLINE",
@@ -127,24 +127,60 @@ class SharedAccountStateMachineTests(unittest.TestCase):
             EVENT_NETWORK_UNAVAILABLE,
             now_millis=10_000,
         )
-        unavailable = reduce_account_event(
+        unavailable_first = reduce_account_event(
             online,
             EVENT_PROBE_UNAVAILABLE,
             now_millis=20_000,
             details={"message": "timed out"},
         )
+        unavailable_second = reduce_account_event(
+            unavailable_first,
+            EVENT_PROBE_UNAVAILABLE,
+            now_millis=25_000,
+            details={"message": "timed out"},
+        )
+        unavailable_third = reduce_account_event(
+            unavailable_second,
+            EVENT_PROBE_UNAVAILABLE,
+            now_millis=30_000,
+            details={"message": "timed out"},
+        )
+        unavailable_fourth = reduce_account_event(
+            unavailable_third,
+            EVENT_PROBE_UNAVAILABLE,
+            now_millis=210_000,
+            details={"message": "timed out"},
+        )
         expired = reduce_account_event(
             online,
             EVENT_SESSION_EXPIRED,
-            now_millis=30_000,
+            now_millis=40_000,
             details={"message": "response-opcode-0x8016"},
         )
 
         self.assertEqual(disconnected["nextOperation"], "wait-network")
         self.assertFalse(disconnected["liveSessionUsable"])
-        self.assertEqual(unavailable["failureKind"], "network")
-        self.assertEqual(unavailable["nextOperation"], "probe")
-        self.assertFalse(unavailable["liveSessionUsable"])
+        self.assertEqual(unavailable_first["failureKind"], "network")
+        self.assertEqual(unavailable_first["nextOperation"], "probe-degraded")
+        self.assertTrue(unavailable_first["liveSessionUsable"])
+        self.assertEqual(unavailable_first["nextRetryAtMillis"], 25_000)
+        self.assertTrue(unavailable_second["liveSessionUsable"])
+        self.assertEqual(unavailable_second["failureCount"], 2)
+        self.assertEqual(
+            unavailable_third["loginState"],
+            "REAL_PROTOCOL_NETWORK_PAUSED",
+        )
+        self.assertEqual(unavailable_third["nextOperation"], "probe")
+        self.assertEqual(unavailable_third["nextRetryAtMillis"], 210_000)
+        self.assertFalse(unavailable_third["liveSessionUsable"])
+        self.assertEqual(unavailable_fourth["failureCount"], 4)
+        self.assertEqual(
+            unavailable_fourth["loginState"],
+            "REAL_PROTOCOL_NEED_RELOGIN",
+        )
+        self.assertEqual(unavailable_fourth["nextOperation"], "login")
+        self.assertEqual(unavailable_fourth["nextRetryAtMillis"], 215_000)
+        self.assertEqual(unavailable_fourth["sessionSecretAction"], "retain")
         self.assertEqual(expired["loginState"], "REAL_PROTOCOL_NEED_RELOGIN")
         self.assertEqual(expired["nextOperation"], "login")
         self.assertEqual(expired["sessionSecretAction"], "retain")
@@ -174,6 +210,28 @@ class SharedAccountStateMachineTests(unittest.TestCase):
         self.assertEqual(without_session["nextOperation"], "login")
         self.assertFalse(with_session["liveSessionUsable"])
         self.assertFalse(without_session["liveSessionUsable"])
+
+    def test_repeated_server_rejection_does_not_trigger_fresh_login_loop(self) -> None:
+        rejected = reduce_account_event(
+            {
+                "desiredStarted": True,
+                "loginState": "REAL_PROTOCOL_NETWORK_PAUSED",
+                "sessionCredentialPresent": True,
+                "failureKind": "server",
+                "failureCount": 3,
+            },
+            EVENT_PROBE_UNAVAILABLE,
+            now_millis=10_000,
+            details={"message": "HTTP 403 forbidden"},
+        )
+
+        self.assertEqual(rejected["failureKind"], "server")
+        self.assertEqual(rejected["failureCount"], 4)
+        self.assertEqual(
+            rejected["loginState"],
+            "REAL_PROTOCOL_NETWORK_PAUSED",
+        )
+        self.assertEqual(rejected["nextOperation"], "probe")
 
     def test_process_recovery_preserves_persisted_future_backoff(self) -> None:
         waiting = reduce_account_event(

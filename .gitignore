@@ -82,3 +82,5 @@ proxy_outbound_ips.json
 node_modules/
 dist/
 .cache/
+cloud-shared-data/.dev.vars
+cloud-shared-data/.wrangler/

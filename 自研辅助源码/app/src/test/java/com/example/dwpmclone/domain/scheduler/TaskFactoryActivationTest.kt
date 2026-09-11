@@ -31,11 +31,11 @@ class TaskFactoryActivationTest {
             )
         )
 
-        assertEquals(listOf(TaskType.STATE_REFRESH), tasks.map { it.type })
+        assertEquals(emptyList<TaskType>(), tasks.map { it.type })
     }
 
     @Test
-    fun technologyOnlyBackgroundSearchAndVerifiedPlantingRemainRunnable() {
+    fun technologyUsesSharedResidentWhileSearchAndVerifiedPlantingRemainMarkers() {
         val tasks = TaskFactory.buildBackgroundTaskSet(
             7L,
             AssistantConfigBundle(
@@ -50,13 +50,12 @@ class TaskFactoryActivationTest {
 
         assertEquals(
             setOf(
-                TaskType.STATE_REFRESH,
                 TaskType.MINE_SEARCH,
-                TaskType.INTERNAL,
                 TaskType.SIX_MINISTRIES
             ),
             tasks.map { it.type }.toSet()
         )
+        assertTrue(tasks.none { it.type == TaskType.INTERNAL })
     }
 
     @Test
@@ -73,11 +72,11 @@ class TaskFactoryActivationTest {
             )
         )
 
-        assertEquals(listOf(TaskType.STATE_REFRESH), tasks.map { it.type })
+        assertEquals(emptyList<TaskType>(), tasks.map { it.type })
     }
 
     @Test
-    fun enabledBrushAndMiningCreateHiddenIdlePreparationAlongsideMilitaryTasks() {
+    fun enabledBrushAndMiningCreateOnlySharedOwnerConfigurationMarkers() {
         val tasks = TaskFactory.buildBackgroundTaskSet(
             7L,
             AssistantConfigBundle(
@@ -95,10 +94,7 @@ class TaskFactoryActivationTest {
         assertEquals(
             setOf(
                 TaskType.SHUA_HUANG,
-                TaskType.BANDIT_PREFETCH,
-                TaskType.AUTO_MINING,
-                TaskType.MINE_PREFETCH,
-                TaskType.STATE_REFRESH
+                TaskType.AUTO_MINING
             ),
             tasks.map { it.type }.toSet()
         )

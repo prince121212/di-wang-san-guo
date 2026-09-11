@@ -49,7 +49,12 @@ data class GameAccount(
     val monarchName: String? = null,
     val nation: String? = null,
     val loginState: String = "LOCAL_NOT_LOGGED_IN",
-    val gameAuthSignEvidence: String? = null
+    val gameAuthSignEvidence: String? = null,
+    /** Public login routing metadata. Credentials and Session secrets remain outside this model. */
+    val platform: String = "热血三国联盟",
+    val platformKey: String = "sglm",
+    val serial: String = "0",
+    val serverQuery: String = serverName
 )
 
 data class GameSession(
@@ -155,19 +160,6 @@ data class GeneralConfig(
     val requireChineseNamePrefix: Boolean = true
 )
 
-data class FoodToCopperConfig(
-    val enabled: Boolean,
-    val copperFloorWan: Int = 1,
-    val pollMillis: Long = 10L * 60L * 1_000L
-) {
-    init {
-        require(copperFloorWan in setOf(1, 10, 20, 50)) {
-            "铜钱保底只支持1、10、20、50万"
-        }
-        require(pollMillis >= 60_000L) { "粮食转铜检查间隔不能少于1分钟" }
-    }
-}
-
 data class FormationConfig(
     val formationId: Long,
     val generalIds: List<Long>,
@@ -218,6 +210,7 @@ object MinistryProtocolCrop {
 data class DungeonConfig(
     val enabled: Boolean,
     val dailyTimes: Int = 999,
+    val fullTroops: Boolean = false,
     val boxPosition: Int,
     val chapter: Int,
     val stage: Int,
@@ -378,17 +371,6 @@ data class AlarmConfig(
     val errorEnabled: Boolean = true
 )
 
-enum class AlarmNotificationKind { INCOMING, MILITARY, ERROR }
-
-data class AlarmNotificationEvent(
-    val accountId: Long,
-    val kind: AlarmNotificationKind,
-    val text: String,
-    val vibrate: Boolean,
-    /** The sink always receives new events so “仅日志” remains observable. */
-    val showNotification: Boolean = true
-)
-
 /**
  * Static response-model snapshot recovered from smali field access.
  *
@@ -454,20 +436,6 @@ data class LicenseConfig(
 data class OpenServerQuery(
     val gameVersion: GameVersion,
     val serverName: String
-)
-
-data class FamousGeneral(
-    val name: String,
-    val breakthrough: Int?,
-    val attribute: String?,
-    val nation: String?
-)
-
-data class GuideArticle(
-    val id: String,
-    val title: String,
-    val body: String,
-    val sourceAsset: String
 )
 
 data class TreasureFilterConfig(

@@ -262,7 +262,10 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             "status": "online",
             "statusText": "开启",
             "started": True,
-            "shouldProbe": True,
+            # A successful game response only 20 seconds ago still validates
+            # the session. Mobile no longer emits a redundant standalone
+            # heartbeat until the 60-second validation interval expires.
+            "shouldProbe": False,
             "mayUseLiveSession": True,
         },
     )
@@ -1164,6 +1167,7 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             "safe": equipment_is_safe_to_discard(
                 {
                     "instanceId": 1,
+                    "equipmentMetadataComplete": True,
                     "famous": False,
                     "strengthen": 0,
                     "extraText": "",
@@ -1176,6 +1180,7 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
             "strengthened": equipment_is_safe_to_discard(
                 {
                     "instanceId": 1,
+                    "equipmentMetadataComplete": True,
                     "famous": False,
                     "strengthen": 1,
                     "extraText": "",

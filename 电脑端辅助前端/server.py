@@ -36,6 +36,7 @@ import ssl
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import threading
@@ -45,13 +46,31 @@ import urllib.request
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, asdict
-from datetime import date, timedelta
+from datetime import date
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _desktop_data_directory() -> Path:
+    configured = str(os.environ.get("DWPM_DATA_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if __name__ == "__main__":
+        return (ROOT / "reports").resolve()
+    # The test suite imports server.py under several module names. Sharing the
+    # production reports directory in those imports lets test-owned CoreFacade
+    # instances replace the live operation/account ledgers. Give every imported
+    # module an isolated store unless its caller explicitly supplied a data dir.
+    return Path(
+        tempfile.mkdtemp(prefix=f"dwpm-desktop-import-{os.getpid()}-")
+    ).resolve()
+
+
+DESKTOP_DATA_DIR = _desktop_data_directory()
 SHARED_PYTHON_SOURCE_DIR = ROOT.parent / "shared_core" / "python"
 if not SHARED_PYTHON_SOURCE_DIR.is_dir():
     raise RuntimeError(f"shared Python core is missing: {SHARED_PYTHON_SOURCE_DIR}")
@@ -61,6 +80,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dwpm_core import CoreFacade
+from dwpm_core.host_ports import HostGameCommandError
+from dwpm_core.reference import (
+    GUIDE_ARTICLE_SPECS,
+    guide_reference_payload as shared_guide_reference_payload,
+)
 from dwpm_core.settings import (
     MILITARY_FUTURE_READINESS as SHARED_MILITARY_FUTURE_READINESS,
     normalize_military_future_settings as shared_normalize_military_future_settings,
@@ -104,6 +128,7 @@ from dwpm_core.features.formation import (
     parse_heal_preinfo_response as shared_parse_heal_preinfo_response,
     parse_heal_response as shared_parse_heal_response,
     parse_refill_response as shared_parse_refill_response,
+    plan_heal_wounded as shared_plan_heal_wounded,
     soldier_type_code as shared_soldier_type_code,
     soldier_type_name as shared_soldier_type_name,
 )
@@ -128,6 +153,7 @@ from dwpm_core.features.lossless import (
     LOSSLESS_STAGE_NAMES as SHARED_LOSSLESS_STAGE_NAMES,
     evaluate_level10_guard_lineup as shared_evaluate_level10_guard_lineup,
     lossless_level_number as shared_lossless_level_number,
+    lossless_stage_context as shared_lossless_stage_context,
     lossless_status_phase as shared_lossless_status_phase,
     parse_lossless_catalog as shared_parse_lossless_catalog,
     parse_lossless_lineup as shared_parse_lossless_lineup,
@@ -146,10 +172,18 @@ from dwpm_core.features.generals import (
     recover_generals_from_8004 as shared_recover_generals_from_8004,
 )
 from dwpm_core.features.inventory import (
+    AUTO_OPEN_ITEM_NAMES as SHARED_AUTO_OPEN_ITEM_NAMES,
+    AUTO_OPEN_KEY_REQUIREMENTS as SHARED_AUTO_OPEN_KEY_REQUIREMENTS,
+    equipment_quality_codes,
+    inventory_reward_log_text as shared_inventory_reward_log_text,
     parse_8104_equipment_records as shared_parse_8104_equipment_records,
     parse_8104_inventory as shared_parse_8104_inventory,
+    plan_open_one_inventory as shared_plan_open_one_inventory,
 )
 from dwpm_core.features.maintenance import (
+    ENERGY_ITEM_GAIN as SHARED_ENERGY_ITEM_GAIN,
+    apply_full_loyalty_receipt as shared_apply_full_loyalty_receipt,
+    apply_general_energy_receipt as shared_apply_general_energy_receipt,
     build_add_loyalty_payload as shared_build_add_loyalty_payload,
     build_delete_all_mail_payload as shared_build_delete_all_mail_payload,
     build_discard_inventory_payload as shared_build_discard_inventory_payload,
@@ -163,6 +197,8 @@ from dwpm_core.features.maintenance import (
     parse_resource_exchange_response as shared_parse_resource_exchange_response,
     parse_status_utf as shared_parse_status_utf,
     parse_use_general_item_response as shared_parse_use_general_item_response,
+    plan_general_energy_use as shared_plan_general_energy_use,
+    plan_generals_full_loyalty as shared_plan_generals_full_loyalty,
 )
 from dwpm_core.features.daily import (
     DAILY_GENERAL_PAGE_SIZE as SHARED_DAILY_GENERAL_PAGE_SIZE,
@@ -181,8 +217,10 @@ from dwpm_core.features.daily import (
     country_donation_limits as shared_country_donation_limits,
     extract_utf_fields as shared_extract_utf_fields,
     general_visit_already_visited as shared_general_visit_already_visited,
+    general_visit_has_no_candidates as shared_general_visit_has_no_candidates,
     national_citizen_daily_skip_result as shared_national_citizen_daily_skip_result,
     normalize_general_visit_ids as shared_normalize_general_visit_ids,
+    parse_daily_donation_receipt as shared_parse_daily_donation_receipt,
     parse_arena_coin_claim_response as shared_parse_arena_coin_claim_response,
     parse_daily_diamond_box_response as shared_parse_daily_diamond_box_response,
     parse_daily_sign_in_packets as shared_parse_daily_sign_in_packets,
@@ -314,24 +352,1179 @@ from dwpm_core.protocol import (
     read_only_gamehex_to_cmd as shared_read_only_gamehex_to_cmd,
     read_utf as shared_read_utf,
 )
-from desktop_adapter.shared_core_ports import create_desktop_platform_ports
+from desktop_adapter.shared_core_ports import (
+    DesktopAccountRuntimePort,
+    DesktopCloudSharedDataPort,
+    DesktopCredentialPort,
+    DesktopDailyCompletionPort,
+    DesktopGameCommandPort,
+    DesktopMapSnapshotPort,
+    DesktopRawHttpPort,
+    DesktopSessionSecretPort,
+    create_desktop_platform_ports,
+)
+
+
+def _desktop_shared_game_command(
+    account_ref: str,
+    opcode: int,
+    payload: bytes,
+    phase: str,
+    context: dict[str, object],
+) -> dict[str, object]:
+    """Expose the desktop authenticated transport without moving game rules here."""
+
+    sessions = globals().get("SESSIONS") or {}
+    session = sessions.get(str(account_ref))
+    if not isinstance(session, dict):
+        raise HostGameCommandError(
+            "电脑端账号尚未登录，拒绝共享核心原始命令",
+            code="DESKTOP_SESSION_MISSING",
+            status=409,
+        )
+    game_http = str(session.get("gameHttp") or "").strip()
+    try:
+        dm = int(session.get("dm"))
+    except (TypeError, ValueError) as error:
+        raise HostGameCommandError(
+            "电脑端 Session 缺少有效 dm",
+            code="DESKTOP_SESSION_DM_MISSING",
+            status=409,
+        ) from error
+    post_game_fn = globals().get("post_game")
+    if not callable(post_game_fn) or not game_http:
+        raise HostGameCommandError(
+            "电脑端游戏传输尚未就绪",
+            code="DESKTOP_GAME_TRANSPORT_UNAVAILABLE",
+            status=503,
+        )
+    code, data, packets = post_game_fn(
+        game_http,
+        [(int(opcode), bytes(payload))],
+        dm,
+        account_id=str(account_ref),
+        noncritical=bool(context.get("readOnly")),
+        platform=session.get("platformKey") or session.get("platform"),
+    )
+    normalized_packets = []
+    for packet in packets or []:
+        if not isinstance(packet, dict):
+            continue
+        try:
+            packet_opcode = int(packet.get("opcode"))
+        except (TypeError, ValueError):
+            continue
+        packet_payload = packet.get("payload")
+        if isinstance(packet_payload, (bytes, bytearray)):
+            payload_hex = bytes(packet_payload).hex()
+        else:
+            payload_hex = str(packet.get("payloadHex") or "")
+        normalized_packets.append({
+            "opcode": packet_opcode,
+            "payloadHex": payload_hex,
+        })
+    return {
+        "requestOpcode": int(opcode),
+        "httpCode": int(code),
+        "httpOk": 200 <= int(code) < 300,
+        "responseBytes": len(data or b""),
+        "packets": normalized_packets,
+        "phase": str(phase),
+    }
+
+
+def _desktop_shared_raw_game_exchange(
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    """Send a core-built game packet through the account-owned desktop route.
+
+    Shared Python owns packet construction (including multi-command packets),
+    while the desktop host owns only transport facts: the selected account
+    proxy, pacing, game-compatible HTTP headers, request lock and logs.
+    """
+
+    account_ref = str(request.get("accountRef") or "").strip()
+    sessions = globals().get("SESSIONS") or {}
+    session = sessions.get(account_ref)
+    if not account_ref or not isinstance(session, dict):
+        raise HostGameCommandError(
+            "电脑端账号尚未登录，拒绝共享核心原始请求",
+            code="DESKTOP_SESSION_MISSING",
+            status=409,
+        )
+    game_http = str(session.get("gameHttp") or "").strip()
+    request_url = str(request.get("url") or "").strip()
+    if not game_http or request_url != game_http:
+        raise HostGameCommandError(
+            "共享核心游戏地址与当前账号 Session 不匹配",
+            code="DESKTOP_GAME_URL_MISMATCH",
+            status=409,
+        )
+    body = request.get("body")
+    if not isinstance(body, (bytes, bytearray)) or not body:
+        raise HostGameCommandError(
+            "共享核心未提供有效游戏请求字节",
+            code="DESKTOP_GAME_BODY_MISSING",
+            status=409,
+        )
+    commands: list[tuple[int, bytes]] = []
+    for item in request.get("gameCommands") or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            commands.append((
+                int(item.get("opcode")),
+                bytes.fromhex(str(item.get("payloadHex") or "")),
+            ))
+        except (TypeError, ValueError):
+            continue
+    if not commands:
+        raise HostGameCommandError(
+            "共享核心未提供可验证的游戏命令元数据",
+            code="DESKTOP_GAME_COMMANDS_MISSING",
+            status=409,
+        )
+    post_prebuilt = globals().get("post_game_prebuilt")
+    if not callable(post_prebuilt):
+        raise HostGameCommandError(
+            "电脑端账号传输尚未就绪",
+            code="DESKTOP_GAME_TRANSPORT_UNAVAILABLE",
+            status=503,
+        )
+    code, data, _packets = post_prebuilt(
+        game_http,
+        commands,
+        bytes(body),
+        account_id=account_ref,
+        noncritical=bool(request.get("readOnly", False)),
+        platform=session.get("platformKey") or session.get("platform"),
+    )
+    return {
+        "status": int(code),
+        "body": bytes(data or b""),
+        "headers": {},
+    }
+
+
+def _desktop_public_value(value: Any) -> Any:
+    """Copy session facts while excluding credentials and transport secrets."""
+
+    if isinstance(value, dict):
+        output = {}
+        for key, item in value.items():
+            lower = str(key).lower()
+            if (
+                lower in {"dm", "userid", "gameauthsign", "sessiontoken"}
+                or any(
+                    part in lower
+                    for part in (
+                        "password",
+                        "passwd",
+                        "cookie",
+                        "authorization",
+                        "token",
+                        "secret",
+                        "credential",
+                    )
+                )
+            ):
+                continue
+            output[str(key)] = _desktop_public_value(item)
+        return output
+    if isinstance(value, list):
+        return [_desktop_public_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_desktop_public_value(item) for item in value]
+    return value
+
+
+def _desktop_shared_account_record(session_id: str, session: dict[str, Any]) -> dict[str, Any]:
+    role = _desktop_public_value(session.get("role") or {})
+    role_state = _desktop_public_value(session.get("roleState") or {})
+    area = _desktop_public_value(session.get("area") or {})
+    role_id = role.get("roleId") or role.get("id") or session_id
+    public_state = dict(role_state) if isinstance(role_state, dict) else {}
+    public_state.update({
+        "gameHttp": str(session.get("gameHttp") or ""),
+        "serverUrl": str(
+            session.get("serverUrl")
+            or area.get("serverUrl")
+            or area.get("url")
+            or ""
+        ),
+        "serverKey": str(
+            session.get("serverKey")
+            or area.get("serverKey")
+            or area.get("serverId")
+            or ""
+        ),
+        "roleId": role_id,
+        "roleName": role.get("roleName") or role.get("name") or "",
+        "level": role.get("level") or public_state.get("level") or 0,
+        "nation": role.get("nation") or role.get("country") or "",
+        "lastValidatedAt": str(int(now_ms())),
+        "generalsJson": json.dumps(
+            _desktop_public_value(session.get("generals") or []),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "armyJson": json.dumps(
+            _desktop_public_value(session.get("army") or []),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "formationsJson": json.dumps(
+            _desktop_public_value(session.get("formations") or []),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "inventoryJson": json.dumps(
+            _desktop_public_value(session.get("inventory") or {}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "inventoryCapacity": str(
+            int((session.get("inventory") or {}).get("capacity") or 0)
+        ),
+        "militaryIntelJson": json.dumps(
+            _desktop_public_value(session.get("militaryIntel") or {}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "militarySnapshotJson": json.dumps(
+            _desktop_public_value(session.get("militarySnapshot") or {}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "dailyActivityJson": json.dumps(
+            _desktop_public_value(session.get("dailyActivity") or {}),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        "state8004PayloadHex": str(session.get("state8004PayloadHex") or ""),
+    })
+    return {
+        "accountRef": str(session_id),
+        "id": str(session_id),
+        "username": str(session.get("username") or ""),
+        "serverName": str(area.get("areaName") or ""),
+        "platform": str(session.get("platform") or ""),
+        "platformKey": str(session.get("platformKey") or ""),
+        "enabled": True,
+        "loginState": "REAL_PROTOCOL_ONLINE",
+        "session": {
+            "accountId": str(role_id),
+            "sourceMode": 1,
+            "publicState": public_state,
+        },
+    }
+
+
+def _desktop_sync_shared_account(session_id: str) -> dict[str, Any]:
+    sessions = globals().get("SESSIONS") or {}
+    session = sessions.get(str(session_id))
+    if not isinstance(session, dict):
+        raise HostGameCommandError(
+            "电脑端账号尚未登录",
+            code="DESKTOP_SESSION_MISSING",
+            status=409,
+        )
+    try:
+        dm = int(session.get("dm") or 0)
+    except (TypeError, ValueError):
+        dm = 0
+    if dm != 0:
+        _desktop_save_shared_session_secrets(session_id, {"dm": str(dm)})
+    record = _desktop_shared_account_record(str(session_id), session)
+    existing = json.loads(
+        SHARED_PYTHON_CORE.account_record_json(session_id)
+    ).get("account")
+    if isinstance(existing, dict):
+        existing_session = existing.get("session")
+        existing_session = (
+            dict(existing_session) if isinstance(existing_session, dict) else {}
+        )
+        existing_public = existing_session.get("publicState")
+        existing_public = (
+            dict(existing_public) if isinstance(existing_public, dict) else {}
+        )
+        incoming_session = dict(record.get("session") or {})
+        incoming_public = dict(incoming_session.get("publicState") or {})
+        record = {
+            **existing,
+            **record,
+            "session": {
+                **existing_session,
+                **incoming_session,
+                "publicState": {**existing_public, **incoming_public},
+            },
+        }
+    SHARED_PYTHON_CORE.account_record_upsert(record)
+    return session
+
+
+def _desktop_shared_accounts_response(
+    *,
+    summary_only: bool,
+    request_id: str,
+) -> Any:
+    """Feed host facts into the one shared account-card projection."""
+
+    with ACCOUNT_LOCK:
+        source_accounts = [dict(account) for account in ACCOUNTS.values()]
+    existing_accounts = {
+        str(item.get("accountRef") or item.get("id") or ""): item
+        for item in SHARED_PYTHON_CORE.account_records_snapshot().get("accounts") or []
+        if isinstance(item, dict)
+    }
+    records = []
+    runtime: dict[str, Any] = {}
+    login_states = {
+        "online": "REAL_PROTOCOL_ONLINE",
+        "checking": "REAL_PROTOCOL_CHECKING",
+        "offline": "REAL_PROTOCOL_OFFLINE",
+        "stopped": "REAL_PROTOCOL_STOPPED",
+    }
+    for account in source_accounts:
+        account_ref = str(account.get("sessionId") or "").strip()
+        if not account_ref:
+            continue
+        session = SESSIONS.get(account_ref)
+        session = session if isinstance(session, dict) else None
+        summary = public_account_summary(account)
+        role = (session or {}).get("role") or account.get("role") or {}
+        role_state = (session or {}).get("roleState") or account.get("roleState") or {}
+        area = (session or {}).get("area") or account.get("area") or {}
+        heartbeat = account.get("lastHeartbeat")
+        heartbeat = heartbeat if isinstance(heartbeat, dict) else {}
+        last_checked_at = heartbeat.get("checkedAt")
+        existing_record = existing_accounts.get(account_ref) or {}
+        existing_public = (
+            ((existing_record.get("session") or {}).get("publicState") or {})
+            if isinstance(existing_record, dict)
+            else {}
+        )
+        host_public = {}
+        if session is not None:
+            host_public = (
+                (_desktop_shared_account_record(account_ref, session).get("session") or {})
+                .get("publicState")
+                or {}
+            )
+            try:
+                dm = int(session.get("dm") or 0)
+            except (TypeError, ValueError):
+                dm = 0
+            if dm != 0:
+                _desktop_save_shared_session_secrets(
+                    account_ref,
+                    {"dm": str(dm)},
+                )
+        public_state = _desktop_public_value({
+            **(existing_public if isinstance(existing_public, dict) else {}),
+            **(host_public if isinstance(host_public, dict) else {}),
+            **(role_state if isinstance(role_state, dict) else {}),
+            "roleId": (
+                (role or {}).get("roleId")
+                or (role or {}).get("id")
+                or account_ref
+            ),
+            "roleName": (
+                (role_state or {}).get("roleName")
+                or (role or {}).get("roleName")
+                or summary.get("roleName")
+                or ""
+            ),
+            "level": summary.get("level") or 0,
+            "lastValidatedAt": last_checked_at,
+            "lastHeartbeatAt": last_checked_at,
+            "lastOfflineReason": str(account.get("lastError") or ""),
+        })
+        records.append({
+            **(existing_record if isinstance(existing_record, dict) else {}),
+            "accountRef": account_ref,
+            "id": account_ref,
+            "username": str(account.get("username") or ""),
+            "displayName": summary.get("displayName"),
+            "monarchName": summary.get("roleName"),
+            "serverName": str(
+                (area or {}).get("areaName")
+                or account.get("serverQuery")
+                or ""
+            ),
+            "enabled": bool(account.get("started")),
+            "loginState": login_states.get(
+                str(account.get("status") or "stopped"),
+                "REAL_PROTOCOL_OFFLINE",
+            ),
+            "platform": summary.get("platform"),
+            "platformKey": summary.get("platformKey"),
+            "serial": summary.get("serial"),
+            "createdAt": account.get("createdAt"),
+            "startedAt": account.get("startedAt"),
+            "localOnly": bool(summary.get("localOnly")),
+            "proxyGroup": summary.get("proxyGroup"),
+            "proxyNode": summary.get("proxyNode"),
+            "proxyMode": summary.get("proxyMode"),
+            "proxyIp": summary.get("proxyIp"),
+            "proxyStatus": summary.get("proxyStatus"),
+            "proxyError": summary.get("proxyError"),
+            "proxyCheckedAt": summary.get("proxyCheckedAt"),
+            "networkDegraded": bool(summary.get("networkDegraded")),
+            "responseUnconfirmed": bool(summary.get("responseUnconfirmed")),
+            "heartbeatNetworkFailureCount": int(
+                summary.get("heartbeatNetworkFailureCount") or 0
+            ),
+            "heartbeatUnconfirmedFailureCount": int(
+                summary.get("heartbeatUnconfirmedFailureCount") or 0
+            ),
+            "session": {
+                "accountId": str(public_state.get("roleId") or account_ref),
+                "sourceMode": 1 if session is not None else 0,
+                "publicState": public_state,
+            },
+        })
+        runtime_entry: dict[str, Any] = {
+            "reconnect": {
+                "nextAttemptAtMillis": account.get("reconnectAt"),
+                "reason": account.get("lastError") or "",
+                "failureKind": account.get("reconnectFailureKind") or "",
+            },
+            "recentGameRequests": summary.get("recentGameRequests") or [],
+            "dailyStats": summary.get("dailyStats") or {},
+            "presentation": {
+                "hasStoredPassword": bool(summary.get("hasStoredPassword")),
+            },
+        }
+        if not summary_only:
+            habit_source = session or {
+                "sessionId": account_ref,
+                "username": account.get("username"),
+                "area": area,
+            }
+            runtime_entry.update({
+                "accountHabits": load_account_habits(habit_source),
+                "session": public_session(session) if session is not None else None,
+                "taskOverview": (
+                    current_task_overview(session)
+                    if session is not None
+                    else {}
+                ),
+            })
+        runtime[account_ref] = runtime_entry
+    replaced = SHARED_PYTHON_CORE.account_records_replace_json(
+        json.dumps(records, ensure_ascii=False, separators=(",", ":"))
+    )
+    replace_result = json.loads(replaced)
+    if not bool(replace_result.get("ok")):
+        detail = replace_result.get("error")
+        if isinstance(detail, dict):
+            detail = detail.get("message") or detail.get("code")
+        raise RuntimeError(f"共享账号账本同步失败：{detail or '未知错误'}")
+    return SHARED_PYTHON_CORE.dispatch(
+        "GET",
+        "/api/accounts",
+        {"runtimeByAccount": runtime, "summary": bool(summary_only)},
+        {
+            "requestId": str(request_id),
+            "source": "desktop-http",
+            "platform": "desktop",
+            "executionOwnerActive": True,
+            "nowMillis": now_ms(),
+        },
+    )
+
+
+def sync_restored_accounts_to_shared_core() -> int:
+    """Rebuild the shared login ledger before any restart reconnect fires."""
+
+    response = _desktop_shared_accounts_response(
+        summary_only=True,
+        request_id=f"desktop-startup-account-sync-{now_ms()}",
+    )
+    if int(getattr(response, "status", 500)) != 200:
+        raise RuntimeError(
+            f"共享账号账本返回 HTTP {getattr(response, 'status', '未知')}"
+        )
+    with ACCOUNT_LOCK:
+        return len(ACCOUNTS)
+
+
+def _desktop_shared_operation_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Add only the stable desktop account reference to a shared request."""
+
+    enriched = dict(body)
+    session_id = str(
+        body.get("accountRef")
+        or body.get("sessionId")
+        or body.get("accountId")
+        or ""
+    ).strip()
+    if not session_id:
+        return enriched
+    enriched["accountRef"] = session_id
+    return enriched
+
+
+def _desktop_expedition_body(body: dict[str, Any]) -> dict[str, Any]:
+    enriched = _desktop_shared_operation_body(body)
+    session_id = str(enriched.get("accountRef") or "").strip()
+    if not session_id:
+        return enriched
+    sessions = globals().get("SESSIONS") or {}
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        return enriched
+    habits_loader = globals().get("load_account_habits")
+    habits = habits_loader(session) if callable(habits_loader) else {}
+    habits = habits if isinstance(habits, dict) else {}
+    config = habits.get("config") if isinstance(habits.get("config"), dict) else {}
+    formations = habits.get("formations") if isinstance(habits.get("formations"), list) else []
+    supplied = enriched.get("hostSettings")
+    host_settings = dict(supplied) if isinstance(supplied, dict) else {}
+    host_settings.setdefault("formations", formations)
+    host_settings.setdefault("config", config)
+    host_settings.setdefault("healWounded", bool(config.get("healWounded", True)))
+    host_settings.setdefault("autoEnergy", bool(config.get("autoEnergy", True)))
+    host_settings.setdefault("energyThreshold", int(config.get("energyThreshold", 20) or 20))
+    host_settings.setdefault("foodToCopper", bool(config.get("foodToCopper", False)))
+    host_settings.setdefault("copperFloorWan", int(config.get("copperFloorWan", 1) or 1))
+    enriched["hostSettings"] = host_settings
+    enriched["accountRef"] = session_id
+    return enriched
+
+
+def _desktop_apply_shared_read_result(
+    session_id: str,
+    result: dict[str, Any],
+) -> None:
+    """Mirror normalized Python facts for legacy desktop workers during migration."""
+
+    session = get_session(session_id)
+    for key in (
+        "role",
+        "roleState",
+        "roleQueueSummary",
+        "inventory",
+        "militaryIntel",
+        "militarySnapshot",
+        "dailyActivity",
+    ):
+        value = result.get(key)
+        if isinstance(value, dict):
+            current = session.get(key)
+            session[key] = {
+                **(current if isinstance(current, dict) else {}),
+                **value,
+            }
+    for key in (
+        "generals",
+        "formations",
+        "army",
+        "technologyStates",
+    ):
+        value = result.get(key)
+        if isinstance(value, list):
+            session[key] = list(value)
+
+    record = json.loads(
+        SHARED_PYTHON_CORE.account_record_json(session_id)
+    ).get("account") or {}
+    public_state = ((record.get("session") or {}).get("publicState") or {})
+    if isinstance(public_state, dict):
+        for key in (
+            "state8004PayloadHex",
+            "state8004TailHex",
+            "lastValidatedAt",
+            "lastHeartbeatAt",
+        ):
+            if public_state.get(key) not in (None, ""):
+                session[key] = public_state[key]
+
+    with ACCOUNT_LOCK:
+        account = ACCOUNTS.get(session_id)
+        if account and "online" in result:
+            heartbeat = {
+                "online": bool(result.get("online")),
+                "message": str(result.get("message") or ""),
+                "checkedAt": int(result.get("checkedAt") or now_ms()),
+                "source": "shared-python/0x3110/0xa110",
+            }
+            account["lastHeartbeat"] = heartbeat
+            if heartbeat["online"]:
+                account["status"] = "online"
+                account["lastError"] = ""
+        elif account:
+            account["status"] = "online"
+            account["lastError"] = ""
+    persist_runtime_state()
+
+
+def _desktop_daily_completion_count(
+    account_ref: str,
+    key: str,
+    now_millis: int,
+) -> int:
+    sessions = globals().get("SESSIONS") or {}
+    session = sessions.get(str(account_ref))
+    checker = globals().get("daily_task_is_completed")
+    if not isinstance(session, dict) or not callable(checker):
+        return 0
+    return 1 if bool(
+        checker(session, str(key), at_millis=int(now_millis))
+    ) else 0
+
+
+def _desktop_add_daily_completion(
+    account_ref: str,
+    key: str,
+    count: int,
+    now_millis: int,
+) -> int:
+    sessions = globals().get("SESSIONS") or {}
+    session = sessions.get(str(account_ref))
+    recorder = globals().get("record_daily_task_completion")
+    if not isinstance(session, dict) or not callable(recorder):
+        raise RuntimeError("电脑端每日完成状态存储尚未就绪")
+    if int(count) <= 0:
+        return _desktop_daily_completion_count(account_ref, key, now_millis)
+    recorder(
+        session,
+        str(key),
+        source="shared-core",
+        at_millis=int(now_millis),
+    )
+    return _desktop_daily_completion_count(account_ref, key, now_millis)
+
+
+def _desktop_save_map_snapshot(snapshot: dict[str, object]) -> None:
+    saver = globals().get("persist_shared_core_map_snapshot")
+    if not callable(saver):
+        raise RuntimeError("电脑端地图快照存储尚未就绪")
+    saver(dict(snapshot))
+
+
+def _desktop_invalidate_map_target(
+    account_ref: str,
+    kind: str,
+    target_id: int,
+    reason: str,
+    invalidated_at_millis: int,
+) -> None:
+    invalidator = globals().get("invalidate_shared_core_map_target")
+    if not callable(invalidator):
+        raise RuntimeError("电脑端地图目标失效存储尚未就绪")
+    invalidator(
+        str(account_ref),
+        str(kind),
+        int(target_id),
+        str(reason),
+        int(invalidated_at_millis),
+    )
+
+
+_DESKTOP_SHARED_SECRET_LOCK = threading.RLock()
+_DESKTOP_SHARED_CREDENTIALS: dict[str, str] = {}
+_DESKTOP_SHARED_SESSION_SECRETS: dict[str, dict[str, str]] = {}
+
+
+def _desktop_save_shared_password(account_ref: str, password: str) -> None:
+    ref = str(account_ref)
+    with _DESKTOP_SHARED_SECRET_LOCK:
+        _DESKTOP_SHARED_CREDENTIALS[ref] = str(password)
+    accounts = globals().get("ACCOUNTS")
+    lock = globals().get("ACCOUNT_LOCK")
+    if isinstance(accounts, dict) and lock is not None:
+        with lock:
+            account = accounts.get(ref)
+            if isinstance(account, dict):
+                account["password"] = str(password)
+
+
+def _desktop_load_shared_password(account_ref: str) -> str | None:
+    ref = str(account_ref)
+    with _DESKTOP_SHARED_SECRET_LOCK:
+        cached = _DESKTOP_SHARED_CREDENTIALS.get(ref)
+    if cached:
+        return cached
+    accounts = globals().get("ACCOUNTS")
+    lock = globals().get("ACCOUNT_LOCK")
+    if not isinstance(accounts, dict) or lock is None:
+        return None
+    with lock:
+        account = accounts.get(ref)
+        password = str(account.get("password") or "") if isinstance(account, dict) else ""
+    return password or None
+
+
+def _desktop_delete_shared_password(account_ref: str) -> None:
+    ref = str(account_ref)
+    with _DESKTOP_SHARED_SECRET_LOCK:
+        _DESKTOP_SHARED_CREDENTIALS.pop(ref, None)
+    accounts = globals().get("ACCOUNTS")
+    lock = globals().get("ACCOUNT_LOCK")
+    if isinstance(accounts, dict) and lock is not None:
+        with lock:
+            account = accounts.get(ref)
+            if isinstance(account, dict):
+                account.pop("password", None)
+
+
+def _desktop_save_shared_session_secrets(
+    account_ref: str,
+    values: Mapping[str, str],
+) -> None:
+    with _DESKTOP_SHARED_SECRET_LOCK:
+        _DESKTOP_SHARED_SESSION_SECRETS[str(account_ref)] = {
+            str(key): str(value)
+            for key, value in values.items()
+            if str(key).strip() and str(value)
+        }
+
+
+def _desktop_load_shared_session_secrets(account_ref: str) -> dict[str, str]:
+    with _DESKTOP_SHARED_SECRET_LOCK:
+        return dict(_DESKTOP_SHARED_SESSION_SECRETS.get(str(account_ref)) or {})
+
+
+def _desktop_delete_shared_session_secrets(account_ref: str) -> None:
+    with _DESKTOP_SHARED_SECRET_LOCK:
+        _DESKTOP_SHARED_SESSION_SECRETS.pop(str(account_ref), None)
+
+
+def _desktop_commit_shared_login_runtime(
+    previous_account_ref: str,
+    account_ref: str,
+    runtime: Mapping[str, object],
+    mode: str,
+) -> None:
+    """Mirror shared login facts for the legacy desktop scheduler only."""
+
+    previous_ref = str(previous_account_ref)
+    actual_ref = str(account_ref)
+    runtime_session = dict(runtime)
+    runtime_session["sessionId"] = actual_ref
+    runtime_session.setdefault("lastTargets", [])
+    runtime_session.setdefault("savedCommonTasksStarted", False)
+    accounts = globals().get("ACCOUNTS")
+    sessions = globals().get("SESSIONS")
+    account_lock = globals().get("ACCOUNT_LOCK")
+    if not isinstance(accounts, dict) or not isinstance(sessions, dict) or account_lock is None:
+        raise RuntimeError("电脑端账号运行时尚未就绪")
+    password = _desktop_load_shared_password(actual_ref) or _desktop_load_shared_password(previous_ref) or ""
+    role = runtime_session.get("role")
+    role = dict(role) if isinstance(role, dict) else {}
+    area = runtime_session.get("area")
+    area = dict(area) if isinstance(area, dict) else {}
+    with account_lock:
+        local = accounts.pop(previous_ref, None) or accounts.pop(actual_ref, None) or {}
+        recovery_intent = bool(
+            local.get("resumeResidentTasksAfterNetworkRecovery")
+            or local.get("resumeResidentTasksAfterReconnect")
+            or local.get("savedTasksStarted")
+            or runtime_session.get("savedTasksStarted")
+        )
+        runtime_session["savedTasksStarted"] = False
+        runtime_session["savedTasksStartedAt"] = None
+        previous_stop = local.get("stopEvent")
+        if previous_stop is not None:
+            previous_stop.set()
+        # A restored/offline account may still point at a heartbeat thread
+        # which is only now unwinding from its old stop event. Keeping that
+        # reference makes start_heartbeat_thread() believe a valid worker
+        # already exists and leaves the newly logged-in Session unmonitored.
+        local.pop("thread", None)
+        created_at = local.get("createdAt") or int(runtime_session.get("createdAt") or now_ms())
+        local.update({
+            "sessionId": actual_ref,
+            "username": str(runtime_session.get("username") or local.get("username") or ""),
+            "password": password,
+            "serverQuery": str(area.get("areaName") or local.get("serverQuery") or ""),
+            "platform": str(runtime_session.get("platform") or local.get("platform") or ""),
+            "platformKey": str(runtime_session.get("platformKey") or local.get("platformKey") or ""),
+            "displayName": str(role.get("roleName") or local.get("displayName") or ""),
+            "role": role,
+            "area": area,
+            "status": "online" if mode == "start" else "stopped",
+            "started": mode == "start",
+            "localOnly": False,
+            "createdAt": created_at,
+            "startedAt": now_ms() if mode == "start" else None,
+            "stopEvent": threading.Event(),
+            "lastError": "",
+            "sessionInvalidatedAt": None,
+            "reconnectState": "",
+            "reconnectAt": None,
+            "reconnectReason": "",
+            "reconnectGeneration": "",
+            "reconnectFailureKind": "",
+            "reconnectFailureCount": 0,
+            "heartbeatNetworkFailureCount": 0,
+            "heartbeatUnconfirmedFailureCount": 0,
+            "networkDegraded": False,
+            "responseUnconfirmed": False,
+            "lastNetworkFailure": None,
+            "savedTasksStarted": recovery_intent,
+            "resumeResidentTasksAfterNetworkRecovery": recovery_intent,
+            "resumeResidentTasksAfterReconnect": recovery_intent,
+        })
+        accounts[actual_ref] = local
+        sessions.pop(previous_ref, None)
+        if mode == "start":
+            sessions[actual_ref] = runtime_session
+        else:
+            sessions.pop(actual_ref, None)
+    if mode == "start":
+        cancel_reconnect = globals().get("cancel_account_reconnect")
+        if callable(cancel_reconnect):
+            cancel_reconnect(actual_ref)
+    for name in ("SAVED_CONFIGS", "SAVED_FORMATION_RULES", "DAILY_BRUSH_COUNTS"):
+        values = globals().get(name)
+        if isinstance(values, dict) and previous_ref in values and actual_ref not in values:
+            values[actual_ref] = values.pop(previous_ref)
+    persist = globals().get("persist_runtime_state")
+    if callable(persist):
+        persist()
+
+
+def _desktop_start_shared_account_hosting(account_ref: str) -> None:
+    ref = str(account_ref)
+    sessions = globals().get("SESSIONS")
+    session = sessions.get(ref) if isinstance(sessions, dict) else None
+    if not isinstance(session, dict):
+        raise RuntimeError("共享登录未建立电脑端运行时 Session")
+    apply_habits = globals().get("apply_account_habits_to_session")
+    if callable(apply_habits):
+        apply_habits(session)
+    clear_health = globals().get("clear_recent_game_requests")
+    if callable(clear_health):
+        clear_health(ref)
+    heartbeat = globals().get("start_heartbeat_thread")
+    if callable(heartbeat):
+        heartbeat(ref, initial_delay_sec=CLIENT_HEARTBEAT_INTERVAL_SEC)
+    idle_map = globals().get("start_idle_bandit_map_thread")
+    if callable(idle_map):
+        idle_map(ref)
+
+
+def _desktop_is_shared_account_hosting(account_ref: str) -> bool:
+    """Observe the desktop worker, not the durable shared account flag."""
+
+    ref = str(account_ref)
+    accounts = globals().get("ACCOUNTS")
+    account_lock = globals().get("ACCOUNT_LOCK")
+    if not isinstance(accounts, dict) or account_lock is None:
+        return False
+    with account_lock:
+        account = accounts.get(ref)
+        if not isinstance(account, dict) or not bool(account.get("started")):
+            return False
+        stop_event = account.get("stopEvent")
+        return not bool(
+            stop_event
+            and getattr(stop_event, "is_set", lambda: False)()
+        )
+
+
+def _desktop_shared_core_log_event(event: Mapping[str, object]) -> None:
+    """Mirror structured shared alarm logs into the existing account log UI."""
+
+    if str(event.get("event") or "") != "alarm":
+        return
+    account_ref = str(event.get("accountRef") or "").strip()
+    callback = globals().get("account_log")
+    if not account_ref or not callable(callback):
+        return
+    callback(
+        account_ref,
+        str(event.get("message") or event.get("text") or "军情警报"),
+        level="warning" if event.get("kind") in {"incoming", "error"} else "info",
+        source="shared-alarm",
+        detail=dict(event),
+    )
 
 
 SHARED_CORE_OPERATION_STORE = (
-    Path(os.environ.get("DWPM_DATA_DIR", str(ROOT / "reports")))
-    .expanduser()
-    .resolve()
+    DESKTOP_DATA_DIR
     / "shared_core"
     / "operations-v2.json"
 )
 SHARED_PYTHON_CORE = CoreFacade(
     ROOT.parent / "shared_core",
     str(SHARED_CORE_OPERATION_STORE),
-    ports=create_desktop_platform_ports(SHARED_CORE_OPERATION_STORE.parents[1]),
+    ports=create_desktop_platform_ports(
+        SHARED_CORE_OPERATION_STORE.parents[1],
+        game_commands=DesktopGameCommandPort(_desktop_shared_game_command),
+        daily_completions=DesktopDailyCompletionPort(
+            _desktop_daily_completion_count,
+            _desktop_add_daily_completion,
+        ),
+        map_snapshots=DesktopMapSnapshotPort(
+            _desktop_save_map_snapshot,
+            _desktop_invalidate_map_target,
+        ),
+        credentials=DesktopCredentialPort(
+            _desktop_save_shared_password,
+            _desktop_load_shared_password,
+            _desktop_delete_shared_password,
+        ),
+        session_secrets=DesktopSessionSecretPort(
+            _desktop_save_shared_session_secrets,
+            _desktop_load_shared_session_secrets,
+            _desktop_delete_shared_session_secrets,
+        ),
+        raw_http=DesktopRawHttpPort(_desktop_shared_raw_game_exchange),
+        cloud_shared_data=(
+            DesktopCloudSharedDataPort.for_local_runtime()
+            if __name__ == "__main__"
+            else DesktopCloudSharedDataPort("", "")
+        ),
+        account_runtime=DesktopAccountRuntimePort(
+            _desktop_commit_shared_login_runtime,
+            _desktop_start_shared_account_hosting,
+            _desktop_is_shared_account_hosting,
+        ),
+        log_callback=_desktop_shared_core_log_event,
+    ),
 )
+SHARED_PYTHON_CORE.register_account_login_routes()
+# Register the shared recovery entry before the staged scheduler handoff.  The
+# existing desktop scheduler is not switched here; once a feature owner is
+# flipped it will only wake/submit this entry, while Python owns every recovery
+# decision and packet.
+SHARED_PYTHON_CORE.register_automation_recovery_runner()
+SHARED_PYTHON_CORE.register_raid_action_runner()
+SHARED_PYTHON_CORE.register_lossless_action_runner()
 SHARED_BEHAVIOR_CONTRACT_PATH = (
     ROOT.parent / "shared_core" / "assistant_behavior_contract.json"
 )
+
+
+def _register_desktop_shared_expedition_routes() -> None:
+    """Install Python-owned raw command workflows used by both hosts."""
+
+    def register(
+        path: str,
+        workflow: Callable[..., dict[str, Any]],
+        payload_builder: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]],
+        body_adapter: Callable[[dict[str, Any]], dict[str, Any]] = (
+            _desktop_shared_operation_body
+        ),
+        *,
+        method: str = "POST",
+        mirror_read_result: bool = False,
+    ) -> None:
+        def persisted_body(body: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+            return payload_builder(body_adapter(body), context)
+
+        def handler(
+            body: dict[str, Any],
+            context: dict[str, Any],
+            execution: Any,
+        ) -> dict[str, Any]:
+            normalized_body = body_adapter(body)
+            session_id = str(normalized_body.get("accountRef") or "").strip()
+            require_online = globals().get("require_account_online")
+            if callable(require_online):
+                require_online(session_id, "共享核心网络操作")
+            _desktop_sync_shared_account(session_id)
+            result = workflow(
+                execution,
+                normalized_body,
+                context,
+            )
+            if mirror_read_result:
+                _desktop_apply_shared_read_result(session_id, result)
+            return result
+
+        SHARED_PYTHON_CORE.register_network_route(
+            method,
+            path,
+            handler,
+            persisted_payload_builder=persisted_body,
+            coalesce_active=True,
+        )
+
+    register(
+        "/api/state/refresh",
+        SHARED_PYTHON_CORE._run_state_refresh_game_workflow,
+        SHARED_PYTHON_CORE.state_refresh_operation_payload,
+        method="GET",
+        mirror_read_result=True,
+    )
+    register(
+        "/api/heartbeat",
+        SHARED_PYTHON_CORE._run_heartbeat_game_workflow,
+        SHARED_PYTHON_CORE.heartbeat_operation_payload,
+        method="GET",
+        mirror_read_result=True,
+    )
+    register(
+        "/api/military/intel",
+        SHARED_PYTHON_CORE._run_military_intel_game_workflow,
+        SHARED_PYTHON_CORE.military_intel_operation_payload,
+        method="GET",
+        mirror_read_result=True,
+    )
+
+    register(
+        "/api/brush/search",
+        SHARED_PYTHON_CORE._run_cloud_coordinated_brush_search_game_workflow,
+        SHARED_PYTHON_CORE.brush_search_operation_payload,
+    )
+    register(
+        "/api/brush/execute",
+        SHARED_PYTHON_CORE._run_cloud_coordinated_brush_execute_game_workflow,
+        SHARED_PYTHON_CORE.brush_execute_operation_payload,
+        _desktop_expedition_body,
+    )
+    register(
+        "/api/mine/search",
+        SHARED_PYTHON_CORE._run_cloud_coordinated_mine_search_game_workflow,
+        SHARED_PYTHON_CORE.mine_search_operation_payload,
+    )
+    register(
+        "/api/mine/execute",
+        SHARED_PYTHON_CORE._run_cloud_coordinated_mine_execute_game_workflow,
+        SHARED_PYTHON_CORE.mine_execute_operation_payload,
+        _desktop_expedition_body,
+    )
+    register(
+        "/api/troops/assign",
+        SHARED_PYTHON_CORE._run_troop_assign_game_workflow,
+        SHARED_PYTHON_CORE.troop_assign_operation_payload,
+    )
+    register(
+        "/api/formations/apply",
+        SHARED_PYTHON_CORE._run_formation_apply_game_workflow,
+        SHARED_PYTHON_CORE.formation_apply_operation_payload,
+    )
+    register(
+        "/api/formations/unassign-all",
+        SHARED_PYTHON_CORE._run_unassign_all_game_workflow,
+        SHARED_PYTHON_CORE.unassign_all_operation_payload,
+    )
+    register(
+        "/api/troops/refill",
+        SHARED_PYTHON_CORE._run_troop_refill_game_workflow,
+        SHARED_PYTHON_CORE.troop_refill_operation_payload,
+    )
+    register(
+        "/api/troops/heal",
+        SHARED_PYTHON_CORE._run_troop_heal_game_workflow,
+        SHARED_PYTHON_CORE.troop_heal_operation_payload,
+    )
+    register(
+        "/api/inventory/open-one",
+        SHARED_PYTHON_CORE._run_inventory_open_one_game_workflow,
+        SHARED_PYTHON_CORE.inventory_open_one_operation_payload,
+    )
+    register(
+        "/api/liubu/hubu/query",
+        SHARED_PYTHON_CORE._run_hubu_status_game_workflow,
+        SHARED_PYTHON_CORE.hubu_query_operation_payload,
+    )
+    register(
+        "/api/liubu/hubu/plant",
+        SHARED_PYTHON_CORE._run_hubu_plant_game_workflow,
+        SHARED_PYTHON_CORE.hubu_plant_operation_payload,
+    )
+    register(
+        "/api/domestic/query",
+        SHARED_PYTHON_CORE._run_domestic_query_game_workflow,
+        SHARED_PYTHON_CORE.domestic_query_operation_payload,
+    )
+    register(
+        "/api/domestic/action",
+        SHARED_PYTHON_CORE._run_domestic_action_game_workflow,
+        SHARED_PYTHON_CORE.domestic_action_operation_payload,
+    )
+    register(
+        "/api/raid/fiefs",
+        SHARED_PYTHON_CORE._run_raid_fiefs_game_workflow,
+        SHARED_PYTHON_CORE.raid_fiefs_operation_payload,
+    )
+    register(
+        "/api/daily/general-visit/candidates",
+        SHARED_PYTHON_CORE._run_daily_general_visit_candidates_game_workflow,
+        SHARED_PYTHON_CORE.general_visit_candidates_operation_payload,
+    )
+    register(
+        "/api/daily/sign-in/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "autoSignIn",
+            SHARED_PYTHON_CORE._run_daily_sign_in_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_operation_payload,
+    )
+    register(
+        "/api/daily/arena-coins/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "arenaCoins",
+            SHARED_PYTHON_CORE._run_daily_arena_coins_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_operation_payload,
+    )
+    register(
+        "/api/daily/donate/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "autoDonate",
+            SHARED_PYTHON_CORE._run_daily_donate_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_operation_payload,
+    )
+    register(
+        "/api/daily/donate/custom",
+        SHARED_PYTHON_CORE._run_daily_custom_donate_game_workflow,
+        SHARED_PYTHON_CORE.daily_custom_donate_operation_payload,
+    )
+    register(
+        "/api/daily/salary/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "salary",
+            SHARED_PYTHON_CORE._run_daily_salary_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_operation_payload,
+    )
+    register(
+        "/api/daily/national-collect/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "nationalCollect",
+            SHARED_PYTHON_CORE._run_daily_national_collect_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_operation_payload,
+    )
+    register(
+        "/api/daily/city-lord-collect/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "cityLordCollect",
+            SHARED_PYTHON_CORE._run_daily_city_lord_collect_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_operation_payload,
+    )
+    register(
+        "/api/daily/general-visit/claim",
+        SHARED_PYTHON_CORE.daily_completion_workflow(
+            "generalVisit",
+            SHARED_PYTHON_CORE._run_daily_general_visit_game_workflow,
+        ),
+        SHARED_PYTHON_CORE.daily_general_visit_operation_payload,
+    )
+
+
+_register_desktop_shared_expedition_routes()
+
+DESKTOP_SHARED_DAILY_OPERATION_ROUTES = frozenset({
+    "/api/daily/sign-in/claim",
+    "/api/daily/arena-coins/claim",
+    "/api/daily/donate/claim",
+    "/api/daily/donate/custom",
+    "/api/daily/salary/claim",
+    "/api/daily/national-collect/claim",
+    "/api/daily/city-lord-collect/claim",
+    "/api/daily/general-visit/candidates",
+    "/api/daily/general-visit/claim",
+})
 
 
 def _load_shared_behavior_contract() -> tuple[dict[str, Any], str]:
@@ -346,7 +1539,8 @@ def _load_shared_behavior_contract() -> tuple[dict[str, Any], str]:
         raise ValueError("assistant behavior contract scheduler is missing")
     priorities = scheduler.get("residentPriority")
     required_residents = {
-        "mine", "lossless", "brushYellow", "raid", "dungeon", "ministry",
+        "mine", "lossless", "brushYellow", "raid", "dungeon", "general",
+        "ministry", "domestic", "inventory", "alarm",
     }
     if not isinstance(priorities, dict) or set(priorities) != required_residents:
         raise ValueError("assistant scheduler residentPriority is incomplete")
@@ -357,6 +1551,7 @@ def _load_shared_behavior_contract() -> tuple[dict[str, Any], str]:
         "sameGeneralMutualExclusionRequired",
         "onlyRunnableResidentBlocksLowerPriority",
         "militaryLaneRunsBeforeIdleLane",
+        "dailyFeaturesRunBeforeResidents",
         "expeditionPreparationIsTaskScoped",
         "idleLaneMustYieldToDueMilitaryWork",
         "observationRefreshMayRunBetweenLanes",
@@ -365,10 +1560,7 @@ def _load_shared_behavior_contract() -> tuple[dict[str, Any], str]:
     ):
         if scheduler.get(flag) is not True:
             raise ValueError(f"assistant scheduler invariant disabled: {flag}")
-    for retired_flag in (
-        "formationPrerequisiteRunsFirst",
-        "dailyFeaturesRunBeforeResidents",
-    ):
+    for retired_flag in ("formationPrerequisiteRunsFirst",):
         if scheduler.get(retired_flag) is not False:
             raise ValueError(
                 f"assistant scheduler retired global ordering must stay disabled: {retired_flag}"
@@ -412,24 +1604,12 @@ try:
     APP_VERSION = VERSION_FILE.read_text(encoding="ascii").strip() or "development"
 except OSError:
     APP_VERSION = "development"
-REPORT_DIR = Path(os.environ.get("DWPM_DATA_DIR", str(ROOT / "reports"))).expanduser().resolve()
+REPORT_DIR = DESKTOP_DATA_DIR
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 ASSET_DIR = Path(os.environ.get("DWPM_ASSET_DIR", str(ROOT / "assets"))).expanduser().resolve()
 GUIDE_REFERENCE_DIR = ASSET_DIR / "guide_reference"
 GUIDE_FAMOUS_GENERALS_FILE = GUIDE_REFERENCE_DIR / "dwsgmjb.TXT"
 GUIDE_ARTICLE_DIR = GUIDE_REFERENCE_DIR / "guidetxts"
-GUIDE_ARTICLE_SPECS = (
-    ("V6fzgl", "V6以上玩家前期发展攻略"),
-    ("dwsgjingyan", "帝王三国升级经验"),
-    ("pm80jigl", "15小时冲击80级攻略"),
-    ("pmkssjgl", "快速升级攻略"),
-    ("qzp", "强装/开箱经验"),
-    ("rmb80jigl", "开区快速80级心得"),
-    ("sfbgl", "副本刷将魂道具装备攻略"),
-    ("shuashihuang", "刷黄攻略"),
-    ("szsjgl", "神州升级攻略"),
-    ("wuditcp", "无敌推城篇"),
-)
 LOG_DIR = REPORT_DIR / "logs"
 ACCOUNT_LOG_DIR = LOG_DIR / "accounts"
 ACCOUNT_CONFIG_DIR = REPORT_DIR / "account_configs"
@@ -564,7 +1744,7 @@ HEARTBEAT_NETWORK_FAILURE_LIMIT = 3
 HEARTBEAT_NETWORK_MAX_PROXY_SWITCHES = 2
 HEARTBEAT_UNCONFIRMED_FAILURE_LIMIT = 6
 PROXY_MAX_LIVE_ACCOUNTS_PER_IP = 2
-BRUSH_ENERGY_ITEM_GAIN = 50
+BRUSH_ENERGY_ITEM_GAIN = SHARED_ENERGY_ITEM_GAIN
 BRUSH_MIN_ROLE_LEVEL = int(_STARTUP_BRUSH_CONTRACT["minimumRoleLevel"])
 DEFAULT_RECONNECT_DELAY_MINUTES = 5
 NETWORK_RECONNECT_BACKOFF_MINUTES = (3, 5, 10)
@@ -658,12 +1838,31 @@ STARTER_WORKERS: dict[str, threading.Thread] = {}
 SAVED_CONFIGS: dict[str, dict[str, Any]] = {}
 SAVED_FORMATION_RULES: dict[str, list[dict[str, Any]]] = {}
 AUTO_TASKS: dict[str, dict[str, Any]] = {}
+SHARED_RESIDENT_DESKTOP_TASK_TYPES = frozenset({
+    "lossless",
+    "auto-brush-yellow",
+    "brush-yellow",
+    "dungeon",
+    "auto-mine",
+    "raid",
+    "auto-general",
+    "auto-ministry",
+    "auto-domestic",
+    "auto-technology",
+    "auto-inventory",
+    "auto-alarm",
+})
 ACCOUNT_RECONNECT_JOBS: dict[str, dict[str, Any]] = {}
+ACCOUNT_RESIDENT_RECOVERY_LOCKS: dict[str, threading.RLock] = {}
+ACCOUNT_RESIDENT_RECOVERY_LOCKS_LOCK = threading.RLock()
+ACCOUNT_RESIDENT_RECOVERY_GENERATIONS: dict[str, int] = {}
 DAILY_BRUSH_COUNTS: dict[str, int] = {}
 DAILY_DUNGEON_COUNTS: dict[str, int] = {}
 DAILY_TASK_COMPLETIONS: dict[str, dict[str, dict[str, Any]]] = {}
 TASK_LOCK = threading.RLock()
 ACCOUNT_LOCK = threading.RLock()
+SHARED_RESIDENT_WAKE_OWNER_LOCK = threading.RLock()
+SHARED_RESIDENT_WAKE_OWNERS: dict[str, str] = {}
 STARTER_LOCK = threading.RLock()
 ACCOUNT_RECONNECT_LOCK = threading.RLock()
 ACCOUNT_CONFIG_LOCK = threading.RLock()
@@ -771,11 +1970,7 @@ ITEM_NAMES_BY_ID: dict[int, str] | None = None
 EQUIPMENT_TEMPLATES_BY_ID: dict[int, dict[str, Any]] | None = None
 EQUIPMENT_QUALITY_NAMES = ("普通", "良好", "优秀", "卓越")
 DEFAULT_BRUSH_DROPS = ("宝物", "资源", "装备", "宝箱")
-AUTO_OPEN_ITEM_NAMES = (
-    "50两银票", "100两银票", "300两银票", "1000两银票",
-    "惊喜宝箱", "实木宝箱", "青铜宝箱", "精铁宝箱",
-    "铜钱辎重", "粮食辎重",
-)
+AUTO_OPEN_ITEM_NAMES = SHARED_AUTO_OPEN_ITEM_NAMES
 
 if os.name == "nt":
     _default_clash_source_dir = ROOT.parent / "proxy"
@@ -1063,158 +2258,63 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-GUIDE_OPEN_SERVER_VERSIONS = (
-    {"index": 0, "label": "九游版", "summary": "30区=2012/11/29，每区间隔5天"},
-    {"index": 1, "label": "腾讯版", "summary": "218区=2016/11/17；290区=2018/8/31；297区=2018/11/9"},
-    {"index": 2, "label": "百度版", "summary": "30区=2012/11/29，每区间隔5天"},
-    {"index": 3, "label": "热血帝王", "summary": "30区=2013/9/20，每区间隔7天"},
-    {"index": 4, "label": "三国联盟", "summary": "102区=2016/10/12；112区=2017/4/26；113区=2017/5/17"},
-    {"index": 5, "label": "新三国争霸", "summary": "30区=2012/7/13，每区间隔7天"},
-    {"index": 6, "label": "繁体版", "summary": "30区=2015/3/20，每区间隔14天"},
-)
-
-
 def guide_famous_generals_payload() -> dict[str, Any]:
-    """Read the recovered APK table used by both desktop and Android guides."""
-    items: list[dict[str, Any]] = []
-    with GUIDE_FAMOUS_GENERALS_FILE.open("r", encoding="utf-8-sig", newline="") as source:
-        rows = csv.reader(source)
-        next(rows, None)
-        for row in rows:
-            if len(row) < 4:
-                continue
-            name = str(row[0]).strip()
-            if not name:
-                continue
-            breakthrough_text = str(row[1]).strip()
-            items.append({
-                "name": name,
-                "breakthrough": int(breakthrough_text) if breakthrough_text.isdigit() else None,
-                "attribute": str(row[2]).strip() or None,
-                "nation": str(row[3]).strip() or None,
-            })
-    return {"ok": True, "total": len(items), "items": items}
+    return shared_guide_reference_payload({
+        "resource": "famous-generals",
+        "sourceText": GUIDE_FAMOUS_GENERALS_FILE.read_text(encoding="utf-8-sig"),
+    })
 
 
 def guide_articles_payload() -> dict[str, Any]:
-    items = [{"id": article_id, "title": title} for article_id, title in GUIDE_ARTICLE_SPECS]
-    return {"ok": True, "total": len(items), "items": items}
+    return shared_guide_reference_payload({"resource": "articles"})
 
 
 def guide_article_payload(article_id: str) -> dict[str, Any]:
     normalized = str(article_id or "").strip()
-    title = next((title for item_id, title in GUIDE_ARTICLE_SPECS if item_id == normalized), None)
-    if title is None:
-        return {"ok": False, "error": "未找到攻略内容"}
-    body = (GUIDE_ARTICLE_DIR / f"{normalized}.txt").read_text(encoding="utf-8-sig")
-    return {
-        "ok": True,
-        "article": {"id": normalized, "title": title, "body": body},
-    }
-
-
-def _guide_open_server_rule(version_index: int, server: int) -> dict[str, Any]:
-    if version_index == 1:
-        if server < 260:
-            values = (218, 10, 2016, 11, 17, "原 APK pswitch_7：server < 260")
-        elif server <= 290:
-            values = (290, 7, 2018, 8, 31, "原 APK pswitch_7：260..290 分段")
-        else:
-            values = (297, 10, 2018, 11, 9, "原 APK pswitch_7：server > 290")
-    elif version_index == 3:
-        values = (30, 7, 2013, 9, 20, "原 APK pswitch_6")
-    elif version_index == 4:
-        if server < 111:
-            values = (102, 21, 2016, 10, 12, "原 APK pswitch_2：server < 111")
-        elif server <= 113:
-            values = (112, 21, 2017, 4, 26, "原 APK pswitch_2：111..113 分段")
-        else:
-            values = (113, 14, 2017, 5, 17, "原 APK pswitch_2：server > 113")
-    elif version_index == 5:
-        values = (30, 7, 2012, 7, 13, "原 APK pswitch_1")
-    elif version_index == 6:
-        values = (30, 14, 2015, 3, 20, "原 APK pswitch_0")
-    else:
-        values = (30, 5, 2012, 11, 29, "原 APK pswitch_8 / 默认初始规则")
-    base_server, interval_days, year, month, day, note = values
-    return {
-        "baseServer": base_server,
-        "intervalDays": interval_days,
-        "year": year,
-        "month": month,
-        "day": day,
-        "note": note,
-    }
-
-
-def _guide_latest_open_server_rule(version_index: int) -> dict[str, Any]:
-    if version_index == 1:
-        return _guide_open_server_rule(version_index, 291)
-    if version_index == 4:
-        return _guide_open_server_rule(version_index, 114)
-    return _guide_open_server_rule(version_index, 2_147_483_647)
-
-
-def _guide_date_text(value: date) -> str:
-    return f"{value.year:04d}/{value.month}/{value.day}"
+    valid = any(item_id == normalized for item_id, _title in GUIDE_ARTICLE_SPECS)
+    request = {"resource": "article", "id": normalized}
+    if valid:
+        request["sourceText"] = (
+            GUIDE_ARTICLE_DIR / f"{normalized}.txt"
+        ).read_text(encoding="utf-8-sig")
+    return shared_guide_reference_payload(request)
 
 
 def guide_open_server_calculation_payload(version_index: int, server: int) -> dict[str, Any]:
-    if server <= 0:
-        raise ValueError("区服编号必须大于 0")
-    version = next(
-        (item for item in GUIDE_OPEN_SERVER_VERSIONS if int(item["index"]) == version_index),
-        GUIDE_OPEN_SERVER_VERSIONS[0],
-    )
-    rule = _guide_open_server_rule(int(version["index"]), server)
-    days_offset = (server - int(rule["baseServer"])) * int(rule["intervalDays"])
-    opened = date(int(rule["year"]), int(rule["month"]), int(rule["day"])) + timedelta(days=days_offset)
-    return {
-        "ok": True,
+    return shared_guide_reference_payload({
+        "resource": "open-server-calculation",
+        "versionIndex": version_index,
         "server": server,
-        "versionIndex": int(version["index"]),
-        "versionLabel": str(version["label"]),
-        "dateText": _guide_date_text(opened),
-        "daysOffset": days_offset,
-        "rule": rule,
-    }
+    })
 
 
 def guide_open_server_options_payload(today: date | None = None) -> dict[str, Any]:
-    current = today or date.today()
-    versions: list[dict[str, Any]] = []
-    for option in GUIDE_OPEN_SERVER_VERSIONS:
-        version_index = int(option["index"])
-        rule = _guide_latest_open_server_rule(version_index)
-        base_date = date(int(rule["year"]), int(rule["month"]), int(rule["day"]))
-        diff_days = (current - base_date).days
-        next_step = 0 if diff_days < 0 else diff_days // int(rule["intervalDays"]) + 1
-        upcoming_server = max(1, int(rule["baseServer"]) + next_step)
-        upcoming_date = base_date + timedelta(days=next_step * int(rule["intervalDays"]))
-        versions.append({
-            **option,
-            "upcomingServer": upcoming_server,
-            "upcomingDate": _guide_date_text(upcoming_date),
-        })
-    return {"ok": True, "versions": versions}
+    request: dict[str, Any] = {"resource": "open-server-options"}
+    if today is not None:
+        request["today"] = today.isoformat()
+    return shared_guide_reference_payload(request)
+
+
+def guide_reference_request_body(query: dict[str, list[str]]) -> dict[str, Any]:
+    resource = str((query.get("resource") or [""])[0] or "")
+    body: dict[str, Any] = {"resource": resource}
+    if resource == "famous-generals":
+        body["sourceText"] = GUIDE_FAMOUS_GENERALS_FILE.read_text(encoding="utf-8-sig")
+    elif resource == "article":
+        article_id = str((query.get("id") or [""])[0] or "").strip()
+        body["id"] = article_id
+        if any(item_id == article_id for item_id, _title in GUIDE_ARTICLE_SPECS):
+            body["sourceText"] = (
+                GUIDE_ARTICLE_DIR / f"{article_id}.txt"
+            ).read_text(encoding="utf-8-sig")
+    elif resource == "open-server-calculation":
+        body["versionIndex"] = (query.get("versionIndex") or ["0"])[0]
+        body["server"] = (query.get("server") or ["0"])[0]
+    return body
 
 
 def guide_reference_payload(query: dict[str, list[str]]) -> dict[str, Any]:
-    resource = str((query.get("resource") or [""])[0] or "")
-    if resource == "famous-generals":
-        return guide_famous_generals_payload()
-    if resource == "articles":
-        return guide_articles_payload()
-    if resource == "article":
-        return guide_article_payload(str((query.get("id") or [""])[0] or ""))
-    if resource == "open-server-options":
-        return guide_open_server_options_payload()
-    if resource == "open-server-calculation":
-        return guide_open_server_calculation_payload(
-            int((query.get("versionIndex") or ["0"])[0]),
-            int((query.get("server") or ["0"])[0]),
-        )
-    return {"ok": False, "error": "未知的攻略资料类型"}
+    return shared_guide_reference_payload(guide_reference_request_body(query))
 
 
 def json_safe(value: Any) -> Any:
@@ -2456,9 +3556,9 @@ def public_bandit_map(sess: dict[str, Any]) -> dict[str, Any]:
         try:
             rows = connection.execute(
                 _bandit_target_select_sql(
-                    "WHERE target.server_key=? AND target.last_seen_at>=?"
+                    "WHERE target.server_key=?"
                 ),
-                (server_key, at_ms - SHARED_MAP_TARGET_TTL_MS),
+                (server_key,),
             ).fetchall()
             updated_row = connection.execute(
                 "SELECT MAX(scanned_at) AS updated_at FROM bandit_regions WHERE server_key=?",
@@ -2468,33 +3568,19 @@ def public_bandit_map(sess: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    points = []
+    records = []
     for row in rows:
         target = _bandit_target_from_row(row)
-        code = composition_code(target)
-        if not code or int(target.get("level") or 0) <= 0:
-            continue
-        status = str(row["status"] or "available")
-        points.append({
-            "key": f"id:{target['idHex']}",
-            "name": target["name"],
-            "level": target["level"],
-            "x": target["x"],
-            "y": target["y"],
-            "compositionCode": code,
-            "rewardDescription": target["resource"],
-            "dropCategories": target["dropCategories"],
-            "lootIds": target["lootIds"],
+        records.append({
+            **target,
             "updatedAt": int(row["last_seen_at"] or 0),
-            "selectedForAttack": status in {"reserved", "dispatched"},
-            "status": status,
+            "status": str(row["status"] or "available"),
         })
-    points.sort(key=lambda point: (point["y"], point["x"], point["level"]))
-    return {
+    return shared_local_view("GET", "/api/maps/bandits", {
         "serverKey": server_key,
         "updatedAt": int((updated_row or {})["updated_at"] or 0),
-        "points": points,
-    }
+        "records": records,
+    })
 
 
 def public_mine_map(sess: dict[str, Any]) -> dict[str, Any]:
@@ -2509,11 +3595,10 @@ def public_mine_map(sess: dict[str, Any]) -> dict[str, Any]:
             rows = connection.execute(
                 _mine_target_select_sql(
                     """
-                    WHERE target.server_key=? AND target.last_seen_at>=?
-                      AND target.status<>'missing'
+                    WHERE target.server_key=? AND target.status<>'missing'
                     """
                 ),
-                (server_key, at_ms - MINE_MAP_TARGET_TTL_MS),
+                (server_key,),
             ).fetchall()
             updated_row = connection.execute(
                 "SELECT MAX(scanned_at) AS updated_at FROM mine_regions WHERE server_key=?",
@@ -2523,44 +3608,19 @@ def public_mine_map(sess: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    points = []
+    records = []
     for row in rows:
         target = _mine_target_from_row(row)
-        status = str(row["status"] or "available")
-        updated_at = int(row["last_seen_at"] or 0)
-        points.append({
-            "key": f"id:{target['idHex']}",
-            "idHex": target["idHex"],
-            "name": target["name"],
-            "kind": target["kind"],
-            "protocolKind": target["protocolKind"],
-            "businessId": target.get("businessId"),
-            "typeCode": target["typeCode"],
-            "level": target["level"],
-            "x": target["x"],
-            "y": target["y"],
-            "ownerName": target["ownerName"],
-            "ownerCountry": target["ownerCountry"],
-            "playerOccupied": target["playerOccupied"],
-            "unoccupiedByPlayer": target["unoccupiedByPlayer"],
-            "amountA": target["amountA"],
-            "amountB": target["amountB"],
-            "description": target["description"],
-            "defenderCount": target["defenderCount"],
-            "hasDefenders": target["hasDefenders"],
-            "updatedAt": updated_at,
-            "expiresAt": updated_at + MINE_MAP_TARGET_TTL_MS,
-            "remainingMs": max(0, updated_at + MINE_MAP_TARGET_TTL_MS - at_ms),
-            "selectedForAttack": status in {"reserved", "dispatched"},
-            "status": status,
+        records.append({
+            **target,
+            "updatedAt": int(row["last_seen_at"] or 0),
+            "status": str(row["status"] or "available"),
         })
-    points.sort(key=lambda point: (point["y"], point["x"], point["businessId"] or 999))
-    return {
+    return shared_local_view("GET", "/api/maps/mines", {
         "serverKey": server_key,
         "updatedAt": int((updated_row or {})["updated_at"] or 0),
-        "ttlMs": MINE_MAP_TARGET_TTL_MS,
-        "points": points,
-    }
+        "records": records,
+    })
 
 
 def shared_map_region_entry(
@@ -2979,11 +4039,17 @@ def record_shared_map_region(
     response_data: bytes,
     response_payloads: list[bytes],
     targets: list[dict[str, Any]],
+    replace_region: bool = True,
+    scanned_at_millis: int | None = None,
 ) -> dict[str, Any] | None:
     server_key = shared_map_server_key(sess)
     if not server_key:
         return None
-    scanned_at = now_ms()
+    scanned_at = (
+        now_ms()
+        if scanned_at_millis is None
+        else max(1, int(scanned_at_millis))
+    )
     coord_key = f"{int(x)},{int(y)}"
     normalized_targets: list[dict[str, Any]] = []
     for target in targets:
@@ -3095,7 +4161,7 @@ def record_shared_map_region(
                         """,
                         (server_key, target_id, int(x), int(y), scanned_at),
                     )
-                removed_ids = old_ids - new_ids
+                removed_ids = old_ids - new_ids if replace_region else set()
                 if removed_ids:
                     placeholders = ",".join("?" for _ in removed_ids)
                     connection.execute(
@@ -3123,7 +4189,7 @@ def record_shared_map_region(
                 connection.execute("ROLLBACK")
                 raise
         added_ids = sorted(new_ids - old_ids)
-        removed_ids = sorted(old_ids - new_ids)
+        removed_ids = sorted(old_ids - new_ids) if replace_region else []
         return {
             "scannedAt": scanned_at,
             "targetKeys": [f"id:{target_id}" for target_id in sorted(new_ids)],
@@ -3179,7 +4245,7 @@ def record_shared_map_region(
                         """,
                         (server_key, target_id, int(x), int(y), scanned_at),
                     )
-                removed_ids = old_ids - new_ids
+                removed_ids = old_ids - new_ids if replace_region else set()
                 if removed_ids:
                     placeholders = ",".join("?" for _ in removed_ids)
                     connection.execute(
@@ -3207,7 +4273,7 @@ def record_shared_map_region(
                 connection.execute("ROLLBACK")
                 raise
         added_ids = sorted(new_ids - old_ids)
-        removed_ids = sorted(old_ids - new_ids)
+        removed_ids = sorted(old_ids - new_ids) if replace_region else []
         return {
             "scannedAt": scanned_at,
             "targetKeys": [f"id:{target_id}" for target_id in sorted(new_ids)],
@@ -3263,6 +4329,129 @@ def record_shared_map_region(
                 "retainedCount": len(retained_keys),
             },
         }
+
+
+def _shared_snapshot_target(row: dict[str, Any]) -> dict[str, Any]:
+    fields = dict(row.get("filterFields") or {})
+    target: dict[str, Any] = {
+        "id": int(row.get("targetId") or 0),
+        "x": int(row.get("x") or 0),
+        "y": int(row.get("y") or 0),
+        "kind": str(row.get("type") or fields.get("kind") or ""),
+        "type": str(row.get("type") or fields.get("kind") or ""),
+        "level": int(row.get("level") or fields.get("level") or 0),
+        "scanCoord": [
+            int(row.get("scanX", row.get("x") or 0)),
+            int(row.get("scanY", row.get("y") or 0)),
+        ],
+    }
+    integer_fields = {
+        "businessId", "typeCode", "rank", "amountA", "amountB",
+        "storage", "productionPerHour", "defenderCount",
+    }
+    boolean_fields = {
+        "playerOccupied", "unoccupiedByPlayer", "isEmpty", "occupied",
+        "hasDefenders",
+    }
+    list_fields = {"dropCategories", "lootIds"}
+    for key, raw in fields.items():
+        if key in list_fields:
+            try:
+                value = json.loads(str(raw))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                value = []
+            target[key] = value if isinstance(value, list) else []
+        elif key in integer_fields:
+            try:
+                target[key] = int(raw)
+            except (TypeError, ValueError):
+                continue
+        elif key in boolean_fields:
+            target[key] = str(raw).strip().lower() in {"1", "true", "yes"}
+        else:
+            target[key] = str(raw)
+    composition_code = str(target.get("compositionCode") or "")
+    if len(composition_code) >= 4 and composition_code[:4].isdigit():
+        target["composition"] = {
+            name: int(composition_code[index])
+            for index, name in enumerate(("foot", "bow", "cavalry", "chariot"))
+        }
+        target["composition"]["source"] = "8540-units"
+    mine_type = str(target.get("resource") or target.get("kind") or "")
+    target["mineType"] = mine_type
+    target["sharedTargetKey"] = f"id:{normalize_bandit_target_id(target)}"
+    return target
+
+
+def persist_shared_core_map_snapshot(snapshot: dict[str, Any]) -> None:
+    """Project a Python-owned query snapshot into the existing desktop map DB."""
+
+    account_ref = str(snapshot.get("accountRef") or "").strip()
+    sess = (globals().get("SESSIONS") or {}).get(account_ref)
+    if not isinstance(sess, dict):
+        raise RuntimeError("地图快照账号未登录")
+    map_kind = str(snapshot.get("kind") or "").strip().lower()
+    if map_kind not in {"bandit", "mine"}:
+        raise ValueError(f"地图快照类型无效：{map_kind}")
+    scanned_at = max(1, int(snapshot.get("scannedAtMillis") or now_ms()))
+    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for raw in snapshot.get("targets") or []:
+        if not isinstance(raw, dict):
+            continue
+        target = _shared_snapshot_target(raw)
+        if int(target.get("id") or 0) <= 0:
+            continue
+        scan_coord = target.get("scanCoord") or [target["x"], target["y"]]
+        grouped.setdefault(
+            (int(scan_coord[0]), int(scan_coord[1])),
+            [],
+        ).append(target)
+    if not grouped:
+        center = str(snapshot.get("fingerprint") or "").split("|", 1)[0]
+        try:
+            center_x, center_y = [int(value) for value in center.split(",", 1)]
+        except (TypeError, ValueError):
+            return
+        grouped[(center_x, center_y)] = []
+    for (scan_x, scan_y), targets in grouped.items():
+        record_shared_map_region(
+            sess,
+            map_kind,
+            x=scan_x,
+            y=scan_y,
+            http_code=200,
+            opcodes=[],
+            response_data=b"",
+            response_payloads=[],
+            targets=targets,
+            # A query snapshot is already filtered.  It may add/update matches,
+            # but absence from this filtered view cannot invalidate other rows.
+            replace_region=False,
+            scanned_at_millis=scanned_at,
+        )
+
+
+def invalidate_shared_core_map_target(
+    account_ref: str,
+    kind: str,
+    target_id: int,
+    reason: str,
+    _invalidated_at_millis: int,
+) -> None:
+    sess = (globals().get("SESSIONS") or {}).get(str(account_ref))
+    if not isinstance(sess, dict):
+        raise RuntimeError("地图失效账号未登录")
+    map_kind = str(kind or "").strip().lower()
+    if map_kind not in {"bandit", "mine"}:
+        raise ValueError(f"地图失效类型无效：{map_kind}")
+    update_shared_map_target_status(
+        sess,
+        map_kind,
+        {"id": int(target_id)},
+        owner="",
+        status="missing",
+        reason=str(reason or "shared-core-invalidated"),
+    )
 
 
 def reserve_shared_map_target(
@@ -5176,9 +6365,17 @@ def success_action_from_log(message: str) -> tuple[str, str] | None:
     )
     if match:
         return "副本", f"编队{match.group(1)} > {match.group(2)}"
-    match = re.search(r"自动加体完成：(.+?) 使用活血丹1个", text)
+    match = re.search(
+        r"自动加体完成：(.+?) 使用活血丹1个(?:.*?由(\d+)更新为(\d+))?",
+        text,
+    )
     if match:
-        return "加体", f"{match.group(1)}使用1枚活血丹"
+        # 加体 and 活血丹使用 are one event; keep both hosts on one category so
+        # the history does not split across the 军事 and 政事 tabs.
+        detail = f"{match.group(1)}使用1枚活血丹"
+        if match.group(2) and match.group(3):
+            detail += f"，体力{match.group(2)}→{match.group(3)}"
+        return "活血丹", detail
     match = re.search(r"粮食转铜完成：兑换(\d+)铜，消耗粮食(\d+)", text)
     if match:
         return "转铜", f"{match.group(2)}粮换{match.group(1)}铜"
@@ -5790,6 +6987,64 @@ def restore_runtime_state() -> None:
     write_account_records_file()
 
 
+def reconcile_restored_live_session_reconnect_states() -> list[str]:
+    """Clear stale reconnect state when the same account has a live Session.
+
+    A snapshot can be persisted between marking an account for reconnect and
+    removing its Session.  Restoring that snapshot otherwise leaves an
+    impossible combination: ``SESSIONS`` contains the account, while the game
+    request gate rejects every heartbeat because ``reconnectState`` is still
+    ``countdown``.  Move only those contradictory records back to ``checking``
+    and let the first normal heartbeat validate the restored Session.
+    """
+
+    reconciled: list[str] = []
+    checked_at = now_ms()
+    with ACCOUNT_LOCK:
+        for sid, acc in ACCOUNTS.items():
+            if (
+                not bool(acc.get("started"))
+                or sid not in SESSIONS
+                or str(acc.get("reconnectState") or "")
+                not in {"countdown", "reconnecting"}
+            ):
+                continue
+            acc["status"] = "checking"
+            acc["reconnectState"] = ""
+            acc["reconnectAt"] = None
+            acc["reconnectReason"] = ""
+            acc["reconnectGeneration"] = ""
+            acc["reconnectFailureKind"] = ""
+            acc["reconnectFailureCount"] = 0
+            acc["heartbeatNetworkFailureCount"] = 0
+            acc["heartbeatUnconfirmedFailureCount"] = 0
+            acc["heartbeatNetworkSwitchCount"] = 0
+            acc["heartbeatNetworkSwitchAttemptCount"] = 0
+            acc["heartbeatNetworkTriedProxyNodes"] = []
+            acc["networkDegraded"] = False
+            acc["responseUnconfirmed"] = False
+            acc["lastNetworkFailure"] = None
+            acc["lastError"] = ""
+            acc["lastHeartbeat"] = {
+                "online": False,
+                "checking": True,
+                "message": "服务重启后正在验证已恢复会话",
+                "checkedAt": checked_at,
+            }
+            # Also replace a possible in-memory stop signal if this helper is
+            # reused by a warm-recovery path in the future.
+            acc["stopEvent"] = threading.Event()
+            reconciled.append(str(sid))
+    for sid in reconciled:
+        account_log(
+            sid,
+            "检测到已恢复会话与重连倒计时冲突，已清除旧倒计时并重新验证会话",
+            level="warn",
+            source="reconnect",
+        )
+    return reconciled
+
+
 def daily_account_key(sess: dict[str, Any], date_key: str | None = None) -> str:
     role = sess.get("role") or {}
     area = sess.get("area") or {}
@@ -5849,6 +7104,130 @@ def record_daily_dungeon_success(sess: dict[str, Any]) -> int:
     return count
 
 
+def shared_account_public_state_snapshot(sess: dict[str, Any]) -> dict[str, Any] | None:
+    """Read one account's durable shared-core public state without game I/O."""
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        return None
+    try:
+        account = json.loads(
+            SHARED_PYTHON_CORE.account_record_json(session_id)
+        ).get("account") or {}
+        public = ((account.get("session") or {}).get("publicState") or {})
+        return dict(public) if isinstance(public, dict) else None
+    except Exception:
+        return None
+
+
+def _shared_public_json_object(
+    public: dict[str, Any] | None,
+    key: str,
+) -> dict[str, Any]:
+    if not isinstance(public, dict):
+        return {}
+    raw = public.get(key) or {}
+    try:
+        value = dict(raw) if isinstance(raw, dict) else json.loads(str(raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def shared_lossless_last_status(
+    sess: dict[str, Any],
+    *,
+    at_millis: int | None = None,
+    public_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return today's last server-confirmed lossless status from durable state."""
+
+    public = (
+        public_state
+        if isinstance(public_state, dict)
+        else shared_account_public_state_snapshot(sess)
+    )
+    status = _shared_public_json_object(public, "losslessLastStatusJson")
+    try:
+        updated_at = int(status.get("updatedAt") or 0)
+    except (TypeError, ValueError):
+        return {}
+    now_value = int(at_millis if at_millis is not None else time.time() * 1000)
+    day_millis = 24 * 60 * 60 * 1000
+    china_offset = 8 * 60 * 60 * 1000
+    if updated_at <= 0 or (updated_at + china_offset) // day_millis != (
+        now_value + china_offset
+    ) // day_millis:
+        return {}
+    return status
+
+
+def shared_resident_daily_count(
+    sess: dict[str, Any],
+    feature: str,
+    *,
+    at_millis: int | None = None,
+    public_state: dict[str, Any] | None = None,
+) -> int | None:
+    """Read migrated resident counters from the shared Python ledger.
+
+    ``None`` means this account has not yet been upgraded to the schema-2
+    resident configuration, so callers may still show the legacy counter.
+    Once schema 2 exists, the shared state is authoritative even when the
+    current value is zero.
+    """
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    normalized_feature = str(feature or "").strip()
+    if not session_id or normalized_feature not in {"brush", "dungeon", "lossless"}:
+        return None
+    try:
+        public = (
+            public_state
+            if isinstance(public_state, dict)
+            else shared_account_public_state_snapshot(sess)
+        )
+        config = _shared_public_json_object(
+            public, "residentAutomationConfigJson"
+        )
+        if not isinstance(config, dict) or int(config.get("schemaVersion") or 0) < 2:
+            return None
+        state = _shared_public_json_object(
+            public, "residentAutomationStateJson"
+        )
+        feature_state = state.get(normalized_feature)
+        feature_state = feature_state if isinstance(feature_state, dict) else {}
+        current_day = (
+            int(at_millis if at_millis is not None else time.time() * 1000)
+            + 8 * 60 * 60 * 1000
+        ) // (24 * 60 * 60 * 1000)
+        state_count = None
+        if int(feature_state.get("dayKey") or -1) == current_day:
+            state_count = max(0, int(feature_state.get("usedCount") or 0))
+        if normalized_feature != "lossless":
+            return state_count if state_count is not None else 0
+
+        # A lossless round is consumed when its first guard dispatch is
+        # accepted, not when all five stages are cleared.  Prefer the largest
+        # same-day fact from our idempotent dispatch counter and the game's
+        # authoritative 0x8900 remaining-attempt value.  This also backfills
+        # accounts created before the local round counter existed.
+        candidates = [state_count] if state_count is not None else []
+        status = shared_lossless_last_status(
+            sess,
+            at_millis=at_millis,
+            public_state=public,
+        )
+        status_used = status.get("usedAttempts")
+        if status_used is None and status.get("remainingAttempts") is not None:
+            status_used = LOSSLESS_DAILY_LIMIT - int(status["remainingAttempts"])
+        if status_used is not None:
+            candidates.append(max(0, int(status_used)))
+        return min(LOSSLESS_DAILY_LIMIT, max(candidates)) if candidates else 0
+    except Exception:
+        return None
+
+
 DAILY_TASK_NAMES = {
     "autoSignIn": "自动签到",
     "arenaCoins": "领竞技币",
@@ -5870,14 +7249,33 @@ DAILY_API_TASK_KEYS = {
 }
 
 
+def _china_calendar_date(at_millis: int | None = None) -> str:
+    timestamp = time.time() if at_millis is None else int(at_millis) / 1000.0
+    return time.strftime("%Y%m%d", time.gmtime(timestamp + 8 * 3600))
+
+
 def arena_coins_cycle_date(now_ts: float | None = None) -> str:
     """Arena reward day runs from local 22:00 through next day's 21:59."""
     timestamp = time.time() if now_ts is None else float(now_ts)
-    return time.strftime("%Y%m%d", time.localtime(timestamp - 22 * 3600))
+    return time.strftime(
+        "%Y%m%d",
+        time.gmtime(timestamp + 8 * 3600 - 22 * 3600),
+    )
 
 
-def daily_task_storage_key(sess: dict[str, Any], task_key: str) -> str:
-    date_key = arena_coins_cycle_date() if str(task_key) == "arenaCoins" else None
+def daily_task_storage_key(
+    sess: dict[str, Any],
+    task_key: str,
+    *,
+    at_millis: int | None = None,
+) -> str:
+    date_key = (
+        arena_coins_cycle_date(
+            None if at_millis is None else int(at_millis) / 1000.0
+        )
+        if str(task_key) == "arenaCoins"
+        else _china_calendar_date(at_millis)
+    )
     return daily_account_key(sess, date_key)
 
 
@@ -5900,6 +7298,7 @@ def record_daily_task_completion(
     *,
     source: str = "automation",
     result: dict[str, Any] | None = None,
+    at_millis: int | None = None,
 ) -> dict[str, Any]:
     """Record a confirmed one-time daily task result for the current role and date."""
     key = str(task_key or "")
@@ -5907,7 +7306,7 @@ def record_daily_task_completion(
         raise ValueError(f"未知每日任务：{key}")
     detail = {
         "completed": True,
-        "completedAt": now_ms(),
+        "completedAt": now_ms() if at_millis is None else int(at_millis),
         "source": str(source or "automation"),
     }
     result_detail = result if isinstance(result, dict) else {}
@@ -5917,7 +7316,11 @@ def record_daily_task_completion(
         if field in result_detail:
             detail[field] = result_detail[field]
     with DAILY_LOCK:
-        storage_key = daily_task_storage_key(sess, key)
+        storage_key = daily_task_storage_key(
+            sess,
+            key,
+            at_millis=at_millis,
+        )
         account_items = DAILY_TASK_COMPLETIONS.setdefault(storage_key, {})
         account_items[key] = detail
     if ACCOUNT_STATE_DB_READY:
@@ -5927,12 +7330,26 @@ def record_daily_task_completion(
     return {"key": key, "name": DAILY_TASK_NAMES[key], **detail}
 
 
-def current_daily_task_completions(sess: dict[str, Any]) -> list[dict[str, Any]]:
+def current_daily_task_completions(
+    sess: dict[str, Any],
+    *,
+    at_millis: int | None = None,
+) -> list[dict[str, Any]]:
     with DAILY_LOCK:
-        completed = dict(DAILY_TASK_COMPLETIONS.get(daily_account_key(sess), {}))
+        completed = dict(DAILY_TASK_COMPLETIONS.get(
+            daily_account_key(sess, _china_calendar_date(at_millis)),
+            {},
+        ))
         arena_completed = (
             DAILY_TASK_COMPLETIONS
-            .get(daily_task_storage_key(sess, "arenaCoins"), {})
+            .get(
+                daily_task_storage_key(
+                    sess,
+                    "arenaCoins",
+                    at_millis=at_millis,
+                ),
+                {},
+            )
             .get("arenaCoins")
         )
         if isinstance(arena_completed, dict):
@@ -5955,11 +7372,19 @@ def current_daily_task_completions(sess: dict[str, Any]) -> list[dict[str, Any]]
     return rows
 
 
-def daily_task_is_completed(sess: dict[str, Any], task_key: str) -> bool:
+def daily_task_is_completed(
+    sess: dict[str, Any],
+    task_key: str,
+    *,
+    at_millis: int | None = None,
+) -> bool:
     key = str(task_key or "")
     return any(
         str(item.get("key") or "") == key and bool(item.get("completed"))
-        for item in current_daily_task_completions(sess)
+        for item in current_daily_task_completions(
+            sess,
+            at_millis=at_millis,
+        )
         if isinstance(item, dict)
     )
 
@@ -5967,7 +7392,8 @@ def daily_task_is_completed(sess: dict[str, Any], task_key: str) -> bool:
 def current_daily_stats(sess: dict[str, Any]) -> dict[str, Any]:
     """User-facing daily stats for the role page.
 
-    刷黄/副本次数是本辅助本地按“账号+区服+角色+日期”记录的成功次数；
+    已迁移账号的刷黄/副本次数来自共享 Python 常驻状态；
+    旧账号在 schema 2 尚未建立时才回退到电脑端历史计数。
     宝藏占领进度来自游戏接口 0x6200/0xe200 的日常任务进度。
     日期进入 key 后，跨过本地 0 点会自然显示为 0。
     """
@@ -5975,10 +7401,20 @@ def current_daily_stats(sess: dict[str, Any]) -> dict[str, Any]:
     treasure = activity.get("treasureOccupied") or {}
     current = treasure.get("current")
     target = treasure.get("target")
+    shared_brush_count = shared_resident_daily_count(sess, "brush")
+    shared_dungeon_count = shared_resident_daily_count(sess, "dungeon")
     return {
         "date": time.strftime("%Y%m%d"),
-        "brushYellowCount": get_daily_brush_count(sess),
-        "dungeonCount": get_daily_dungeon_count(sess),
+        "brushYellowCount": (
+            shared_brush_count
+            if shared_brush_count is not None
+            else get_daily_brush_count(sess)
+        ),
+        "dungeonCount": (
+            shared_dungeon_count
+            if shared_dungeon_count is not None
+            else get_daily_dungeon_count(sess)
+        ),
         "treasureOccupied": current,
         "treasureLimit": target,
         "treasureProgress": treasure.get("progress") or (f"{current}/{target}" if current is not None and target is not None else ""),
@@ -8365,9 +9801,15 @@ def _post_game_impl(
     allow_reconnecting: bool = False,
     noncritical: bool = False,
     platform: Any = None,
+    prebuilt_body: bytes | None = None,
 ) -> tuple[int, bytes, list[dict[str, Any]]]:
-    profile = resolve_request_platform(account_id, platform)
-    body = make_packet(commands, dm, header=str(profile["header"]))
+    if prebuilt_body is None:
+        profile = resolve_request_platform(account_id, platform)
+        body = make_packet(commands, dm, header=str(profile["header"]))
+    else:
+        body = bytes(prebuilt_body)
+        if not body:
+            raise ValueError("预构建游戏请求不能为空")
     direct_error = ""
     proxy_mode = account_proxy_mode(account_id)
     ensure_account_request_active(account_id, allow_reconnecting=allow_reconnecting)
@@ -8445,6 +9887,10 @@ def _post_game_impl(
             reason = f"当前账号选择了{route_name}，但本次无法连接游戏服"
             if account_id:
                 if noncritical:
+                    mark_account_network_degraded_without_pause(
+                        account_id,
+                        f"{reason}；最后错误：{direct_error}",
+                    )
                     account_log(
                         account_id,
                         f"非关键准备请求失败，任务保持运行：{reason}",
@@ -8594,6 +10040,10 @@ def _post_game_impl(
     )
     if noncritical:
         reason = connection_reason + "非关键准备请求稍后重试，任务保持运行"
+        mark_account_network_degraded_without_pause(
+            account_id,
+            f"{reason}；最后错误：{last_error}",
+        )
         account_log(account_id, reason, level="warn", source="proxy")
         raise RuntimeError(f"{reason}；最后错误：{last_error}")
     reason = (
@@ -8659,6 +10109,7 @@ def post_game(
     allow_reconnecting: bool = False,
     noncritical: bool = False,
     platform: Any = None,
+    _prebuilt_body: bytes | None = None,
 ) -> tuple[int, bytes, list[dict[str, Any]]]:
     """Track foreground traffic so account-level idle scanners always yield."""
     if account_id:
@@ -8677,6 +10128,7 @@ def post_game(
                     allow_reconnecting=allow_reconnecting,
                     noncritical=noncritical,
                     platform=platform,
+                    prebuilt_body=_prebuilt_body,
                 )
             finally:
                 _finish_account_game_request(
@@ -8692,9 +10144,32 @@ def post_game(
             allow_reconnecting=allow_reconnecting,
             noncritical=noncritical,
             platform=platform,
+            prebuilt_body=_prebuilt_body,
         )
     finally:
         _finish_account_game_request(account_id, noncritical=noncritical)
+
+
+def post_game_prebuilt(
+    url: str,
+    commands: list[tuple[int, bytes]],
+    body: bytes,
+    *,
+    account_id: str,
+    noncritical: bool = False,
+    platform: Any = None,
+) -> tuple[int, bytes, list[dict[str, Any]]]:
+    """Send an already-packed shared-core body through normal desktop I/O."""
+
+    return post_game(
+        url,
+        commands,
+        0,
+        account_id=account_id,
+        noncritical=noncritical,
+        platform=platform,
+        _prebuilt_body=bytes(body),
+    )
 
 
 def account_game_transaction_lock(account_id: str) -> threading.RLock:
@@ -8802,35 +10277,30 @@ def ensure_military_generals_full_loyalty(
     task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
-    for general in selected:
-        general_id = int(general.get("id") or 0)
-        name = str(general.get("name") or general_id)
-        loyalty = general.get("loyalty")
-        loyalty_limit = general.get("loyaltyLimit")
-        if loyalty is None or loyalty_limit is None:
-            raise RuntimeError(
-                f"{action_name}满忠失败：{name} 的忠诚度状态不可用，"
-                "本轮暂不出征"
-            )
-        loyalty = int(loyalty)
-        loyalty_limit = int(loyalty_limit)
-        if loyalty >= loyalty_limit:
-            results.append({
-                "generalId": general_id,
-                "name": name,
-                "loyalty": loyalty,
-                "loyaltyLimit": loyalty_limit,
-                "skipped": True,
-            })
+    try:
+        plans = shared_plan_generals_full_loyalty(
+            selected,
+            action_name=action_name,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    for plan in plans:
+        general = selected[int(plan["sourceIndex"])]
+        general_id = int(plan["generalId"])
+        name = str(plan["name"])
+        loyalty = int(plan["loyalty"])
+        loyalty_limit = int(plan["loyaltyLimit"])
+        if bool(plan.get("skipped")):
+            results.append(dict(plan))
             continue
-        delta = loyalty_limit - loyalty
+        delta = int(plan["delta"])
         if task:
             task_log(
                 task,
                 f"{action_name}满忠检查：{name} {loyalty}/{loyalty_limit}，"
                 f"需要补{delta}点",
             )
-        payload = build_add_loyalty_payload(general_id, delta)
+        payload = bytes.fromhex(str(plan["payloadHex"]))
         code, data, packets = post_game(
             sess["gameHttp"],
             [(0x121F, payload)],
@@ -8846,33 +10316,16 @@ def ensure_military_generals_full_loyalty(
             (item for item in candidates if item.get("success")),
             candidates[0] if candidates else None,
         )
-        if not parsed or not parsed.get("success"):
-            message = (
-                str((parsed or {}).get("message") or "")
-                or "未收到 0x821f 加忠成功响应"
+        try:
+            confirmed = shared_apply_full_loyalty_receipt(
+                plan,
+                parsed or {},
+                action_name=action_name,
             )
-            raise RuntimeError(
-                f"{action_name}满忠失败：{name}；{message}，本轮暂不出征"
-            )
-        updated = next(
-            (
-                row for row in parsed.get("generals") or []
-                if int(row.get("generalId") or 0) == general_id
-            ),
-            None,
-        )
-        if not updated:
-            raise RuntimeError(
-                f"{action_name}满忠失败：{name}；响应未包含该将领，"
-                "本轮暂不出征"
-            )
-        new_loyalty = int(updated.get("loyalty") or 0)
-        new_limit = int(updated.get("loyaltyLimit") or loyalty_limit)
-        if new_loyalty < new_limit:
-            raise RuntimeError(
-                f"{action_name}满忠失败：{name} 加忠后仍为 "
-                f"{new_loyalty}/{new_limit}，本轮暂不出征"
-            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        new_loyalty = int(confirmed["loyalty"])
+        new_limit = int(confirmed["loyaltyLimit"])
         general["loyalty"] = new_loyalty
         general["loyaltyLimit"] = new_limit
         for session_general in sess.get("generals") or []:
@@ -8881,9 +10334,9 @@ def ensure_military_generals_full_loyalty(
                 session_general["loyaltyLimit"] = new_limit
         role_state = sess.get("roleState")
         if isinstance(role_state, dict):
-            role_state["copper"] = parsed.get("copper")
+            role_state["copper"] = confirmed.get("copper")
         result = {
-            **parsed,
+            **confirmed,
             "http": code,
             "responseBytes": len(data),
             "payloadHex": payload.hex(),
@@ -9067,98 +10520,38 @@ def query_raid_fiefs(sess: dict[str, Any], player_name: str) -> dict[str, Any]:
     return parsed
 
 
-def recommend_brush_center(sess: dict[str, Any], general_ids: list[str]) -> dict[str, Any]:
-    """Calculate the brush center from fief coordinates cached at login.
-
-    Saving settings is a local operation. It must not issue another 0x1310
-    game request, otherwise repeated saves can be delayed by live game
-    traffic. start_account() already refreshes every owned fief and attaches
-    its coordinates to the generals immediately after login.
-    """
-    ordered_ids = [str(value) for value in general_ids if str(value or "").strip()]
-    if not ordered_ids:
-        raise RuntimeError("当前刷黄编队没有已选将领")
-    generals = sess.get("generals") or []
-    selected = []
-    for general_id in ordered_ids:
-        general = next((
-            item for item in generals
-            if str(item.get("id")) == general_id
-            or str(item.get("idHex")) == general_id
-        ), None)
-        if not general:
-            raise RuntimeError(f"无法读取将领 {general_id} 的所在封地")
-        fief_id = int(general.get("fiefId") or general.get("placeID") or 0)
-        if fief_id <= 0:
-            raise RuntimeError(f"将领 {general.get('name') or general_id} 没有可识别的所在封地")
-        selected.append({
-            "generalId": general_id,
-            "generalName": general.get("name") or general_id,
-            "fiefId": fief_id,
-        })
-
+def recommend_brush_center(
+    sess: dict[str, Any],
+    general_ids: list[str],
+    *,
+    enforce_role_level: bool = False,
+) -> dict[str, Any]:
+    """Delegate the cached-only recommendation to the shared Python core."""
     locations = sess.get("ownedFiefLocations") or {}
     if isinstance(locations, dict):
-        fiefs = [
+        primary_fiefs = [
             item
             for item in locations.values()
             if isinstance(item, dict)
         ]
     else:
-        fiefs = []
-    if not fiefs:
-        # Compatibility with sessions restored from an older runtime snapshot.
-        # This is still cached data and never performs live game I/O.
-        fiefs = [
-            item
-            for item in (sess.get("lastRaidFiefs") or {}).get("fiefs") or []
-            if isinstance(item, dict)
-        ]
-    by_id = {int(item.get("targetId") or 0): item for item in fiefs}
-
-    # A general also receives fiefX/fiefY during login. Use that local copy if
-    # the session's fief catalog came from an older snapshot.
-    for general in generals:
-        try:
-            fief_id = int(general.get("fiefId") or general.get("placeID") or 0)
-        except (TypeError, ValueError):
-            continue
-        if fief_id <= 0 or fief_id in by_id:
-            continue
-        if general.get("fiefX") is None or general.get("fiefY") is None:
-            continue
-        by_id[fief_id] = {
-            "targetId": fief_id,
-            "fiefName": general.get("fiefName") or "",
-            "cityName": general.get("cityName") or "",
-            "x": general.get("fiefX"),
-            "y": general.get("fiefY"),
-        }
-
-    counts: dict[int, int] = {}
-    for item in selected:
-        counts[item["fiefId"]] = counts.get(item["fiefId"], 0) + 1
-    highest = max(counts.values())
-    tied = {fief_id for fief_id, count in counts.items() if count == highest}
-    chosen_fief_id = next(item["fiefId"] for item in selected if item["fiefId"] in tied)
-    chosen = by_id.get(chosen_fief_id)
-    if not chosen or chosen.get("x") is None or chosen.get("y") is None:
-        raise RuntimeError(
-            f"登录缓存中没有封地ID {chosen_fief_id} 的世界坐标，请重新启动该账号"
-        )
-    world_x = max(0, min(int(chosen["x"]), 186))
-    world_y = max(0, int(chosen["y"]))
-    return {
-        "x": world_x,
-        "y": min(world_y, 55),
-        "worldX": world_x,
-        "worldY": world_y,
-        "fiefId": chosen_fief_id,
-        "fiefName": chosen.get("fiefName") or chosen.get("name") or "",
-        "cityName": chosen.get("cityName") or chosen.get("city") or "",
-        "selectedGenerals": selected,
-        "fiefCounts": {str(key): value for key, value in counts.items()},
-    }
+        primary_fiefs = []
+    legacy_fiefs = [
+        item
+        for item in (sess.get("lastRaidFiefs") or {}).get("fiefs") or []
+        if isinstance(item, dict)
+    ]
+    return shared_local_view(
+        "POST",
+        "/api/brush/recommended-center",
+        {
+            "generalIds": list(general_ids or []),
+            "generals": list(sess.get("generals") or []),
+            "fiefs": [*primary_fiefs, *legacy_fiefs],
+            "roleLevel": session_role_level(sess),
+            "enforceRoleLevel": bool(enforce_role_level),
+        },
+    )
 
 
 def enrich_generals_with_fief_names(sess: dict[str, Any]) -> None:
@@ -10317,60 +11710,607 @@ def raid_preflight_generals(
 
 
 def normalize_raid_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_rows = body.get("rows")
-    if not isinstance(raw_rows, list):
-        raw_rows = [body]
-    known_ids = {str(g.get("id")) for g in sess.get("generals", []) if g.get("id") is not None}
-    known_ids.update(str(g.get("idHex")) for g in sess.get("generals", []) if g.get("idHex"))
-    rows: list[dict[str, Any]] = []
-    for idx, row0 in enumerate(raw_rows):
-        row = dict(row0 or {})
-        if not bool(row.get("enabled", True)):
-            continue
-        raw_ids = row.get("generalIds")
-        if isinstance(raw_ids, list):
-            general_ids = [str(x) for x in raw_ids if str(x or "").strip()]
-        elif row.get("generalId"):
-            general_ids = [str(row.get("generalId"))]
-        else:
-            general_ids = []
-        general_ids = list(dict.fromkeys(general_ids))
-        if not general_ids:
-            raise RuntimeError(f"第 {idx + 1} 条掠夺规则未选择出征将领")
-        if len(general_ids) > RAID_MAX_GENERALS_PER_FORMATION:
+    planning_body = dict(body or {})
+    planning_body["confirm"] = "raid"
+    planning_body["knownGenerals"] = list(sess.get("generals") or [])
+    plan = shared_settings_write_plan("/api/raid/execute", planning_body)
+    return list((plan.get("response") or {}).get("executionRows") or [])
+
+
+def wait_shared_core_operation(
+    operation_id: str,
+    *,
+    task: dict[str, Any] | None = None,
+    timeout_seconds: float = 300.0,
+) -> dict[str, Any]:
+    """Wait in a background worker for one already-submitted shared operation."""
+
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    cancellation_requested = False
+    while time.monotonic() < deadline:
+        status_result = SHARED_PYTHON_CORE.operation_status(operation_id)
+        operation = status_result.get("operation")
+        if not isinstance(operation, dict):
+            raise RuntimeError("共享 operation 状态不存在")
+        status = str(operation.get("status") or "")
+        if status not in {"QUEUED", "RUNNING"}:
+            if status == "SUCCEEDED":
+                result = operation.get("result")
+                if not isinstance(result, dict):
+                    raise RuntimeError("共享 operation 未返回结果对象")
+                return result
+            error = operation.get("error")
+            error = error if isinstance(error, dict) else {}
             raise RuntimeError(
-                f"第 {idx + 1} 条掠夺规则最多选择"
-                f"{RAID_MAX_GENERALS_PER_FORMATION}名出征将领"
+                str(error.get("message") or f"共享 operation 结束：{status}")
             )
-        missing = [gid for gid in general_ids if known_ids and gid not in known_ids]
-        if missing:
-            raise RuntimeError(f"第 {idx + 1} 条掠夺规则存在不属于当前账号的将领：{','.join(missing)}")
-        player_name = str(row.get("playerName") or row.get("targetPlayer") or "").strip()
-        if not player_name:
-            raise RuntimeError(f"第 {idx + 1} 条掠夺规则未填写玩家名称")
-        fief_index = int(row.get("fiefIndex") or row.get("fiefNo") or 0)
-        if fief_index <= 0:
-            raise RuntimeError(f"第 {idx + 1} 条掠夺规则封地序号必须大于 0")
-        rows.append({
-            "enabled": True,
-            "sourceRowIndex": idx,
-            "generalIds": general_ids,
-            "generalId": general_ids[0],
-            "playerName": player_name,
-            "fiefIndex": fief_index,
-            "fullTroops": bool(row.get(
-                "fullTroops",
-                RAID_BEHAVIOR_CONTRACT["fullTroopsDefault"],
-            )),
-            "fullLoyalty": bool(row.get(
-                "fullLoyalty",
-                RAID_BEHAVIOR_CONTRACT["fullLoyaltyDefault"],
-            )),
-            "duration": str(row.get("duration") or "立即出征"),
-        })
-    if not rows:
-        raise RuntimeError("至少需要勾选一条掠夺规则")
-    return rows
+        stop_event = task.get("stopEvent") if isinstance(task, dict) else None
+        if (
+            stop_event is not None
+            and stop_event.is_set()
+            and not bool(operation.get("requestSent"))
+            and not cancellation_requested
+        ):
+            SHARED_PYTHON_CORE.cancel_operation(operation_id)
+            cancellation_requested = True
+        if stop_event is not None:
+            stop_event.wait(0.05)
+        else:
+            time.sleep(0.05)
+    raise RuntimeError("共享 operation 等待超过 300 秒")
+
+
+def sync_shared_resident_automation(
+    sess: dict[str, Any],
+    *,
+    started: bool | None = None,
+) -> dict[str, Any]:
+    """Hydrate the shared resident plan from the existing desktop habit store."""
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("同步共享常驻配置缺少账号")
+    _desktop_sync_shared_account(session_id)
+    configured = SHARED_PYTHON_CORE.configure_resident_automation_from_habits(
+        session_id,
+        load_account_habits(sess),
+    )
+    active_keys = _desktop_active_shared_resident_keys(session_id)
+    activation = SHARED_PYTHON_CORE.set_resident_automation_activation(
+        session_id,
+        bool(sess.get("savedTasksStarted")) if started is None else bool(started),
+        active_keys,
+    )
+    return {**configured, "activation": activation}
+
+
+def _desktop_active_shared_resident_keys(session_id: str) -> list[str]:
+    tasks = globals().get("AUTO_TASKS") or {}
+    lock = globals().get("TASK_LOCK")
+
+    def snapshot() -> list[dict[str, Any]]:
+        return [
+            dict(task)
+            for task in tasks.values()
+            if str(task.get("sessionId") or (task.get("config") or {}).get("sessionId") or "")
+            == str(session_id)
+            and str(task.get("status") or "")
+            in {"starting", "running", "stopping"}
+            and not bool(
+                task.get("stopEvent") is not None
+                and task["stopEvent"].is_set()
+            )
+        ]
+
+    if lock is not None:
+        with lock:
+            active = snapshot()
+    else:
+        active = snapshot()
+    keys = set()
+    for task in active:
+        task_type = str(task.get("type") or "")
+        if task_type in {"auto-brush-yellow", "brush-yellow"}:
+            keys.add("brushYellow")
+        if task_type == "auto-mine":
+            keys.add("mine")
+        if task_type == "raid":
+            keys.add("raid")
+        if task_type == "lossless":
+            keys.add("lossless")
+        if task_type == "dungeon":
+            keys.add("dungeon")
+        if task_type == "auto-general":
+            keys.add("general")
+        if task_type == "auto-ministry":
+            keys.add("ministry")
+        if task_type in {"auto-domestic", "auto-technology"}:
+            keys.add("domestic")
+        if task_type == "auto-inventory":
+            keys.add("inventory")
+        if task_type == "auto-alarm":
+            keys.add("alarm")
+    return sorted(keys)
+
+
+def desktop_shared_allowed_features(active_keys: list[str]) -> list[str]:
+    """Translate active display rows into the core's execution allow-list."""
+
+    output: list[str] = []
+    for raw in active_keys:
+        value = "brush" if str(raw) == "brushYellow" else str(raw)
+        if value and value not in output:
+            output.append(value)
+    # Daily work shares the account lane but has no resident display row.
+    if "daily" not in output:
+        output.append("daily")
+    return output
+
+
+def try_sync_shared_resident_automation(
+    sess: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return sync_shared_resident_automation(sess)
+    except Exception as error:
+        return {
+            "ok": False,
+            "changed": False,
+            "error": str(error) or error.__class__.__name__,
+        }
+
+
+def _shared_resident_pending(session_id: str) -> bool:
+    try:
+        account = json.loads(
+            SHARED_PYTHON_CORE.account_record_json(str(session_id))
+        ).get("account") or {}
+        public = ((account.get("session") or {}).get("publicState") or {})
+        for field in (
+            "minePendingGarrisonJson",
+            "losslessPendingBattleJson",
+            "brushPendingRecoveryJson",
+            "raidPendingReturnJson",
+            "dungeonPendingRunJson",
+            "generalMaintenancePendingJson",
+            "ministryPendingPlantJson",
+            "domesticPendingActionJson",
+            "inventoryPendingActionJson",
+            "alarmPendingEventsJson",
+        ):
+            value = json.loads(str(public.get(field) or "{}"))
+            if isinstance(value, dict) and value:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _shared_resident_pending_features(
+    session_id: str,
+    *,
+    strict: bool = False,
+) -> list[str]:
+    """Return feature identities for every durable resident ledger."""
+
+    fields = (
+        ("alarmPendingEventsJson", "alarm"),
+        ("minePendingGarrisonJson", "mine"),
+        ("losslessPendingBattleJson", "lossless"),
+        ("brushPendingRecoveryJson", "brush"),
+        ("raidPendingReturnJson", "raid"),
+        ("dungeonPendingRunJson", "dungeon"),
+        ("generalMaintenancePendingJson", "general"),
+        ("ministryPendingPlantJson", "ministry"),
+        ("domesticPendingActionJson", "domestic"),
+        ("inventoryPendingActionJson", "inventory"),
+    )
+    try:
+        account = json.loads(
+            SHARED_PYTHON_CORE.account_record_json(str(session_id))
+        ).get("account") or {}
+        public = ((account.get("session") or {}).get("publicState") or {})
+        features = []
+        for field, feature in fields:
+            value = json.loads(str(public.get(field) or "{}"))
+            if isinstance(value, dict) and value and feature not in features:
+                features.append(feature)
+        return features
+    except Exception:
+        if strict:
+            raise
+        return []
+
+
+def _shared_brush_mine_pending(session_id: str) -> bool:
+    """Compatibility alias for older desktop tests and dead workers."""
+
+    return _shared_resident_pending(session_id)
+
+
+def execute_shared_resident_automation_tick(
+    sess: dict[str, Any],
+    *,
+    task: dict[str, Any] | None = None,
+    configured_execution_allowed: bool = True,
+    allowed_features: list[str] | None = None,
+    daily_allowed_keys: list[str] | None = None,
+    operator_reconcile_features: list[str] | None = None,
+) -> dict[str, Any]:
+    """Submit/wait one Python-owned resident tick."""
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("共享常驻 tick 缺少账号")
+    _desktop_sync_shared_account(session_id)
+    tick_at = now_ms()
+    request_context: dict[str, Any] = {
+        "requestId": f"desktop-resident-{session_id}-{tick_at}",
+        "source": "desktop-resident-scheduler",
+        "platform": "desktop",
+        "allowedFeatures": list(
+            allowed_features
+            if allowed_features is not None
+            else [
+                "mine", "lossless", "brush", "raid", "dungeon",
+                "general", "ministry", "domestic", "inventory", "alarm", "daily",
+            ]
+        ),
+        "configuredExecutionAllowed": bool(configured_execution_allowed),
+    }
+    if daily_allowed_keys is not None:
+        request_context["dailyAllowedKeys"] = list(daily_allowed_keys)
+    if operator_reconcile_features is not None:
+        request_context["operatorReconcileFeatures"] = list(
+            operator_reconcile_features
+        )
+    submitted = SHARED_PYTHON_CORE.submit_automation_recovery_tick(
+        session_id,
+        tick_key=(
+            f"desktop-resident-{session_id}-{tick_at}-{threading.get_ident()}"
+        ),
+        request_context=request_context,
+    )
+    result = wait_shared_core_operation(
+        str(submitted["operationId"]),
+        task=task,
+        timeout_seconds=900.0,
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("共享常驻 tick 未返回结果对象")
+    return dict(result)
+
+
+OPERATOR_RECONCILIATION_CONFIRM = "reconcile-uncertain-expeditions"
+OPERATOR_DRAIN_CONFIRM = "drain-confirmed-expeditions"
+OPERATOR_RECONCILIATION_FEATURES = {
+    "lossless": {
+        "core": "lossless",
+        "pending": "losslessPendingBattleJson",
+        "notice": "task:lossless",
+        "label": "无损",
+    },
+    "brushYellow": {
+        "core": "brush",
+        "pending": "brushPendingRecoveryJson",
+        "notice": "task:brushYellow",
+        "label": "刷黄",
+    },
+    "dungeon": {
+        "core": "dungeon",
+        "pending": "dungeonPendingRunJson",
+        "notice": "task:dungeon",
+        "label": "副本",
+    },
+}
+
+
+def operator_maintenance_barrier(
+    sess: dict[str, Any],
+    reason: str,
+) -> tuple[str, list[str], list[str]]:
+    """Pause account workers and cancel only ticks that have not sent."""
+
+    sid = str(sess.get("sessionId") or "").strip()
+    if not sid:
+        raise RuntimeError("人工维护缺少账号")
+    require_account_online(sid, reason)
+    stopped_task_ids = stop_tasks_for_session_invalid(
+        sid,
+        reason + "：暂时暂停账号全部常驻任务",
+        operator_maintenance=True,
+    )
+    # These rows were interrupted by an explicit local maintenance barrier,
+    # not by a task or network failure.  Keep suppression attached to the old
+    # task object until it is pruned so a late CANCELLED wake cannot create a
+    # fresh role-page notice after the barrier returns.
+    with TASK_LOCK:
+        for task in AUTO_TASKS.values():
+            if str(task.get("taskId") or "") not in stopped_task_ids:
+                continue
+            task["_suppressImportantNotice"] = True
+            task["_operatorMaintenancePause"] = True
+            task.pop("_transientNetworkPause", None)
+    cancelled_operation_ids: list[str] = []
+    active_send_boundary: list[str] = []
+    # Give stopped worker threads a short hand-off window, repeatedly checking
+    # because a thread may have been between ``submit`` and its stop event.
+    for _attempt in range(40):
+        active_send_boundary = []
+        found_active = False
+        for operation in (
+            SHARED_PYTHON_CORE.operations_snapshot().get("operations") or []
+        ):
+            if not isinstance(operation, dict):
+                continue
+            if (
+                str(operation.get("accountRef") or "") != sid
+                or str(operation.get("kind") or "")
+                != "automation:recovery-tick:v1"
+                or str(operation.get("status") or "")
+                not in {"QUEUED", "RUNNING"}
+            ):
+                continue
+            found_active = True
+            operation_id = str(operation.get("operationId") or "")
+            if bool(operation.get("requestSent")):
+                active_send_boundary.append(operation_id)
+                continue
+            if operation_id:
+                cancelled = SHARED_PYTHON_CORE.cancel_operation(operation_id)
+                if operation_id not in cancelled_operation_ids:
+                    cancelled_operation_ids.append(operation_id)
+                if bool(
+                    ((cancelled.get("operation") or {}).get("requestSent"))
+                ):
+                    active_send_boundary.append(operation_id)
+        if active_send_boundary or not found_active:
+            break
+        time.sleep(0.05)
+    if active_send_boundary:
+        raise RuntimeError(
+            "账号仍有自动化请求已越过发送边界，暂不执行人工维护："
+            + ",".join(active_send_boundary)
+        )
+    _desktop_sync_shared_account(sid)
+    return sid, stopped_task_ids, cancelled_operation_ids
+
+
+def resolve_operator_maintenance_notices(
+    session_id: str,
+    stopped_task_ids: list[str],
+) -> None:
+    """Resolve only notices emitted by rows stopped for local maintenance."""
+
+    if not stopped_task_ids:
+        return
+    notice_keys: set[str] = set()
+    with TASK_LOCK:
+        for task in AUTO_TASKS.values():
+            if str(task.get("taskId") or "") not in stopped_task_ids:
+                continue
+            notice_key, _name = task_notice_identity(task)
+            notice_keys.add(notice_key)
+    account_key = account_storage_key(session_id=session_id)
+    for notice_key in notice_keys:
+        database_resolve_important_notice(account_key, notice_key)
+
+
+def reconcile_uncertain_expeditions(
+    sess: dict[str, Any],
+    requested_features: Any,
+    *,
+    resume_after_reconciliation: bool = False,
+) -> dict[str, Any]:
+    """Run the explicit, read-only-evidence gate for old expedition ledgers."""
+
+    if not isinstance(requested_features, list) or not requested_features:
+        raise ValueError("人工结清至少需要选择一个功能")
+    aliases = {"brush": "brushYellow", "brushYellow": "brushYellow"}
+    normalized: list[str] = []
+    for raw in requested_features:
+        value = str(raw or "").strip()
+        value = aliases.get(value, value)
+        if value not in OPERATOR_RECONCILIATION_FEATURES:
+            raise ValueError(f"不支持人工结清的功能：{value or '空值'}")
+        if value not in normalized:
+            normalized.append(value)
+
+    # A service restart can leave a pre-restart recovery tick in the durable
+    # operation queue.  Isolate the account while reconciling so that such a
+    # tick cannot rewrite a ledger after this endpoint has archived it.
+    sid, stopped_task_ids, cancelled_operation_ids = (
+        operator_maintenance_barrier(
+            sess,
+            "人工结清旧出征账本",
+        )
+    )
+    # Freeze the latest saved formation rules before any live observation.
+    # This updates local durable configuration only and sends no game command.
+    SHARED_PYTHON_CORE.configure_resident_automation_from_habits(
+        sid,
+        load_account_habits(sess),
+    )
+
+    results: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    account_key = account_storage_key(session_id=sid)
+    for feature in normalized:
+        spec = OPERATOR_RECONCILIATION_FEATURES[feature]
+        try:
+            result = execute_shared_resident_automation_tick(
+                sess,
+                configured_execution_allowed=False,
+                allowed_features=[str(spec["core"])],
+                operator_reconcile_features=[str(spec["core"])],
+            )
+            state = str(result.get("state") or "")
+            if state != "reconciled":
+                account = json.loads(
+                    SHARED_PYTHON_CORE.account_record_json(sid)
+                ).get("account") or {}
+                public = ((account.get("session") or {}).get("publicState") or {})
+                pending = json.loads(
+                    str(public.get(str(spec["pending"])) or "{}")
+                )
+                if not isinstance(pending, dict) or not pending:
+                    result = {
+                        **result,
+                        "state": "already-clear",
+                        "success": True,
+                        "message": f"{spec['label']}没有待结清旧账本",
+                    }
+                else:
+                    raise RuntimeError(
+                        f"{spec['label']}旧账本未结清："
+                        f"{result.get('message') or state or '未知状态'}"
+                    )
+            results[feature] = result
+            database_resolve_important_notice(
+                account_key,
+                str(spec["notice"]),
+            )
+            account_log(
+                sid,
+                f"{spec['label']}旧不确定账本已人工安全结清："
+                f"state={result.get('state')}；{result.get('message') or ''}",
+                source="operator-reconciliation",
+                detail={
+                    "feature": feature,
+                    "state": result.get("state"),
+                    "requestSent": False,
+                },
+            )
+        except Exception as error:
+            errors[feature] = str(error) or error.__class__.__name__
+            account_log(
+                sid,
+                f"{spec['label']}旧不确定账本人工结清被安全门拒绝："
+                f"{errors[feature]}",
+                level="warning",
+                source="operator-reconciliation",
+            )
+
+    if not errors and resume_after_reconciliation:
+        resumed = resume_saved_resident_tasks(sess)
+    else:
+        resumed = {
+            "resumed": {},
+            "oneTime": {},
+            "errors": (
+                {
+                    "operatorReconciliation": (
+                        "存在未结清账本，已保持任务暂停"
+                    ),
+                }
+                if errors
+                else {}
+            ),
+            "pausedAfterReconciliation": True,
+        }
+    resolve_operator_maintenance_notices(sid, stopped_task_ids)
+    return {
+        "ok": not errors,
+        "confirmed": OPERATOR_RECONCILIATION_CONFIRM,
+        "requestedFeatures": normalized,
+        "results": results,
+        "errors": errors,
+        "stoppedTaskIds": stopped_task_ids,
+        "cancelledOperationIds": cancelled_operation_ids,
+        "resumeAfterReconciliation": bool(
+            resume_after_reconciliation
+        ),
+        "resumed": resumed,
+    }
+
+
+def drain_confirmed_expeditions(
+    sess: dict[str, Any],
+    requested_features: Any,
+) -> dict[str, Any]:
+    """Advance accepted battle ledgers one tick without starting new work."""
+
+    if not isinstance(requested_features, list) or not requested_features:
+        raise ValueError("接管已确认战斗至少需要选择一个功能")
+    normalized: list[str] = []
+    for raw in requested_features:
+        value = str(raw or "").strip()
+        if value not in {"lossless", "dungeon"}:
+            raise ValueError(f"不支持接管的功能：{value or '空值'}")
+        if value not in normalized:
+            normalized.append(value)
+    sid, stopped_task_ids, cancelled_operation_ids = (
+        operator_maintenance_barrier(
+            sess,
+            "接管并推进已确认战斗",
+        )
+    )
+    results: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    pending_fields = {
+        "lossless": "losslessPendingBattleJson",
+        "dungeon": "dungeonPendingRunJson",
+    }
+    for feature in normalized:
+        try:
+            result = execute_shared_resident_automation_tick(
+                sess,
+                configured_execution_allowed=False,
+                allowed_features=[feature],
+            )
+            results[feature] = result
+            account_log(
+                sid,
+                f"已确认{feature}战斗单步接管："
+                f"state={result.get('state')}；{result.get('message') or ''}",
+                source="operator-reconciliation",
+            )
+        except Exception as error:
+            errors[feature] = str(error) or error.__class__.__name__
+    account = json.loads(
+        SHARED_PYTHON_CORE.account_record_json(sid)
+    ).get("account") or {}
+    public = ((account.get("session") or {}).get("publicState") or {})
+    pending = {
+        feature: bool(
+            json.loads(str(public.get(field) or "{}"))
+        )
+        for feature, field in pending_fields.items()
+        if feature in normalized
+    }
+    resolve_operator_maintenance_notices(sid, stopped_task_ids)
+    return {
+        "ok": not errors,
+        "confirmed": OPERATOR_DRAIN_CONFIRM,
+        "requestedFeatures": normalized,
+        "results": results,
+        "errors": errors,
+        "pending": pending,
+        "stoppedTaskIds": stopped_task_ids,
+        "cancelledOperationIds": cancelled_operation_ids,
+        "resumed": False,
+    }
+
+
+def execute_shared_daily_automation_tick(
+    sess: dict[str, Any],
+    allowed_keys: list[str],
+) -> dict[str, Any]:
+    """Run one Python-owned daily feature without desktop business logic."""
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("共享日常 tick 缺少账号")
+    _desktop_sync_shared_account(session_id)
+    SHARED_PYTHON_CORE.configure_resident_automation_from_habits(
+        session_id,
+        load_account_habits(sess),
+    )
+    return execute_shared_resident_automation_tick(
+        sess,
+        allowed_features=["daily"],
+        daily_allowed_keys=list(allowed_keys),
+    )
 
 
 def execute_raid(
@@ -10378,146 +12318,133 @@ def execute_raid(
     opts: dict[str, Any],
     task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if opts.get("confirm") != "raid":
-        raise RuntimeError("真实掠夺需要 confirm=raid")
-    player_name = str(opts.get("playerName") or "").strip()
-    fief_index = int(opts.get("fiefIndex") or 0)
-    general_ids = [str(x) for x in (opts.get("generalIds") or ([opts.get("generalId")] if opts.get("generalId") else [])) if str(x or "").strip()]
-    if not general_ids:
-        raise RuntimeError("掠夺至少需要选择 1 个出征将领")
-    fief_list = query_raid_fiefs(sess, player_name)
-    fiefs = list(fief_list.get("fiefs") or [])
-    if fief_index < 1 or fief_index > len(fiefs):
-        raise RuntimeError(f"{player_name} 当前只解析到 {len(fiefs)} 个封地，无法选择第 {fief_index} 个")
-    target = dict(fiefs[fief_index - 1])
-    selected = raid_preflight_generals(sess, general_ids, task=task)
-    refill_report = None
-    if bool(opts.get("fullTroops", True)):
-        refill_report = execute_refill_troops(sess, general_ids, confirm="batch-refill")
-        if not refill_report.get("success"):
-            msg = refill_report.get("message") or "无提示"
-            raise RuntimeError(f"掠夺前补满兵失败：{msg}")
-        selected = raid_preflight_generals(sess, general_ids, task=task)
-    loyalty_report = None
-    if bool(opts.get("fullLoyalty", False)):
-        loyalty_report = ensure_military_generals_full_loyalty(
-            sess,
-            selected,
-            action_name="掠夺",
-            task=task,
-        )
-    general_hexes = [g.get("idHex") or f"{int(g['id']):016x}" for g in selected]
-    prepare_payload = build_raid_prepare_payload(general_hexes, int(target["targetId"]))
-    expedition_payload = build_raid_expedition_payload(general_hexes, int(target["targetId"]))
-    action_results: list[dict[str, Any]] = []
-
-    def send_phase(phase: str, opcode: int, payload: bytes) -> tuple[int, bytes, list[dict[str, Any]]]:
-        code, data, packets = post_game(
-            sess["gameHttp"],
-            [(opcode, payload)],
-            int(sess["dm"]),
-            account_id=str(sess.get("sessionId") or ""),
-        )
-        summarized = summarize_packets(packets)
-        action_results.append({
-            "phase": phase,
-            "http": code,
-            "opcode": f"0x{opcode:04x}",
-            "payloadLen": len(payload),
-            "payloadHex": payload.hex(),
-            "responseBytes": len(data),
-            "packets": summarized,
-        })
-        return code, data, packets
-
-    prepare_code, _prepare_data, prepare_packets = send_phase(
-        "prepare", RAID_PREPARE_OPCODE, prepare_payload
-    )
-    prepare_confirmed = 200 <= int(prepare_code) < 300 and any(
-        packet_opcode(packet) == RAID_PREPARE_RESPONSE_OPCODE
-        for packet in prepare_packets
-    )
-    if not prepare_confirmed:
-        raise RuntimeError(
-            "掠夺预出征未收到游戏服"
-            f"0x{RAID_PREPARE_RESPONSE_OPCODE:04x}确认，已禁止发送正式出征"
-        )
-    time.sleep(0.35)
-    send_phase("expedition", RAID_DISPATCH_OPCODE, expedition_payload)
-    time.sleep(0.35)
-    expedition_packets = [
-        pkt
-        for r in action_results if r.get("phase") == "expedition"
-        for pkt in r.get("packets") or []
-        if pkt.get("opcode") == f"0x{RAID_DISPATCH_RESPONSE_OPCODE:04x}"
-    ]
-    parsed_8522 = [pkt.get("dispatch8522") or {} for pkt in expedition_packets]
-    ok_8522 = next((x for x in parsed_8522 if x.get("success")), None)
-    battle_text = "\n".join(str(pkt.get("textPreview") or "") for pkt in expedition_packets).strip()
-    text_match = bool(
-        battle_text
-        and "夺取" in battle_text
-        and (target.get("fiefName") in battle_text or player_name in battle_text)
-    )
-    success = bool(ok_8522)
-    failure_reason = ""
-    if not success:
-        payload_hexes = [str(pkt.get("payloadHex") or "").lower() for pkt in expedition_packets]
-        if payload_hexes and all(x == "ff0000" for x in payload_hexes):
-            failure_reason = "游戏服拒绝掠夺出征(0x8522=ff0000)，通常是将领状态/体力/兵力/目标状态不满足"
-        else:
-            messages = [str(x.get("message") or "") for x in parsed_8522 if x.get("message")]
-            failure_reason = "；".join(messages) or "未收到可确认成功的 0x8522 掠夺响应"
-    try:
-        refresh_generals(sess)
-        refresh_military_intel(sess)
-    except Exception:
-        pass
-    report = {
-        "time": now_ms(),
-        "role": sess["role"],
-        "area": sess["area"],
-        "playerName": player_name,
-        "fiefIndex": fief_index,
-        "target": target,
-        "generals": [{
-            "id": g.get("id"),
-            "idHex": g.get("idHex"),
-            "name": g.get("name"),
-            "status": g.get("displayStatus") or g.get("statusText"),
-            "soldierTypeCode": g.get("soldierTypeCode"),
-            "soldierType": soldier_type_name(g.get("soldierTypeCode")) if g.get("soldierTypeCode") is not None else "",
-            "soldierCount": g.get("soldierCount", g.get("currentSoldierCount")),
-        } for g in selected],
-        "options": {
-            "fullTroops": bool(opts.get("fullTroops", True)),
-            "fullLoyalty": bool(opts.get("fullLoyalty", False)),
-            "duration": str(opts.get("duration") or "立即出征"),
-            "dispatchMode": "immediate",
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("真实掠夺缺少已登录账号")
+    _desktop_sync_shared_account(session_id)
+    body = _desktop_expedition_body({
+        **dict(opts),
+        "accountRef": session_id,
+        "sessionId": session_id,
+    })
+    submitted = SHARED_PYTHON_CORE.submit_raid_action(
+        body,
+        {
+            "requestId": f"desktop-raid-{session_id}-{now_ms()}",
+            "source": "desktop-resident-task" if task else "desktop-direct",
+            "platform": "desktop",
         },
-        "fiefList": {k: v for k, v in fief_list.items() if k not in {"packets", "rawHex"}},
-        "refillReport": {
-            "success": refill_report.get("success"),
-            "message": refill_report.get("message"),
-            "reportFile": refill_report.get("reportFile"),
-        } if refill_report else None,
-        "loyaltyReport": loyalty_report,
-        "payloads": {
-            "prepareOpcode": f"0x{RAID_PREPARE_OPCODE:04x}",
-            "preparePayloadHex": prepare_payload.hex(),
-            "expeditionOpcode": f"0x{RAID_DISPATCH_OPCODE:04x}",
-            "expeditionPayloadHex": expedition_payload.hex(),
-            "expeditionRelatedLong": RAID_IMMEDIATE_RELATED_LONG,
-            "expeditionFlags": RAID_IMMEDIATE_FLAGS.hex(),
+        idempotency_key=(
+            f"desktop-raid-{session_id}-{now_ms()}-{threading.get_ident()}"
+        ),
+    )
+    result_envelope = wait_shared_core_operation(
+        str(submitted["operationId"]),
+        task=task,
+    )
+    result = result_envelope.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("共享掠夺 operation 未返回业务结果")
+    report = dict(result)
+    report.setdefault("time", now_ms())
+    report.setdefault("role", sess.get("role"))
+    report.setdefault("area", sess.get("area"))
+    report.setdefault("failureReason", "")
+    report.setdefault("battleText", str(report.get("message") or ""))
+    report.setdefault("reportFile", "")
+    return report
+
+
+def execute_lossless_tick(
+    sess: dict[str, Any],
+    row: dict[str, Any],
+    task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Submit one resident lossless tick to the unique Python core."""
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("真实无损缺少已登录账号")
+    _desktop_sync_shared_account(session_id)
+    body = _desktop_expedition_body({
+        **dict(row),
+        "accountRef": session_id,
+        "sessionId": session_id,
+        "confirm": "lossless",
+    })
+    submitted = SHARED_PYTHON_CORE.submit_lossless_action(
+        body,
+        {
+            "requestId": f"desktop-lossless-{session_id}-{now_ms()}",
+            "source": "desktop-resident-task" if task else "desktop-direct",
+            "platform": "desktop",
         },
-        "success": success,
-        "successBattleId": ok_8522.get("battleId") if ok_8522 else None,
-        "textMatch": text_match,
-        "failureReason": failure_reason,
-        "battleText": battle_text,
-        "actionResults": action_results,
-    }
-    report["reportFile"] = ""
+        idempotency_key=(
+            f"desktop-lossless-{session_id}-{now_ms()}-"
+            f"{threading.get_ident()}"
+        ),
+    )
+    result_envelope = wait_shared_core_operation(
+        str(submitted["operationId"]),
+        task=task,
+        timeout_seconds=1800.0,
+    )
+    result = result_envelope.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("共享无损 operation 未返回业务结果")
+    report = dict(result)
+    report.setdefault("time", now_ms())
+    report.setdefault("role", sess.get("role"))
+    report.setdefault("area", sess.get("area"))
+    report.setdefault("reportFile", "")
+    return report
+
+
+def execute_dungeon_tick(
+    sess: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    mode: str = "loop",
+    task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Submit one resident dungeon tick to the unique Python core."""
+
+    session_id = str(sess.get("sessionId") or "").strip()
+    if not session_id:
+        raise RuntimeError("真实副本缺少已登录账号")
+    _desktop_sync_shared_account(session_id)
+    body = _desktop_expedition_body({
+        **dict(row),
+        "accountRef": session_id,
+        "sessionId": session_id,
+        "confirm": "dungeon",
+        "mode": normalize_dungeon_mode(mode),
+    })
+    submitted = SHARED_PYTHON_CORE.submit_dungeon_action(
+        body,
+        {
+            "requestId": f"desktop-dungeon-{session_id}-{now_ms()}",
+            "source": "desktop-resident-task" if task else "desktop-direct",
+            "platform": "desktop",
+        },
+        idempotency_key=(
+            f"desktop-dungeon-{session_id}-{now_ms()}-"
+            f"{threading.get_ident()}"
+        ),
+    )
+    result_envelope = wait_shared_core_operation(
+        str(submitted["operationId"]),
+        task=task,
+        timeout_seconds=900.0,
+    )
+    result = result_envelope.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("共享副本 operation 未返回业务结果")
+    report = dict(result)
+    report.setdefault("time", now_ms())
+    report.setdefault("role", sess.get("role"))
+    report.setdefault("area", sess.get("area"))
+    report.setdefault("reportFile", "")
     return report
 
 
@@ -10783,71 +12710,15 @@ def dispatch_lossless(
 
 
 def normalize_lossless_rows(sess: dict[str, Any], body: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_rows = body.get("rows")
-    if not isinstance(raw_rows, list):
-        raw_rows = [body]
-    known_ids = {str(general.get("id")) for general in sess.get("generals", []) if general.get("id") is not None}
-    known_ids.update(
-        str(general.get("idHex"))
-        for general in sess.get("generals", [])
-        if general.get("idHex")
+    plan = shared_settings_write_plan(
+        "/api/lossless/execute",
+        {
+            "confirm": "lossless",
+            "settings": dict(body or {}),
+            "knownGenerals": list(sess.get("generals") or []),
+        },
     )
-    rows = []
-    for row_index, raw_row in enumerate(raw_rows):
-        row = dict(raw_row or {})
-        if row.get("enabled") is not True:
-            continue
-        raw_ids = row.get("generalIds")
-        if isinstance(raw_ids, list):
-            general_ids = [str(item or "").strip() for item in raw_ids if str(item or "").strip()]
-        elif row.get("generalId"):
-            general_ids = [str(row.get("generalId"))]
-        else:
-            general_ids = []
-        general_ids = list(dict.fromkeys(general_ids))
-        if not general_ids:
-            raise RuntimeError(f"第 {row_index + 1} 条无损规则未选择出征将领")
-        if len(general_ids) > LOSSLESS_MAX_GENERALS_PER_FORMATION:
-            raise RuntimeError(
-                f"第 {row_index + 1} 条无损规则最多选择"
-                f"{LOSSLESS_MAX_GENERALS_PER_FORMATION}名出征将领"
-            )
-        missing = [general_id for general_id in general_ids if known_ids and general_id not in known_ids]
-        if missing:
-            raise RuntimeError(
-                f"第 {row_index + 1} 条无损规则存在不属于当前账号的将领：{','.join(missing)}"
-            )
-        level = lossless_level_number(
-            row.get("level")
-            if row.get("level") is not None
-            else LOSSLESS_MAX_LEVEL
-        )
-        rows.append({
-            "enabled": True,
-            "sourceRowIndex": row_index,
-            "generalIds": general_ids,
-            "generalId": general_ids[0],
-            "level": level,
-            "levelName": f"{level}级",
-            "fullTroops": bool(row.get(
-                "fullTroops",
-                body.get(
-                    "fullTroops",
-                    LOSSLESS_BEHAVIOR_CONTRACT["fullTroopsDefault"],
-                ),
-            )),
-            "maxLineupRerolls": max(
-                1,
-                min(
-                    int(
-                        row.get("maxLineupRerolls")
-                        or LOSSLESS_GUARD_CONTRACT["defaultMaxRerolls"]
-                    ),
-                    int(LOSSLESS_GUARD_CONTRACT["maximumMaxRerolls"]),
-                ),
-            ),
-        })
-    return rows
+    return list((plan.get("response") or {}).get("executionRows") or [])
 
 
 DUNGEON_CHAPTER_MAP = SHARED_DUNGEON_CHAPTER_MAP
@@ -11200,80 +13071,16 @@ def normalize_dungeon_rows(
     *,
     mode: str | None = None,
 ) -> list[dict[str, Any]]:
-    raw_rows = body.get("rows")
-    if not isinstance(raw_rows, list):
-        raw_rows = [body]
-    enabled_count = sum(1 for row in raw_rows if isinstance(row, dict) and row.get("enabled") is True)
-    if enabled_count > 1:
-        raise RuntimeError("副本编队同一时间只能启用一条")
-    known_ids = {str(g.get("id")) for g in sess.get("generals", []) if g.get("id") is not None}
-    known_ids.update(str(g.get("idHex")) for g in sess.get("generals", []) if g.get("idHex"))
-    rows: list[dict[str, Any]] = []
-    for idx, row0 in enumerate(raw_rows):
-        row = dict(row0 or {})
-        if row.get("enabled") is not True:
-            continue
-        raw_ids = row.get("generalIds")
-        if isinstance(raw_ids, list):
-            general_ids = [str(x) for x in raw_ids if str(x or "").strip()]
-        elif row.get("generalId"):
-            general_ids = [str(row.get("generalId"))]
-        else:
-            general_ids = []
-        general_ids = list(dict.fromkeys(general_ids))
-        if not general_ids:
-            raise RuntimeError(f"第 {idx + 1} 条副本规则未选择出征将领")
-        if len(general_ids) > DUNGEON_MAX_GENERALS_PER_FORMATION:
-            raise RuntimeError(
-                f"第 {idx + 1} 条副本规则最多选择"
-                f"{DUNGEON_MAX_GENERALS_PER_FORMATION}名出征将领"
-            )
-        missing = [gid for gid in general_ids if known_ids and gid not in known_ids]
-        if missing:
-            raise RuntimeError(f"第 {idx + 1} 条副本规则存在不属于当前账号的将领：{','.join(missing)}")
-        chapter_label = row.get("chapterName") or row.get("chapter")
-        stage_value = row.get("stage") if row.get("stage") is not None else row.get("level")
-        if normalize_dungeon_mode(mode) == DUNGEON_MODE_CLEAR:
-            # Clear mode replaces these placeholders from the live catalog
-            # immediately before each dispatch; tolerate stale UI values.
-            try:
-                chapter = dungeon_chapter_number(
-                    chapter_label if chapter_label is not None else "第一章"
-                )
-            except RuntimeError:
-                chapter = 0
-            try:
-                stage = dungeon_stage_number(
-                    stage_value if stage_value is not None else 1,
-                    chapter,
-                )
-            except RuntimeError:
-                stage = 1
-        else:
-            chapter = dungeon_chapter_number(
-                chapter_label if chapter_label is not None else "第一章"
-            )
-            stage = dungeon_stage_number(
-                stage_value if stage_value is not None else 1,
-                chapter,
-            )
-        chest_value = row.get("chest") if row.get("chest") is not None else row.get("chestName")
-        chest = dungeon_chest_index(chest_value if chest_value is not None else "右")
-        rows.append({
-            "enabled": True,
-            "sourceRowIndex": idx,
-            "generalIds": general_ids,
-            "generalId": general_ids[0],
-            "chapter": chapter,
-            "chapterName": str(row.get("chapterName") or row.get("chapter") or f"第{chapter + 1}章"),
-            "stage": stage,
-            "chest": chest,
-            "chestName": list(DUNGEON_BEHAVIOR_CONTRACT["chestNames"])[chest],
-            "fullTroops": bool(row.get("fullTroops", False)),
-            "waitForGeneralsIdle": True,
-            "openChest": True,
-        })
-    return rows
+    plan = shared_settings_write_plan(
+        "/api/dungeon/execute",
+        {
+            "confirm": "dungeon",
+            "mode": normalize_dungeon_mode(mode),
+            "rows": list(body.get("rows") or []),
+            "knownGenerals": list(sess.get("generals") or []),
+        },
+    )
+    return list((plan.get("response") or {}).get("executionRows") or [])
 
 
 def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -11532,6 +13339,10 @@ def execute_dungeon(sess: dict[str, Any], opts: dict[str, Any], task: dict[str, 
 MILITARY_FUTURE_READINESS = SHARED_MILITARY_FUTURE_READINESS
 
 
+class SharedSettingsValidationError(RuntimeError):
+    """A shared settings plan rejected user input before any local write."""
+
+
 def normalize_military_future_settings(feature: str, settings: Any) -> dict[str, Any]:
     return shared_normalize_military_future_settings(feature, settings)
 
@@ -11551,13 +13362,47 @@ def shared_settings_write_plan(
         },
     )
     if planned.status != 200 or not planned.body.get("ok"):
-        raise RuntimeError(
-            str(planned.body.get("error") or "共享设置核心拒绝保存")
-        )
+        message = str(planned.body.get("error") or "共享设置核心拒绝保存")
+        if 400 <= int(planned.status) < 500:
+            raise SharedSettingsValidationError(message)
+        raise RuntimeError(message)
     write_plan = planned.body.get("plan")
     if not isinstance(write_plan, dict) or write_plan.get("networkRequired") is not False:
         raise RuntimeError("本地设置写入计划无效或尝试等待游戏网络")
     return write_plan
+
+
+def shared_local_view(
+    method: str,
+    route: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    projected = SHARED_PYTHON_CORE.dispatch(
+        method,
+        route,
+        body,
+        {
+            "requestId": f"desktop-local-{now_ms()}",
+            "source": "desktop-http",
+            "platform": "desktop",
+        },
+    )
+    if projected.status != 200 or not projected.body.get("ok"):
+        raise RuntimeError(
+            str(projected.body.get("error") or "共享本地核心拒绝请求")
+        )
+    return dict(projected.body)
+
+
+def shared_local_write_plan(
+    route: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    response = shared_local_view("POST", route, body)
+    plan = response.get("plan")
+    if not isinstance(plan, dict) or plan.get("networkRequired") is not False:
+        raise RuntimeError("共享本地写入计划无效")
+    return plan
 
 
 def printable(bs: bytes, limit: int = 512) -> str:
@@ -11964,11 +13809,18 @@ def execute_discard_inventory(
     }
 
 
-def equipment_is_safe_to_discard(equipment: dict[str, Any], *, max_quality: int, max_level: int) -> tuple[bool, str]:
+def equipment_is_safe_to_discard(
+    equipment: dict[str, Any],
+    *,
+    max_quality: int,
+    max_level: int,
+    allowed_qualities: list[int] | None = None,
+) -> tuple[bool, str]:
     return shared_equipment_is_safe_to_discard(
         equipment,
         max_quality=max_quality,
         max_level=max_level,
+        allowed_qualities=allowed_qualities,
         quality_names=EQUIPMENT_QUALITY_NAMES,
     )
 
@@ -12014,6 +13866,12 @@ def clean_inventory_by_policy(sess: dict[str, Any], policy: dict[str, Any]) -> d
     if bool(policy.get("discardEquipment", False)):
         quality_name = str(policy.get("maxEquipmentQuality") or "良好")
         max_quality = EQUIPMENT_QUALITY_NAMES.index(quality_name) if quality_name in EQUIPMENT_QUALITY_NAMES else 1
+        raw_allowed_qualities = policy.get("discardEquipmentQualities")
+        allowed_qualities = (
+            equipment_quality_codes(raw_allowed_qualities)
+            if isinstance(raw_allowed_qualities, (list, tuple, set))
+            else None
+        )
         max_level = max(1, min(int(policy.get("maxEquipmentLevel") or 60), 100))
         for equipment in list(inventory.get("equipment") or []):
             if len(actions) >= max_actions:
@@ -12022,6 +13880,7 @@ def clean_inventory_by_policy(sess: dict[str, Any], policy: dict[str, Any]) -> d
                 equipment,
                 max_quality=max_quality,
                 max_level=max_level,
+                allowed_qualities=allowed_qualities,
             )
             if not allowed:
                 continue
@@ -12301,6 +14160,22 @@ def read_area_catalog(platform: Any = None) -> dict[str, Any]:
     }
 
 
+def sync_area_catalog_to_cloud(catalog: dict[str, Any]) -> None:
+    """Publish the complete public snapshot without blocking the local UI."""
+
+    try:
+        SHARED_PYTHON_CORE._schedule_cloud_directory_sync(  # noqa: SLF001
+            str(catalog.get("platformKey") or catalog.get("platform") or ""),
+            list(catalog.get("areas") or []),
+        )
+    except Exception as error:
+        system_log(
+            f"共享区服目录同步未启动：{error}",
+            level="warning",
+            source="area-catalog",
+        )
+
+
 def update_area_catalog_if_changed(
     areas: list[dict[str, Any]],
     platform: Any = None,
@@ -12363,6 +14238,7 @@ def update_area_catalog_if_changed(
         f"{platform_display_name(platform_key)}区服目录已更新：共 {len(clean_areas)} 个区服",
         source="area-catalog",
     )
+    sync_area_catalog_to_cloud(read_area_catalog(platform_key))
     return True
 
 
@@ -12563,6 +14439,31 @@ def get_session(sid: str) -> dict[str, Any]:
     if not sess:
         raise RuntimeError("session 不存在或已过期，请重新登录")
     return sess
+
+
+def get_local_settings_context(sid: str) -> tuple[dict[str, Any], bool]:
+    """Resolve local persistence identity without requiring a live game session."""
+
+    session_id = str(sid or "").strip()
+    if not session_id:
+        raise RuntimeError("缺少 sessionId")
+    live = SESSIONS.get(session_id)
+    if isinstance(live, dict):
+        return live, True
+    with ACCOUNT_LOCK:
+        account = dict(ACCOUNTS.get(session_id) or {})
+    if not account:
+        raise RuntimeError("账号不存在")
+    return {
+        "sessionId": session_id,
+        "username": account.get("username"),
+        "area": deepcopy(account.get("area") or {}),
+        "serverQuery": account.get("serverQuery"),
+        "platform": account.get("platform"),
+        "role": deepcopy(account.get("role") or {}),
+        "roleState": {},
+        "generals": [],
+    }, False
 
 
 STARTER_STAGE_LABELS = {
@@ -14295,6 +16196,7 @@ def execute_starter_bandit_action(
     attempted_targets = []
     target_index = 0
     dispatch_owner = f"starter-bandit:{action.get('job_id')}:{action.get('id')}"
+    cloud_shared = bool((report.get("sharedMap") or {}).get("cloud"))
     # A stale shared-map target must not consume a team. Keep that team idle and
     # let it try the next candidate until it is dispatched or candidates run out.
     for team in teams:
@@ -14305,12 +16207,15 @@ def execute_starter_bandit_action(
         while target_index < len(exact_targets):
             target = exact_targets[target_index]
             target_index += 1
-            if not reserve_shared_map_target(
-                sess,
-                "bandit",
-                target,
-                owner=dispatch_owner,
-                task_id=str(action.get("id") or ""),
+            if (
+                not cloud_shared
+                and not reserve_shared_map_target(
+                    sess,
+                    "bandit",
+                    target,
+                    owner=dispatch_owner,
+                    task_id=str(action.get("id") or ""),
+                )
             ):
                 continue
             attempted_targets.append(target)
@@ -14324,23 +16229,27 @@ def execute_starter_bandit_action(
                     },
                 )
             except Exception:
-                update_shared_map_target_status(
-                    sess, "bandit", target,
-                    owner=dispatch_owner, status="available", reason="起号出征异常，释放目标",
-                )
+                if not cloud_shared:
+                    update_shared_map_target_status(
+                        sess, "bandit", target,
+                        owner=dispatch_owner, status="available", reason="起号出征异常，释放目标",
+                    )
                 raise
             dispatches.append(dispatch)
-            update_shared_map_target_status(
-                sess,
-                "bandit",
-                target,
-                owner=dispatch_owner,
-                status="dispatched" if dispatch.get("success") else "rejected",
-                reason=dispatch.get("failureReason") or dispatch.get("battleText") or "",
-            )
+            if not cloud_shared:
+                update_shared_map_target_status(
+                    sess,
+                    "bandit",
+                    target,
+                    owner=dispatch_owner,
+                    status="dispatched" if dispatch.get("success") else "rejected",
+                    reason=dispatch.get("failureReason") or dispatch.get("battleText") or "",
+                )
             if dispatch.get("success"):
                 time.sleep(0.5)
                 break
+            if dispatch.get("cloudConflict"):
+                continue
             # “目标不存在”等失败通常表示共享地图候选已过期；当前队伍继续
             # 使用后续候选，而不是中止本轮并浪费已经完成的治疗和配兵。
     successful_dispatches = sum(1 for row in dispatches if row.get("success"))
@@ -16293,6 +18202,10 @@ def general_visit_already_visited(status: Any, message: Any) -> bool:
     return shared_general_visit_already_visited(status, message)
 
 
+def general_visit_has_no_candidates(status: Any, message: Any) -> bool:
+    return shared_general_visit_has_no_candidates(status, message)
+
+
 def parse_general_visit_receipt(payload: bytes) -> dict[str, Any]:
     return shared_parse_general_visit_receipt(payload)
 
@@ -16462,6 +18375,7 @@ def query_general_visit_candidates(sess: dict[str, Any]) -> dict[str, Any]:
             raise GameProtocolResponseError(f"名将列表未收到0xA271：page={page} http={code}")
         parsed = parse_general_visit_page(response.get("payload") or b"")
         if int(parsed.get("status") or 0) != 0 and not parsed.get("candidates"):
+            server_message = str(parsed.get("message") or "").strip()
             if general_visit_already_visited(
                 parsed.get("status"), parsed.get("message")
             ):
@@ -16470,6 +18384,22 @@ def query_general_visit_candidates(sess: dict[str, Any]) -> dict[str, Any]:
                     "completed": True,
                     "alreadyVisited": True,
                     "message": str(parsed.get("message") or "本日已拜访"),
+                    "generals": [],
+                    "candidates": [],
+                    "pages": len(pages),
+                    "updatedAt": now_ms(),
+                }
+            if general_visit_has_no_candidates(
+                parsed.get("status"), parsed.get("message")
+            ):
+                return {
+                    "success": True,
+                    "completed": True,
+                    "noTarget": True,
+                    "skipped": True,
+                    "skipReason": "king-has-no-generals",
+                    "statusText": server_message,
+                    "message": server_message,
                     "generals": [],
                     "candidates": [],
                     "pages": len(pages),
@@ -16866,16 +18796,11 @@ def use_inventory_item(sess: dict[str, Any], item_id: int, count: int = 1, *, it
     }
 
 
-AUTO_OPEN_KEY_REQUIREMENTS = {
-    "青铜宝箱": "青铜钥匙",
-    "精铁宝箱": "精铁钥匙",
-}
+AUTO_OPEN_KEY_REQUIREMENTS = SHARED_AUTO_OPEN_KEY_REQUIREMENTS
 
 
 def inventory_reward_log_text(message: Any) -> str:
-    text = re.sub(r"(?i)<br\s*/?>", "；", str(message or ""))
-    text = re.sub(r"<[^>]+>", "", text)
-    return "；".join(part.strip() for part in re.split(r"[；;]", text) if part.strip())
+    return shared_inventory_reward_log_text(message)
 
 
 def auto_open_inventory_items(sess: dict[str, Any], selected_names: list[str]) -> dict[str, Any]:
@@ -17112,11 +19037,10 @@ def log_daily_sign_in_result(
     if result.get("success"):
         database_resolve_important_notice(account_key, "daily:autoSignIn")
     else:
-        database_upsert_important_notice(
+        upsert_daily_feature_important_notice(
             account_key,
-            "daily:autoSignIn",
-            severity="warning",
-            title="自动签到未完成",
+            "autoSignIn",
+            "自动签到",
             message=message,
             source=source,
         )
@@ -17124,6 +19048,75 @@ def log_daily_sign_in_result(
 
 def _daily_exception_is_session_invalid(exc: BaseException) -> bool:
     return isinstance(exc, GameServerRejected) or is_session_invalid_message(str(exc))
+
+
+AUTO_SIGN_IN_INVENTORY_FULL_NOTICE = (
+    "自动签到失败：宝库空间不足，请清理宝库后再来领取"
+)
+
+
+def normalize_daily_feature_notice_message(
+    task_key: str,
+    message: str,
+) -> str:
+    text = str(message or "").strip()
+    if str(task_key or "") == "autoSignIn" and "宝库空间不足" in text:
+        return AUTO_SIGN_IN_INVENTORY_FULL_NOTICE
+    return text
+
+
+def auto_sign_in_notice_is_uncertain(message: str) -> bool:
+    text = str(message or "")
+    return any(marker in text for marker in (
+        "回执不明",
+        "回执未知",
+        "未收到可识别的服务器回执",
+        "禁止自动重放",
+    ))
+
+
+def upsert_daily_feature_important_notice(
+    account_key: str,
+    task_key: str,
+    task_name: str,
+    *,
+    message: str,
+    source: str,
+    at_ms: int | None = None,
+) -> None:
+    """Keep one actionable daily notice without losing a known cause.
+
+    A later transport/restart ambiguity is less informative than the game's
+    explicit “宝库空间不足” response.  Preserve that concrete sign-in reason
+    under the same unique notice key; confirmed success/duplicate handling
+    still resolves it through the normal success path.
+    """
+
+    normalized = normalize_daily_feature_notice_message(task_key, message)
+    notice_key = f"daily:{str(task_key or '')}"
+    if (
+        str(task_key or "") == "autoSignIn"
+        and auto_sign_in_notice_is_uncertain(normalized)
+    ):
+        existing = database_read_important_notice_record(
+            account_key,
+            notice_key,
+        )
+        if (
+            existing
+            and existing.get("active")
+            and "宝库空间不足" in str(existing.get("message") or "")
+        ):
+            return
+    database_upsert_important_notice(
+        account_key,
+        notice_key,
+        severity="warning",
+        title=f"{task_name}未完成",
+        message=normalized,
+        source=source,
+        at_ms=at_ms,
+    )
 
 
 def log_daily_feature_result(
@@ -17150,11 +19143,10 @@ def log_daily_feature_result(
         if success:
             database_resolve_important_notice(account_key, f"daily:{task_key}")
         else:
-            database_upsert_important_notice(
+            upsert_daily_feature_important_notice(
                 account_key,
-                f"daily:{task_key}",
-                severity="warning",
-                title=f"{name}未完成",
+                str(task_key),
+                name,
                 message=message,
                 source=source,
             )
@@ -17564,6 +19556,25 @@ def execute_general_visit(sess: dict[str, Any], selected_ids: list[Any] | tuple[
             "attempts": [],
         }
     query_result = query_general_visit_candidates(sess)
+    if isinstance(query_result, dict) and query_result.get("noTarget"):
+        message = str(
+            query_result.get("message") or "不可拜访，国王麾下无名将"
+        )
+        return {
+            "success": True,
+            "completed": True,
+            "noTarget": True,
+            "skipped": True,
+            "skipReason": str(
+                query_result.get("skipReason") or "king-has-no-generals"
+            ),
+            "statusText": message,
+            "attemptedCount": 0,
+            "failureCount": 0,
+            "message": message,
+            "attempts": [],
+            "skippedCandidates": [],
+        }
     if isinstance(query_result, dict) and query_result.get("alreadyVisited"):
         return {
             "success": True,
@@ -17653,155 +19664,35 @@ def execute_general_visit(sess: dict[str, Any], selected_ids: list[Any] | tuple[
     }
 
 
-def execute_daily_once_tasks(sess: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
-    completed = {
-        item["key"]: item
-        for item in current_daily_task_completions(sess)
-        if isinstance(item, dict) and item.get("key")
-    }
+def execute_daily_once_tasks(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute each enabled daily feature through the shared Python scheduler."""
+
+    remaining = [
+        key for key in DAILY_TASK_NAMES if bool(settings.get(key))
+    ]
     results: dict[str, Any] = {}
-    sid = str(sess.get("sessionId") or "")
-
-    def should_run(key: str) -> bool:
-        if not bool(settings.get(key)):
-            return False
-        # Re-read completion while holding the feature lock.  A manual button
-        # or another scheduler callback may have completed this same feature
-        # after the initial snapshot was taken.
-        latest = {
-            item["key"]: item
-            for item in current_daily_task_completions(sess)
-            if isinstance(item, dict) and item.get("key")
+    while remaining:
+        tick = execute_shared_daily_automation_tick(sess, remaining)
+        key = str(tick.get("dailyKey") or "")
+        if key not in remaining:
+            break
+        business = tick.get("result")
+        business = dict(business) if isinstance(business, dict) else {
+            "success": bool(tick.get("success")),
+            "completed": str(tick.get("state") or "") == "completed",
+            "message": str(tick.get("message") or ""),
+            "requiresAttention": bool(tick.get("requiresAttention")),
+            "errorCode": tick.get("errorCode"),
         }
-        return not bool((latest.get(key) or completed.get(key) or {}).get("completed"))
-
-    def record_if_completed(key: str, result: dict[str, Any]) -> None:
-        if not bool(result.get("completed")):
-            return
-        if result.get("skipped"):
-            record_daily_task_completion(sess, key, result=result)
-        elif result.get("duplicateClaim"):
-            record_daily_task_completion(sess, key, source="automation-duplicate")
-        else:
-            record_daily_task_completion(sess, key)
-
-    def isolated(key: str, fn: Callable[[], dict[str, Any]], *, custom_log: Callable[[dict[str, Any]], None] | None = None) -> None:
-        # Locks are per account *and* feature: a duplicate manual/scheduled
-        # invocation is suppressed, while a failure in this feature never
-        # holds up sibling daily features.
-        with daily_feature_lock(sess, key):
-            if not should_run(key):
-                return
-            try:
-                result = dict(fn() or {})
-            except GameServerRejected as exc:
-                # The account circuit breaker is still updated by post_game,
-                # but the task result is recorded locally and the next daily
-                # feature is allowed to run and report its own outcome.
-                mark_account_offline_if_session_invalid(sid, str(exc))
-                result = _daily_feature_failure_result(key, exc)
-                result["sessionInvalid"] = True
-            except Exception as exc:
-                if _daily_exception_is_session_invalid(exc):
-                    mark_account_offline_if_session_invalid(sid, str(exc))
-                    result = _daily_feature_failure_result(key, exc)
-                    result["sessionInvalid"] = True
-                else:
-                    result = _daily_feature_failure_result(key, exc)
-            results[key] = result
-            if custom_log is not None:
-                try:
-                    custom_log(result)
-                except Exception as exc:
-                    try:
-                        account_log(sid, f"{DAILY_TASK_NAMES.get(key, key)}结果记录异常：{exc}", level="error", source="automation-log")
-                    except Exception:
-                        pass
-            else:
-                log_daily_feature_result(sess, key, result)
-            try:
-                record_if_completed(key, result)
-            except Exception as exc:
-                try:
-                    account_log(sid, f"{DAILY_TASK_NAMES.get(key, key)}每日状态记录失败：{exc}", level="error", source="automation-log")
-                except Exception:
-                    pass
-
-    def sign_in_once() -> dict[str, Any]:
-        sign_result = claim_daily_sign_in(sess)
-        success = bool(sign_result.get("success"))
-        log_daily_sign_in_result(sess, sign_result)
-        box_code, _box_data, box_packets = post_game(
-            sess["gameHttp"],
-        [(DAILY_DIAMOND_BOX_REQUEST_OPCODE, bytes.fromhex(str(DAILY_DIAMOND_BOX_CONTRACT["payloadHex"])))],
-            int(sess["dm"]),
-            account_id=sid,
+        business.setdefault(
+            "completed", str(tick.get("state") or "") == "completed"
         )
-        box_response = next((p for p in box_packets if p.get("opcode") == DAILY_DIAMOND_BOX_RESPONSE_OPCODE), None)
-        box_parsed = parse_daily_diamond_box_response(box_response["payload"]) if box_response else {
-            "success": False,
-            "status": None,
-            "message": f"未收到 0x{DAILY_DIAMOND_BOX_RESPONSE_OPCODE:04x} 每日金钻宝箱响应",
-        }
-        box_result = {
-            **box_parsed,
-            "http": box_code,
-            "responseOpcode": f"0x{DAILY_DIAMOND_BOX_RESPONSE_OPCODE:04x}" if box_response else "",
-            "packets": summarize_packets(box_packets),
-        }
-        result = {
-            **sign_result,
-            "completed": success,
-            "message": (
-                f"{sign_result.get('message') or '签到未返回说明'}；每日金钻宝箱："
-                f"{box_result.get('message') or ('领取成功' if box_result.get('success') else '领取失败')}"
-            ),
-            "signIn": sign_result,
-            "dailyDiamondBox": box_result,
-        }
-        try:
-            account_log(
-                sid,
-                f"自动签到后领取每日金钻宝箱：{box_result.get('message') or ('成功' if box_result.get('success') else '失败')}",
-                level=("info" if box_result.get("success") else "error"),
-                source="automation",
-                detail=box_result,
-            )
-            if box_result.get("success"):
-                database_resolve_important_notice(account_storage_key(session_id=sid), "daily:diamondBox")
-            else:
-                database_upsert_important_notice(
-                    account_storage_key(session_id=sid),
-                    "daily:diamondBox",
-                    severity="warning",
-                    title="每日金钻宝箱未领取",
-                    message=str(box_result.get("message") or "服务器未确认领取结果"),
-                    source="automation",
-                )
-        except Exception:
-            pass
-        return result
-
-    def arena_once() -> dict[str, Any]:
-        result = dict(claim_arena_coins(sess) or {})
-        result["completed"] = bool(result.get("success"))
-        return result
-
-    def salary_once() -> dict[str, Any]:
-        result = dict(claim_national_salary(sess) or {})
-        result["completed"] = bool(result.get("success"))
-        return result
-
-    isolated("autoSignIn", sign_in_once, custom_log=lambda result: log_daily_feature_result(sess, "autoSignIn", result))
-    isolated("arenaCoins", arena_once, custom_log=lambda result: log_arena_coin_claim_result(sess, result))
-    isolated("autoDonate", lambda: execute_daily_country_donations(sess))
-    isolated("salary", salary_once)
-    isolated("nationalCollect", lambda: execute_national_collect(sess))
-    isolated("cityLordCollect", lambda: execute_city_lord_collect(sess))
-    selected_ids = settings.get("generalVisitGeneralIds")
-    if not isinstance(selected_ids, (list, tuple)):
-        selected_ids = []
-    isolated("generalVisit", lambda: execute_general_visit(sess, list(selected_ids)))
+        results[key] = business
+        log_daily_feature_result(sess, key, business)
+        remaining.remove(key)
     return results
 
 
@@ -18293,23 +20184,17 @@ def execute_country_donation(
     )
     response = next((packet for packet in packets if packet.get("opcode") == response_opcode), None)
     response_payload = response.get("payload") if response else b""
-    # Donation replies are role-state packets whose leading status byte is 0
-    # on the captured successful path.  Presence alone is not enough when the
-    # game returns a business rejection with the same response opcode.
-    confirmed = bool(response is not None and response_payload and response_payload[0] == 0)
-    label = {"copper": "铜钱", "food": "粮食", "technology": "科技积分"}[key]
+    receipt = shared_parse_daily_donation_receipt(
+        response_payload,
+        key,
+        int(amount),
+    )
     return {
-        "success": code == 200 and confirmed,
-        "resource": key,
-        "amount": int(amount),
+        **receipt,
+        "success": code == 200 and bool(receipt.get("success")),
         "http": code,
         "opcode": f"0x{opcode:04x}/0x{response_opcode:04x}",
         "payloadHex": payload.hex(),
-        "message": (
-            f"已按最高额度捐献{label}{amount}"
-            if confirmed
-            else f"未确认{label}捐献成功（响应状态={response_payload[0] if response_payload else '无'}）"
-        ),
         "packets": summarize_packets(packets),
     }
 
@@ -22116,6 +24001,7 @@ def execute_starter_five_stage_bandit_dispatch(
         row for row in report.get("targets") or []
         if str(row.get("id") or row.get("idHex") or "") not in excluded_ids
     ]
+    cloud_shared = bool((report.get("sharedMap") or {}).get("cloud"))
     if not targets:
         if yield_on_miss:
             retry_at = now_ms() + 30_000
@@ -22155,8 +24041,8 @@ def execute_starter_five_stage_bandit_dispatch(
         f"starter-five-stage:{action.get('job_id')}:{general_id}:"
         f"{action.get('id')}"
     )
-    target = targets[0] if direct_search else None
-    if not direct_search:
+    target = targets[0] if direct_search or cloud_shared else None
+    if not direct_search and not cloud_shared:
         for candidate in targets:
             if reserve_shared_map_target(
                 sess,
@@ -22208,13 +24094,13 @@ def execute_starter_five_stage_bandit_dispatch(
             allow_under30=direct_search,
         )
     except Exception:
-        if level >= 30:
+        if level >= 30 and not cloud_shared:
             update_shared_map_target_status(
                 sess, "bandit", target,
                 owner=owner, status="available", reason="五阶段出征异常，释放目标",
             )
         raise
-    if level >= 30:
+    if level >= 30 and not cloud_shared:
         update_shared_map_target_status(
             sess,
             "bandit",
@@ -22256,7 +24142,8 @@ def execute_starter_five_stage_bandit_dispatch(
         "general": starter_general_ref(general),
         "target": target,
         "directSearch": direct_search,
-        "sharedMap": not direct_search,
+        "sharedMap": bool(cloud_shared or not direct_search),
+        "cloudSharedMap": cloud_shared,
         "healing": healing,
         "dispatch": dispatch,
     }
@@ -23051,6 +24938,7 @@ def execute_daily_automation_after_midnight(sess: dict[str, Any]) -> bool:
     )
     if str(sess.get("dailyAutomationAttemptDate") or "") != today:
         execute_scheduled_daily_tasks_once(sess, settings)
+        sess["dailyAutomationLastRunKind"] = "initial"
         return True
 
     if str(sess.get("dailyAutomationRetryDate") or "") != today:
@@ -23069,6 +24957,7 @@ def execute_daily_automation_after_midnight(sess: dict[str, Any]) -> bool:
     retry_settings["generalVisitGeneralIds"] = settings["generalVisitGeneralIds"]
     results = execute_daily_once_tasks(sess, retry_settings)
     update_daily_automation_retry_state(sess, settings, results)
+    sess["dailyAutomationLastRunKind"] = "retry"
     return True
 
 
@@ -23356,8 +25245,18 @@ def _account_reconnect_worker(session_id: str, generation: str, cancel_event: th
         acc["reconnectAt"] = None
     account_log(sid, "掉线重连倒计时结束，开始执行一次真实重新登录", source="reconnect")
     try:
-        public = start_account(sid, automatic_reconnect=True)
-        actual_sid = str(public.get("sessionId") or sid)
+        relogged = SHARED_PYTHON_CORE.relogin_account(sid)
+        if not bool(relogged.get("ok")):
+            error = relogged.get("error")
+            message = (
+                str(error.get("message") or "")
+                if isinstance(error, dict)
+                else str(error or "")
+            )
+            raise RuntimeError(message or "重新登录后未确认在线")
+        actual_sid = str(relogged.get("accountRef") or sid)
+        with ACCOUNT_LOCK:
+            public = public_account(ACCOUNTS[actual_sid])
         if str(public.get("status") or "") != "online":
             raise RuntimeError(public.get("lastError") or "重新登录后未确认在线")
         with ACCOUNT_LOCK:
@@ -23367,14 +25266,30 @@ def _account_reconnect_worker(session_id: str, generation: str, cancel_event: th
                 acc["reconnectAt"] = None
                 acc["reconnectReason"] = ""
                 acc["reconnectGeneration"] = ""
-                acc["resumeResidentTasksAfterReconnect"] = False
                 acc["reconnectFailureKind"] = ""
                 acc["reconnectFailureCount"] = 0
+                if resume_resident:
+                    acc["resumeResidentTasksAfterReconnect"] = True
         if resume_resident:
             sess = SESSIONS.get(actual_sid)
             if sess:
-                resume_saved_resident_tasks(sess)
-        account_log(actual_sid, "账号自动重连成功，已恢复掉线前启用的常驻任务", source="reconnect")
+                recovery = coordinate_resident_recovery(
+                    sess,
+                    trigger="relogin-succeeded",
+                )
+                if not recovery.get("complete"):
+                    raise RuntimeError(
+                        "重新登录成功，但常驻恢复未完成："
+                        + json.dumps(
+                            recovery.get("errors") or {},
+                            ensure_ascii=False,
+                        )
+                    )
+        account_log(
+            actual_sid,
+            "账号自动重连成功，已对账并恢复掉线前启用的常驻任务",
+            source="reconnect",
+        )
         persist_runtime_state()
     except Exception as exc:
         message = f"自动重连失败：{exc}"
@@ -23501,9 +25416,8 @@ def mark_account_offline_for_server_rejection(
         resume_resident = any(
             str(task.get("sessionId") or task.get("config", {}).get("sessionId") or "") == str(session_id)
             and str(task.get("status") or "") in {"queued", "starting", "running", "stopping"}
-            and str(task.get("type") or "") in {
-                "lossless", "auto-brush-yellow", "brush-yellow", "dungeon", "auto-mine", "raid"
-            }
+            and str(task.get("type") or "")
+            in SHARED_RESIDENT_DESKTOP_TASK_TYPES
             for task in AUTO_TASKS.values()
         )
     with ACCOUNT_LOCK:
@@ -23543,9 +25457,8 @@ def mark_account_offline_for_network_failure(session_id: str, message: str) -> N
         resume_resident = any(
             str(task.get("sessionId") or task.get("config", {}).get("sessionId") or "") == sid
             and str(task.get("status") or "") in {"queued", "starting", "running", "stopping"}
-            and str(task.get("type") or "") in {
-                "lossless", "auto-brush-yellow", "brush-yellow", "dungeon", "auto-mine", "raid"
-            }
+            and str(task.get("type") or "")
+            in SHARED_RESIDENT_DESKTOP_TASK_TYPES
             for task in AUTO_TASKS.values()
         )
     with ACCOUNT_LOCK:
@@ -23586,9 +25499,8 @@ def pause_tasks_for_transient_network_failure(
         had_active_resident_tasks = any(
             str(task.get("sessionId") or task.get("config", {}).get("sessionId") or "") == sid
             and str(task.get("status") or "") in {"queued", "starting", "running", "stopping"}
-            and str(task.get("type") or "") in {
-                "lossless", "auto-brush-yellow", "brush-yellow", "dungeon", "auto-mine", "raid"
-            }
+            and str(task.get("type") or "")
+            in SHARED_RESIDENT_DESKTOP_TASK_TYPES
             for task in AUTO_TASKS.values()
         )
     with ACCOUNT_LOCK:
@@ -23597,6 +25509,10 @@ def pause_tasks_for_transient_network_failure(
             return
         if is_network:
             acc["networkDegraded"] = True
+            acc["lastNetworkFailure"] = {
+                "message": brief,
+                "checkedAt": now_ms(),
+            }
         else:
             acc["responseUnconfirmed"] = True
         acc["lastError"] = brief
@@ -23604,7 +25520,12 @@ def pause_tasks_for_transient_network_failure(
             acc.get("resumeResidentTasksAfterNetworkRecovery")
             or had_active_resident_tasks
         )
-    stopped = stop_tasks_for_session_invalid(sid, brief)
+    # A transport timeout is an account-level degraded state, not an
+    # independent terminal failure of every resident feature.  Stop the
+    # workers to preserve the fail-closed mutation boundary, but do not emit
+    # one task notice per row; the account warning below is the single source
+    # of truth until heartbeat recovery.
+    stopped = stop_tasks_for_session_invalid(sid, brief, transient=True)
     account_log(
         sid,
         (
@@ -23629,6 +25550,74 @@ def pause_tasks_for_transient_network_failure(
         },
     )
     persist_runtime_state()
+
+
+def mark_account_network_degraded_without_pause(
+    session_id: str,
+    message: str,
+) -> None:
+    """Record a read-only transport failure without stopping active workers.
+
+    The HTTP layer deliberately lets noncritical preparation requests fail
+    without pausing the account.  The shared wake loop still needs a durable,
+    account-scoped signal so it can expose the problem and retry later; it
+    must not turn the current wake-owner row into a feature error.
+    """
+
+    sid = str(session_id or "")
+    brief = str(message or "网络请求暂时失败")[:300]
+    with ACCOUNT_LOCK:
+        acc = ACCOUNTS.get(sid)
+        if not acc or acc.get("started") is False:
+            return
+        if str(acc.get("status") or "") in {"offline", "error"}:
+            return
+        acc["networkDegraded"] = True
+        acc["lastError"] = brief
+        # This was not a heartbeat request, so do not overwrite the last
+        # confirmed heartbeat fact.  Keep separate transport evidence while
+        # the public account status remains online.
+        acc["lastNetworkFailure"] = {
+            "message": brief,
+            "checkedAt": now_ms(),
+        }
+    persist_runtime_state()
+
+
+def retry_pending_resident_recovery_after_healthy_heartbeat(
+    session_id: str,
+    sess: dict[str, Any],
+) -> None:
+    """Retry an unfinished coordinator generation on later healthy heartbeats."""
+
+    sid = str(session_id or "")
+    if not _resident_recovery_pending(sid):
+        return
+    with TASK_LOCK:
+        active = any(
+            str(
+                task.get("sessionId")
+                or (task.get("config") or {}).get("sessionId")
+                or ""
+            ) == sid
+            and str(task.get("status") or "") in ACTIVE_TASK_STATUSES
+            and str(task.get("type") or "")
+            in SHARED_RESIDENT_DESKTOP_TASK_TYPES
+            for task in AUTO_TASKS.values()
+        )
+    if active:
+        return
+    recovery = coordinate_resident_recovery(
+        sess,
+        trigger="heartbeat-recovery-retry",
+    )
+    if recovery.get("complete"):
+        account_log(
+            sid,
+            "后续心跳已完成上次未完成的常驻任务恢复",
+            source="heartbeat",
+            detail=recovery,
+        )
 
 
 def record_heartbeat_network_failure(session_id: str, message: str) -> int:
@@ -23704,9 +25693,8 @@ def mark_account_offline_for_unconfirmed_failure(session_id: str, message: str) 
         resume_resident = any(
             str(task.get("sessionId") or task.get("config", {}).get("sessionId") or "") == sid
             and str(task.get("status") or "") in {"queued", "starting", "running", "stopping"}
-            and str(task.get("type") or "") in {
-                "lossless", "auto-brush-yellow", "brush-yellow", "dungeon", "auto-mine", "raid"
-            }
+            and str(task.get("type") or "")
+            in SHARED_RESIDENT_DESKTOP_TASK_TYPES
             for task in AUTO_TASKS.values()
         )
     with ACCOUNT_LOCK:
@@ -23751,7 +25739,10 @@ def record_heartbeat_unconfirmed_failure(session_id: str, message: str) -> int:
         acc = ACCOUNTS.get(sid)
         if not acc or acc.get("started") is False:
             return 0
-        count = int(acc.get("heartbeatUnconfirmedFailureCount") or 0) + 1
+        count = min(
+            HEARTBEAT_UNCONFIRMED_FAILURE_LIMIT,
+            int(acc.get("heartbeatUnconfirmedFailureCount") or 0) + 1,
+        )
         acc["heartbeatUnconfirmedFailureCount"] = count
         if count < HEARTBEAT_UNCONFIRMED_FAILURE_LIMIT:
             acc["status"] = "online"
@@ -23786,17 +25777,23 @@ def record_heartbeat_unconfirmed_failure(session_id: str, message: str) -> int:
     return count
 
 
-def clear_heartbeat_network_failures(session_id: str, sess: dict[str, Any]) -> None:
+def clear_heartbeat_network_failures(
+    session_id: str,
+    sess: dict[str, Any],
+) -> bool:
     """Reset transport and unknown-response streaks after one confirmed heartbeat."""
     sid = str(session_id or "")
     with ACCOUNT_LOCK:
         acc = ACCOUNTS.get(sid)
         if not acc:
-            return
+            return False
         previous = int(acc.get("heartbeatNetworkFailureCount") or 0)
         previous_unconfirmed = int(acc.get("heartbeatUnconfirmedFailureCount") or 0)
         previous_switches = int(acc.get("heartbeatNetworkSwitchCount") or 0)
-        should_resume = bool(acc.get("resumeResidentTasksAfterNetworkRecovery"))
+        should_resume = bool(
+            acc.get("resumeResidentTasksAfterNetworkRecovery")
+            or acc.get("resumeResidentTasksAfterReconnect")
+        )
         acc["heartbeatNetworkFailureCount"] = 0
         acc["heartbeatUnconfirmedFailureCount"] = 0
         acc["heartbeatNetworkSwitchCount"] = 0
@@ -23804,7 +25801,7 @@ def clear_heartbeat_network_failures(session_id: str, sess: dict[str, Any]) -> N
         acc["heartbeatNetworkTriedProxyNodes"] = []
         acc["networkDegraded"] = False
         acc["responseUnconfirmed"] = False
-        acc["resumeResidentTasksAfterNetworkRecovery"] = False
+        acc["lastNetworkFailure"] = None
         acc["lastError"] = ""
     if previous:
         account_log(
@@ -23825,8 +25822,23 @@ def clear_heartbeat_network_failures(session_id: str, sess: dict[str, Any]) -> N
             source="heartbeat",
         )
     if should_resume:
-        resume_saved_resident_tasks(sess)
-        account_log(sid, "网络恢复，已恢复暂停前的常驻任务", source="heartbeat")
+        recovery = coordinate_resident_recovery(
+            sess,
+            trigger="heartbeat-recovered",
+        )
+        account_log(
+            sid,
+            (
+                "网络恢复，已完成待决账本对账并恢复暂停前的常驻任务"
+                if recovery.get("complete")
+                else "网络已恢复，常驻任务恢复尚未全部完成，已保留后续重试意图"
+            ),
+            level="info" if recovery.get("complete") else "warning",
+            source="heartbeat",
+            detail=recovery,
+        )
+    persist_runtime_state()
+    return should_resume
 
 
 def account_state_block_reason(session_id: str) -> str | None:
@@ -23935,7 +25947,15 @@ def require_brush_save_level(
         require_brush_level(sess)
 
 
-def add_local_account(username: str, password: str, server_query: str, *, platform: str = "", serial: str = "0") -> dict[str, Any]:
+def add_local_account(
+    username: str,
+    password: str,
+    server_query: str,
+    *,
+    platform: str = "",
+    serial: str = "0",
+    account_ref: str = "",
+) -> dict[str, Any]:
     """Add an account record only. Real game login happens later in start_account()."""
     username = str(username or "").strip()
     password = str(password or "")
@@ -23945,7 +25965,9 @@ def add_local_account(username: str, password: str, server_query: str, *, platfo
         raise RuntimeError("请输入账号")
     if not password:
         raise RuntimeError("请输入密码；添加只保存本地记录，点击启动时才会用它登录")
-    sid = "local_" + uuid4().hex[:12]
+    sid = str(account_ref or ("local_" + uuid4().hex[:12])).strip()
+    if not sid:
+        raise RuntimeError("共享核心未生成本地账号引用")
     acc = {
         "sessionId": sid,
         "username": username,
@@ -24038,6 +26060,10 @@ def heartbeat_worker(session_id: str, initial_delay_sec: float = 0.0) -> None:
             hb = execute_heartbeat(sess)
             if hb.get("online"):
                 start_idle_bandit_map_thread(session_id)
+                # Presence is the only cloud call made in one-account mode.
+                # Map reads/writes remain gated by the Worker's distinct-actor
+                # count and are performed only by the shared core.
+                SHARED_PYTHON_CORE.cloud_presence_heartbeat(session_id)
             if hb.get("online") and not sess.get("savedCommonTasksStarted"):
                 resume_saved_common_tasks(sess)
                 sess["savedCommonTasksStarted"] = True
@@ -24045,7 +26071,19 @@ def heartbeat_worker(session_id: str, initial_delay_sec: float = 0.0) -> None:
             if hb.get("online") and refresh_daily_activity_after_midnight(sess):
                 account_log(session_id, "跨日后已读取一次日常任务", source="server")
             if hb.get("online") and execute_daily_automation_after_midnight(sess):
-                account_log(session_id, "跨日后已执行一次启用的每日任务", source="server")
+                daily_run_kind = str(
+                    sess.get("dailyAutomationLastRunKind") or "initial"
+                )
+                account_log(
+                    session_id,
+                    (
+                        "跨日后已完成一次每日任务检查；"
+                        "未完成项将按计划重试"
+                        if daily_run_kind == "initial"
+                        else "已对未完成的每日任务进行一次重试"
+                    ),
+                    source="server",
+                )
             if hb.get("online") and execute_arena_automation_after_22_boundary(sess):
                 account_log(session_id, "竞技币任务已按22点刷新周期检查一次", source="server")
             prev_status = ""
@@ -24090,8 +26128,23 @@ def heartbeat_worker(session_id: str, initial_delay_sec: float = 0.0) -> None:
                     f"responseKind={hb.get('responseKind') or 'unknown'}",
                 )
             else:
-                clear_heartbeat_network_failures(session_id, sess)
+                recovery_attempted = clear_heartbeat_network_failures(
+                    session_id,
+                    sess,
+                )
+                if not recovery_attempted:
+                    retry_pending_resident_recovery_after_healthy_heartbeat(
+                        session_id,
+                        sess,
+                    )
             persist_runtime_state()
+        except AccountRequestStopped:
+            # This is a local lifecycle gate (user stop, reconnect countdown,
+            # replaced Session, or an already-set stop event), not evidence of
+            # a network failure or an unconfirmed server response.  The state
+            # owner which closed the gate is responsible for the next login or
+            # wake-up; this heartbeat worker must simply leave.
+            return
         except Exception as e:
             with ACCOUNT_LOCK:
                 acc = ACCOUNTS.get(session_id)
@@ -24368,6 +26421,7 @@ def start_account(
             acc["heartbeatNetworkTriedProxyNodes"] = []
             acc["networkDegraded"] = False
             acc["responseUnconfirmed"] = False
+            acc["lastNetworkFailure"] = None
         else:
             acc["status"] = "offline"
             acc["lastError"] = hb.get("message", "心跳未确认在线")
@@ -24391,6 +26445,26 @@ def start_account(
         resume_saved_common_tasks(sess)
         sess["savedCommonTasksStarted"] = True
         sess["savedCommonTasksStartedAt"] = now_ms()
+        if automatic_reconnect or _resident_recovery_intent(
+            actual_session_id,
+            sess,
+        ):
+            recovery = coordinate_resident_recovery(
+                sess,
+                trigger=(
+                    "start-account-reconnect"
+                    if automatic_reconnect
+                    else "start-account-login"
+                ),
+            )
+            if not recovery.get("complete"):
+                account_log(
+                    actual_session_id,
+                    "账号已登录，但常驻任务恢复未全部完成，已保留重试意图",
+                    level="warning",
+                    source="resident-recovery",
+                    detail=recovery,
+                )
     persist_runtime_state()
     # Login/bootstrap requests are not part of the stability window. A newly
     # logged-in account starts with ten gray dots; subsequent game requests
@@ -24597,6 +26671,31 @@ def search_targets(
         BRUSH_SCAN_BATCH_SIZE,
         len(coords),
     ))
+    cloud_policy = legacy_map_prefetch_policy(
+        str(sess.get("sessionId") or "")
+    )
+    cloud_mode = str(cloud_policy.get("mode") or "LOCAL_ONLY")
+    if cloud_mode != "LOCAL_ONLY":
+        if cloud_mode != "CLOUD_SHARED":
+            raise RuntimeError(
+                str(
+                    cloud_policy.get("message")
+                    or "云端共享曾启用但当前不可用，地图任务已安全延后"
+                )
+            )
+        return cloud_coordinated_legacy_bandit_search(
+            sess,
+            {
+                **opts,
+                "startX": sx,
+                "startY": sy,
+                "scanLimit": limit,
+                "targetKind": target_kind,
+                "levels": levels,
+                "drops": drops,
+                "compositionFilter": comp_filter,
+            },
+        )
     state = scan_state if isinstance(scan_state, dict) else {}
     scan_key = f"{sx},{sy}:{len(coords)}"
     if state.get("key") != scan_key:
@@ -24903,6 +27002,165 @@ def idle_bandit_scan_centers(sess: dict[str, Any]) -> tuple[list[tuple[int, int]
     return centers, scan_limit
 
 
+def legacy_map_prefetch_policy(session_id: str) -> dict[str, Any]:
+    """Fail closed when a legacy scanner could race cloud map coordination.
+
+    The shared core owns the transition rule because it remembers whether the
+    account has ever entered cloud-shared mode.  A genuinely local-only account
+    keeps the old scanner unchanged; shared mode and a post-shared outage both
+    pause it.  Unexpected policy failures are also paused instead of risking a
+    duplicate cross-device scan or dispatch.
+    """
+    sid = str(session_id or "").strip()
+    try:
+        policy = dict(SHARED_PYTHON_CORE.cloud_map_coordination_policy(sid))
+    except Exception as exc:
+        return {
+            "mode": "CLOUD_UNAVAILABLE",
+            "legacyLocalMapPrefetchAllowed": False,
+            "message": f"共享地图协调状态读取失败：{exc}",
+        }
+    mode = str(policy.get("mode") or "LOCAL_ONLY")
+    policy["mode"] = mode
+    policy["legacyLocalMapPrefetchAllowed"] = bool(
+        policy.get("legacyLocalMapPrefetchAllowed")
+        and mode == "LOCAL_ONLY"
+    )
+    return policy
+
+
+class _LegacyCloudMapReadExecution:
+    """Read-only execution adapter for the remaining desktop starter path."""
+
+    def __init__(self, session_id: str) -> None:
+        self.operation_id = (
+            f"desktop-legacy-cloud-map-{session_id}-{uuid4().hex[:8]}"
+        )
+
+    def mark_request_sent(self, _metadata: Any = None) -> None:
+        return None
+
+    def publish_progress(
+        self,
+        _progress: int,
+        _details: Any = None,
+    ) -> None:
+        return None
+
+    def raise_if_cancelled(self) -> None:
+        return None
+
+    def wait(self, _seconds: float) -> None:
+        return None
+
+
+def cloud_coordinated_legacy_bandit_search(
+    sess: dict[str, Any],
+    opts: dict[str, Any],
+) -> dict[str, Any]:
+    """Reuse the shared-core cloud query/lease flow for starter searches."""
+
+    sid = str(sess.get("sessionId") or "")
+    if not sid:
+        raise RuntimeError("云端地图搜索缺少账号标识")
+    _desktop_sync_shared_account(sid)
+    body = SHARED_PYTHON_CORE.brush_search_operation_payload(
+        {
+            "accountRef": sid,
+            "startX": int(opts.get("startX") or 0),
+            "startY": int(opts.get("startY") or 0),
+            "scanLimit": int(opts.get("scanLimit") or 80),
+            "targetKind": str(opts.get("targetKind") or "山贼"),
+            "levels": list(opts.get("levels") or []),
+            "drops": list(opts.get("drops") or []),
+            "compositionFilter": dict(
+                opts.get("compositionFilter") or {}
+            ),
+            "maxDistance": int(opts.get("maxDistance") or 0),
+        },
+        {"accountRef": sid, "source": "desktop-starter-cloud-map"},
+    )
+    result = SHARED_PYTHON_CORE._run_cloud_coordinated_brush_search_game_workflow(
+        _LegacyCloudMapReadExecution(sid),
+        body,
+        {"accountRef": sid, "source": "desktop-starter-cloud-map"},
+    )
+    targets = [
+        dict(value)
+        for value in result.get("targets") or []
+        if isinstance(value, dict)
+    ]
+    sess["lastTargets"] = targets[:RUNTIME_LAST_TARGETS_LIMIT]
+    scan_results = [
+        dict(value)
+        for value in result.get("scanResults") or []
+        if isinstance(value, dict)
+    ]
+    scanned_count = max(
+        0, int(result.get("scannedCount") or len(scan_results))
+    )
+    return {
+        "role": sess.get("role") or {},
+        "scanCount": scanned_count,
+        "requestCount": scanned_count,
+        "batchSize": int(result.get("scanBatchSize") or 0),
+        "scans": scan_results,
+        "targets": targets,
+        "allTargetCount": len(targets),
+        "matchedCount": len(targets),
+        "cacheEntries": len(targets),
+        "cacheHitCount": len(targets) if scanned_count == 0 else 0,
+        "cacheSkipCount": 0,
+        "scanLeaseSkipCount": max(
+            0,
+            int(result.get("scanBatchSize") or 0) - scanned_count,
+        ),
+        "sharedMap": {
+            "enabled": True,
+            "cloud": True,
+            "serverKey": shared_map_server_key(sess),
+            "mapKind": "bandit",
+        },
+        "nextCursor": int(result.get("nextScanOffset") or 0),
+        "scanWrapped": bool(result.get("scanWrapped")),
+        "interrupted": False,
+        "filter": {
+            "targetKind": str(opts.get("targetKind") or "山贼"),
+            "levels": list(opts.get("levels") or []),
+            "drops": list(opts.get("drops") or []),
+            "compositionFilter": dict(
+                opts.get("compositionFilter") or {}
+            ),
+            "center": [
+                int(opts.get("startX") or 0),
+                int(opts.get("startY") or 0),
+            ],
+            "order": "nearest-first",
+        },
+    }
+
+
+def legacy_map_prefetch_pause_view(
+    policy: dict[str, Any],
+    *,
+    task_name: str,
+) -> dict[str, Any]:
+    mode = str(policy.get("mode") or "CLOUD_UNAVAILABLE")
+    if mode == "CLOUD_SHARED":
+        return {
+            "state": "cloud_managed",
+            "cloudMode": mode,
+            "message": f"{task_name}已交由云端分块租约协调",
+            "updatedAt": now_ms(),
+        }
+    return {
+        "state": "cloud_unavailable",
+        "cloudMode": mode,
+        "message": str(policy.get("message") or "云端共享曾启用但当前不可用，已安全暂停本地预扫"),
+        "updatedAt": now_ms(),
+    }
+
+
 def account_ready_for_idle_bandit_scan(session_id: str) -> bool:
     """Only use a genuinely quiet account without its own active brush task."""
     sid = str(session_id or "")
@@ -25008,6 +27266,15 @@ def idle_bandit_map_worker(
                     "message": "尚未识别区服，暂不执行闲时找黄",
                     "updatedAt": now_ms(),
                 }
+                if stop_event.wait(IDLE_BANDIT_SCAN_FRESH_PAUSE_SEC):
+                    return
+                continue
+            cloud_policy = legacy_map_prefetch_policy(sid)
+            if not cloud_policy["legacyLocalMapPrefetchAllowed"]:
+                sess["idleBanditMap"] = legacy_map_prefetch_pause_view(
+                    cloud_policy,
+                    task_name="山贼地图预扫",
+                )
                 if stop_event.wait(IDLE_BANDIT_SCAN_FRESH_PAUSE_SEC):
                     return
                 continue
@@ -25213,9 +27480,16 @@ def bandit_coordinator_scan_worker(
     error = ""
     request_count = 0
     target_count = 0
+    cloud_policy: dict[str, Any] = {
+        "mode": "LOCAL_ONLY",
+        "legacyLocalMapPrefetchAllowed": True,
+    }
     try:
         sess = SESSIONS.get(sid)
         if not sess or shared_map_server_key(sess) != server_key:
+            return
+        cloud_policy = legacy_map_prefetch_policy(sid)
+        if not cloud_policy["legacyLocalMapPrefetchAllowed"]:
             return
         centers, scan_limit = idle_bandit_scan_centers(sess)
         with BANDIT_COORDINATOR_LOCK:
@@ -25256,6 +27530,15 @@ def bandit_coordinator_scan_worker(
             state["routeLastAt"][route_key] = finished
             server_state = state["servers"].setdefault(server_key, {})
             server_state.update({
+                "state": (
+                    "local_prefetch"
+                    if cloud_policy["legacyLocalMapPrefetchAllowed"]
+                    else legacy_map_prefetch_pause_view(
+                        cloud_policy,
+                        task_name="山贼地图预扫",
+                    )["state"]
+                ),
+                "cloudMode": str(cloud_policy.get("mode") or "LOCAL_ONLY"),
                 "lastFinishedAt": finished,
                 "lastAccountId": sid,
                 "lastRouteKey": route_key,
@@ -25284,6 +27567,30 @@ def bandit_map_coordinator_worker() -> None:
                 by_server.setdefault(server_key, []).append((sid, sess))
         now_mono = time.monotonic()
         for server_key, rows in sorted(by_server.items()):
+            cloud_policies = {
+                sid: legacy_map_prefetch_policy(sid)
+                for sid, _sess in rows
+            }
+            blocking_policy = next((
+                policy
+                for policy in cloud_policies.values()
+                if not policy["legacyLocalMapPrefetchAllowed"]
+            ), None)
+            if blocking_policy is not None:
+                pause_view = legacy_map_prefetch_pause_view(
+                    blocking_policy,
+                    task_name="山贼地图预扫",
+                )
+                with BANDIT_COORDINATOR_LOCK:
+                    server_state = BANDIT_COORDINATOR_STATE["servers"].setdefault(
+                        server_key, {}
+                    )
+                    if (
+                        server_state.get("state") != pause_view["state"]
+                        or server_state.get("cloudMode") != pause_view["cloudMode"]
+                    ):
+                        server_state.update(pause_view)
+                continue
             sessions = [sess for _sid, sess in rows]
             water = bandit_coordinator_water_level(server_key, sessions)
             with BANDIT_COORDINATOR_LOCK:
@@ -25626,9 +27933,16 @@ def mine_coordinator_scan_worker(
 ) -> None:
     error = ""
     request_count = 0
+    cloud_policy: dict[str, Any] = {
+        "mode": "LOCAL_ONLY",
+        "legacyLocalMapPrefetchAllowed": True,
+    }
     try:
         sess = SESSIONS.get(sid)
         if not sess or shared_map_server_key(sess) != server_key:
+            return
+        cloud_policy = legacy_map_prefetch_policy(sid)
+        if not cloud_policy["legacyLocalMapPrefetchAllowed"]:
             return
         task = demand["task"]
         row = demand["row"]
@@ -25675,6 +27989,15 @@ def mine_coordinator_scan_worker(
             state["routeLastAt"][route_key] = finished
             server_state = state["servers"].setdefault(server_key, {})
             server_state.update({
+                "state": (
+                    "local_prefetch"
+                    if cloud_policy["legacyLocalMapPrefetchAllowed"]
+                    else legacy_map_prefetch_pause_view(
+                        cloud_policy,
+                        task_name="资源点地图预扫",
+                    )["state"]
+                ),
+                "cloudMode": str(cloud_policy.get("mode") or "LOCAL_ONLY"),
                 "lastFinishedAt": finished,
                 "lastAccountId": sid,
                 "lastRequestCount": request_count,
@@ -25707,6 +28030,30 @@ def mine_map_coordinator_worker() -> None:
             )
             demand = min(lacking, key=lambda item: int(item["candidateCount"]))
             rows = [(sid, sess) for sid, sess in online if shared_map_server_key(sess) == server_key]
+            cloud_policies = {
+                sid: legacy_map_prefetch_policy(sid)
+                for sid, _sess in rows
+            }
+            blocking_policy = next((
+                policy
+                for policy in cloud_policies.values()
+                if not policy["legacyLocalMapPrefetchAllowed"]
+            ), None)
+            if blocking_policy is not None:
+                pause_view = legacy_map_prefetch_pause_view(
+                    blocking_policy,
+                    task_name="资源点地图预扫",
+                )
+                with MINE_COORDINATOR_LOCK:
+                    server_state = MINE_COORDINATOR_STATE["servers"].setdefault(
+                        server_key, {}
+                    )
+                    if (
+                        server_state.get("state") != pause_view["state"]
+                        or server_state.get("cloudMode") != pause_view["cloudMode"]
+                    ):
+                        server_state.update(pause_view)
+                continue
             with MINE_COORDINATOR_LOCK:
                 state = MINE_COORDINATOR_STATE
                 server_state = state["servers"].setdefault(server_key, {})
@@ -25992,67 +28339,110 @@ def execute_brush(
     vp["targetCandidate"] = "canonical"
     vp["targetHex"] = target_hex
     variant_payloads = [vp]
+    cloud_dispatch = SHARED_PYTHON_CORE.cloud_prepare_host_target_dispatch(
+        str(sess.get("sessionId") or ""),
+        "bandit",
+        target,
+    )
+    reservation_token = str(
+        cloud_dispatch.get("reservationToken") or ""
+    )
+    if (
+        cloud_dispatch.get("reservationRequired") is True
+        and cloud_dispatch.get("reserved") is not True
+    ):
+        return {
+            "time": now_ms(),
+            "role": sess.get("role") or {},
+            "area": sess.get("area") or {},
+            "general": selected_generals[0],
+            "generals": selected_generals,
+            "target": target,
+            "targetHex": target_hex,
+            "success": False,
+            "cloudConflict": True,
+            "cloudMode": str(cloud_dispatch.get("mode") or "CLOUD_SHARED"),
+            "failureReason": str(
+                cloud_dispatch.get("reason")
+                or "目标已被同区服其他账号预占"
+            ),
+            "battleText": "",
+            "actionResults": [],
+            "reportFile": "",
+        }
     action_results = []
     success = False
     success_variant: int | None = None
     success_target_candidate = ""
     success_battle_id = None
     false_positive_note = ""
-    for vp in variant_payloads:
-        variant = int(vp["variant"])
-        variant_results = []
-        for phase, gh in [("prepare", vp["prepare"]), ("expedition", vp["expedition"])]:
-            declared, op, payload = action_gamehex_to_cmd(gh)
-            code, data, packets = post_game(sess["gameHttp"], [(op, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
-            summarized = summarize_packets(packets)
-            item = {
-                "variant": variant,
-                "targetCandidate": vp.get("targetCandidate", ""),
-                "targetHex": vp.get("targetHex", target_hex),
-                "phase": phase,
-                "http": code,
-                "declared": declared,
-                "opcode": f"0x{op:04x}",
-                "payloadLen": len(payload),
-                "responseBytes": len(data),
-                "packets": summarized,
-            }
-            action_results.append(item)
-            variant_results.append(item)
-            time.sleep(0.5)
-        parsed_8522 = [
-            pkt.get("dispatch8522") or {}
-            for r in variant_results
-            if r.get("phase") == "expedition"
-            for pkt in r.get("packets", [])
-            if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
-        ]
-        ok_8522 = next((x for x in parsed_8522 if x.get("success")), None)
-        if ok_8522:
-            success = True
-            success_variant = variant
-            success_target_candidate = str(vp.get("targetCandidate") or "")
-            success_battle_id = ok_8522.get("battleId")
-            break
-        variant_text = "\n".join(
-            pkt.get("textPreview", "")
-            for r in variant_results
-            for pkt in r.get("packets", [])
-            if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
-        )
-        if any(k in variant_text for k in ["消灭", "出征成功", "刷黄出征成功"]):
-            false_positive_note = "响应出现出征文字，但没有正数 battleId，已按出征失败处理"
-        expedition_payload_hex = ""
-        for r in variant_results:
-            if r.get("phase") == "expedition":
-                packets = r.get("packets") or []
-                expedition_payload_hex = "".join(
-                    p.get("payloadHex", "")
-                    for p in packets
-                    if p.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
-                )
-        if expedition_payload_hex and expedition_payload_hex != BRUSH_SOFT_REJECT_PAYLOAD_HEX:
-            break
+    try:
+        for vp in variant_payloads:
+            variant = int(vp["variant"])
+            variant_results = []
+            for phase, gh in [("prepare", vp["prepare"]), ("expedition", vp["expedition"])]:
+                declared, op, payload = action_gamehex_to_cmd(gh)
+                code, data, packets = post_game(sess["gameHttp"], [(op, payload)], int(sess["dm"]), account_id=str(sess.get("sessionId") or ""))
+                summarized = summarize_packets(packets)
+                item = {
+                    "variant": variant,
+                    "targetCandidate": vp.get("targetCandidate", ""),
+                    "targetHex": vp.get("targetHex", target_hex),
+                    "phase": phase,
+                    "http": code,
+                    "declared": declared,
+                    "opcode": f"0x{op:04x}",
+                    "payloadLen": len(payload),
+                    "responseBytes": len(data),
+                    "packets": summarized,
+                }
+                action_results.append(item)
+                variant_results.append(item)
+                time.sleep(0.5)
+            parsed_8522 = [
+                pkt.get("dispatch8522") or {}
+                for r in variant_results
+                if r.get("phase") == "expedition"
+                for pkt in r.get("packets", [])
+                if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
+            ]
+            ok_8522 = next((x for x in parsed_8522 if x.get("success")), None)
+            if ok_8522:
+                success = True
+                success_variant = variant
+                success_target_candidate = str(vp.get("targetCandidate") or "")
+                success_battle_id = ok_8522.get("battleId")
+                break
+            variant_text = "\n".join(
+                pkt.get("textPreview", "")
+                for r in variant_results
+                for pkt in r.get("packets", [])
+                if pkt.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
+            )
+            if any(k in variant_text for k in ["消灭", "出征成功", "刷黄出征成功"]):
+                false_positive_note = "响应出现出征文字，但没有正数 battleId，已按出征失败处理"
+            expedition_payload_hex = ""
+            for r in variant_results:
+                if r.get("phase") == "expedition":
+                    packets = r.get("packets") or []
+                    expedition_payload_hex = "".join(
+                        p.get("payloadHex", "")
+                        for p in packets
+                        if p.get("opcode") == f"0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x}"
+                    )
+            if expedition_payload_hex and expedition_payload_hex != BRUSH_SOFT_REJECT_PAYLOAD_HEX:
+                break
+    except Exception as exc:
+        if reservation_token:
+            SHARED_PYTHON_CORE.cloud_finish_host_target_dispatch(
+                str(sess.get("sessionId") or ""),
+                "bandit",
+                target,
+                reservation_token,
+                "uncertain",
+                str(exc),
+            )
+        raise
     battle_text = "\n".join(
         pkt.get("textPreview", "")
         for r in action_results
@@ -26092,6 +28482,15 @@ def execute_brush(
             f"出征成功：0x{BRUSH_DISPATCH_RESPONSE_OPCODE:04x} status=0 "
             f"battleId={success_battle_id if success_battle_id is not None else '未知'}"
         )
+    if reservation_token:
+        SHARED_PYTHON_CORE.cloud_finish_host_target_dispatch(
+            str(sess.get("sessionId") or ""),
+            "bandit",
+            target,
+            reservation_token,
+            "dispatched" if success else "rejected",
+            failure_reason or battle_text,
+        )
     report = {
         "time": now_ms(),
         "role": sess["role"],
@@ -26107,6 +28506,7 @@ def execute_brush(
         "successTargetCandidate": success_target_candidate,
         "successBattleId": success_battle_id,
         "failureReason": failure_reason,
+        "cloudMode": str(cloud_dispatch.get("mode") or "LOCAL_ONLY"),
         "battleText": battle_text,
         "actionResults": action_results,
     }
@@ -26461,6 +28861,25 @@ def resolve_brush_troop_shortage_notice(
     database_resolve_important_notice(
         account_storage_key(sess=sess),
         brush_troop_shortage_notice_key(rule_index),
+    )
+
+
+BRUSH_HIGH_LEVEL_TROOPS_NOTICE_PREFIX = (
+    "task:brushYellow:highLevelTroops:"
+)
+
+
+def brush_high_level_troops_notice_key(rule_index: int) -> str:
+    return (
+        f"{BRUSH_HIGH_LEVEL_TROOPS_NOTICE_PREFIX}"
+        f"{max(0, int(rule_index))}"
+    )
+
+
+def resolve_brush_high_level_troops_notices(sess: dict[str, Any]) -> None:
+    database_resolve_important_notices_by_prefix(
+        account_storage_key(sess=sess),
+        BRUSH_HIGH_LEVEL_TROOPS_NOTICE_PREFIX,
     )
 
 
@@ -26830,50 +29249,11 @@ def prepare_heal_wounded(sess: dict[str, Any], formation: dict[str, Any], *, all
     目前 0x1230/0x1231 字段已恢复，但“当前伤兵数量”还需要从 8004/战报/伤兵列表进一步稳定解析。
     因此自动刷黄循环默认只生成可审计 payload，不盲发可能错误的治疗请求。
     """
-    general_id = str(formation.get("generalId") or "")
-    general = next((g for g in sess.get("generals", []) if str(g.get("id")) == general_id), {}) if general_id else {}
-    fief_id = formation.get("fiefId") or formation.get("placeID") or general.get("fiefId") or general.get("placeID")
-    soldier_code = soldier_type_code(formation.get("soldierType") or general.get("soldierType") or "轻骑兵")
-    wounded_count = formation.get("woundedCount") or general.get("woundedCount") or general.get("hurtSoldierCount")
-    soldier_group = int(formation.get("soldierGroup") or formation.get("healGroup") or 2)
-    if not fief_id:
-        return {"ready": False, "reason": "缺少 fiefId/placeID，暂不发送治疗包", "opcode": "0x1230/0x1231", "soldierTypeCode": soldier_code}
-    if wounded_count is None or str(wounded_count).strip() == "":
-        if allow_all_if_count_unknown:
-            pre_payload, heal_payload = build_heal_all_payloads(int(fief_id))
-            return {
-                "ready": True,
-                "healAll": True,
-                "reason": "未取得精确伤兵数量，使用客户端“治疗全部”语义",
-                "opcode": "0x1230/0x1231",
-                "fiefId": int(fief_id),
-                "soldierGroup": 2,
-                "soldierTypeCode": 0,
-                "woundedCount": -1,
-                "preInfoPayloadHex": pre_payload.hex(),
-                "healPayloadHex": heal_payload.hex(),
-            }
-        return {
-            "ready": False,
-            "reason": "缺少当前伤兵数量，暂不发送治疗包",
-            "opcode": "0x1230/0x1231",
-            "fiefId": int(fief_id),
-            "soldierGroup": soldier_group,
-            "soldierTypeCode": soldier_code,
-            "preInfoPayloadHexIfCountKnown": build_heal_preinfo_payload(int(fief_id), soldier_code, 0).hex(),
-        }
-    count = int(wounded_count)
-    if count <= 0:
-        return {"ready": False, "reason": "当前无伤兵需要治疗", "fiefId": int(fief_id), "soldierTypeCode": soldier_code, "woundedCount": count}
-    return {
-        "ready": True,
-        "fiefId": int(fief_id),
-        "soldierGroup": soldier_group,
-        "soldierTypeCode": soldier_code,
-        "woundedCount": count,
-        "preInfoPayloadHex": build_heal_preinfo_payload(int(fief_id), soldier_code, count).hex(),
-        "healPayloadHex": build_heal_payload(int(fief_id), soldier_group, soldier_code, count, use_gold=False).hex(),
-    }
+    return shared_plan_heal_wounded(
+        sess.get("generals") or [],
+        formation,
+        allow_all_if_count_unknown=allow_all_if_count_unknown,
+    )
 
 
 TASK_NOTICE_DISPLAY = {
@@ -26885,9 +29265,13 @@ TASK_NOTICE_DISPLAY = {
     "lossless": ("lossless", "无损"),
     "dungeon": ("dungeon", "副本"),
     "raid": ("raid", "掠夺"),
+    "auto-general": ("general", "将领维护"),
+    "auto-ministry": ("ministry", "六部"),
     "apply-formations": ("formations", "配兵"),
     "auto-domestic": ("autoDomestic", "自动内政"),
     "auto-technology": ("autoTechnology", "升级科技"),
+    "auto-inventory": ("inventory", "背包整理"),
+    "auto-alarm": ("alarm", "军情警报"),
 }
 
 
@@ -26922,6 +29306,20 @@ def sync_task_important_notice(
             source="task",
         )
         return
+    if (
+        status in ACTIVE_TASK_STATUSES
+        and notice_key in {"task:dungeon", "task:lossless"}
+        and "state=waiting-resources" in str(message or "")
+    ):
+        database_upsert_important_notice(
+            account_key,
+            notice_key,
+            severity="warning",
+            title=f"{task_name}等待资源",
+            message=text,
+            source="automation",
+        )
+        return
     abnormal_stop = bool(task.get("stopReason")) or any(
         marker in str(message or "")
         for marker in ("账号连接中断", "未取得指挥中心出征权", "异常，已中断")
@@ -26938,7 +29336,14 @@ def sync_task_important_notice(
         return
     if status in ACTIVE_TASK_STATUSES and any(
         marker in str(message or "")
-        for marker in ("启动", "恢复运行", "重新开始")
+        for marker in (
+            "启动", "恢复运行", "重新开始",
+            "已接入账号共享常驻调度",
+            "state=completed", "state=dispatched", "state=fighting",
+            "state=settled", "state=chest-opened",
+            "state=settlement-recovered", "state=reconciled",
+            "state=waiting",
+        )
     ):
         database_resolve_important_notice(account_key, notice_key)
 
@@ -26968,7 +29373,12 @@ def task_log(task: dict[str, Any], message: str) -> None:
         detail = {"taskId": task.get("taskId"), "type": task.get("type"), "status": task.get("status"), "cycle": task.get("cycle")}
     if sid:
         account_log(sid, message, source="task", detail=detail)
-        sync_task_important_notice(task, message, sid)
+        # A transient account-network pause is intentionally represented by
+        # the account-level warning.  Logging the lifecycle transition is
+        # still useful, but it must not create a terminal notice for every
+        # feature row (those rows did not fail independently).
+        if not bool(task.get("_suppressImportantNotice")):
+            sync_task_important_notice(task, message, sid)
     else:
         system_log(message, source="task", detail=detail)
     if os.environ.get("DWPM_VERBOSE_TASK_LOGS", "").lower() in {
@@ -26979,8 +29389,20 @@ def task_log(task: dict[str, Any], message: str) -> None:
         prune_auto_tasks()
 
 
-def stop_tasks_for_session_invalid(session_id: str, reason: str) -> list[str]:
-    """Immediately stop all active background tasks while an account waits to reconnect."""
+def stop_tasks_for_session_invalid(
+    session_id: str,
+    reason: str,
+    *,
+    transient: bool = False,
+    operator_maintenance: bool = False,
+) -> list[str]:
+    """Stop active account tasks at one explicit lifecycle boundary.
+
+    Operator maintenance is deliberately separate from a transient network
+    pause: its notice-suppression marker must be installed before the stop
+    event is signalled.  Otherwise the waiting worker can observe CANCELLED
+    and publish a false terminal feature notice in that small hand-off window.
+    """
     sid = str(session_id or "")
     stopped: list[dict[str, Any]] = []
     with TASK_LOCK:
@@ -26990,24 +29412,67 @@ def stop_tasks_for_session_invalid(session_id: str, reason: str) -> list[str]:
                 "queued", "starting", "running", "stopping"
             }:
                 continue
+            if operator_maintenance:
+                # Set this before stopEvent.  A worker awakened by set() can
+                # immediately log a cancelled shared operation.
+                task["_suppressImportantNotice"] = True
+                task["_operatorMaintenancePause"] = True
+                task.pop("_transientNetworkPause", None)
             if task.get("stopEvent"):
                 task["stopEvent"].set()
             task["status"] = "stopped"
-            task["stopReason"] = f"账号连接中断，已停止后台任务：{reason}"
+            task["stopReason"] = (
+                f"本地人工维护已暂停后台任务：{reason}"
+                if operator_maintenance
+                else (
+                    f"网络暂时不可用，已暂停后台任务并等待心跳恢复：{reason}"
+                    if transient
+                    else f"账号连接中断，已停止后台任务：{reason}"
+                )
+            )
             task.pop("error", None)
             task["schedulerState"] = "stopped"
             task["schedulerRunnable"] = False
-            task["schedulerMessage"] = "账号掉线，等待倒计时重连"
+            task["schedulerMessage"] = (
+                "本地人工维护中，任务已暂停"
+                if operator_maintenance
+                else (
+                    "网络暂时不可用，等待心跳恢复"
+                    if transient
+                    else "账号掉线，等待倒计时重连"
+                )
+            )
+            if transient:
+                task["_transientNetworkPause"] = True
             task["updatedAt"] = now_ms()
             stopped.append(task)
     with COMMAND_CENTER_CONDITION:
         COMMAND_CENTER_CLAIMS.pop(sid, None)
         COMMAND_CENTER_CONDITION.notify_all()
     for task in stopped:
-        task_log(task, task.get("stopReason") or f"账号连接中断，已停止后台任务：{reason}")
+        temporary_suppression = transient and not operator_maintenance
+        if temporary_suppression:
+            task["_suppressImportantNotice"] = True
+        try:
+            task_log(
+                task,
+                task.get("stopReason")
+                or f"账号连接中断，已停止后台任务：{reason}",
+            )
+        finally:
+            if temporary_suppression:
+                task.pop("_suppressImportantNotice", None)
     if stopped:
         system_log(
-            f"账号连接中断，已停止 {len(stopped)} 个后台任务：{reason}",
+            (
+                f"本地人工维护已暂停 {len(stopped)} 个后台任务：{reason}"
+                if operator_maintenance
+                else (
+                    f"账号网络暂时不可用，已暂停 {len(stopped)} 个后台任务：{reason}"
+                    if transient
+                    else f"账号连接中断，已停止 {len(stopped)} 个后台任务：{reason}"
+                )
+            ),
             level="info",
             source="session",
             session_id=sid,
@@ -27137,16 +29602,22 @@ def ensure_general_energy_for_check(
                 f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}；"
                 f"使用活血丹前读取宝库失败：{exc}"
             ) from exc
-        item = next((
-            row for row in inventory.get("items") or []
-            if int(row.get("itemId") or -1) == 12
-        ), None)
-        available = int((item or {}).get("count") or 0)
-        if available < 1:
-            raise RuntimeError(
-                f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}，"
-                "但宝库没有活血丹"
+        planning_general = dict(latest or general)
+        planning_general["tili"] = current
+        planning_general["energyReliable"] = True
+        try:
+            energy_plan = shared_plan_general_energy_use(
+                planning_general,
+                inventory,
+                enabled=enabled,
+                threshold=threshold,
+                action_name=action_name,
             )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if not energy_plan.get("actionRequired"):
+            general["tili"] = int(energy_plan.get("after") or current)
+            return general
         try:
             result = execute_use_energy_item(
                 sess,
@@ -27158,21 +29629,19 @@ def ensure_general_energy_for_check(
                 f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}；"
                 f"活血丹使用失败：{exc}"
             ) from exc
-        if not result.get("success"):
-            raise RuntimeError(
-                f"{action_name}检查到{name}体力={current}，低于自动加体阈值{threshold}；"
-                f"活血丹使用失败：{result.get('message') or '无提示'}"
+        try:
+            confirmed = shared_apply_general_energy_receipt(
+                energy_plan,
+                result,
+                action_name=action_name,
             )
-
-        updated = current + BRUSH_ENERGY_ITEM_GAIN
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        updated = int(confirmed["after"])
         general["tili"] = updated
         if latest is not None:
             latest["tili"] = updated
-        message = (
-            f"自动加体完成：{name} 使用活血丹1个，"
-            f"体力+{BRUSH_ENERGY_ITEM_GAIN}，由{current}更新为{updated}；"
-            f"检查来源={action_name}，设定阈值={threshold}"
-        )
+        message = str(confirmed["message"])
         if task is not None:
             task_log(task, message)
         else:
@@ -27727,6 +30196,7 @@ SETTINGS_SCOPE_FIELDS = {
         "discardItemNames",
         "discardEquipment",
         "maxEquipmentQuality",
+        "discardEquipmentQualities",
         "maxEquipmentLevel",
         "autoOpenItemNames",
         "autoOpenEnabled",
@@ -27941,6 +30411,19 @@ def normalize_auto_config(
     max_equipment_quality = str(cfg.get("maxEquipmentQuality") or brush.get("maxEquipmentQuality") or "良好")
     if max_equipment_quality not in EQUIPMENT_QUALITY_NAMES:
         max_equipment_quality = "良好"
+    # Qualities are chosen as a set on the page; the ceiling is kept as the
+    # highest selected so older readers see the same limit.  A record without
+    # the set expands the ceiling to "that and below", its long-standing meaning.
+    raw_discard_qualities = cfg.get("discardEquipmentQualities", brush.get("discardEquipmentQualities"))
+    if isinstance(raw_discard_qualities, (list, tuple, set)):
+        wanted_qualities = {str(name or "").strip() for name in raw_discard_qualities}
+        discard_equipment_qualities = [name for name in EQUIPMENT_QUALITY_NAMES if name in wanted_qualities]
+        if discard_equipment_qualities:
+            max_equipment_quality = discard_equipment_qualities[-1]
+    else:
+        discard_equipment_qualities = list(
+            EQUIPMENT_QUALITY_NAMES[: EQUIPMENT_QUALITY_NAMES.index(max_equipment_quality) + 1]
+        )
     raw_auto_open_names = cfg.get("autoOpenItemNames", brush.get("autoOpenItemNames", []))
     if isinstance(raw_auto_open_names, list):
         auto_open_names = [str(name or "").strip() for name in raw_auto_open_names]
@@ -28014,6 +30497,7 @@ def normalize_auto_config(
         "keepItemCount": 0,
         "discardEquipment": bool(cfg.get("discardEquipment", brush.get("discardEquipment", False))),
         "maxEquipmentQuality": max_equipment_quality,
+        "discardEquipmentQualities": discard_equipment_qualities,
         "maxEquipmentLevel": max(1, min(int(cfg.get("maxEquipmentLevel") or brush.get("maxEquipmentLevel") or 20), 100)),
         "autoOpenItemNames": auto_open_names,
         "autoOpenEnabled": bool(cfg.get("autoOpenEnabled", brush.get("autoOpenEnabled", False))),
@@ -28302,7 +30786,11 @@ _RESIDENT_TASK_LABELS = {
     "brushYellow": "刷黄",
     "raid": "掠夺",
     "dungeon": "副本",
+    "general": "将领维护",
     "ministry": "六部",
+    "domestic": "自动内政/科技",
+    "inventory": "背包整理",
+    "alarm": "军情警报",
 }
 RESIDENT_TASKS = [
     (key, _RESIDENT_TASK_LABELS[key])
@@ -28320,7 +30808,12 @@ AUTO_TASK_OVERVIEW_KEYS = {
     "auto-mine": "mine",
     "attack-mine": "mine",
     "raid": "raid",
+    "auto-general": "general",
     "auto-ministry": "ministry",
+    "auto-domestic": "domestic",
+    "auto-technology": "domestic",
+    "auto-inventory": "inventory",
+    "auto-alarm": "alarm",
     "siege": "siege",
     "city-attack": "siege",
     "lossless": "lossless",
@@ -28339,6 +30832,11 @@ TASK_STACK_TYPE_META = {
     "attack-mine": ("mine", "打矿", "resident"),
     "auto-ministry": ("ministry", "六部", "resident"),
     "raid": ("raid", "掠夺", "resident"),
+    "auto-general": ("general", "将领维护", "resident"),
+    "auto-domestic": ("domestic", "自动内政", "resident"),
+    "auto-technology": ("domestic", "升级科技", "resident"),
+    "auto-inventory": ("inventory", "背包整理", "resident"),
+    "auto-alarm": ("alarm", "军情警报", "resident"),
     "siege": ("siege", "抢城", "resident"),
     "city-attack": ("siege", "抢城", "resident"),
     "escort": ("escort", "押镖", "resident"),
@@ -28346,8 +30844,6 @@ TASK_STACK_TYPE_META = {
     "treasure-hunt": ("treasure", "寻宝", "resident"),
     "apply-formations": ("formations", "配兵", "military"),
     "heal-wounded": ("healWounded", "治疗伤兵", "daily"),
-    "auto-domestic": ("autoDomestic", "自动内政", "daily"),
-    "auto-technology": ("autoTechnology", "升级科技", "daily"),
     "general-energy": ("generalEnergy", "将领加体力", "daily"),
     "food-to-copper": ("foodToCopper", "粮食转铜", "daily"),
     "auto-sign-in": ("autoSignIn", "自动签到", "daily"),
@@ -28941,10 +31437,13 @@ def sync_recent_important_notices_from_logs(account_key: str) -> None:
             if marker in message:
                 database_resolve_important_notice(key, notice_key, at_ms=timestamp)
         if message.startswith("自动签到失败"):
-            database_upsert_important_notice(
-                key, "daily:autoSignIn", severity="warning",
-                title="自动签到未完成", message=message,
-                source="automation-history", at_ms=timestamp,
+            upsert_daily_feature_important_notice(
+                key,
+                "autoSignIn",
+                "自动签到",
+                message=message,
+                source="automation-history",
+                at_ms=timestamp,
             )
         elif message.startswith(("自动签到完成", "自动签到重复")):
             database_resolve_important_notice(key, "daily:autoSignIn", at_ms=timestamp)
@@ -28987,13 +31486,27 @@ def important_notice_advice(notice_key: str) -> str:
     key = str(notice_key or "")
     if key == "account:connection":
         return "检查当前IP、VPN和网络；连接恢复后提示会自动消失。"
+    if key == "account:network":
+        return "检查当前IP、VPN和网络；心跳确认恢复后，暂停的常驻任务会自动恢复。"
     if key == "account:proxy":
         return "刷新节点检测或更换可用IP后重新启动相关任务。"
     if key.startswith("task:brushYellow:troopShortage:"):
         return "到“军事-配兵”检查该编队所需兵种和数量；闲兵补足或配置修正后，提示会自动消失。"
+    if key.startswith(BRUSH_HIGH_LEVEL_TROOPS_NOTICE_PREFIX):
+        return "到“军事-配兵”将该刷黄编队内每名将领的配兵改为至少1000；保存刷黄设置或高等级出征成功后，提示会自动消失。"
     if key.startswith("task:brushYellow"):
         return "根据中止原因检查IP、将领状态、体力、闲兵和刷黄编队，修正后重新启动刷黄。"
-    if key in {"task:mine", "task:raid", "task:lossless", "task:dungeon", "task:formations"}:
+    if key == "task:general":
+        return "检查将领伤兵、体力、忠诚和对应补给品；条件恢复后重新启动将领维护。"
+    if key == "task:inventory":
+        return "检查宝库容量、物品或装备识别结果及背包整理配置；该任务不依赖将领体力。"
+    if key == "task:alarm":
+        return "检查账号在线状态、军情读取和警报配置；该任务不依赖将领体力。"
+    if key in {
+        "task:mine", "task:raid", "task:lossless", "task:dungeon",
+        "task:formations", "task:ministry",
+        "task:autoDomestic", "task:autoTechnology",
+    }:
         return "根据原因检查将领状态、配兵和任务配置，修正后重新启动该任务。"
     if key.startswith("daily:"):
         return "确认账号在线后手动重试；成功或确认已经领取后，提示会自动消失。"
@@ -29027,11 +31540,73 @@ def important_notice_summary(notice: dict[str, Any]) -> str:
     return summary if len(summary) <= 72 else summary[:69] + "..."
 
 
+def _shared_result_notice_is_misattributed(notice: dict[str, Any]) -> bool:
+    """Reject legacy task notices whose feature identity contradicts text.
+
+    Before the shared wake-owner fix, a result with no active matching row was
+    written to the owner's fallback row.  The durable notice table therefore
+    contains a few cross-feature records (for example a dungeon message under
+    ``task:autoDomestic``).  These records are presentation corruption, not
+    evidence that the displayed task failed.  Keep the check deliberately
+    narrow so unrelated historical task messages remain visible.
+    """
+
+    key = str(notice.get("key") or "")
+    message = str(notice.get("message") or "")
+    message_lower = message.lower()
+    if not key.startswith("task:"):
+        return False
+    if message.startswith((
+        "网络暂时不可用，已暂停后台任务",
+        "账号连接中断，已停止后台任务",
+    )):
+        # These are account-lifecycle transitions.  A former wake-owner row
+        # is not evidence that inventory, alarm, domestic, or any other one
+        # feature failed.  The account-level connection/network notice is the
+        # sole owner of this condition.
+        return True
+    if "无法连接游戏服" in message and (
+        "ip" in message_lower or "网络" in message or "http" in message_lower
+    ):
+        # Transport state is account-scoped; it must never be represented as
+        # a feature-specific terminal failure.
+        return True
+    if "副本前置操作已开始" in message:
+        return key != "task:dungeon"
+    if "无损前置操作已开始" in message:
+        return key != "task:lossless"
+    if "刷黄战后步骤" in message or "刷黄战后新维护步骤" in message:
+        return key != "task:brushYellow"
+    if "将领维护" in message:
+        # General healing/energy/loyalty is an independent resident feature.
+        # Inventory cleanup and military-intel polling neither select nor use
+        # a general, so an old wake-owner notice such as
+        # ``task:inventory -> 将领维护检查到...体力...`` is impossible evidence
+        # for those rows.  Keep the real general notice, but retire every
+        # cross-feature copy produced by the legacy fallback router.
+        return key != "task:general"
+    return False
+
+
 def current_important_notices(sess: dict[str, Any]) -> list[dict[str, Any]]:
     sid = str(sess.get("sessionId") or "")
     account_key = account_storage_key(sess=sess)
     sync_recent_important_notices_from_logs(account_key)
     notices = database_read_active_important_notices(account_key)
+    # Hide and resolve records produced by the old fallback routing bug.  This
+    # also repairs accounts that were already running before the code fix; no
+    # separate manual database cleanup is required after the new server code
+    # is deployed.
+    filtered_notices: list[dict[str, Any]] = []
+    for notice in notices:
+        if _shared_result_notice_is_misattributed(notice):
+            database_resolve_important_notice(
+                account_key,
+                str(notice.get("key") or ""),
+            )
+            continue
+        filtered_notices.append(notice)
+    notices = filtered_notices
     with ACCOUNT_LOCK:
         acc = dict(ACCOUNTS.get(sid) or {})
     status = str(acc.get("status") or "")
@@ -29063,6 +31638,59 @@ def current_important_notices(sess: dict[str, Any]) -> list[dict[str, Any]]:
                 "updatedAt": now_ms(),
                 "active": True,
             })
+    # A transient request timeout keeps the account online while workers are
+    # paused.  Surface one account-level warning instead of manufacturing a
+    # separate "task aborted" notice for every resident row.
+    if (
+        status not in {"offline", "error"}
+        and reconnect_state not in {"countdown", "reconnecting"}
+        and (acc.get("networkDegraded") or acc.get("responseUnconfirmed"))
+    ):
+        network_notice_key = "account:network"
+        network_reason = str(
+            acc.get("lastError")
+            or (
+                "游戏服响应未确认，已暂停自动操作，等待心跳复核"
+                if acc.get("responseUnconfirmed")
+                else "当前网络请求失败，已暂停自动操作，等待心跳恢复"
+            )
+        )
+        dismissed = database_read_important_notice_record(
+            account_key,
+            network_notice_key,
+        )
+        if not (
+            dismissed
+            and not dismissed.get("active")
+            and dismissed.get("source") == "user-dismiss"
+            and dismissed.get("message") == network_reason
+        ):
+            network_checked_at = (
+                (acc.get("lastNetworkFailure") or {}).get("checkedAt")
+                if isinstance(acc.get("lastNetworkFailure"), dict)
+                else None
+            )
+            if not network_checked_at and isinstance(
+                acc.get("lastHeartbeat"), dict
+            ):
+                network_checked_at = (
+                    acc.get("lastHeartbeat") or {}
+                ).get("checkedAt")
+            notices.append({
+                "id": "dynamic-account-network",
+                "key": network_notice_key,
+                "severity": "warning",
+                "title": (
+                    "账号响应未确认"
+                    if acc.get("responseUnconfirmed")
+                    else "账号网络异常"
+                ),
+                "message": network_reason,
+                "source": "account",
+                "createdAt": int(network_checked_at or now_ms()),
+                "updatedAt": now_ms(),
+                "active": True,
+            })
     if str(acc.get("proxyStatus") or "") == "error" or str(acc.get("proxyError") or ""):
         proxy_reason = str(acc.get("proxyError") or "当前IP节点检测失败")
         dismissed = database_read_important_notice_record(
@@ -29091,7 +31719,21 @@ def current_important_notices(sess: dict[str, Any]) -> list[dict[str, Any]]:
     for notice in notices:
         notice_key = str(notice.get("key") or notice.get("id") or "")
         notice["message"] = str(notice.get("message") or "")[:800]
-        notice["advice"] = important_notice_advice(notice_key)
+        notice["advice"] = (
+            "无需手动重启；系统已跳过本轮任务并继续执行其他任务，"
+            "5分钟后会自动重新检查体力和活血丹。"
+            if notice_key in {"task:dungeon", "task:lossless"}
+            and str(notice.get("title") or "") in {
+                "副本等待资源", "无损等待资源",
+            }
+            else (
+                "请先清理宝库空位，再手动重试签到；签到成功或服务器确认"
+                "本日已签到后，提示会自动消失。"
+                if notice_key == "daily:autoSignIn"
+                and "宝库空间不足" in notice["message"]
+                else important_notice_advice(notice_key)
+            )
+        )
         notice["summary"] = important_notice_summary(notice)
         existing = deduped.get(notice_key)
         if existing is None or int(notice.get("updatedAt") or 0) >= int(existing.get("updatedAt") or 0):
@@ -29391,10 +32033,33 @@ def assistant_live_operations(sess: dict[str, Any]) -> list[dict[str, Any]]:
 def current_task_overview(sess: dict[str, Any]) -> dict[str, Any]:
     """Return the role task page model without triggering any game action."""
     sid = str(sess.get("sessionId") or "")
+    overview_at = now_ms()
+    shared_public = shared_account_public_state_snapshot(sess)
     role_state = sess.get("roleState") if isinstance(sess.get("roleState"), dict) else {}
     resource_point_current = max(0, int(role_state.get("resourcePointCurrent") or 0))
     resource_point_cap = max(0, int(role_state.get("resourcePointCap") or 0))
-    daily_dungeon_count = get_daily_dungeon_count(sess)
+    shared_dungeon_count = shared_resident_daily_count(
+        sess,
+        "dungeon",
+        at_millis=overview_at,
+        public_state=shared_public,
+    )
+    daily_dungeon_count = (
+        shared_dungeon_count
+        if shared_dungeon_count is not None
+        else get_daily_dungeon_count(sess)
+    )
+    shared_lossless_count = shared_resident_daily_count(
+        sess,
+        "lossless",
+        at_millis=overview_at,
+        public_state=shared_public,
+    )
+    persisted_lossless_status = shared_lossless_last_status(
+        sess,
+        at_millis=overview_at,
+        public_state=shared_public,
+    )
     active_by_key: dict[str, dict[str, Any]] = {}
     with TASK_LOCK:
         session_tasks = [
@@ -29421,18 +32086,54 @@ def current_task_overview(sess: dict[str, Any]) -> dict[str, Any]:
         if AUTO_TASK_OVERVIEW_KEYS.get(str(task.get("type") or "")) == "lossless"
         and isinstance(task.get("lastLosslessStatus"), dict)
     ), None)
+    lossless_status_candidates = [
+        value
+        for value in (
+            persisted_lossless_status,
+            sess.get("lastLosslessStatus"),
+            (latest_lossless_task or {}).get("lastLosslessStatus"),
+            (active_by_key.get("lossless") or {}).get("lastLosslessStatus"),
+        )
+        if isinstance(value, dict) and value
+    ]
+    overview_lossless_status = max(
+        lossless_status_candidates,
+        key=lambda value: int(value.get("updatedAt") or 0),
+        default={},
+    )
+    lossless_used_candidates: list[int] = []
+    if shared_lossless_count is not None:
+        lossless_used_candidates.append(int(shared_lossless_count))
+    for source_task in (
+        active_by_key.get("lossless"),
+        latest_lossless_task,
+    ):
+        if not isinstance(source_task, dict):
+            continue
+        direct_used = source_task.get("losslessUsedAttempts")
+        if direct_used is not None:
+            lossless_used_candidates.append(max(0, int(direct_used)))
+    if overview_lossless_status.get("usedAttempts") is not None:
+        lossless_used_candidates.append(
+            max(0, int(overview_lossless_status["usedAttempts"]))
+        )
+    elif overview_lossless_status.get("remainingAttempts") is not None:
+        lossless_used_candidates.append(max(
+            0,
+            LOSSLESS_DAILY_LIMIT
+            - int(overview_lossless_status["remainingAttempts"]),
+        ))
+    overview_lossless_used = (
+        min(LOSSLESS_DAILY_LIMIT, max(lossless_used_candidates))
+        if lossless_used_candidates
+        else 0
+    )
+    overview_lossless_remaining = max(
+        0, LOSSLESS_DAILY_LIMIT - overview_lossless_used
+    )
     for key, name in RESIDENT_TASKS:
         task = active_by_key.get(key)
-        status_source_task = task or (latest_lossless_task if key == "lossless" else None)
-        lossless_status = (status_source_task or {}).get("lastLosslessStatus")
-        if not isinstance(lossless_status, dict):
-            lossless_status = {}
-        used_attempts = (status_source_task or {}).get("losslessUsedAttempts")
-        if used_attempts is None:
-            used_attempts = lossless_status.get("usedAttempts")
-        remaining_attempts = (status_source_task or {}).get("losslessRemainingAttempts")
-        if remaining_attempts is None:
-            remaining_attempts = lossless_status.get("remainingAttempts")
+        lossless_status = overview_lossless_status if key == "lossless" else {}
         scheduler_state = str((task or {}).get("schedulerState") or "idle")
         scheduler_next_check_at = (task or {}).get("schedulerNextCheckAt")
         if key == "lossless" and lossless_status_phase(lossless_status) == "cooldown":
@@ -29460,19 +32161,24 @@ def current_task_overview(sess: dict[str, Any]) -> dict[str, Any]:
             ),
             "taskId": (task or {}).get("taskId"),
             "cycle": int((task or {}).get("cycle") or 0),
-            "usedAttempts": max(0, min(LOSSLESS_DAILY_LIMIT, int(used_attempts or 0))) if key == "lossless" else None,
-            "remainingAttempts": max(0, min(LOSSLESS_DAILY_LIMIT, int(remaining_attempts or 0))) if key == "lossless" else None,
+            "usedAttempts": overview_lossless_used if key == "lossless" else None,
+            "remainingAttempts": overview_lossless_remaining if key == "lossless" else None,
             "resourcePointCurrent": resource_point_current if key == "mine" else None,
             "resourcePointCap": resource_point_cap if key == "mine" else None,
             "dailyDungeonCount": daily_dungeon_count if key == "dungeon" else None,
             "updatedAt": (task or {}).get("updatedAt"),
         })
+    task_stack = task_stack_for_session(sid, tasks)
+    if shared_lossless_count is not None or overview_lossless_status:
+        for item in task_stack:
+            if str(item.get("key") or "") == "lossless":
+                item["remainingAttempts"] = overview_lossless_remaining
     return {
         "date": time.strftime("%Y%m%d"),
-        "updatedAt": now_ms(),
+        "updatedAt": overview_at,
         "savedTasksStarted": bool(sess.get("savedTasksStarted")),
         "savedTasksStartedAt": sess.get("savedTasksStartedAt"),
-        "taskStack": task_stack_for_session(sid, tasks),
+        "taskStack": task_stack,
         "resident": resident,
         "daily": current_daily_task_completions(sess),
         "notices": current_important_notices(sess),
@@ -29848,433 +32554,15 @@ def ensure_building_resources_after_failure(
 
 
 def auto_domestic_worker(task_id: str) -> None:
-    task = AUTO_TASKS.get(task_id)
-    if not task:
-        return
-    cfg = dict(task.get("config") or {})
-    sid = str(task.get("sessionId") or cfg.get("sessionId") or "")
-    sess = SESSIONS.get(sid)
-    if not sess:
-        task["status"] = "error"
-        task["error"] = "账号未登录，自动内政未启动"
-        return
-    technology_only = bool(cfg.get("technologyOnly"))
-    task_name = "升级科技" if technology_only else "自动内政"
-    task["status"] = "running"
-    task_log(task, f"{task_name}启动：" + ("仅管理各封地书院科技研究" if technology_only else "仅执行空地建造和建筑升级"))
-    batch_submitted = 0
-    reuse_fief_states = False
-    states: list[dict[str, Any]] = []
+    """Desktop only wakes the shared Python domestic resident owner."""
 
-    def wait_until_next_cycle(interval_seconds: int, interval_text: str) -> None:
-        command_center_set_state(
-            task,
-            state="cooldown",
-            runnable=False,
-            message=f"{task_name}等待下次检查（{interval_text}后）",
-            next_check_at=now_ms() + interval_seconds * 1000,
-        )
-        task["stopEvent"].wait(interval_seconds)
-
-    try:
-        while not task["stopEvent"].is_set():
-            if not wait_for_task_account_online(task, sid, task_name):
-                task["status"] = "stopped"
-                task_log(task, f"{task_name}已收到停止请求")
-                break
-            state_was_reused = bool(reuse_fief_states and states)
-            reuse_fief_states = False
-            if not state_was_reused:
-                refresh_generals(sess)
-                fief_ids = query_all_owned_fief_ids(sess)
-                if not fief_ids:
-                    raise RuntimeError("未能从角色状态读取自有封地 ID")
-                states = [query_fief_buildings(sess, fief_id) for fief_id in fief_ids]
-            interval_seconds = auto_domestic_interval_seconds(states)
-            interval_text = auto_domestic_interval_text(interval_seconds)
-            task["fiefs"] = states
-            task["nextIntervalSec"] = interval_seconds
-            task["updatedAt"] = now_ms()
-            acted = False
-
-            # The hall gates every other building level. Upgrade it first and do
-            # not let other buildings advance while its own upgrade is pending.
-            hall_candidates = []
-            for state in states:
-                if technology_only:
-                    continue
-                busy_count, queue_capacity = fief_build_queue_state(state)
-                if busy_count >= queue_capacity:
-                    continue
-                hall = fief_hall(state)
-                if hall and hall_must_upgrade_first(state):
-                    hall_candidates.append((int(hall.get("level", 0)), state, hall))
-            if hall_candidates:
-                _level, state, hall = min(
-                    hall_candidates,
-                    key=lambda item: (item[0], int(item[1]["fiefId"])),
-                )
-                result = execute_building_action(
-                    sess, int(state["fiefId"]), int(hall["slot"]), 0,
-                    previous_level=int(hall["level"]),
-                )
-                task_log(
-                    task,
-                    f"优先升级大厅：{fief_display_name(sess, state['fiefId'])} "
-                    f"槽{hall['slot']}大厅 {hall['level']}→{int(hall['level']) + 1}；"
-                    f"{'成功' if result.get('success') else '失败'}",
-                )
-                if result.get("success"):
-                    record_success_action(
-                        sid,
-                        "内政",
-                        f"{fief_display_name(sess, state['fiefId'])}槽{hall['slot']}"
-                        f"大厅升级{hall['level']} > {int(hall['level']) + 1}",
-                    )
-                    apply_building_sync_to_fief(state, result)
-                    acted = True
-                else:
-                    copper_check = ensure_building_resources_after_failure(
-                        task, sess, 0, int(hall["level"]) + 1, "大厅升级失败后",
-                    )
-                    if copper_check.get("exchanged"):
-                        result = execute_building_action(
-                            sess, int(state["fiefId"]), int(hall["slot"]), 0,
-                            previous_level=int(hall["level"]),
-                        )
-                        task_log(task, f"粮食转铜后重试大厅升级：{'成功' if result.get('success') else '仍失败'}")
-                    if result.get("success"):
-                        record_success_action(
-                            sid,
-                            "内政",
-                            f"{fief_display_name(sess, state['fiefId'])}槽{hall['slot']}"
-                            f"大厅升级{hall['level']} > {int(hall['level']) + 1}",
-                        )
-                        apply_building_sync_to_fief(state, result)
-                        acted = True
-                    else:
-                        task_log(
-                            task, f"大厅升级未生效：status={result.get('status')} "
-                            f"sub={result.get('substatus')}，{interval_text}后重新排入任务栈",
-                        )
-                        wait_until_next_cycle(interval_seconds, interval_text)
-                        continue
-
-            empty_type = int(cfg.get("emptyBuildingType", 1))
-            if empty_type not in BUILDING_TYPE_NAMES or empty_type < 0:
-                empty_type = 1
-            for state in states if not acted and not technology_only else []:
-                buildings = list(state.get("buildings") or [])
-                occupied = {int(item["slot"]) for item in buildings}
-                busy_count, queue_capacity = fief_build_queue_state(state)
-                if busy_count >= queue_capacity:
-                    continue
-                empty_slots = [slot for slot in range(1, 13) if slot not in occupied]
-                if empty_slots:
-                    slot = empty_slots[0]
-                    result = execute_building_action(
-                        sess, int(state["fiefId"]), slot, empty_type, previous_level=None,
-                    )
-                    task_log(
-                        task,
-                        f"空地建造{BUILDING_TYPE_NAMES.get(empty_type, empty_type)}："
-                        f"{fief_display_name(sess, state['fiefId'])} 槽{slot}；"
-                        f"{'成功' if result.get('success') else '失败'}",
-                    )
-                    if not result.get("success"):
-                        copper_check = ensure_building_resources_after_failure(
-                            task, sess, empty_type, 1, "空地建造失败后",
-                        )
-                        if copper_check.get("exchanged"):
-                            result = execute_building_action(
-                                sess, int(state["fiefId"]), slot, empty_type, previous_level=None,
-                            )
-                            task_log(task, f"粮食转铜后重试空地建造：{'成功' if result.get('success') else '仍失败'}")
-                    if not result.get("success"):
-                        task_log(
-                            task, f"空地建造未生效：status={result.get('status')} "
-                            f"sub={result.get('substatus')}，跳过本槽位，{interval_text}后重新排入任务栈",
-                        )
-                        wait_until_next_cycle(interval_seconds, interval_text)
-                        continue
-                    record_success_action(
-                        sid,
-                        "内政",
-                        f"{fief_display_name(sess, state['fiefId'])}槽{slot}"
-                        f"空地新建{BUILDING_TYPE_NAMES.get(empty_type, empty_type)}",
-                    )
-                    apply_building_sync_to_fief(state, result)
-                    acted = True
-                    break
-
-            if not acted and technology_only and bool(cfg.get("upgradeTechnology", False)):
-                technology_states = current_technology_states(sess)
-                occupied_academy_ids = {
-                    int(item["academyInstanceId"])
-                    for item in technology_states
-                    if item.get("researching") and item.get("academyInstanceId") is not None
-                }
-                academies = [
-                    (state, building)
-                    for state in states for building in state.get("buildings") or []
-                    if int(building.get("type", -1)) == 3
-                    and not building.get("busy")
-                    and int(building.get("instanceId") or 0) not in occupied_academy_ids
-                ]
-                if academies:
-                    selected_technology_ids = list(dict.fromkeys(
-                        int(value) for value in cfg.get(
-                            "technologyIds",
-                            [cfg.get("technologyId", 5)],
-                        )
-                        if str(value).lstrip("-").isdigit() and int(value) in TECHNOLOGY_NAMES
-                    ))
-                    if not selected_technology_ids:
-                        raise RuntimeError("升级科技已开启，但没有勾选任何科技")
-                    researching_technology_ids = {
-                        int(item["technologyId"])
-                        for item in technology_states
-                        if item.get("researching")
-                    }
-                    candidates: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
-                    for state, building in academies:
-                        academy_level = int(building.get("level") or 0)
-                        for technology in technology_states:
-                            tech_id = int(technology.get("technologyId", -1))
-                            tech_level = int(technology.get("level", 0))
-                            if (
-                                tech_id in selected_technology_ids
-                                and tech_id not in researching_technology_ids
-                                and tech_level < academy_level
-                            ):
-                                candidates.append((
-                                    tech_level,
-                                    selected_technology_ids.index(tech_id),
-                                    {"state": state, "building": building},
-                                    technology,
-                                ))
-                    if not candidates:
-                        researching = [
-                            f"{item.get('name')}（{item.get('level')}级，其他封地升级中）"
-                            for item in technology_states
-                            if int(item.get("technologyId", -1)) in selected_technology_ids
-                            and item.get("researching")
-                        ]
-                        raise RuntimeError(
-                            "没有可供空闲书院升级的已勾选科技"
-                            + (
-                                f"：{'、'.join(researching)}"
-                                if researching
-                                else "：所选科技等级均已达到当前空闲书院等级"
-                            )
-                        )
-                    _tech_level, _selection_order, academy, technology = min(
-                        candidates,
-                        key=lambda item: (item[0], item[1], int(item[2]["state"]["fiefId"])),
-                    )
-                    state = academy["state"]
-                    building = academy["building"]
-                    tech_id = int(technology["technologyId"])
-                    next_level = int(technology.get("level", 0)) + 1
-                    cost = TECHNOLOGY_LEVEL_COSTS.get((tech_id, next_level)) or {}
-                    required_copper = int(cost.get("copper") or 0)
-                    required_food = int(cost.get("costB") or 0)
-                    copper_check = ensure_account_copper_floor(
-                        sess,
-                        task=task,
-                        context=f"升级{TECHNOLOGY_NAMES.get(tech_id, tech_id)}前",
-                        required_copper=required_copper,
-                        reserve_food=required_food,
-                    )
-                    current_copper = int((sess.get("roleState") or {}).get("copper") or 0)
-                    current_food = int((sess.get("roleState") or {}).get("food") or 0)
-                    if (
-                        not copper_check.get("ok")
-                        or current_copper < required_copper
-                        or current_food < required_food
-                    ):
-                        raise RuntimeError(
-                            f"升级科技{TECHNOLOGY_NAMES.get(tech_id, tech_id)}暂停："
-                            f"需要铜钱{required_copper}/粮食{required_food}，"
-                            f"当前铜钱{current_copper}/粮食{current_food}，兑换后仍不足"
-                        )
-                    result = execute_technology_upgrade(
-                        sess, int(state["fiefId"]), int(building["slot"]), tech_id, next_level,
-                    )
-                    task_log(
-                        task,
-                        f"升级科技{TECHNOLOGY_NAMES.get(tech_id, tech_id)}："
-                        f"{technology.get('level')}→{next_level}级；"
-                        f"{result.get('message') or ('成功' if result.get('success') else '失败')}",
-                    )
-                    if not result.get("success"):
-                        copper_check = ensure_account_copper_floor(
-                            sess,
-                            task=task,
-                            context="科技升级失败后",
-                            required_copper=required_copper,
-                            reserve_food=required_food,
-                        )
-                        if copper_check.get("exchanged"):
-                            result = execute_technology_upgrade(
-                                sess, int(state["fiefId"]), int(building["slot"]), tech_id, next_level,
-                            )
-                            task_log(task, f"粮食转铜后重试科技升级：{'成功' if result.get('success') else '仍失败'}")
-                        if not result.get("success"):
-                            raise RuntimeError(
-                                f"升级科技{TECHNOLOGY_NAMES.get(tech_id, tech_id)}失败，"
-                                f"{result.get('message') or '服务器未返回说明'}"
-                            )
-                    record_success_action(
-                        sid,
-                        "科技",
-                        f"{TECHNOLOGY_NAMES.get(tech_id, tech_id)} "
-                        f"{technology.get('level')} > {next_level}",
-                    )
-                    acted = True
-                elif any(
-                    int(building.get("type", -1)) == 3
-                    for state in states for building in state.get("buildings") or []
-                ):
-                    raise RuntimeError("所有书院均被建筑任务或科技研究占用，暂停自动内政")
-
-            if not acted and not technology_only and bool(cfg.get("upgradeBuildings", True)):
-                candidates = []
-                try:
-                    technology_states = current_technology_states(sess)
-                except Exception:
-                    technology_states = []
-                occupied_academy_ids = {
-                    int(item["academyInstanceId"])
-                    for item in technology_states
-                    if item.get("researching")
-                    and item.get("academyInstanceId") is not None
-                }
-                for state in states:
-                    buildings = list(state.get("buildings") or [])
-                    busy_count, queue_capacity = fief_build_queue_state(state)
-                    hall = fief_hall(state)
-                    if (
-                        busy_count >= queue_capacity
-                        or not hall
-                    ):
-                        continue
-                    for building in buildings:
-                        if (
-                            int(building.get("type", -1)) == 3
-                            and int(building.get("instanceId") or 0)
-                            in occupied_academy_ids
-                        ):
-                            task_log(
-                                task,
-                                f"跳过升级建筑：{fief_display_name(sess, state['fiefId'])} "
-                                f"槽{building['slot']}{building['name']}正在研究科技，"
-                                "书院被占用",
-                            )
-                            continue
-                        if building_can_follow_hall(state, building):
-                            candidates.append((int(building.get("level", 0)), state, building))
-                if candidates:
-                    _level, state, building = min(candidates, key=lambda item: (item[0], int(item[2]["slot"])))
-                    result = execute_building_action(
-                        sess, int(state["fiefId"]), int(building["slot"]), int(building["type"]),
-                        previous_level=int(building["level"]),
-                    )
-                    task_log(
-                        task,
-                        f"升级建筑：{fief_display_name(sess, state['fiefId'])} "
-                        f"槽{building['slot']}{building['name']} "
-                        f"{building['level']}→{int(building['level']) + 1}；"
-                        f"{'成功' if result.get('success') else '失败'}",
-                    )
-                    if not result.get("success"):
-                        copper_check = ensure_building_resources_after_failure(
-                            task,
-                            sess,
-                            int(building["type"]),
-                            int(building["level"]) + 1,
-                            "建筑升级失败后",
-                        )
-                        if copper_check.get("exchanged"):
-                            result = execute_building_action(
-                                sess, int(state["fiefId"]), int(building["slot"]), int(building["type"]),
-                                previous_level=int(building["level"]),
-                            )
-                            task_log(task, f"粮食转铜后重试建筑升级：{'成功' if result.get('success') else '仍失败'}")
-                    if not result.get("success"):
-                        task_log(
-                            task, f"建筑升级未生效：status={result.get('status')} "
-                            f"sub={result.get('substatus')}，跳过本槽位，{interval_text}后重新排入任务栈",
-                        )
-                        wait_until_next_cycle(interval_seconds, interval_text)
-                        continue
-                    record_success_action(
-                        sid,
-                        "内政",
-                        f"{fief_display_name(sess, state['fiefId'])}槽{building['slot']}"
-                        f"{building['name']}升级{building['level']} > {int(building['level']) + 1}",
-                    )
-                    apply_building_sync_to_fief(state, result)
-                    acted = True
-
-            task["cycle"] = int(task.get("cycle") or 0) + 1
-            if (
-                should_continue_filling_build_queues(acted, technology_only)
-                and not task["stopEvent"].is_set()
-            ):
-                batch_submitted += 1
-                task_log(
-                    task,
-                    f"本批次自动内政已提交{batch_submitted}项操作，"
-                    "立即使用服务器同步状态继续填充剩余建筑队列",
-                )
-                command_center_set_state(
-                    task,
-                    state="running",
-                    runnable=True,
-                    message=f"自动内政正在连续填充建筑队列（已提交{batch_submitted}项）",
-                )
-                reuse_fief_states = True
-                continue
-            if batch_submitted and state_was_reused:
-                task_log(task, "本批次快速提交暂时没有可执行项，刷新全部封地确认队列状态")
-                continue
-            if batch_submitted:
-                task_log(task, f"本批次自动内政连续提交完成，共{batch_submitted}项操作")
-                batch_submitted = 0
-            task_log(
-                task,
-                f"本轮{task_name}{'已提交1项操作' if acted else '没有可执行项目'}，"
-                f"{interval_text}后重新排入任务栈",
-            )
-            wait_until_next_cycle(interval_seconds, interval_text)
-        task["status"] = "stopped"
-        command_center_set_state(
-            task,
-            state="stopped",
-            runnable=False,
-            message=f"{task_name}已停止",
-        )
-        task_log(task, f"{task_name}已停止")
-    except Exception as exc:
-        task["status"] = "error"
-        task["error"] = str(exc)
-        command_center_set_state(
-            task,
-            state="error",
-            runnable=False,
-            message=f"{task_name}中断：{exc}",
-        )
-        task_log(task, f"{task_name}中断：{exc}")
-        mark_account_offline_if_session_invalid(sid, str(exc))
-    finally:
-        task["updatedAt"] = now_ms()
-        persist_runtime_state()
+    auto_brush_worker(task_id)
 
 
 def start_auto_domestic(sess: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     sid = str(sess.get("sessionId") or "")
     request_stop_tasks_for_session_type(sid, "auto-domestic", "自动内政配置已更新")
+    request_stop_tasks_for_session_type(sid, "auto-technology", "自动内政配置已更新")
     if not bool(config.get("enabled")):
         return {"started": False, "reason": "自动内政未启用"}
     task_id = uuid4().hex[:12]
@@ -30282,6 +32570,9 @@ def start_auto_domestic(sess: dict[str, Any], config: dict[str, Any]) -> dict[st
         "taskId": task_id, "type": "auto-domestic", "sessionId": sid,
         "status": "starting", "cycle": 0, "createdAt": now_ms(), "updatedAt": now_ms(),
         "config": {"sessionId": sid, **dict(config)}, "logs": [], "stopEvent": threading.Event(),
+        "schedulerState": "checking", "schedulerRunnable": True,
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES["domestic"],
+        "schedulerGeneralIds": [], "schedulerMessage": "等待执行共享自动内政",
     }
     thread = threading.Thread(target=auto_domestic_worker, args=(task_id,), daemon=True)
     task["thread"] = thread
@@ -30294,6 +32585,7 @@ def start_auto_domestic(sess: dict[str, Any], config: dict[str, Any]) -> dict[st
 def start_auto_technology(sess: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     sid = str(sess.get("sessionId") or "")
     request_stop_tasks_for_session_type(sid, "auto-technology", "升级科技配置已更新")
+    request_stop_tasks_for_session_type(sid, "auto-domestic", "升级科技配置已更新")
     if not bool(config.get("upgradeTechnology")):
         return {"started": False, "reason": "升级科技未启用"}
     task_id = uuid4().hex[:12]
@@ -30313,6 +32605,11 @@ def start_auto_technology(sess: dict[str, Any], config: dict[str, Any]) -> dict[
         },
         "logs": [],
         "stopEvent": threading.Event(),
+        "schedulerState": "checking",
+        "schedulerRunnable": True,
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES["domestic"],
+        "schedulerGeneralIds": [],
+        "schedulerMessage": "等待执行共享升级科技",
     }
     thread = threading.Thread(target=auto_domestic_worker, args=(task_id,), daemon=True)
     task["thread"] = thread
@@ -30509,96 +32806,9 @@ def start_apply_formations_task(sess: dict[str, Any], formations: list[dict[str,
 
 
 def raid_worker(task_id: str) -> None:
-    task = AUTO_TASKS.get(task_id)
-    if not task:
-        return
-    cfg = task.get("config") or {}
-    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
-    sess = SESSIONS.get(sid)
-    if not sess:
-        task["status"] = "error"
-        task["error"] = "账号未登录或 session 已失效，请重新登录后再执行掠夺"
-        task_log(task, task["error"])
-        return
-    claim_held = False
-    try:
-        task["status"] = "running"
-        rows = [dict(x) for x in cfg.get("rows") or []]
-        if not rows:
-            raise RuntimeError("掠夺循环任务没有可执行规则")
-        task_log(task, f"掠夺循环任务启动：共 {len(rows)} 条规则；将领回闲后继续下一轮")
-        success_count = 0
-        results: list[dict[str, Any]] = []
-        while not task["stopEvent"].is_set():
-            if not wait_for_task_account_online(task, sid, "掠夺"):
-                break
-            cycle_no = int(task.get("cycle") or 0) + 1
-            task["currentCycle"] = cycle_no
-            for idx, row in enumerate(rows, start=1):
-                if task["stopEvent"].is_set():
-                    break
-                general_ids = list(row.get("generalIds") or [])
-                if not command_center_wait_generals_idle(task, sess, general_ids, "掠夺"):
-                    break
-                if not command_center_acquire(task, general_ids):
-                    break
-                claim_held = True
-                general_names = []
-                for gid in general_ids:
-                    general = next((item for item in sess.get("generals", []) if str(item.get("id")) == str(gid) or str(item.get("idHex")) == str(gid)), None)
-                    general_names.append((general or {}).get("name") or str(gid))
-                task_log(task, f"掠夺第 {cycle_no} 轮第 {idx}/{len(rows)} 条：{','.join(general_names)} → {row.get('playerName')} 第 {row.get('fiefIndex')} 个封地")
-                result = execute_raid(sess, {**row, "confirm": "raid"}, task=task)
-                command_center_release(task, state="waiting_generals", message="掠夺已出征，等待将领回闲")
-                claim_held = False
-                item = {
-                    "cycle": cycle_no,
-                    "row": idx,
-                    "success": bool(result.get("success")),
-                    "playerName": row.get("playerName"),
-                    "fiefIndex": row.get("fiefIndex"),
-                    "target": result.get("target"),
-                    "battleText": result.get("battleText", "")[:500],
-                    "failureReason": result.get("failureReason", ""),
-                    "reportFile": result.get("reportFile", ""),
-                }
-                results.append(item)
-                task["raidResults"] = results[-100:]
-                task["lastRaidResult"] = item
-                if not result.get("success"):
-                    raise RuntimeError(f"第 {idx} 条掠夺未确认成功：{result.get('failureReason') or result.get('battleText') or '无提示'}")
-                success_count += 1
-                task["successCount"] = success_count
-                target = result.get("target") or {}
-                task_log(task, f"掠夺发送成功：{','.join(general_names)} → {row.get('playerName')}({target.get('fiefName') or target.get('name') or '封地'})")
-                record_success_action(
-                    sid,
-                    "掠夺",
-                    f"编队{idx} > 玩家{row.get('playerName')}"
-                    f"{target.get('fiefName') or target.get('name') or '封地'}",
-                    detail={"target": target, "generalIds": general_ids},
-                )
-            task["cycle"] = cycle_no
-            task["updatedAt"] = now_ms()
-            persist_runtime_state()
-        task["status"] = "stopped"
-        task["updatedAt"] = now_ms()
-        task_log(task, f"掠夺循环任务已停止：累计成功 {success_count} 次")
-        persist_runtime_state()
-    except Exception as e:
-        msg = str(e)
-        mark_account_offline_if_session_invalid(sid, msg)
-        task["status"] = "error"
-        task["error"] = msg
-        task["updatedAt"] = now_ms()
-        task_log(task, "掠夺任务失败：" + msg)
-        try:
-            persist_runtime_state()
-        except Exception:
-            pass
-    finally:
-        if claim_held:
-            command_center_release(task, state="stopped", message="掠夺任务已释放出征权")
+    """Raid now shares the account-level Python resident tick."""
+
+    auto_brush_worker(task_id)
 
 
 def start_raid_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -30648,25 +32858,7 @@ def lossless_stage_context(
     catalog: dict[str, Any] | None = None,
     lineup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    stage_id = (lineup or {}).get("stageId")
-    if stage_id is None:
-        stage_id = status.get("stageId")
-    stage = ((catalog or {}).get("stageById") or {}).get(str(stage_id)) if stage_id is not None else None
-    level = (lineup or {}).get("levelName") or (stage or {}).get("levelName")
-    stage_name = (lineup or {}).get("stageName") or (stage or {}).get("name")
-    if not stage_name and stage_id is not None:
-        suffix = int(stage_id) & 0xFF
-        if 0x11 <= suffix <= 0x15:
-            stage_name = LOSSLESS_STAGE_NAMES[suffix - 0x11]
-    return {
-        "stageId": stage_id,
-        "stageIdHex": f"{int(stage_id):04x}" if stage_id is not None else None,
-        "level": (stage or {}).get("level") or status.get("selectedLevel"),
-        "levelName": level or (
-            f"{status.get('selectedLevel')}级关卡" if status.get("selectedLevel") else ""
-        ),
-        "stageName": stage_name or "未知阶段",
-    }
+    return shared_lossless_stage_context(status, catalog, lineup)
 
 
 def prepare_lossless_target_lineup(
@@ -30889,245 +33081,9 @@ def local_daily_start_schedule(
 
 
 def lossless_worker(task_id: str) -> None:
-    task = AUTO_TASKS.get(task_id)
-    if not task:
-        return
-    cfg = task.get("config") or {}
-    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
-    sess = SESSIONS.get(sid)
-    if not sess:
-        task["status"] = "error"
-        task["error"] = "账号未登录或session已失效，请重新登录后再执行无损"
-        task_log(task, task["error"])
-        return
-    try:
-        task["status"] = "running"
-        rows = [dict(item) for item in cfg.get("rows") or []]
-        if not rows:
-            raise RuntimeError("无损常驻任务没有可执行编队")
-        task_log(
-            task,
-            f"无损常驻任务启动：共{len(rows)}条编队；每日上限{LOSSLESS_DAILY_LIMIT}次；"
-            "任务优先级：低于打矿，高于刷黄和副本",
-        )
-        catalog: dict[str, Any] | None = None
-        row_cursor = 0
-        while not task.get("stopEvent").is_set():
-            if not wait_for_task_account_online(task, sid, "无损"):
-                break
-            row = rows[row_cursor % len(rows)]
-            row_cursor += 1
-            general_ids = list(row.get("generalIds") or [])
-            command_center_set_state(
-                task,
-                "checking",
-                general_ids=general_ids,
-                runnable=True,
-                message="检查无损状态、剩余次数和冷却",
-            )
-            status = query_lossless_status(sess)
-            if status.get("parseError"):
-                raise RuntimeError(f"读取无损状态失败：{status.get('parseError')}")
-            task["lastLosslessStatus"] = status
-            task["losslessRemainingAttempts"] = status.get("remainingAttempts")
-            task["losslessUsedAttempts"] = status.get("usedAttempts")
+    """Lossless cursor and wake timing now live in the shared Python tick."""
 
-            remaining = int(status.get("remainingAttempts") or 0)
-            mode = int(status.get("mode")) if status.get("mode") is not None else -1
-            phase = lossless_status_phase(status)
-            wait_signature = f"{phase}:{remaining}:{status.get('cooldownSec')}:{status.get('stageId')}"
-            if phase == "settlement":
-                settlement = settle_lossless_result(sess)
-                if not settlement.get("success"):
-                    raise RuntimeError(
-                        f"处理待结算无损失败：{settlement.get('message') or settlement.get('parseError') or '无提示'}"
-                    )
-                task["lastLosslessSettlement"] = settlement
-                result_text = settlement.get("message") or settlement.get("textPreview") or ""
-                task_log(
-                    task,
-                    f"无损待结算结果已处理：{'失败' if settlement.get('battleFailed') else '胜利/完成'}；"
-                    f"{str(result_text)[:240]}",
-                )
-                command_center_release(
-                    task,
-                    state="checking",
-                    runnable=False,
-                    message="无损已结算，重新读取冷却与阶段",
-                )
-                persist_runtime_state()
-                task.get("stopEvent").wait(0.5)
-                continue
-            if phase == "daily_done":
-                wait_sec = seconds_until_next_local_day()
-                command_center_release(
-                    task,
-                    state="daily_done",
-                    runnable=False,
-                    message=f"今日无损次数已用完，{wait_sec // 60}分钟后进入新的一天",
-                )
-                command_center_set_state(
-                    task,
-                    "daily_done",
-                    general_ids=general_ids,
-                    runnable=False,
-                    message="今日无损次数已用完",
-                    next_check_at=now_ms() + wait_sec * 1000,
-                )
-                if task.get("lastLosslessWaitSignature") != wait_signature:
-                    task["lastLosslessWaitSignature"] = wait_signature
-                    task_log(task, f"无损今日次数已用完：5/5；保持常驻，跨过0点后自动恢复检查")
-                task.get("stopEvent").wait(min(wait_sec, 60))
-                continue
-            if phase == "cooldown":
-                cooldown_sec = max(1, int(status.get("cooldownSec") or 20))
-                command_center_release(
-                    task,
-                    state="cooldown",
-                    runnable=False,
-                    message=f"无损冷却中，剩余约{cooldown_sec}秒",
-                )
-                command_center_set_state(
-                    task,
-                    "cooldown",
-                    general_ids=general_ids,
-                    runnable=False,
-                    message=f"无损冷却中，剩余约{cooldown_sec}秒",
-                    next_check_at=now_ms() + cooldown_sec * 1000,
-                )
-                if task.get("lastLosslessWaitSignature") != wait_signature:
-                    task["lastLosslessWaitSignature"] = wait_signature
-                    task_log(
-                        task,
-                        f"无损冷却中：剩余约{cooldown_sec}秒，当日剩余{remaining}/{LOSSLESS_DAILY_LIMIT}次；"
-                        "指挥中心现在允许刷黄，其次副本",
-                    )
-                task.get("stopEvent").wait(min(max(cooldown_sec, 5), 60))
-                continue
-            if phase == "fighting":
-                command_center_release(
-                    task,
-                    state="fighting",
-                    runnable=False,
-                    message="检测到已有无损战斗，等待战斗结束",
-                )
-                if task.get("lastLosslessWaitSignature") != wait_signature:
-                    task["lastLosslessWaitSignature"] = wait_signature
-                    task_log(task, "检测到已有无损战斗，等待游戏状态变化后再处理")
-                task.get("stopEvent").wait(CLIENT_HEARTBEAT_INTERVAL_SEC)
-                continue
-            if phase != "ready":
-                raise RuntimeError(
-                    f"无损状态未知，不能出征：mode={mode}；progress={status.get('progressCode')}"
-                )
-
-            if not command_center_wait_generals_idle(task, sess, general_ids, "无损"):
-                break
-            if not command_center_acquire(task, general_ids):
-                break
-            release_state = "checking"
-            release_message = "无损本轮结束，重新检查状态"
-            try:
-                selected = prepare_military_generals(sess, general_ids, "无损", task=task)
-                if bool(row.get("fullTroops", True)):
-                    refill = execute_refill_troops(sess, general_ids, confirm="batch-refill")
-                    task["lastLosslessRefill"] = {
-                        "success": refill.get("success"),
-                        "message": refill.get("message"),
-                        "reportFile": refill.get("reportFile"),
-                    }
-                    if not refill.get("success"):
-                        raise RuntimeError(f"无损出征前补满兵失败：{refill.get('message') or '无提示'}")
-                    selected = prepare_military_generals(sess, general_ids, "无损", task=task)
-                if catalog is None or catalog.get("parseError"):
-                    catalog = query_lossless_catalog(sess)
-                    if catalog.get("parseError"):
-                        raise RuntimeError(f"读取无损十级五阶段目录失败：{catalog.get('parseError')}")
-                lineup = prepare_lossless_target_lineup(task, sess, row, status)
-                stage = lossless_stage_context(status, catalog, lineup)
-                task["lastLosslessLineup"] = {
-                    **{key: value for key, value in lineup.items() if key not in {"packets", "rawHex"}},
-                    "stage": stage,
-                }
-                task_log(
-                    task,
-                    f"无损准备出征：{stage.get('levelName')}-{stage.get('stageName')}，"
-                    f"将领={','.join(str(general.get('name') or general.get('id')) for general in selected)}，"
-                    f"当日剩余{remaining}/{LOSSLESS_DAILY_LIMIT}次",
-                )
-                dispatched = dispatch_lossless(sess, selected, task=task)
-                if not dispatched.get("success"):
-                    raise RuntimeError(
-                        f"无损出征未确认成功：{dispatched.get('failureReason') or dispatched.get('battleText') or '无提示'}"
-                    )
-                task["cycle"] = int(task.get("cycle") or 0) + 1
-                task["currentStage"] = stage
-                command_center_set_state(
-                    task,
-                    "fighting",
-                    general_ids=general_ids,
-                    runnable=False,
-                    message=f"无损{stage.get('levelName')}-{stage.get('stageName')}战斗中",
-                )
-                task_log(
-                    task,
-                    f"无损出征成功：{stage.get('levelName')}-{stage.get('stageName')}；"
-                    f"battleId={dispatched.get('battleId')}；证据={dispatched.get('reportFile')}",
-                )
-                record_success_action(
-                    sid,
-                    "无损",
-                    f"编队{((row_cursor - 1) % len(rows)) + 1} > "
-                    f"{stage.get('levelName')}-{stage.get('stageName')}战",
-                    detail={"stage": stage, "battleId": dispatched.get("battleId")},
-                )
-                result = wait_for_lossless_result(task, sess, general_ids)
-                task["lastLosslessResult"] = result
-                settlement = result.get("settlement") or {}
-                if settlement:
-                    result_text = settlement.get("message") or settlement.get("textPreview") or ""
-                    task_log(
-                        task,
-                        f"无损本轮完成并结算：{'失败' if settlement.get('battleFailed') else '胜利/完成'}；"
-                        f"{str(result_text)[:240]}",
-                    )
-                else:
-                    task_log(task, f"无损本轮战斗已结束：状态={result.get('state', {}).get('stateName')}")
-                persist_runtime_state()
-            except RuntimeError as exc:
-                message = str(exc)
-                if "不是空闲状态" not in message and "必须=闲" not in message:
-                    raise
-                release_state = "waiting_generals"
-                release_message = "将领状态刚发生变化，等待回闲后继续无损"
-                task_log(task, f"无损暂缓：{message}；任务保持运行，等待将领回闲")
-            finally:
-                command_center_release(
-                    task,
-                    state=release_state,
-                    runnable=False,
-                    message=release_message,
-                )
-            if task.get("stopEvent").is_set():
-                break
-            task.get("stopEvent").wait(0.5)
-        task["status"] = "stopped"
-        task["updatedAt"] = now_ms()
-        command_center_release(task, state="stopped", runnable=False, message="无损常驻任务已停止")
-        task_log(task, "无损常驻任务已停止")
-        persist_runtime_state()
-    except Exception as e:
-        msg = str(e)
-        mark_account_offline_if_session_invalid(sid, msg)
-        task["status"] = "error"
-        task["error"] = msg
-        task["updatedAt"] = now_ms()
-        command_center_release(task, state="error", runnable=False, message=msg)
-        task_log(task, "无损任务失败：" + msg)
-        try:
-            persist_runtime_state()
-        except Exception:
-            pass
+    auto_brush_worker(task_id)
 
 
 def start_lossless_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -31171,35 +33127,6 @@ def start_lossless_task(sess: dict[str, Any], rows: list[dict[str, Any]]) -> dic
         }
 
 
-def next_dungeon_clear_stage(sess: dict[str, Any]) -> dict[str, Any]:
-    """Read the live catalog and select the first sequential uncompleted stage."""
-    catalog = query_dungeon_catalog(sess)
-    chapters = catalog.get("chapters") or []
-    if not chapters:
-        raise RuntimeError(
-            f"读取打通副本关卡失败：{catalog.get('parseError') or '目录没有章节数据'}"
-        )
-    stage = first_uncompleted_dungeon_stage(catalog)
-    if stage is None:
-        return {
-            "completed": True,
-            "catalog": catalog,
-            "message": (
-                "所有可单人挑战的副本关卡均已通关"
-                "（各章最后一关为多人副本，不自动挑战）"
-            ),
-        }
-    stage = dict(stage)
-    stage["waitingUnlock"] = not bool(stage.get("available", True))
-    stage["catalog"] = catalog
-    if stage["waitingUnlock"]:
-        stage["message"] = (
-            f"当前首个未通关关卡为{stage['chapterName']}第{stage['stage']}关，"
-            "尚未解锁，稍后重新检查"
-        )
-    return stage
-
-
 def persist_dungeon_clear_pause(
     sess: dict[str, Any],
     task: dict[str, Any],
@@ -31231,463 +33158,9 @@ def persist_dungeon_clear_pause(
 
 
 def dungeon_worker(task_id: str) -> None:
-    task = AUTO_TASKS.get(task_id)
-    if not task:
-        return
-    cfg = task.get("config") or {}
-    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
-    sess = SESSIONS.get(sid)
-    if not sess:
-        task["status"] = "error"
-        task["error"] = "账号未登录或 session 已失效，请重新登录后再执行副本"
-        task_log(task, task["error"])
-        return
-    claim_held = False
-    try:
-        task["status"] = "running"
-        rows = [dict(x) for x in cfg.get("rows") or []]
-        dungeon_mode = normalize_dungeon_mode(cfg.get("mode"))
-        clear_mode = dungeon_mode == DUNGEON_MODE_CLEAR
-        task["dungeonMode"] = dungeon_mode
-        if not rows:
-            raise RuntimeError("副本循环任务没有可执行规则")
-        task_log(
-            task,
-            (
-                "打通副本任务启动：使用已保存的副本编队，从首个未通关关卡开始逐关推进；"
-                "每关出征前检查伤兵并按保存规则重新配兵，确认战败后立即暂停"
-                if clear_mode else
-                f"副本循环任务启动：共 {len(rows)} 条规则；每轮检查状态、体力和配兵，"
-                "出征将领全部回闲后直接开箱并继续下一轮"
-            ),
-        )
-        success_count = 0
-        results: list[dict[str, Any]] = []
+    """Dungeon cursor, daily count and wake timing use the shared Python tick."""
 
-        def pause_clear_after_defeat(row: dict[str, Any], result: dict[str, Any]) -> None:
-            nonlocal claim_held
-            chapter_name = str(row.get("chapterName") or f"第{int(row.get('chapter') or 0) + 1}章")
-            stage_label = f"{chapter_name}第{row.get('stage')}关"
-            battle_text = next(iter(_dungeon_battle_texts(result)), "服务器明确返回战败")
-            reason = f"打通副本暂停：{stage_label}战败；{battle_text[:240]}"
-            task["defeatConfirmed"] = True
-            task["lastDungeonDefeat"] = {
-                "stage": {
-                    "chapter": row.get("chapter"),
-                    "chapterName": chapter_name,
-                    "stage": row.get("stage"),
-                },
-                "message": battle_text[:500],
-                "at": now_ms(),
-            }
-            task["stopReason"] = reason
-            task["status"] = "stopped"
-            try:
-                task["dungeonClearPause"] = persist_dungeon_clear_pause(
-                    sess, task, row, reason,
-                )
-            except Exception as exc:
-                task["dungeonClearPauseError"] = str(exc)
-            command_center_release(
-                task,
-                state="stopped",
-                runnable=False,
-                message="打通副本因战败暂停",
-            )
-            claim_held = False
-            task_log(task, reason)
-            persist_runtime_state()
-
-        def confirm_clear_stage(row: dict[str, Any], result: dict[str, Any]) -> bool:
-            if result.get("stageCompleted") is not None:
-                return bool(result.get("stageCompleted"))
-            confirmed: bool | None = None
-            for attempt in range(3):
-                catalog = query_dungeon_catalog(sess)
-                task["lastDungeonClearCatalog"] = {
-                    key: value
-                    for key, value in catalog.items()
-                    if key not in {"packets", "rawHex"}
-                }
-                confirmed = dungeon_stage_completed_in_catalog(catalog, row)
-                if confirmed is True:
-                    break
-                if attempt < 2:
-                    time.sleep(0.5)
-            result["stageCompleted"] = confirmed
-            return confirmed is True
-
-        while not task["stopEvent"].is_set():
-            if not wait_for_task_account_online(task, sid, "副本"):
-                break
-            active_rows = rows
-            if clear_mode:
-                next_stage = next_dungeon_clear_stage(sess)
-                task["lastDungeonClearSelection"] = {
-                    key: value
-                    for key, value in next_stage.items()
-                    if key != "catalog"
-                }
-                if next_stage.get("completed"):
-                    task["status"] = "finished"
-                    task["completed"] = True
-                    task["stopReason"] = "副本已全部打通"
-                    command_center_release(
-                        task,
-                        state="stopped",
-                        runnable=False,
-                        message="副本已全部打通",
-                    )
-                    task_log(task, "打通副本任务完成：副本目录中的所有关卡均已通关")
-                    persist_runtime_state()
-                    return
-                if next_stage.get("waitingUnlock"):
-                    wait_sec = 60
-                    command_center_set_state(
-                        task,
-                        "cooldown",
-                        general_ids=list(rows[0].get("generalIds") or []),
-                        runnable=False,
-                        message=next_stage.get("message") or "等待下一副本关卡解锁",
-                        next_check_at=now_ms() + wait_sec * 1000,
-                    )
-                    if task.get("lastDungeonClearUnlockLog") != next_stage.get("message"):
-                        task["lastDungeonClearUnlockLog"] = next_stage.get("message")
-                        task_log(task, next_stage.get("message") or "等待下一副本关卡解锁")
-                    task["stopEvent"].wait(wait_sec)
-                    continue
-                active_rows = [{
-                    **rows[0],
-                    "chapter": next_stage.get("chapter"),
-                    "chapterName": next_stage.get("chapterName"),
-                    "stage": next_stage.get("stage"),
-                    "stageCode": next_stage.get("stageCode"),
-                    "clearStage": True,
-                }]
-                task["currentDungeonStage"] = {
-                    "chapter": next_stage.get("chapter"),
-                    "chapterName": next_stage.get("chapterName"),
-                    "stage": next_stage.get("stage"),
-                    "stageCode": next_stage.get("stageCode"),
-                }
-            cycle_no = int(task.get("cycle", 0)) + 1
-            task["currentCycle"] = cycle_no
-            task_log(
-                task,
-                (
-                    f"打通副本第 {cycle_no} 次检查：准备{active_rows[0].get('chapterName')}"
-                    f"第{active_rows[0].get('stage')}关"
-                    if clear_mode else
-                    f"副本第 {cycle_no} 轮开始：将依次执行 {len(active_rows)} 条规则"
-                ),
-            )
-            for idx, row in enumerate(active_rows, start=1):
-                if task["stopEvent"].is_set():
-                    task["status"] = "stopped"
-                    task_log(task, "副本循环任务已停止，不再发起下一场")
-                    persist_runtime_state()
-                    return
-                if not wait_for_task_account_online(task, sid, "副本"):
-                    task["status"] = "stopped"
-                    task_log(task, "副本循环任务已停止，不再执行本轮")
-                    return
-                general_names = []
-                for gid in row.get("generalIds") or []:
-                    g = next((x for x in sess.get("generals", []) if str(x.get("id")) == str(gid) or str(x.get("idHex")) == str(gid)), None)
-                    general_names.append((g or {}).get("name") or str(gid))
-                chapter_name = str(row.get("chapterName") or f"第{int(row.get('chapter') or 0) + 1}章")
-                task["currentRow"] = idx
-                # 循环模式也记录“当前正在打的关卡”，军情页和任务页共用。
-                task["currentDungeonStage"] = {
-                    "chapter": row.get("chapter"),
-                    "chapterName": chapter_name,
-                    "stage": row.get("stage"),
-                    "stageCode": row.get("stageCode"),
-                }
-                task_log(
-                    task,
-                    f"副本第 {cycle_no} 轮第 {idx}/{len(active_rows)} 条："
-                    f"{','.join(general_names) or ','.join(row.get('generalIds') or [])} → "
-                    f"{chapter_name}第{row.get('stage')}关，开箱={row.get('chestName')}",
-                )
-                if not command_center_wait_generals_idle(
-                    task,
-                    sess,
-                    list(row.get("generalIds") or []),
-                    "副本",
-                ):
-                    task["status"] = "stopped"
-                    task_log(task, "副本循环任务已停止，不再等待出征将领")
-                    return
-                if not command_center_acquire(task, list(row.get("generalIds") or [])):
-                    task["status"] = "stopped"
-                    task_log(task, "副本循环任务未取得出征权，已停止")
-                    return
-                claim_held = True
-                while True:
-                    try:
-                        if clear_mode:
-                            task_log(
-                                task,
-                                "打通副本出征前：检查伤兵并先治疗，随后按已保存副本编队重新配兵",
-                            )
-                        result = execute_dungeon(
-                            sess,
-                            {**row, "confirm": "dungeon"},
-                            task=task,
-                        )
-                        break
-                    except RuntimeError as preflight_error:
-                        error_text = str(preflight_error)
-                        temporarily_busy = (
-                            "副本出征前检查未通过" in error_text
-                            and "将领当前不是空闲状态" in error_text
-                        )
-                        if not temporarily_busy:
-                            raise
-                        command_center_release(
-                            task,
-                            state="waiting_generals",
-                            runnable=False,
-                            message="副本将领仍在战斗，等待回闲后自动重试",
-                        )
-                        claim_held = False
-                        task_log(task, "副本将领状态暂未回闲，已交还出征权并等待自动重试")
-                        if not command_center_wait_generals_idle(
-                            task,
-                            sess,
-                            list(row.get("generalIds") or []),
-                            "副本",
-                        ):
-                            task["status"] = "stopped"
-                            return
-                        if not command_center_acquire(
-                            task,
-                            list(row.get("generalIds") or []),
-                        ):
-                            task["status"] = "stopped"
-                            return
-                        claim_held = True
-                if clear_mode and dungeon_battle_defeat_confirmed(result):
-                    pause_clear_after_defeat(row, result)
-                    return
-                pending_recovery: dict[str, Any] | None = None
-                launch_error = result.get("failureReason") or result.get("launchText") or ""
-                if (
-                    not result.get("success")
-                    and is_dungeon_pending_chest_error(launch_error)
-                    and dungeon_generals_are_idle(sess, row.get("generalIds") or [])
-                ):
-                    task_log(
-                        task,
-                        f"检测到上一场副本已结束但尚未开箱：出征将领均为闲，"
-                        f"先补开{row.get('chestName')}箱，再重试本轮",
-                    )
-                    pending_recovery = open_dungeon_chest(sess, row.get("chest"))
-                    task["lastPendingDungeonChestRecovery"] = pending_recovery
-                    if not pending_recovery.get("success"):
-                        recovery_reason = (
-                            pending_recovery.get("reason")
-                            or str(pending_recovery.get("textPreview") or "")[:160]
-                            or "游戏服未确认开箱成功"
-                        )
-                        raise RuntimeError(
-                            f"副本个人状态非空闲，且补开待领取宝箱失败：{recovery_reason}"
-                        )
-                    success_count += 1
-                    task["successCount"] = success_count
-                    recovered_daily_count = record_daily_dungeon_success(sess)
-                    task["dailyDungeonCount"] = recovered_daily_count
-                    results.append({
-                        "cycle": cycle_no,
-                        "row": idx,
-                        "success": True,
-                        "recoveredPendingChest": True,
-                        "chapter": None,
-                        "chapterName": "上次未结算副本",
-                        "stage": None,
-                        "chestName": row.get("chestName"),
-                        "launchText": result.get("launchText", "")[:500],
-                        "failureReason": launch_error,
-                        "generalWaitSummary": {},
-                        "chestResult": {
-                            k: pending_recovery.get(k)
-                            for k in ["success", "skipped", "reason", "textPreview"]
-                        },
-                        "reportFile": result.get("reportFile", ""),
-                    })
-                    task_log(
-                        task,
-                        f"待领取副本{row.get('chestName')}箱已补开；累计完成={success_count}，"
-                        f"今日副本次数={recovered_daily_count}；现在重试本轮出征",
-                    )
-                    if task["stopEvent"].is_set():
-                        task["status"] = "stopped"
-                        task_log(task, "待领取宝箱已补开，副本循环任务现已停止")
-                        persist_runtime_state()
-                        return
-                    task["stopEvent"].wait(0.5)
-                    while True:
-                        try:
-                            result = execute_dungeon(
-                                sess,
-                                {**row, "confirm": "dungeon"},
-                                task=task,
-                            )
-                            break
-                        except RuntimeError as preflight_error:
-                            error_text = str(preflight_error)
-                            temporarily_busy = (
-                                "副本出征前检查未通过" in error_text
-                                and "将领当前不是空闲状态" in error_text
-                            )
-                            if not temporarily_busy:
-                                raise
-                            command_center_release(
-                                task,
-                                state="waiting_generals",
-                                runnable=False,
-                                message="补开宝箱后将领仍忙，等待回闲后自动重试",
-                            )
-                            claim_held = False
-                            if not command_center_wait_generals_idle(
-                                task,
-                                sess,
-                                list(row.get("generalIds") or []),
-                                "副本",
-                            ):
-                                task["status"] = "stopped"
-                                return
-                            if not command_center_acquire(
-                                task,
-                                list(row.get("generalIds") or []),
-                            ):
-                                task["status"] = "stopped"
-                                return
-                            claim_held = True
-                chest_result = result.get("chestResult") or {}
-                general_wait_summary = result.get("generalWaitSummary") or {}
-                completed = bool(result.get("success")) and bool(chest_result.get("success"))
-                if clear_mode and dungeon_battle_defeat_confirmed(result):
-                    pause_clear_after_defeat(row, result)
-                    return
-                results.append({
-                    "cycle": cycle_no,
-                    "row": idx,
-                    "success": completed,
-                    "launchSuccess": bool(result.get("success")),
-                    "chapter": row.get("chapter"),
-                    "chapterName": chapter_name,
-                    "stage": row.get("stage"),
-                    "chestName": row.get("chestName"),
-                    "launchText": result.get("launchText", "")[:500],
-                    "failureReason": result.get("failureReason", ""),
-                    "generalWaitSummary": general_wait_summary,
-                    "chestResult": {k: chest_result.get(k) for k in ["success", "skipped", "reason", "textPreview"]},
-                    "defeatConfirmed": bool(result.get("defeatConfirmed")),
-                    "stageCompleted": result.get("stageCompleted"),
-                    "pendingChestRecovery": pending_recovery,
-                    "reportFile": result.get("reportFile", ""),
-                })
-                results = results[-30:]
-                task["dungeonResults"] = results
-                task["lastDungeonResult"] = results[-1]
-                if clear_mode and result.get("success"):
-                    clear_stage_completed = confirm_clear_stage(row, result)
-                    results[-1]["stageCompleted"] = result.get("stageCompleted")
-                    results[-1]["success"] = bool(completed and clear_stage_completed)
-                    task["lastDungeonResult"] = results[-1]
-                    if not clear_stage_completed:
-                        raise RuntimeError(
-                            f"{chapter_name}第{row.get('stage')}关战斗结束，但目录未确认通关；"
-                            "打通副本已暂停，避免重复出征"
-                        )
-                if not result.get("success"):
-                    raise RuntimeError(
-                        f"第 {cycle_no} 轮第 {idx} 条副本未确认启动成功："
-                        f"{result.get('failureReason') or result.get('launchText') or '无提示'}"
-                    )
-                if general_wait_summary and not general_wait_summary.get("finished"):
-                    reason = general_wait_summary.get("reason") or "将领状态未回到闲"
-                    raise RuntimeError(f"第 {cycle_no} 轮第 {idx} 条副本异常：{reason}，已中断循环")
-                if not chest_result.get("success"):
-                    chest_reason = (
-                        chest_result.get("reason")
-                        or str(chest_result.get("textPreview") or "")[:160]
-                        or "游戏服未确认开箱成功"
-                    )
-                    raise RuntimeError(f"第 {cycle_no} 轮第 {idx} 条副本开箱失败：{chest_reason}；已中断循环")
-                success_count += 1
-                task["successCount"] = success_count
-                if clear_mode:
-                    task["clearCompletedCount"] = success_count
-                    task["lastClearedDungeonStage"] = {
-                        "chapter": row.get("chapter"),
-                        "chapterName": chapter_name,
-                        "stage": row.get("stage"),
-                    }
-                daily_after = record_daily_dungeon_success(sess)
-                task["dailyDungeonCount"] = daily_after
-                task_log(
-                    task,
-                    f"{'打通副本' if clear_mode else '副本'}第 {cycle_no} 轮第 {idx} 条完成："
-                    f"{','.join(general_names)} → {chapter_name}第{row.get('stage')}关，"
-                    f"{row.get('chestName')}箱已开启；累计完成={success_count}，今日副本次数={daily_after}；"
-                    f"证据={result.get('reportFile')}",
-                )
-                task_log(task, f"副本开箱结果：{str(chest_result.get('textPreview') or '')[:160]}")
-                persist_runtime_state()
-                command_center_release(
-                    task,
-                    state="checking",
-                    runnable=False,
-                    message="副本本轮已完成，交还出征权",
-                )
-                claim_held = False
-                if task["stopEvent"].is_set():
-                    task["status"] = "stopped"
-                    task_log(task, "当前副本已完成并开箱，副本循环任务现已停止")
-                    persist_runtime_state()
-                    return
-                task["stopEvent"].wait(0.5)
-                if clear_mode:
-                    break
-            task["cycle"] = cycle_no
-            task["updatedAt"] = now_ms()
-            task_log(
-                task,
-                (
-                    f"打通副本第 {cycle_no} 关完成；下一轮重新读取首个未通关关卡"
-                    if clear_mode else
-                    f"副本第 {cycle_no} 轮完成：共完成 {len(active_rows)} 条；"
-                    "返回第 1 步重新检查将领状态、体力和配兵"
-                ),
-            )
-            persist_runtime_state()
-            task["stopEvent"].wait(0.5)
-        task["status"] = "stopped"
-        task["updatedAt"] = now_ms()
-        task_log(task, "副本循环任务已停止")
-        persist_runtime_state()
-    except Exception as e:
-        msg = str(e)
-        mark_account_offline_if_session_invalid(sid, msg)
-        task["status"] = "error"
-        task["error"] = msg
-        task["updatedAt"] = now_ms()
-        task_log(task, "副本任务失败：" + msg)
-        try:
-            persist_runtime_state()
-        except Exception:
-            pass
-    finally:
-        if claim_held:
-            command_center_release(
-                task,
-                state="error" if task.get("status") == "error" else "stopped",
-                runnable=False,
-                message=task.get("error") or "副本任务已交还出征权",
-            )
+    auto_brush_worker(task_id)
 
 
 def start_dungeon_task(
@@ -32319,6 +33792,18 @@ def brush_map_preparation_worker(
     while not stop_event.is_set():
         if SESSIONS.get(sid) is not sess:
             return
+        cloud_policy = legacy_map_prefetch_policy(sid)
+        if not cloud_policy["legacyLocalMapPrefetchAllowed"]:
+            task["mapPreparation"] = {
+                **legacy_map_prefetch_pause_view(
+                    cloud_policy,
+                    task_name="刷黄地图准备",
+                ),
+                "task": "brushYellow",
+            }
+            if stop_event.wait(MAP_PREPARATION_IDLE_PAUSE_SEC):
+                return
+            continue
         rule_index = cursor % len(brush_rules)
         cursor = (rule_index + 1) % len(brush_rules)
         rule = brush_rules[rule_index]
@@ -32486,959 +33971,650 @@ def process_brush_inflight(
     return True
 
 
-def auto_brush_worker(task_id: str) -> None:
-    task = AUTO_TASKS[task_id]
-    cfg = task["config"]
-    sess = SESSIONS.get(cfg["sessionId"])
-    if not sess:
-        state_machine_stop(task, "账号未登录或 session 已失效，请重新登录")
-        return
-    database_resolve_important_notices_by_prefix(
-        account_storage_key(sess=sess),
-        "task:brushYellow:troopShortage:",
+def claim_shared_resident_wake_owner(session_id: str, task_id: str) -> bool:
+    """Elect exactly one desktop wake owner for an account's shared tick.
+
+    Ownership is a lease released explicitly by the worker's hand-off/finally
+    path.  Task status alone cannot revoke it: during a network pause the row
+    is marked ``stopped`` before an already-sent pending operation finishes.
+    Allowing another stopped worker to steal at that point caused a thundering
+    herd of identical recovery ticks and cross-task notices.
+    """
+
+    sid = str(session_id or "")
+    tid = str(task_id or "")
+    if not sid or not tid:
+        return False
+    with SHARED_RESIDENT_WAKE_OWNER_LOCK:
+        current = str(SHARED_RESIDENT_WAKE_OWNERS.get(sid) or "")
+        if current == tid:
+            return True
+        if current:
+            return False
+        SHARED_RESIDENT_WAKE_OWNERS[sid] = tid
+        return True
+
+
+def release_shared_resident_wake_owner(session_id: str, task_id: str) -> None:
+    sid = str(session_id or "")
+    tid = str(task_id or "")
+    with SHARED_RESIDENT_WAKE_OWNER_LOCK:
+        if str(SHARED_RESIDENT_WAKE_OWNERS.get(sid) or "") == tid:
+            SHARED_RESIDENT_WAKE_OWNERS.pop(sid, None)
+
+
+def shared_resident_result_task(
+    session_id: str,
+    feature: str,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return only the active row that owns ``feature``.
+
+    ``fallback`` is retained for source/API compatibility with older callers,
+    but is intentionally ignored.  A shared tick is account-scoped and can
+    finish after its display row has been stopped/replaced.  Falling back to
+    the wake-owner row silently changes feature identity and creates false
+    task errors/notices (the exact failure seen in the role提示 page).
+    """
+
+    key = "brushYellow" if str(feature or "") == "brush" else str(feature or "")
+    sid = str(session_id or "")
+    with TASK_LOCK:
+        candidates = [
+            task
+            for task in AUTO_TASKS.values()
+            if str(
+                task.get("sessionId")
+                or (task.get("config") or {}).get("sessionId")
+                or ""
+            ) == sid
+            and str(task.get("status") or "") in ACTIVE_TASK_STATUSES
+            and resident_task_key(task) == key
+            and not bool(
+                task.get("stopEvent") is not None
+                and task["stopEvent"].is_set()
+            )
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: int(item.get("createdAt") or 0),
     )
-    resolve_brush_waiting_state_notice(sess)
-    claim_held = False
-    active_target_reservation: dict[str, Any] | None = None
-    scan_state: dict[str, Any] = {}
-    try:
-        require_brush_level(sess)
-        task["status"] = "running"
-        if not wait_for_task_account_online(
-            task,
-            str(cfg.get("sessionId") or ""),
-            "刷黄",
+
+
+def sync_shared_resident_feature_notice(
+    session_id: str,
+    feature: str,
+    result: dict[str, Any],
+) -> None:
+    """Keep retryable warnings active and resolve them on verified recovery."""
+
+    normalized = str(feature or "")
+    if normalized == "brushYellow":
+        normalized = "brush"
+    state = str(result.get("state") or "")
+    message = str(result.get("message") or "").strip()
+    account_key = account_storage_key(session_id=str(session_id or ""))
+    if normalized == "brush":
+        main_notice_key = "task:brushYellow"
+        if bool(result.get("requiresAttention")) or state in {
+            "blocked", "uncertain", "timeout",
+        }:
+            database_upsert_important_notice(
+                account_key,
+                main_notice_key,
+                severity="error",
+                title="刷黄已中止",
+                message=message or "刷黄恢复需要处理",
+                source="automation",
+            )
+        elif state in {
+            "completed", "dispatched", "fighting", "reconciled",
+            "recovered-ready", "retry", "settled", "waiting",
+            "waiting-generals", "waiting-return",
+        }:
+            database_resolve_important_notice(account_key, main_notice_key)
+        error_code = str(result.get("errorCode") or "")
+        server_message = str(result.get("serverMessage") or message)
+        try:
+            source_row_index = max(
+                0, int(result.get("sourceRowIndex") or 0)
+            )
+        except (TypeError, ValueError):
+            source_row_index = 0
+        notice_key = brush_high_level_troops_notice_key(source_row_index)
+        if (
+            error_code == "BRUSH_DISPATCH_REJECTED"
+            and "每个将领至少需配1000兵力" in server_message
         ):
-            task["status"] = "stopped"
+            display_row_number = source_row_index + 1
+            database_upsert_important_notice(
+                account_key,
+                notice_key,
+                severity="warning",
+                title=f"刷黄编队{display_row_number}配兵不足",
+                message=(
+                    f"刷黄编队{display_row_number}未满足每个将领配兵达到1000"
+                ),
+                source="shared-brush-high-level-troops",
+            )
             return
-        brush_rules = [
-            dict(rule)
-            for rule in cfg.get("brush", {}).get("rules") or []
-            if isinstance(rule, dict) and rule.get("enabled", True)
-        ]
-        if not brush_rules:
-            legacy_general_id = str(cfg.get("brush", {}).get("generalId") or "")
-            brush_rules = [{
-                **dict(cfg.get("brush") or {}),
-                "generalIds": [legacy_general_id] if legacy_general_id else [],
-                "generalId": legacy_general_id,
-                "formations": list(cfg.get("formations") or []),
-            }]
-        configured_general_ids = list(dict.fromkeys(
-            str(general_id)
-            for rule in brush_rules
-            for general_id in rule.get("generalIds") or []
-            if str(general_id or "").strip()
-        ))
-        start_bandit_map_coordinator()
+        target = result.get("target")
+        target = target if isinstance(target, dict) else {}
+        try:
+            target_level = int(target.get("level") or 0)
+        except (TypeError, ValueError):
+            target_level = 0
+        selected_levels = result.get("selectedLevels")
+        selected_levels = (
+            list(selected_levels) if isinstance(selected_levels, list) else []
+        )
+        selected_levels_are_high = bool(selected_levels) and all(
+            str(level) in {"9", "10"} for level in selected_levels
+        )
+        if (
+            state == "dispatched"
+            and bool(result.get("success"))
+            and (target_level in {9, 10} or selected_levels_are_high)
+        ):
+            database_resolve_important_notice(account_key, notice_key)
+        return
+    if normalized not in {"dungeon", "lossless"}:
+        return
+    notice_key = f"task:{normalized}"
+    if state == "waiting-resources":
+        label = "副本" if normalized == "dungeon" else "无损"
+        database_upsert_important_notice(
+            account_key,
+            notice_key,
+            severity="warning",
+            title=f"{label}等待资源",
+            message=message or f"{label}资源暂时不足，等待下一轮重新检查",
+            source="automation",
+        )
+        return
+    if bool(result.get("requiresAttention")) or state in {
+        "blocked", "uncertain", "timeout",
+    }:
+        return
+    healthy_states = {
+        "all-clear",
+        "chest-opened",
+        "completed",
+        "configured-daily-limit",
+        "cooldown",
+        "daily_done",
+        "dispatched",
+        "fighting",
+        "reconciled",
+        "recovered-ready",
+        "settled",
+        "settlement-recovered",
+        "waiting-generals",
+        "waiting-unlock",
+    }
+    if state in healthy_states:
+        database_resolve_important_notice(account_key, notice_key)
+
+
+def auto_brush_worker(task_id: str) -> None:
+    """One-account wake loop; shared Python owns every resident decision."""
+
+    task = AUTO_TASKS.get(task_id)
+    if not task:
+        return
+    cfg = task.get("config") or {}
+    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
+    sess = SESSIONS.get(sid)
+    if not sess:
+        task["status"] = "error"
+        task["error"] = "账号未登录或 session 已失效"
+        task_log(task, task["error"])
+        return
+    owns_wake = False
+    owner_start_logged = False
+    try:
+        # Starting one feature row (for example the always-on inventory
+        # helper restored at login) must not claim that the user's complete
+        # saved resident plan has started. Only resume_saved_resident_tasks()
+        # owns that account-level intent flag.
+        sync_shared_resident_automation(sess, started=True)
+        task["status"] = "running"
         task_log(
             task,
-            f"自动刷黄启动：每日 {cfg.get('startHour', 0)} 点开始，上限 {cfg['dailyLimit']} 次，"
-            f"启用 {len(brush_rules)} 条编队，"
-            f"中心坐标 ({cfg['brush']['startX']},{cfg['brush']['startY']})，筛选 {cfg['brush']['compositionCode']}，"
-            f"目标 {cfg['brush']['targetKind']} "
-            f"{brush_levels_text(cfg['brush'].get('levels'), cfg['brush'].get('level'))}级，"
-            f"活血丹={'开启' if cfg.get('autoEnergy') else '关闭'}，"
-            f"粮转铜={'开启' if cfg.get('foodToCopper') else '关闭'}，"
-            f"清邮件={'开启' if cfg.get('cleanMail') else '关闭'}，"
-            f"清宝库={'开启' if cfg.get('cleanInventory') else '关闭'}",
+            "已接入账号共享常驻调度；同一账号只保留一个唤醒线程",
         )
-        task["brushInFlight"] = {}
-        task["brushPreparedRules"] = {}
-        task["dispatchSequence"] = int(task.get("cycle") or 0)
-        while not task["stopEvent"].is_set():
-            if not process_brush_inflight(task, sess):
-                return
-            task_done = int(task.get("cycle", 0))
-            daily_used = get_daily_brush_count(sess)
-            task["dailyBrushCount"] = daily_used
-            limit = int(cfg["dailyLimit"])
-            start_hour = int(cfg.get("startHour") or 0)
-            start_wait_sec, start_at = local_daily_start_schedule(start_hour)
-            if start_wait_sec > 0:
-                task["schedulerNextCheckAt"] = start_at
-                command_center_set_state(
-                    task,
-                    "scheduled",
-                    general_ids=configured_general_ids,
-                    runnable=False,
-                    message=f"今日将在 {start_hour} 点开始刷黄",
-                    next_check_at=start_at,
-                )
-                task_log(task, f"尚未到今日开始时间，等待至 {local_time_text(start_at)}")
-                if task["stopEvent"].wait(float(start_wait_sec)):
+        while True:
+            stop_requested = bool(task["stopEvent"].is_set())
+            pending = _shared_resident_pending(sid)
+            if stop_requested and not pending:
+                break
+            if not claim_shared_resident_wake_owner(sid, task_id):
+                if stop_requested:
                     break
-                task["schedulerNextCheckAt"] = None
+                task["stopEvent"].wait(0.5)
                 continue
-            if daily_used >= limit and task.get("brushInFlight"):
-                command_center_set_state(
-                    task,
-                    "fighting",
-                    general_ids=configured_general_ids,
-                    runnable=False,
-                    message="今日刷黄已达上限，等待在途编队归队并完成维护",
-                )
-                with GENERAL_STATE_CONDITION:
-                    GENERAL_STATE_CONDITION.wait(timeout=2.0)
-                continue
-            if daily_used >= limit:
-                next_wait_sec, next_start_at = local_daily_start_schedule(start_hour, next_day=True)
-                task["schedulerNextCheckAt"] = next_start_at
-                command_center_set_state(
-                    task,
-                    "daily_done",
-                    general_ids=configured_general_ids,
-                    runnable=False,
-                    message=f"今日已达上限，次日 {start_hour} 点继续",
-                    next_check_at=next_start_at,
-                )
+            owns_wake = True
+            if not owner_start_logged:
+                owner_start_logged = True
                 task_log(
                     task,
-                    f"今日刷黄次数已达上限 {daily_used}/{limit}，常驻任务保留，"
-                    f"将在 {local_time_text(next_start_at)} 自动继续",
+                    "当前任务线程已成为该账号唯一共享 tick 唤醒者",
                 )
-                if task["stopEvent"].wait(float(next_wait_sec)):
-                    break
-                task["schedulerNextCheckAt"] = None
-                continue
-            task["schedulerNextCheckAt"] = None
-            if not wait_for_task_account_online(
-                task,
-                str(cfg.get("sessionId") or ""),
-                "刷黄",
+            # If this display task was replaced while other resident tasks are
+            # still active, hand ownership over immediately. If it was the
+            # final task, keep draining an already-sent pending action first.
+            active_keys = _desktop_active_shared_resident_keys(sid)
+            if stop_requested and active_keys:
+                release_shared_resident_wake_owner(sid, task_id)
+                owns_wake = False
+                break
+            if not stop_requested and not wait_for_task_account_online(
+                task, sid, "共享常驻任务"
             ):
-                task["status"] = "stopped"
-                return
-            task_log(task, f"状态机检查通过：账号=开启，今日刷黄次数={daily_used}/{limit}，本任务完成={task_done}次")
-            cycle_no = int(task.get("dispatchSequence") or 0) + 1
-            start_rule_index = int(task.get("ruleCursor") or 0) % len(brush_rules)
-            rule_index = select_dispatchable_brush_rule_index(
-                task,
-                sess,
-                brush_rules,
-                start_rule_index,
-            )
-            if rule_index is None:
-                current_ms = now_ms()
-                task.setdefault("brushWaitingSince", current_ms)
-                waiting_on_generals, wait_general_ids, state_summary = (
-                    brush_cached_general_wait_state(sess, brush_rules)
-                )
-                candidates_ready = (
-                    str((task.get("mapPreparation") or {}).get("state") or "")
-                    == "ready"
-                )
-                if (
-                    waiting_on_generals
-                    and current_ms
-                    >= int(task.get("nextIdleGeneralFullRefreshAt") or 0)
-                ):
-                    task["nextIdleGeneralFullRefreshAt"] = (
-                        current_ms
-                        + BRUSH_IDLE_FULL_REFRESH_INTERVAL_SEC * 1000
-                    )
-                    try:
-                        refresh_generals(sess)
-                        (
-                            waiting_after_refresh,
-                            wait_general_ids,
-                            refreshed_summary,
-                        ) = brush_cached_general_wait_state(sess, brush_rules)
-                        signature = (
-                            f"{int(waiting_after_refresh)}:{refreshed_summary}"
-                        )
-                        if signature != task.get("_lastBrushWaitStateSignature"):
-                            task["_lastBrushWaitStateSignature"] = signature
-                            task_log(
-                                task,
-                                "刷黄等待期间已完整复查将领状态："
-                                f"{refreshed_summary}",
-                            )
-                        # 完整同步可能已经把心跳未覆盖的旧“战/返”状态修正为
-                        # “闲”，立即重新选择编队，不再无提示地等待下一轮。
-                        continue
-                    except Exception as exc:
-                        task_log(
-                            task,
-                            f"刷黄等待期间完整复查将领状态失败，"
-                            f"{BRUSH_IDLE_FULL_REFRESH_INTERVAL_SEC}秒后重试：{exc}",
-                        )
-                waiting_ms = current_ms - int(
-                    task.get("brushWaitingSince") or current_ms
-                )
-                if (
-                    waiting_on_generals
-                    and candidates_ready
-                    and waiting_ms >= BRUSH_WAITING_NOTICE_SEC * 1000
-                ):
-                    notice_message = (
-                        "已找到符合条件的山贼，但刷黄编队连续"
-                        f"{max(1, waiting_ms // 60_000)}分钟未能出征；"
-                        f"当前将领状态：{state_summary}。"
-                        "辅助会每30秒完整同步角色状态并自动恢复。"
-                    )
-                    if (
-                        not task.get("_brushWaitNoticeActive")
-                        or notice_message != task.get("_brushWaitNoticeMessage")
-                    ):
-                        database_upsert_important_notice(
-                            account_storage_key(sess=sess),
-                            BRUSH_WAITING_STATE_NOTICE_KEY,
-                            severity="warning",
-                            title="刷黄长时间未出征",
-                            message=notice_message,
-                            source="brush-waiting-state",
-                        )
-                        task["_brushWaitNoticeActive"] = True
-                        task["_brushWaitNoticeMessage"] = notice_message
-                command_center_set_state(
-                    task,
-                    "waiting_generals" if waiting_on_generals else "waiting_target",
-                    general_ids=wait_general_ids or configured_general_ids,
-                    runnable=False,
-                    message=(
-                        f"等待刷黄将领回闲：{state_summary}"
-                        if waiting_on_generals
-                        else "刷黄编队已空闲，等待符合条件的候选目标"
-                    ),
-                )
-                with COMMAND_CENTER_CONDITION:
-                    COMMAND_CENTER_CONDITION.wait(timeout=2.0)
-                continue
-            task.pop("brushWaitingSince", None)
-            task.pop("nextIdleGeneralFullRefreshAt", None)
-            task.pop("_lastBrushWaitStateSignature", None)
-            if task.pop("_brushWaitNoticeActive", False):
-                resolve_brush_waiting_state_notice(sess)
-                task.pop("_brushWaitNoticeMessage", None)
-            task["ruleCursor"] = rule_index + 1
-            rule = brush_rules[rule_index]
-            rule_was_prepared = bool(
-                task.get("brushPreparedRules", {}).get(str(rule_index))
-            )
-            general_ids = list(dict.fromkeys(
-                str(general_id)
-                for general_id in rule.get("generalIds") or []
-                if str(general_id or "").strip()
-            ))
-            formations = [dict(formation) for formation in rule.get("formations") or []]
-            formation_by_general = {
-                str(formation.get("generalId")): formation
-                for formation in formations
-            }
-            if not general_ids or any(general_id not in formation_by_general for general_id in general_ids):
-                state_machine_stop(task, f"第 {rule_index + 1} 条刷黄编队缺少将领或配兵规则，已停止")
-                return
-            search_opts = brush_search_options(cfg, rule, sess)
-            if not wait_for_task_account_online(
-                task,
-                str(cfg.get("sessionId") or ""),
-                "刷黄",
-            ):
-                task["status"] = "stopped"
-                return
-            cached_generals = {
-                str(general.get("id") or general.get("idHex") or ""): general
-                for general in sess.get("generals") or []
-            }
-            general_text = "、".join(
-                f"{(cached_generals.get(general_id) or {}).get('name') or general_id}"
-                f"({general_id})"
-                for general_id in general_ids
-            )
-            if not command_center_acquire(task, general_ids):
-                task["status"] = "stopped"
-                task_log(task, "刷黄未取得指挥中心出征权，已停止")
-                return
-            claim_held = True
-            # 先锁定本编队的出征权，再完成治疗和配兵。目标只在编队准备好
-            # 之后选择，避免治疗/配兵期间绑定一个可能已经变化的目标。
-            if not command_center_wait_generals_idle(
-                task,
-                sess,
-                general_ids,
-                "刷黄",
-            ):
-                task["status"] = "stopped"
-                return
-            if task.get("config", {}).get("healWounded") and not rule_was_prepared:
-                healed_fiefs: set[str] = set()
-                for general_id in general_ids:
-                    formation = formation_by_general[general_id]
-                    current_general = next((
-                        general
-                        for general in sess.get("generals") or []
-                        if str(general.get("id")) == general_id
-                        or str(general.get("idHex")) == general_id
-                    ), {})
-                    fief_id = str(
-                        formation.get("fiefId")
-                        or formation.get("placeID")
-                        or current_general.get("fiefId")
-                        or current_general.get("placeID")
-                        or ""
-                    )
-                    heal_key = fief_id or f"general:{general_id}"
-                    if heal_key in healed_fiefs:
-                        continue
-                    healed_fiefs.add(heal_key)
-                    heal_formation = {
-                        **formation,
-                        "fiefId": fief_id or formation.get("fiefId"),
-                    }
-                    try:
-                        task_log(
-                            task,
-                            f"第 {cycle_no} 轮编队 {rule_index + 1}："
-                            f"先治疗封地 {fief_id or '待解析'} 伤兵，再统一配兵",
-                        )
-                        heal = execute_heal_wounded(
-                            sess,
-                            heal_formation,
-                            confirm="heal-wounded",
-                            allow_all_if_count_unknown=bool(
-                                task.get("config", {}).get(
-                                    "healAllIfCountUnknown",
-                                    True,
-                                )
-                            ),
-                        )
-                    except Exception as exc:
-                        msg = str(exc)
-                        mark_account_offline_if_session_invalid(
-                            str(sess.get("sessionId") or ""),
-                            msg,
-                        )
-                        state_machine_stop(task, f"出征前治疗失败：{msg}")
-                        return
-                    if heal.get("success"):
-                        task_log(
-                            task,
-                            f"出征前治疗完成：封地 {fief_id or '已解析'}；"
-                            f"{heal.get('message') or '成功'}",
-                        )
-                    elif heal.get("skipped"):
-                        task_log(
-                            task,
-                            f"出征前治疗跳过：封地 {fief_id or '待解析'}；"
-                            f"{heal.get('message') or '当前无伤兵'}",
-                        )
-                    else:
-                        state_machine_stop(
-                            task,
-                            f"出征前治疗失败：封地 {fief_id or '待解析'}；"
-                            f"{heal.get('message') or '服务器未确认成功'}",
-                        )
-                        return
-                try:
-                    refresh_generals(sess)
-                except Exception as exc:
-                    state_machine_stop(task, f"治疗后刷新兵力失败：{exc}")
-                    return
-            retry_after_final_confirmation = False
-            generals = []
-            for general_id in general_ids:
-                general = load_general_for_state_machine(task, sess, general_id, "出征前最终确认")
-                if general is None:
-                    return
-                task_log(
-                    task,
-                    f"第 {cycle_no} 轮编队 {rule_index + 1}：出征前确认将领 "
-                    f"{general.get('name') or general_id}({general_id}) "
-                    f"状态={general.get('displayStatus') or general.get('statusText') or '未知'} "
-                    f"体力={general.get('tili')}",
-                )
-                if not ensure_brush_energy(task, sess, general):
-                    return
-                formation = formation_by_general[general_id]
-                block_reason = dispatch_block_reason(general, formation)
-                formation_reason = formation_match_reason(general, formation)
-                if block_reason:
-                    task_log(
-                        task,
-                        f"出征前最终确认暂不可执行：{block_reason}；"
-                        "释放出征权后重新调度",
-                    )
-                    retry_after_final_confirmation = True
-                    break
-                if formation_reason:
-                    shortage_reason = troop_assignment_precheck(
-                        sess,
-                        general,
-                        formation.get("soldierType") or "轻骑兵",
-                        int(formation.get("soldierCount") or 0),
-                    )
-                    if shortage_reason:
-                        retry_at = (
-                            now_ms() + FORMATION_SHORTAGE_RETRY_SEC * 1000
-                        )
-                        task.setdefault("brushRuleRetryAt", {})[
-                            str(rule_index)
-                        ] = retry_at
-                        upsert_brush_troop_shortage_notice(
-                            sess,
-                            rule_index,
-                            shortage_reason,
-                        )
-                        task_log(
-                            task,
-                            f"第 {cycle_no} 轮编队 {rule_index + 1} 暂时让行："
-                            f"{shortage_reason}；1分钟后重新治疗并检查，"
-                            "其他可用刷黄编队继续",
-                        )
-                        retry_after_final_confirmation = True
-                        break
-                    task_log(
-                        task,
-                        f"出征前最终确认发现配兵变化：{formation_reason}；"
-                        "正在按保存规则恢复",
-                    )
-                    if not perform_pre_dispatch_troops(
-                        task,
-                        sess,
-                        formation,
-                        current_general=general,
-                        heal_before_assign=False,
-                        stop_on_shortage=False,
-                    ):
-                        assign_message = str(
-                            (
-                                task.get("lastPreDispatchAssignTroops")
-                                or {}
-                            ).get("message")
-                            or ""
-                        )
-                        if is_troop_shortage_message(assign_message):
-                            retry_at = (
-                                now_ms()
-                                + FORMATION_SHORTAGE_RETRY_SEC * 1000
-                            )
-                            task.setdefault("brushRuleRetryAt", {})[
-                                str(rule_index)
-                            ] = retry_at
-                            upsert_brush_troop_shortage_notice(
-                                sess,
-                                rule_index,
-                                assign_message,
-                            )
-                            task_log(
-                                task,
-                                f"第 {cycle_no} 轮编队 {rule_index + 1} "
-                                f"真实配兵未达到规则，暂时让行："
-                                f"{assign_message}；1分钟后重试，"
-                                "其他可用刷黄编队继续",
-                            )
-                            retry_after_final_confirmation = True
-                            break
-                        return
-                    general = load_general_for_state_machine(
-                        task,
-                        sess,
-                        general_id,
-                        "恢复配兵后最终确认",
-                    )
-                    if general is None:
-                        return
-                    block_reason = dispatch_block_reason(general, formation)
-                    formation_reason = formation_match_reason(general, formation)
-                    if block_reason:
-                        task_log(
-                            task,
-                            f"恢复配兵后暂不可执行：{block_reason}；"
-                            "释放出征权后重新调度",
-                        )
-                        retry_after_final_confirmation = True
-                        break
-                    if formation_reason:
-                        state_machine_stop(
-                            task,
-                            f"恢复配兵后最终确认未通过：{formation_reason}；已停止",
-                        )
-                        return
-                generals.append(general)
-                task_log(
-                    task,
-                    f"出征前最终确认通过：将领 {general.get('name') or general_id} 当前 "
-                    f"{general.get('soldierCount', general.get('currentSoldierCount'))} "
-                    f"{soldier_type_name(general.get('soldierTypeCode'))}",
-                )
-            if retry_after_final_confirmation:
-                task.setdefault("brushPreparedRules", {}).pop(
-                    str(rule_index),
-                    None,
-                )
-                command_center_release(
-                    task,
-                    state="cooldown",
-                    runnable=False,
-                    message="当前编队暂不可执行，已让行其他刷黄编队",
-                )
-                claim_held = False
-                with GENERAL_STATE_CONDITION:
-                    GENERAL_STATE_CONDITION.wait(timeout=2.0)
-                continue
-            resolve_brush_troop_shortage_notice(sess, rule_index)
-            task.setdefault("brushPreparedRules", {})[str(rule_index)] = {
-                "preparedAt": now_ms(),
-                "generalIds": list(general_ids),
-            }
-            command_center_set_state(
-                task,
-                "waiting_target",
-                general_ids=general_ids,
-                runnable=True,
-                message=(
-                    "编队已治疗并配兵，正在选择"
-                    f"{brush_levels_text(rule.get('levels'), rule.get('level'))}级山贼"
-                ),
-            )
-            task_log(
-                task,
-                f"第 {cycle_no} 轮编队 {rule_index + 1}：治疗、配兵完成，"
-                f"现在从候选池选择山贼；筛选步弓骑车≤"
-                f"{rule.get('compositionCode')}，将领 {general_text}",
+                break
+            drain_final_pending = bool(
+                stop_requested and not active_keys and pending
             )
             try:
-                targets = shared_map_available_targets(
+                result = execute_shared_resident_automation_tick(
                     sess,
-                    "bandit",
-                    target_kind=str(search_opts.get("targetKind") or "山贼"),
-                    level=normalize_brush_levels(
-                        search_opts.get("levels"),
-                        search_opts.get("level"),
+                    # The account scheduler, not one feature row, owns an
+                    # in-flight operation. Stopping a single row must not
+                    # cancel another feature after its request crossed the
+                    # send boundary.
+                    task=None,
+                    configured_execution_allowed=not stop_requested,
+                    allowed_features=(
+                        None
+                        if drain_final_pending
+                        else desktop_shared_allowed_features(active_keys)
                     ),
-                    drops=normalize_drop_keywords(
-                        search_opts.get("drop"),
-                        search_opts.get("drops"),
-                    ),
-                    composition_filter=dict(
-                        search_opts.get("compositionFilter") or {}
-                    ),
-                    max_results=SHARED_MAP_QUERY_MAX_TARGETS,
-                    center_x=int(search_opts.get("startX") or 0),
-                    center_y=int(search_opts.get("startY") or 0),
                 )
-                found = {
-                    "targets": targets,
-                    "scanCount": 0,
-                    "requestCount": 0,
-                    "matchedCount": len(targets),
-                    "cacheEntries": 0,
-                    "cacheHitCount": len(targets),
-                    "cacheSkipCount": 0,
-                    "scanLeaseSkipCount": 0,
-                    "sharedMap": {
-                        "enabled": True,
-                        "serverKey": shared_map_server_key(sess),
-                        "mapKind": "bandit",
-                    },
-                    "nextCursor": 0,
-                    "scanWrapped": False,
-                    "filter": {
-                        "targetKind": search_opts.get("targetKind"),
-                        "levels": search_opts.get("levels"),
-                        "compositionFilter": search_opts.get("compositionFilter"),
-                    },
-                }
-            except Exception as e:
-                task_log(task, f"读取区服共享山贼地图失败，稍后重试：{e}")
-                found = {"targets": [], "requestCount": 0, "scanCount": 0}
-            if task["stopEvent"].is_set():
-                break
-            targets = found.get("targets") or []
-            task["lastSearch"] = {
-                "scanCount": found.get("scanCount"),
-                "requestCount": found.get("requestCount"),
-                "matchedCount": found.get("matchedCount"),
-                "cacheEntries": found.get("cacheEntries"),
-                "cacheHitCount": found.get("cacheHitCount"),
-                "cacheSkipCount": found.get("cacheSkipCount"),
-                "scanLeaseSkipCount": found.get("scanLeaseSkipCount"),
-                "sharedMap": found.get("sharedMap"),
-                "nextCursor": found.get("nextCursor"),
-                "scanWrapped": found.get("scanWrapped"),
-                "filter": found.get("filter"),
-            }
-            task["scanCursor"] = int(found.get("nextCursor") or 0)
-            task["scanCacheEntries"] = int(found.get("cacheEntries") or 0)
-            if not targets:
-                command_center_release(
-                    task,
-                    state="waiting_target",
-                    runnable=False,
-                    message="编队准备完成，但候选池暂无可用山贼",
-                )
-                claim_held = False
-                if pause_brush_after_search_miss(
-                    task,
-                    general_ids,
-                    cycle_no,
-                    found,
-                    rule_index=rule_index,
-                ):
-                    break
-                continue
-            task["consecutiveTargetMisses"] = 0
-            invalidated_cache_entries = (
-                0
-                if bool((found.get("sharedMap") or {}).get("enabled"))
-                else invalidate_brush_scan_cache(scan_state, targets)
-            )
-            if invalidated_cache_entries:
-                task["scanCacheEntries"] = max(
-                    0,
-                    int(task.get("scanCacheEntries") or 0)
-                    - invalidated_cache_entries,
-                )
-            target = targets[0]
-            task["lastTarget"] = target
-            baseline_intel = sess.get("militaryIntel") or {}
-            baseline_updated_at = int(baseline_intel.get("updatedAt") or 0)
-            task_log(task, f"第 {cycle_no} 轮：筛选命中 {len(targets)} 个目标，首选 {target.get('name')}({target.get('x')},{target.get('y')})，准备出征")
-            result = None
-            attempted_dispatch = False
-            shared_owner = str(sess.get("sessionId") or task_id)
-            for attempt_index, candidate in enumerate(targets[: int(cfg.get("maxTargetAttemptsPerSearch", 5))], 1):
-                if task["stopEvent"].is_set():
-                    task_log(task, "收到停止请求，取消本轮出征")
-                    return
-                if not wait_for_task_account_online(
-                    task,
-                    str(cfg.get("sessionId") or ""),
-                    "刷黄",
-                ):
-                    task["status"] = "stopped"
-                    return
-                if not reserve_shared_map_target(
-                    sess,
-                    "bandit",
-                    candidate,
-                    owner=shared_owner,
-                    task_id=task_id,
-                ):
-                    task_log(
-                        task,
-                        f"第 {cycle_no} 轮：目标 {candidate.get('name')}"
-                        f"({candidate.get('x')},{candidate.get('y')}) 已被其他账号占用，换下一个",
+            except Exception as error:
+                # A shared operation has no feature-safe task owner at this
+                # layer.  In particular, noncritical read failures are
+                # intentionally raised by the transport with “任务保持运行”;
+                # do not convert that exception into an error on whichever
+                # display row happened to own the wake thread.
+                error_message = str(error) or error.__class__.__name__
+                if is_session_invalid_message(error_message):
+                    mark_account_offline_if_session_invalid(
+                        sid,
+                        error_message,
                     )
-                    continue
-                active_target_reservation = candidate if shared_map_server_key(sess) else None
-                if candidate.get("fromCache") and shared_map_server_key(sess):
-                    try:
-                        revalidated = revalidate_shared_bandit_target(
-                            sess,
-                            candidate,
-                            owner=shared_owner,
-                            stop_event=task["stopEvent"],
-                        )
-                    except Exception as e:
-                        update_shared_map_target_status(
-                            sess,
-                            "bandit",
-                            candidate,
-                            owner=shared_owner,
-                            status="available",
-                            reason=f"定点复核异常：{e}",
-                        )
-                        active_target_reservation = None
-                        msg = str(e)
-                        mark_account_offline_if_session_invalid(
-                            str(sess.get("sessionId") or ""),
-                            msg,
-                        )
-                        state_machine_stop(task, f"缓存目标定点复核失败；{msg}")
-                        return
-                    if not revalidated.get("available"):
-                        reason = str(revalidated.get("reason") or "目标复核未通过")
-                        update_shared_map_target_status(
-                            sess,
-                            "bandit",
-                            candidate,
-                            owner=shared_owner,
-                            status=(
-                                "available"
-                                if revalidated.get("busy")
-                                or revalidated.get("interrupted")
-                                else "missing"
-                            ),
-                            reason=reason,
-                        )
-                        active_target_reservation = None
-                        task_log(
-                            task,
-                            f"第 {cycle_no} 轮：跳过缓存目标 "
-                            f"{candidate.get('name')}({candidate.get('x')},{candidate.get('y')})；{reason}",
-                        )
-                        if revalidated.get("interrupted"):
-                            return
-                        continue
-                    candidate = dict(revalidated.get("target") or candidate)
-                    if not target_matches_search_filter(
-                        candidate,
-                        str(search_opts.get("targetKind") or "山贼"),
-                        normalize_brush_levels(
-                            search_opts.get("levels"),
-                            search_opts.get("level"),
-                        ),
-                        normalize_drop_keywords(
-                            search_opts.get("drop"),
-                            search_opts.get("drops"),
-                        ),
-                        dict(search_opts.get("compositionFilter") or {}),
+                    break
+                if is_network_failure_message(error_message):
+                    # If a mutation ledger exists, fail closed and pause the
+                    # account until heartbeat recovery.  A read-only failure
+                    # without pending mutation may retry in place.
+                    if (
+                        _shared_resident_pending(sid)
+                        and not task["stopEvent"].is_set()
                     ):
-                        update_shared_map_target_status(
-                            sess,
-                            "bandit",
-                            candidate,
-                            owner=shared_owner,
-                            status="available",
-                            reason="定点复核后目标属性已不符合当前刷黄筛选条件",
+                        pause_tasks_for_transient_network_failure(
+                            sid,
+                            error_message,
                         )
-                        active_target_reservation = None
-                        task_log(
-                            task,
-                            f"第 {cycle_no} 轮：目标定点复核后等级、掉落或阵容已变化，跳过",
+                    else:
+                        mark_account_network_degraded_without_pause(
+                            sid,
+                            error_message,
+                        )
+                    if not task["stopEvent"].is_set():
+                        # Let the heartbeat (normally 20s) confirm recovery
+                        # before issuing another read-only scan; this avoids a
+                        # dead proxy turning into a tight request loop.
+                        task["stopEvent"].wait(
+                            max(5.0, CLIENT_HEARTBEAT_INTERVAL_SEC)
                         )
                         continue
-                task["lastTarget"] = candidate
-                candidate_composition = composition_code(candidate)
-                if not candidate_composition:
-                    task_log(
-                        task,
-                        f"第 {cycle_no} 轮：目标 {candidate.get('name')}({candidate.get('x')},{candidate.get('y')})"
-                        "守军阵容无法确认，禁止出征",
-                    )
-                    continue
-                task_log(
-                    task,
-                    f"第 {cycle_no} 轮：即将出征 {candidate.get('name')}"
-                    f"({candidate.get('x')},{candidate.get('y')})，阵容={candidate_composition}，"
-                    f"将领={general_text}",
-                )
-                if not perform_brush_batch_refill(
-                    task,
-                    sess,
-                    general_ids,
-                ):
-                    update_shared_map_target_status(
-                        sess,
-                        "bandit",
-                        candidate,
-                        owner=shared_owner,
-                        status="available",
-                        reason="批量补满失败，未发起出征",
-                    )
-                    active_target_reservation = None
-                    return
-                try:
-                    attempted_dispatch = True
-                    result = execute_brush(sess, {"generalIds": general_ids, "target": candidate, "confirm": "brush-yellow"})
-                except Exception as e:
-                    update_shared_map_target_status(
-                        sess,
-                        "bandit",
-                        candidate,
-                        owner=shared_owner,
-                        status="available",
-                        reason=f"出征请求异常：{e}",
-                    )
-                    active_target_reservation = None
-                    msg = str(e)
-                    mark_account_offline_if_session_invalid(str(sess.get("sessionId") or ""), msg)
-                    state_machine_stop(task, f"出征请求失败；{msg}")
-                    return
-                task["lastResult"] = {
-                    "success": result.get("success"),
-                    "generalIds": general_ids,
-                    "generalNames": [general.get("name") or "" for general in generals],
-                    "battleText": result.get("battleText", "")[:500],
-                    "failureReason": result.get("failureReason", ""),
-                    "reportFile": result.get("reportFile"),
-                }
-                if result.get("success"):
-                    target = candidate
-                    update_shared_map_target_status(
-                        sess,
-                        "bandit",
-                        candidate,
-                        owner=shared_owner,
-                        status="dispatched",
-                        reason=f"battleId={result.get('successBattleId')}",
-                    )
-                    active_target_reservation = None
+                    # A critical request already stopped this account's
+                    # workers.  Leave the pending ledger untouched and let
+                    # the heartbeat/reconnect owner resume it safely.
                     break
-                reason_preview = (result.get("failureReason") or result.get("battleText") or "无战报")[:160]
-                update_shared_map_target_status(
-                    sess,
-                    "bandit",
-                    candidate,
-                    owner=shared_owner,
-                    status=(
-                        "missing"
-                        if is_missing_target_dispatch_reject(result)
-                        else "rejected"
-                        if is_soft_dispatch_reject(result)
-                        else "available"
-                    ),
-                    reason=reason_preview,
-                )
-                active_target_reservation = None
-                task_log(task, f"第 {cycle_no} 轮目标被拒绝：target={candidate.get('id')} reason={reason_preview}")
-                if is_session_invalid_message(reason_preview):
-                    mark_account_offline_if_session_invalid(str(sess.get("sessionId") or ""), reason_preview)
-                    state_machine_stop(task, f"出征响应显示账号/角色状态不可用；{reason_preview}")
-                    return
-                if not is_soft_dispatch_reject(result):
-                    break
-            command_center_release(
-                task,
-                state="fighting" if result and result.get("success") else "waiting_target",
-                runnable=False,
-                message="刷黄将领已出征" if result and result.get("success") else "本轮刷黄未成功出征",
+                raise
+            feature = str(result.get("feature") or "")
+            state = str(result.get("state") or "idle")
+            message = str(result.get("message") or "共享常驻 tick 已完成")
+            task_scoped_result = feature not in {"", "daily"}
+            result_task = (
+                shared_resident_result_task(sid, feature, task)
+                if task_scoped_result
+                else task
             )
-            claim_held = False
-            if not attempted_dispatch:
-                task_log(
-                    task,
-                    f"第 {cycle_no} 轮候选目标均已被其他账号占用或在复核时消失，稍后继续",
-                )
-                task["stopEvent"].wait(1.0)
-                continue
-            if result and result.get("success"):
-                task.setdefault("brushPreparedRules", {}).pop(
-                    str(rule_index),
-                    None,
-                )
-                daily_after = record_daily_brush_success(sess)
-                task["dailyBrushCount"] = daily_after
-                task["dispatchSequence"] = cycle_no
-                task.setdefault("brushInFlight", {})[str(rule_index)] = {
-                    "cycleNo": cycle_no,
-                    "ruleIndex": rule_index,
-                    "generalIds": list(general_ids),
-                    "formations": [dict(value) for value in formations],
-                    "target": dict(target),
-                    "battleId": result.get("successBattleId"),
-                    "dispatchedAt": now_ms(),
-                    "deadlineAt": (
-                        now_ms()
-                        + max(
-                            15 * 60,
-                            int(cfg.get("maxReturnWaitSec") or 300),
-                        )
-                        * 1000
+            if result_task is not None:
+                result_task["lastSharedResidentResult"] = dict(result)
+                result_task["updatedAt"] = now_ms()
+            elif task_scoped_result:
+                account_log(
+                    sid,
+                    f"共享常驻结果未找到对应活动任务，已按账号记录且未写入唤醒线程："
+                    f"feature={feature} state={state}；{message}",
+                    level=(
+                        "warning"
+                        if result.get("requiresAttention")
+                        or state in {"blocked", "uncertain", "timeout"}
+                        else "info"
                     ),
-                    "lastIntelUpdatedAt": baseline_updated_at,
-                    "lastStatusUpdatedAt": baseline_updated_at,
-                    "sawBusy": False,
-                    "nextFullStateRefreshAt": (
-                        now_ms()
-                        + min(10, BRUSH_SETTLEMENT_FULL_REFRESH_INTERVAL_SEC)
-                        * 1000
-                    ),
-                }
-                task_log(
-                    task,
-                    f"第 {cycle_no} 轮有效出征：将领={general_text}，"
-                    f"目标={target.get('name')}({target.get('x')},{target.get('y')})，"
-                    f"battleId={result.get('successBattleId')}；"
-                    f"已计入今日刷黄次数={daily_after}/{cfg['dailyLimit']}；"
-                    f"该编队转入在途跟踪，立即调度其他空闲刷黄编队",
+                    source="automation",
+                    detail={
+                        "feature": feature,
+                        "state": state,
+                        "wakeOwnerTaskId": task.get("taskId"),
+                        "requiresAttention": bool(
+                            result.get("requiresAttention")
+                        ),
+                        "errorCode": result.get("errorCode"),
+                        "nextWakeAtMillis": result.get(
+                            "nextWakeAtMillis"
+                        ),
+                    },
                 )
+            if feature in {
+                "ministry", "general", "domestic", "inventory",
+            } and state == "completed":
+                if result_task is not None:
+                    result_task["cycle"] = (
+                        int(result_task.get("cycle") or 0) + 1
+                    )
                 record_success_action(
-                    str(sess.get("sessionId") or ""),
-                    "刷黄",
-                    f"编队{rule_index + 1} > {target.get('name')}"
-                    f"({target.get('x')}，{target.get('y')})",
-                    detail={"target": target, "battleId": result.get("successBattleId")},
+                    sid,
+                    {
+                        "ministry": "六部",
+                        "general": "将领维护",
+                        "domestic": "自动内政",
+                        "inventory": "背包整理",
+                    }[feature],
+                    message,
+                    detail={
+                        "feature": feature,
+                        "state": state,
+                        "action": result.get("action") or {},
+                        "consumedCount": result.get("consumedCount"),
+                    },
                 )
-            else:
-                task["dispatchFailures"] = int(task.get("dispatchFailures", 0)) + 1
-                last_reason = ((result or {}).get("failureReason") or (result or {}).get("battleText") or "无战报")[:160]
-                task_log(task, f"第 {cycle_no} 轮出征响应未确认成功：{last_reason}")
-                if result and is_soft_dispatch_reject(result):
-                    task["dispatchFailures"] = 0
-                    wait_sec = int(cfg.get("cycleDelaySec") or 10)
-                    task.setdefault("brushRuleRetryAt", {})[
-                        str(rule_index)
-                    ] = now_ms() + wait_sec * 1000
-                    task_log(
-                        task,
-                        f"第 {cycle_no} 轮所有候选目标均被游戏服拒绝，"
-                        f"当前编队冷却 {wait_sec} 秒，其他刷黄编队继续",
+            elif result.get("dispatchAccepted"):
+                if result_task is not None:
+                    result_task["cycle"] = (
+                        int(result_task.get("cycle") or 0) + 1
                     )
+                category = {
+                    "mine": "打矿",
+                    "brush": "刷黄",
+                    "brushYellow": "刷黄",
+                    "raid": "掠夺",
+                    "lossless": "无损",
+                    "dungeon": "副本",
+                }.get(feature, "常驻任务")
+                target = result.get("target")
+                target = target if isinstance(target, dict) else {}
+                stage = result.get("stage")
+                stage = stage if isinstance(stage, dict) else {}
+                destination = (
+                    target.get("name")
+                    or target.get("mineType")
+                    or target.get("type")
+                    or stage.get("chapterName")
+                    or stage.get("stageName")
+                    or result.get("playerName")
+                    or "目标"
+                )
+                shared_record = result.get("successRecord")
+                shared_record = (
+                    shared_record if isinstance(shared_record, dict) else {}
+                )
+                record_detail = {
+                    "battleId": result.get("battleId"),
+                    "feature": feature,
+                    "target": target,
+                    "stage": stage,
+                }
+                if feature in {"brush", "brushYellow", "lossless"} \
+                        and shared_record.get("message"):
+                    category = str(shared_record.get("category") or category)
+                    record_message = str(shared_record["message"])
+                    shared_detail = shared_record.get("detail")
+                    if isinstance(shared_detail, dict):
+                        record_detail.update(shared_detail)
+                    if shared_record.get("dedupeKey"):
+                        record_detail["dedupeKey"] = str(
+                            shared_record["dedupeKey"]
+                        )
+                elif feature in {"brush", "brushYellow"}:
+                    if target.get("x") is not None and target.get("y") is not None:
+                        destination += f"({target['x']}，{target['y']})"
+                    try:
+                        formation_number = max(
+                            0, int(result.get("sourceRowIndex"))
+                        ) + 1
+                    except (TypeError, ValueError):
+                        try:
+                            formation_number = max(
+                                1, int(result.get("formationNumber"))
+                            )
+                        except (TypeError, ValueError):
+                            formation_number = None
+                    action = (
+                        f"编队{formation_number}"
+                        if formation_number is not None else "出征"
+                    )
+                    battle_id = result.get("battleId")
+                    suffix = f"（battleId={battle_id}）" if battle_id else ""
+                    record_message = f"{action} > {destination}{suffix}"
+                elif feature == "lossless":
+                    try:
+                        lossless_level = max(1, int(stage.get("level")))
+                    except (TypeError, ValueError):
+                        match = re.search(
+                            r"(\d+)\s*级", str(stage.get("levelName") or "")
+                        )
+                        lossless_level = int(match.group(1)) if match else None
+                    stage_name = str(stage.get("stageName") or "").strip()
+                    record_message = (
+                        f"{lossless_level}级-{stage_name}"
+                        if lossless_level is not None and stage_name
+                        else destination
+                    )
+                else:
+                    record_message = f"共享核心出征 > {destination}"
+                record_success_action(
+                    sid,
+                    category,
+                    record_message,
+                    detail=record_detail,
+                )
+            scheduler_state = {
+                "dispatched": "fighting",
+                "waiting": "waiting_generals",
+                "waiting-generals": "waiting_generals",
+                "waiting-return": "waiting_generals",
+                "fighting": "fighting",
+                "completed": "checking",
+                "settled": "checking",
+                "chest-opened": "checking",
+                "settlement-recovered": "checking",
+                "cooldown": "cooldown",
+                "configured-daily-limit": "daily_done",
+                "daily_done": "daily_done",
+                "all-clear": "daily_done",
+                "no-targets": "checking",
+                "retry": "checking",
+                "idle": "checking",
+            }.get(state, "checking")
+            if task_scoped_result and result_task is not None:
+                command_center_set_state(
+                    result_task,
+                    scheduler_state,
+                    runnable=False,
+                    message=message,
+                )
+                task_log(
+                    result_task,
+                    f"共享常驻：feature={feature} state={state}；{message}",
+                )
+            if task_scoped_result:
+                sync_shared_resident_feature_notice(sid, feature, result)
+            persist_runtime_state()
+            if result.get("requiresAttention") or state in {
+                "blocked", "uncertain", "timeout"
+            }:
+                if not task_scoped_result:
+                    account_log(
+                        sid,
+                        f"共享每日任务已暂停：{message}",
+                        level="warning",
+                        source="automation",
+                    )
+                    next_wake = result.get("nextWakeAtMillis")
+                    try:
+                        wait_seconds = max(
+                            0.5,
+                            min(
+                                60.0,
+                                (int(next_wake) - now_ms()) / 1000.0,
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        wait_seconds = 5.0
+                    task["stopEvent"].wait(wait_seconds)
                     continue
-                if int(task.get("dispatchFailures", 0)) >= int(cfg.get("maxDispatchFailures", 1)):
-                    task["status"] = "error"
-                    task["error"] = f"连续 {task.get('dispatchFailures')} 次出征未确认成功，已停止，避免重复误发；请检查将领体力/兵力/目标是否可打"
-                    task_log(task, task["error"])
-                    return
-            if not (result and result.get("success")):
-                wait_sec = int(cfg.get("cycleDelaySec") or 1)
-                task_log(task, f"下一轮间隔 {wait_sec} 秒")
-                task["stopEvent"].wait(float(wait_sec))
-        if task["stopEvent"].is_set():
+                if result_task is None:
+                    # The core may finish a pending workflow after its
+                    # display row was stopped.  Keep the durable pending
+                    # record and stop this wake owner when no resident row is
+                    # left; never manufacture an error on the owner/fallback.
+                    if not _desktop_active_shared_resident_keys(sid):
+                        break
+                    next_wake = result.get("nextWakeAtMillis")
+                    try:
+                        wait_seconds = max(
+                            0.5,
+                            min(
+                                60.0,
+                                (int(next_wake) - now_ms()) / 1000.0,
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        wait_seconds = 5.0
+                    task["stopEvent"].wait(wait_seconds)
+                    continue
+                result_task["status"] = "error"
+                result_task["error"] = message
+                result_task["updatedAt"] = now_ms()
+                result_stop = result_task.get("stopEvent")
+                if result_stop is not None:
+                    result_stop.set()
+                command_center_set_state(
+                    result_task,
+                    "error",
+                    runnable=False,
+                    message=message,
+                )
+                task_log(result_task, "共享常驻任务已暂停：" + message)
+                try_sync_shared_resident_automation(sess)
+                if result_task is task:
+                    break
+            next_wake = result.get("nextWakeAtMillis")
+            try:
+                wait_seconds = max(
+                    0.5,
+                    min(60.0, (int(next_wake) - now_ms()) / 1000.0),
+                )
+            except (TypeError, ValueError):
+                wait_seconds = 5.0
+            task["stopEvent"].wait(wait_seconds)
+        if str(task.get("status") or "") != "error":
             task["status"] = "stopped"
-            command_center_set_state(task, "stopped", runnable=False, message="自动刷黄已停止")
-            task_log(task, "自动刷黄已停止")
-        else:
-            task["status"] = "finished"
-            command_center_set_state(task, "daily_done", runnable=False, message="自动刷黄达到今日上限")
-            task_log(task, f"自动刷黄达到今日上限 {get_daily_brush_count(sess)}/{cfg['dailyLimit']}，已结束")
-    except Exception as e:
-        msg = str(e)
-        mark_account_offline_if_session_invalid(str(cfg.get("sessionId") or ""), msg)
-        state_machine_stop(task, "自动刷黄异常：" + msg)
-        command_center_set_state(task, "error", runnable=False, message=msg)
-    finally:
-        task["stopEvent"].set()
-        if active_target_reservation is not None:
-            update_shared_map_target_status(
-                sess,
-                "bandit",
-                active_target_reservation,
-                owner=str(sess.get("sessionId") or task_id),
-                status="available",
-                reason="刷黄任务中断，释放目标占用",
-            )
-        if claim_held:
-            command_center_release(
+            command_center_set_state(
                 task,
-                state="error" if task.get("status") == "error" else "stopped",
+                "stopped",
                 runnable=False,
-                message=task.get("error") or "刷黄任务已交还出征权",
+                message="共享常驻唤醒线程已停止",
             )
-
-
-def is_missing_target_dispatch_reject(result: dict[str, Any]) -> bool:
-    text = f"{result.get('failureReason') or ''} {result.get('battleText') or ''}".lower()
-    return any(marker in text for marker in (
-        "目标不存在",
-        "目标已不存在",
-        "不能到达",
-        "无法到达",
-        "目标已消失",
-        "目标消失",
-        "目标被消灭",
-        "目标已被消灭",
-    ))
-
-
-def is_soft_dispatch_reject(result: dict[str, Any]) -> bool:
-    text = f"{result.get('failureReason') or ''} {result.get('battleText') or ''}".lower()
-    action_hexes = []
-    for item in result.get("actionResults") or []:
-        if item.get("phase") != "expedition":
-            continue
-        for pkt in item.get("packets") or []:
-            if pkt.get("opcode") == "0x8522":
-                action_hexes.append(str(pkt.get("payloadHex") or "").lower())
-    return (
-        is_missing_target_dispatch_reject(result)
-        or "0x8522=ff0000" in text
-        or "游戏服拒绝出征" in text
-        or (action_hexes and all(x == "ff0000" for x in action_hexes))
-    )
+            if task.get("_transientNetworkPause"):
+                task["_suppressImportantNotice"] = True
+            try:
+                task_log(task, "共享常驻唤醒线程已停止")
+            finally:
+                if not task.get("_operatorMaintenancePause"):
+                    task.pop("_suppressImportantNotice", None)
+        try_sync_shared_resident_automation(sess)
+        persist_runtime_state()
+    except Exception as error:
+        message = str(error)
+        # Exceptions outside the shared tick (for example the account-online
+        # gate) still do not identify a feature.  Session/network failures are
+        # lifecycle events and must not become a terminal notice on the wake
+        # owner's display row.
+        if is_session_invalid_message(message):
+            mark_account_offline_if_session_invalid(sid, message)
+            task["status"] = "stopped"
+            task.pop("error", None)
+            task["updatedAt"] = now_ms()
+            command_center_set_state(
+                task,
+                "stopped",
+                runnable=False,
+                message="账号会话失效，等待重新登录",
+            )
+            task["_suppressImportantNotice"] = True
+            try:
+                task_log(task, "账号会话失效，唤醒线程已停止并等待重新登录")
+            finally:
+                task.pop("_suppressImportantNotice", None)
+            try_sync_shared_resident_automation(sess)
+            try:
+                persist_runtime_state()
+            except Exception:
+                pass
+            return
+        if is_network_failure_message(message):
+            if _shared_resident_pending(sid) and not task["stopEvent"].is_set():
+                pause_tasks_for_transient_network_failure(sid, message)
+            else:
+                mark_account_network_degraded_without_pause(sid, message)
+            if task["stopEvent"].is_set():
+                task["status"] = "stopped"
+                task.pop("error", None)
+                task["updatedAt"] = now_ms()
+                command_center_set_state(
+                    task,
+                    "stopped",
+                    runnable=False,
+                    message="网络暂时不可用，等待心跳恢复",
+                )
+                task["_suppressImportantNotice"] = True
+                try:
+                    task_log(task, "网络暂时不可用，唤醒线程已停止并等待心跳恢复")
+                finally:
+                    task.pop("_suppressImportantNotice", None)
+            else:
+                task["stopEvent"].wait(
+                    max(5.0, CLIENT_HEARTBEAT_INTERVAL_SEC)
+                )
+            try_sync_shared_resident_automation(sess)
+            try:
+                persist_runtime_state()
+            except Exception:
+                pass
+            return
+        task["status"] = "error"
+        task["error"] = message
+        task["updatedAt"] = now_ms()
+        command_center_set_state(
+            task, "error", runnable=False, message=message
+        )
+        task_log(task, "共享常驻任务失败：" + message)
+        try_sync_shared_resident_automation(sess)
+        try:
+            persist_runtime_state()
+        except Exception:
+            pass
+    finally:
+        if owns_wake:
+            release_shared_resident_wake_owner(sid, task_id)
 
 
 def start_auto_brush(config: dict[str, Any]) -> dict[str, Any]:
@@ -33495,88 +34671,21 @@ def normalize_mine_settings(
     sess: dict[str, Any],
     body: dict[str, Any],
 ) -> dict[str, Any]:
-    settings = dict(body.get("settings") or body)
-    raw_rows = settings.get("rows")
-    if not isinstance(raw_rows, list):
-        raw_rows = []
-    known_ids = {
-        str(value)
-        for general in sess.get("generals") or []
-        for value in (general.get("id"), general.get("idHex"))
-        if value not in (None, "")
-    }
-    rows: list[dict[str, Any]] = []
-    for index, raw_row in enumerate(raw_rows):
-        row = dict(raw_row or {})
-        if not bool(row.get("enabled", False)):
-            continue
-        raw_ids = row.get("generalIds")
-        if isinstance(raw_ids, list):
-            general_ids = [
-                str(value) for value in raw_ids if str(value or "").strip()
-            ]
-        else:
-            general_id = str(row.get("generalId") or "").strip()
-            general_ids = [general_id] if general_id else []
-        general_ids = list(dict.fromkeys(general_ids))
-        if not general_ids:
-            raise RuntimeError(f"第 {index + 1} 条打矿规则未选择出征将领")
-        if len(general_ids) > MINE_MAX_GENERALS_PER_FORMATION:
-            raise RuntimeError(
-                f"第 {index + 1} 条打矿规则最多选择"
-                f"{MINE_MAX_GENERALS_PER_FORMATION}名出征将领"
-            )
-        missing = [
-            general_id
-            for general_id in general_ids
-            if known_ids and general_id not in known_ids
-        ]
-        if missing:
-            raise RuntimeError(
-                f"第 {index + 1} 条打矿规则存在不属于当前账号的将领："
-                + ",".join(missing)
-            )
-        resource_type = str(row.get("resourceType") or "").strip()
-        if resource_type not in set(MINE_RESOURCE_OPTIONS):
-            raise RuntimeError(f"第 {index + 1} 条打矿规则未选择有效资源类型")
-        scope = str(row.get("scope") or MINE_DEFAULT_SEARCH_SCOPE)
-        if scope not in MINE_ALLOWED_SEARCH_SCOPES:
-            scope = MINE_DEFAULT_SEARCH_SCOPE
-        x = max(0, min(int(row.get("x") or 0), 186))
-        y = max(0, min(int(row.get("y") or 0), 66))
-        rows.append({
-            "enabled": True,
-            "sourceRowIndex": index,
-            "generalIds": general_ids,
-            "generalId": general_ids[0],
-            "resourceType": resource_type,
-            "level": int(row.get("level") or 0) or None,
-            "x": x,
-            "y": y,
-            "scope": scope,
-            "onlyEmpty": bool(row.get("onlyEmpty", False)),
-            "onlyDefended": bool(row.get("onlyDefended", False)),
-        })
-    try:
-        max_march_minutes = int(settings.get("maxMarchMinutes") or 45)
-    except (TypeError, ValueError):
-        max_march_minutes = MINE_DEFAULT_MAX_MARCH_MINUTES
-    if max_march_minutes not in MINE_ALLOWED_MAX_MARCH_MINUTES:
-        max_march_minutes = MINE_DEFAULT_MAX_MARCH_MINUTES
+    settings = body.get("settings") if isinstance(body.get("settings"), dict) else body
+    write_plan = shared_settings_write_plan(
+        "/api/mine/save",
+        {
+            "settings": dict(settings or {}),
+            "knownGenerals": list(sess.get("generals") or []),
+        },
+    )
+    response_fields = write_plan.get("response") or {}
+    persisted = dict(response_fields.get("settings") or {})
+    execution_rows = list(response_fields.get("executionRows") or [])
     return {
-        # Older saved rows contain a selected item name. Any value other than
-        # "不加速" means the new smart-acceleration checkbox is enabled.
-        "speed": mine_speed_enabled(settings.get("speed")),
-        "fullLoyalty": bool(settings.get("fullLoyalty", True)),
-        "replenishTroops": bool(settings.get("replenishTroops", True)),
-        "maxMarchMinutes": max_march_minutes,
-        "centerX": max(0, min(int(settings.get("centerX") or 0), 186)),
-        "centerY": max(0, min(int(settings.get("centerY") or 0), 66)),
-        # 旧版“定点送将玩家名”会把攻击玩家矿与普通打矿混在一起。
-        # 当前自动打矿只允许未被玩家占领的资源点，因此不再执行该旧字段。
-        "targetPlayerName": "",
-        "rows": rows,
-        "uiRows": [dict(row or {}) for row in raw_rows],
+        **persisted,
+        "rows": execution_rows,
+        "uiRows": list(persisted.get("rows") or []),
     }
 
 
@@ -33703,6 +34812,18 @@ def mine_map_preparation_worker(
     while not stop_event.is_set():
         if SESSIONS.get(sid) is not sess:
             return
+        cloud_policy = legacy_map_prefetch_policy(sid)
+        if not cloud_policy["legacyLocalMapPrefetchAllowed"]:
+            task["mapPreparation"] = {
+                **legacy_map_prefetch_pause_view(
+                    cloud_policy,
+                    task_name="打矿地图准备",
+                ),
+                "task": "mine",
+            }
+            if stop_event.wait(MAP_PREPARATION_IDLE_PAUSE_SEC):
+                return
+            continue
         role_state = sess.get("roleState") or {}
         current = int(role_state.get("resourcePointCurrent") or 0)
         cap = int(role_state.get("resourcePointCap") or 0)
@@ -33783,451 +34904,9 @@ def mine_map_preparation_worker(
 
 
 def auto_mine_worker(task_id: str) -> None:
-    task = AUTO_TASKS.get(task_id)
-    if not task:
-        return
-    cfg = task.get("config") or {}
-    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
-    sess = SESSIONS.get(sid)
-    preparation_thread: threading.Thread | None = None
-    active_reservation: dict[str, Any] | None = None
-    claim_held = False
-    scan_states: dict[int, dict[str, Any]] = {}
-    try:
-        if not sess:
-            raise RuntimeError("打矿账号会话不存在，请重新启动账号")
-        task["status"] = "running"
-        task_log(
-            task,
-            f"打矿常驻任务启动：启用 {len(cfg.get('rows') or [])} 条编队；"
-            "共享区服矿图、目标占用和区域Diff已开启",
-        )
-        start_mine_map_coordinator()
-        recovery_results = recover_pending_mine_garrisons(
-            sess,
-            list(cfg.get("rows") or []),
-            task=task,
-        )
-        if recovery_results:
-            task["mineRecovery"] = {
-                "results": recovery_results,
-                "updatedAt": now_ms(),
-            }
-        while not task["stopEvent"].is_set():
-            dispatched_in_pass = False
-            capacity_full_in_pass = False
-            troop_shortage_in_pass = False
-            configured_ids = [
-                str(general_id)
-                for row in cfg.get("rows") or []
-                for general_id in row.get("generalIds") or []
-                if str(general_id or "").strip()
-            ]
-            configured_states, _missing = _selected_general_states(
-                sess,
-                configured_ids,
-            )
-            if any(item.get("status") == "防" for item in configured_states):
-                recovered = recover_pending_mine_garrisons(
-                    sess,
-                    list(cfg.get("rows") or []),
-                    task=task,
-                )
-                if recovered:
-                    task["mineRecovery"] = {
-                        "results": recovered,
-                        "updatedAt": now_ms(),
-                    }
-            role_state = (
-                sess.get("roleState")
-                if isinstance(sess.get("roleState"), dict)
-                else {}
-            )
-            resource_current = int(role_state.get("resourcePointCurrent") or 0)
-            resource_cap = int(role_state.get("resourcePointCap") or 0)
-            task["resourcePointCapacity"] = {
-                "current": resource_current,
-                "cap": resource_cap,
-            }
-            if resource_cap > 0 and resource_current >= resource_cap:
-                capacity_signature = f"{resource_current}/{resource_cap}"
-                if task.get("lastCapacityFullSignature") != capacity_signature:
-                    task["lastCapacityFullSignature"] = capacity_signature
-                    task_log(
-                        task,
-                        f"打矿额度已满：资源点 {capacity_signature}；"
-                        "保持常驻，额度释放后自动继续",
-                    )
-                next_check = now_ms() + BRUSH_SCAN_MISS_PAUSE_SEC * 1000
-                command_center_set_state(
-                    task,
-                    "capacity_done",
-                    runnable=False,
-                    message=f"资源点额度已满 {capacity_signature}",
-                    next_check_at=next_check,
-                )
-                task["stopEvent"].wait(BRUSH_SCAN_MISS_PAUSE_SEC)
-                continue
-            for row_index, row in enumerate(cfg.get("rows") or []):
-                if task["stopEvent"].is_set():
-                    break
-                general_ids = list(row.get("generalIds") or [])
-                if not wait_for_task_account_online(task, sid, "打矿"):
-                    task["status"] = "stopped"
-                    return
-                if not command_center_wait_generals_idle(
-                    task,
-                    sess,
-                    general_ids,
-                    "打矿",
-                ):
-                    task["status"] = "stopped"
-                    return
-                if not command_center_acquire(task, general_ids):
-                    task["status"] = "stopped"
-                    return
-                claim_held = True
-                if not command_center_wait_generals_idle(
-                    task,
-                    sess,
-                    general_ids,
-                    "打矿",
-                ):
-                    task["status"] = "stopped"
-                    return
-                try:
-                    prepared_generals = prepare_military_generals(
-                        sess,
-                        general_ids,
-                        "打矿",
-                        task=task,
-                    )
-                except Exception as exc:
-                    message = str(exc)
-                    command_center_release(
-                        task,
-                        state="waiting_generals",
-                        runnable=False,
-                        message="打矿治疗或配兵未完成，稍后重试",
-                    )
-                    claim_held = False
-                    if retryable_mine_preflight_error(message):
-                        if any(marker in message for marker in (
-                            "配兵未达到目标",
-                            "闲兵不足",
-                            "不足以达到目标",
-                        )):
-                            troop_shortage_in_pass = True
-                        task_log(
-                            task,
-                            f"{message}；本轮延后，打矿任务继续运行",
-                        )
-                        continue
-                    raise
-                search_opts = mine_search_options(cfg, row, sid)
-                # 打矿任务只消费区服共享候选池；统一调度器按水位低频补图。
-                search_opts["cacheOnly"] = True
-                command_center_set_state(
-                    task,
-                    "waiting_target",
-                    general_ids=general_ids,
-                    runnable=True,
-                    message=f"治疗、配兵完成，正在选择{row.get('resourceType')}",
-                )
-                task_log(
-                    task,
-                    f"第 {row_index + 1} 条打矿编队治疗、配兵完成，"
-                    f"现在从候选池选择{row.get('resourceType')}",
-                )
-                found = search_mine_targets(
-                    sess,
-                    search_opts,
-                    scan_state=scan_states.setdefault(row_index, {}),
-                    stop_event=task["stopEvent"],
-                )
-                task["lastSearch"] = {
-                    "row": row_index + 1,
-                    "matchedCount": found.get("matchedCount"),
-                    "requestCount": found.get("requestCount"),
-                    "cacheHitCount": found.get("cacheHitCount"),
-                    "cacheSkipCount": found.get("cacheSkipCount"),
-                    "scanLeaseSkipCount": found.get("scanLeaseSkipCount"),
-                    "sharedMap": found.get("sharedMap"),
-                    "filter": found.get("filter"),
-                }
-                targets = list(found.get("targets") or [])
-                if not targets:
-                    task_log(
-                        task,
-                        f"第 {row_index + 1} 条打矿规则未找到符合条件的"
-                        f"{row.get('resourceType')}，稍后继续",
-                    )
-                    command_center_release(
-                        task,
-                        state="waiting_target",
-                        runnable=False,
-                        message="编队准备完成，但候选池暂无可用矿点",
-                    )
-                    claim_held = False
-                    continue
-                owner = sid or task_id
-                result = None
-                for target in targets[:5]:
-                    if task["stopEvent"].is_set():
-                        break
-                    if not reserve_shared_map_target(
-                        sess,
-                        "mine",
-                        target,
-                        owner=owner,
-                        task_id=task_id,
-                    ):
-                        continue
-                    active_reservation = target if shared_map_server_key(sess) else None
-                    # 无论来自 3 小时 SQLite 缓存还是本轮新扫描，正式出征前都
-                    # 必须按同一 resourceId 定点复核，避免矿点归属/状态刚好变化。
-                    if shared_map_server_key(sess):
-                        revalidated = revalidate_shared_mine_target(
-                            sess,
-                            target,
-                            owner=owner,
-                            stop_event=task["stopEvent"],
-                        )
-                        if not revalidated.get("available"):
-                            status = (
-                                "available"
-                                if revalidated.get("busy")
-                                or revalidated.get("interrupted")
-                                else "missing"
-                            )
-                            update_shared_map_target_status(
-                                sess,
-                                "mine",
-                                target,
-                                owner=owner,
-                                status=status,
-                                reason=str(revalidated.get("reason") or ""),
-                            )
-                            active_reservation = None
-                            if revalidated.get("interrupted"):
-                                break
-                            continue
-                        target = dict(revalidated.get("target") or target)
-                    if not mine_target_matches(
-                        target,
-                        resource_types=[str(row.get("resourceType") or "")],
-                        levels=(
-                            [int(row.get("level"))]
-                            if row.get("level") not in (None, "")
-                            else None
-                        ),
-                        only_empty=True,
-                        only_defended=bool(row.get("onlyDefended")),
-                    ):
-                        update_shared_map_target_status(
-                            sess,
-                            "mine",
-                            target,
-                            owner=owner,
-                            status="available",
-                            reason="出征前复核后矿点类型、等级或玩家归属已变化",
-                        )
-                        active_reservation = None
-                        task_log(
-                            task,
-                            f"矿点({target.get('x')},{target.get('y')})复核后"
-                            "已不符合规则或已被玩家占领，禁止出征",
-                        )
-                        continue
-                    task_log(
-                        task,
-                        f"命中 {target.get('name')}({target.get('x')},{target.get('y')})，"
-                        "定点复核通过，准备出征",
-                    )
-                    try:
-                        if bool(cfg.get("replenishTroops", True)):
-                            refill = execute_refill_troops(
-                                sess,
-                                general_ids,
-                                confirm="batch-refill",
-                            )
-                            if not refill.get("success"):
-                                message = str(
-                                    refill.get("message") or "批量补满未成功"
-                                )
-                                update_shared_map_target_status(
-                                    sess,
-                                    "mine",
-                                    target,
-                                    owner=owner,
-                                    status="available",
-                                    reason=f"打矿批量补满失败：{message}",
-                                )
-                                active_reservation = None
-                                task_log(
-                                    task,
-                                    f"打矿批量补满失败：{message}；本轮延后",
-                                )
-                                continue
-                            task_log(task, "打矿出征前批量补满完成")
-                        result = execute_mine(
-                            sess,
-                            {
-                                "confirm": "mine",
-                                "generalIds": general_ids,
-                                "target": target,
-                                "speed": bool(cfg.get("speed")),
-                                "fullLoyalty": bool(cfg.get("fullLoyalty")),
-                                "maxMarchMinutes": int(cfg.get("maxMarchMinutes") or 45),
-                            },
-                            task=task,
-                            prepared_generals=prepared_generals,
-                        )
-                    except Exception as exc:
-                        message = str(exc)
-                        update_shared_map_target_status(
-                            sess,
-                            "mine",
-                            target,
-                            owner=owner,
-                            status="available",
-                            reason=f"打矿请求异常：{message}",
-                        )
-                        active_reservation = None
-                        if mine_capacity_full_error(message):
-                            capacity_full_in_pass = True
-                            result = {
-                                "success": False,
-                                "failureReason": message,
-                                "successBattleId": None,
-                                "reportFile": "",
-                            }
-                            task_log(
-                                task,
-                                f"打矿额度已满：{message}；"
-                                "本轮不再出征，额度释放后自动继续",
-                            )
-                            break
-                        if retryable_mine_preflight_error(message):
-                            result = {
-                                "success": False,
-                                "failureReason": message,
-                                "successBattleId": None,
-                                "reportFile": "",
-                            }
-                            task_log(task, f"{message}；本轮延后，打矿任务继续运行")
-                            break
-                        raise
-                    update_shared_map_target_status(
-                        sess,
-                        "mine",
-                        target,
-                        owner=owner,
-                        status="missing" if result.get("success") else "rejected",
-                        reason=(
-                            f"完整闭环完成并已召回，battleId={result.get('successBattleId')}"
-                            if result.get("success")
-                            else str(result.get("failureReason") or "")
-                        ),
-                    )
-                    active_reservation = None
-                    task["lastTarget"] = target
-                    task["lastResult"] = {
-                        "success": result.get("success"),
-                        "successBattleId": result.get("successBattleId"),
-                        "failureReason": result.get("failureReason"),
-                        "reportFile": result.get("reportFile"),
-                    }
-                    if result.get("success"):
-                        task["cycle"] = int(task.get("cycle") or 0) + 1
-                        dispatched_in_pass = True
-                        task_log(
-                            task,
-                            f"打矿出征成功：{target.get('name')}"
-                            f"({target.get('x')},{target.get('y')})，"
-                            f"battleId={result.get('successBattleId')}",
-                        )
-                        break
-                command_center_release(
-                    task,
-                    state="fighting" if result and result.get("success") else "waiting_target",
-                    runnable=False,
-                    message=(
-                        "打矿将领已出征"
-                        if result and result.get("success")
-                        else "本轮未成功出征"
-                    ),
-                )
-                claim_held = False
-            if capacity_full_in_pass and not task["stopEvent"].is_set():
-                next_check = now_ms() + BRUSH_SCAN_MISS_PAUSE_SEC * 1000
-                command_center_set_state(
-                    task,
-                    "capacity_done",
-                    runnable=False,
-                    message="资源点额度已满",
-                    next_check_at=next_check,
-                )
-                task["stopEvent"].wait(BRUSH_SCAN_MISS_PAUSE_SEC)
-            elif not dispatched_in_pass and not task["stopEvent"].is_set():
-                retry_sec = (
-                    FORMATION_SHORTAGE_RETRY_SEC
-                    if troop_shortage_in_pass
-                    else BRUSH_SCAN_MISS_PAUSE_SEC
-                )
-                next_check = now_ms() + retry_sec * 1000
-                command_center_set_state(
-                    task,
-                    "cooldown",
-                    runnable=False,
-                    message=(
-                        "当前兵力不足，1分钟后重新治疗并配兵"
-                        if troop_shortage_in_pass
-                        else "暂无符合条件的矿点，稍后继续"
-                    ),
-                    next_check_at=next_check,
-                )
-                task["stopEvent"].wait(retry_sec)
-        task["status"] = "stopped"
-        command_center_set_state(
-            task,
-            "stopped",
-            runnable=False,
-            message="打矿常驻任务已停止",
-        )
-        task_log(task, "打矿常驻任务已停止")
-    except Exception as exc:
-        message = str(exc)
-        mark_account_offline_if_session_invalid(sid, message)
-        task["status"] = "error"
-        task["error"] = f"打矿任务异常，已中断：{message}"
-        task_log(task, task["error"])
-        command_center_set_state(
-            task,
-            "error",
-            runnable=False,
-            message=message,
-        )
-    finally:
-        task["stopEvent"].set()
-        if preparation_thread is not None:
-            preparation_thread.join(timeout=2.0)
-        if active_reservation is not None and sess:
-            update_shared_map_target_status(
-                sess,
-                "mine",
-                active_reservation,
-                owner=sid or task_id,
-                status="available",
-                reason="打矿任务中断，释放目标占用",
-            )
-        if claim_held:
-            command_center_release(
-                task,
-                state="error" if task.get("status") == "error" else "stopped",
-                runnable=False,
-                message=task.get("error") or "打矿任务已交还出征权",
-            )
+    """Mine uses the same account-level shared resident wake loop as brush."""
+
+    auto_brush_worker(task_id)
 
 
 def start_auto_mine(
@@ -34285,61 +34964,236 @@ def start_auto_mine(
 
 
 def auto_ministry_worker(task_id: str) -> None:
-    task = AUTO_TASKS.get(task_id)
-    if not task:
-        return
-    cfg = task.get("config") or {}
-    sid = str(cfg.get("sessionId") or task.get("sessionId") or "")
-    sess = SESSIONS.get(sid)
+    """Ministry timing and planting decisions use the shared Python tick."""
+
+    auto_brush_worker(task_id)
+
+
+def desktop_general_resident_settings(
+    common: dict[str, Any],
+) -> dict[str, Any]:
+    """Project the common-page switches into the shared resident vocabulary."""
+
     try:
-        if not sess:
-            raise RuntimeError("六部账号会话不存在，请重新启动账号")
-        task["status"] = "running"
-        task_log(task, "六部常驻任务启动：已确认金银花批量种植；其他动作保持只保存不发送")
-        unsupported = shared_unconfirmed_ministry_actions(cfg)
-        if unsupported:
-            task_log(task, f"协议尚未完整确认，当前不会发送：{'、'.join(unsupported)}")
-        while not task["stopEvent"].is_set():
-            if not wait_for_task_account_online(task, sid, "六部"):
-                task["status"] = "stopped"
-                return
-            try:
-                query = query_hubu_plant_state(sess)
-                task["lastQuery"] = query
-                if not query.get("success"):
-                    task_log(task, "六部菜地查询未收到0xe320，10分钟后重试")
-                else:
-                    planted = execute_hubu_batch_plant(
-                        sess,
-                        confirm="hubu-batch-plant",
-                    )
-                    task["lastPlant"] = planted
-                    if planted.get("success"):
-                        task["cycle"] = int(task.get("cycle") or 0) + 1
-                        task_log(task, planted.get("message") or "金银花批量种植成功")
-                    else:
-                        task_log(
-                            task,
-                            planted.get("message") or "当前没有可确认的空菜地，稍后重试",
-                        )
-            except Exception as exc:
-                message = str(exc)
-                mark_account_offline_if_session_invalid(sid, message)
-                task_log(task, f"六部本轮执行失败：{message}；10分钟后重试")
-            task["updatedAt"] = now_ms()
-            task["stopEvent"].wait(
-                int(_STARTUP_SCHEDULER_CONTRACT["ministryPollMillis"]) / 1000
-            )
-        task["status"] = "stopped"
-        task_log(task, "六部常驻任务已停止")
-    except Exception as exc:
-        message = str(exc)
-        mark_account_offline_if_session_invalid(sid, message)
-        task["status"] = "error"
-        task["error"] = f"六部任务异常，已中断：{message}"
-        task_log(task, task["error"])
-    finally:
-        task["stopEvent"].set()
+        minimum_energy = int(common.get("energyThreshold") or 20)
+    except (TypeError, ValueError):
+        minimum_energy = 20
+    return {
+        "autoHeal": bool(common.get("healWounded", True)),
+        "autoEnergy": bool(common.get("autoEnergy", True)),
+        "minEnergy": max(20, min(100, minimum_energy)),
+        "keepFullLoyalty": bool(common.get("keepFullLoyalty", False)),
+        "autoRescue": False,
+        "foodToCopper": bool(common.get("foodToCopper", False)),
+        "copperFloorWan": int(common.get("copperFloorWan") or 1),
+    }
+
+
+def auto_general_worker(task_id: str) -> None:
+    """General maintenance is another thin shared-tick wake owner."""
+
+    auto_brush_worker(task_id)
+
+
+def start_auto_general(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    sid = str(sess.get("sessionId") or "")
+    request_stop_tasks_for_session_type(
+        sid,
+        "auto-general",
+        "收到新的将领维护设置，停止旧唤醒任务",
+    )
+    enabled = any(bool(settings.get(key)) for key in (
+        "autoHeal", "autoEnergy", "keepFullLoyalty",
+    ))
+    if not enabled:
+        return {
+            "started": False,
+            "disabled": True,
+            "reason": "治疗、加体和加忠均未开启",
+        }
+    task_id = uuid4().hex[:12]
+    config = {**settings, "sessionId": sid}
+    task = {
+        "taskId": task_id,
+        "type": "auto-general",
+        "sessionId": sid,
+        "status": "starting",
+        "cycle": 0,
+        "createdAt": now_ms(),
+        "updatedAt": now_ms(),
+        "config": config,
+        "logs": [],
+        "stopEvent": threading.Event(),
+        "schedulerState": "checking",
+        "schedulerRunnable": True,
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES["general"],
+        "schedulerGeneralIds": [],
+        "schedulerMessage": "等待执行共享将领维护",
+    }
+    thread = threading.Thread(
+        target=auto_general_worker,
+        args=(task_id,),
+        daemon=True,
+    )
+    task["thread"] = thread
+    with TASK_LOCK:
+        AUTO_TASKS[task_id] = task
+    thread.start()
+    return {"started": True, "task": task_public(task)}
+
+
+def desktop_inventory_resident_enabled(common: dict[str, Any]) -> bool:
+    """Match the shared core's fail-closed inventory activation rule."""
+
+    raw_open = common.get("autoOpenItemNames")
+    open_names = (
+        list(raw_open)
+        if isinstance(raw_open, list)
+        else re.split(r"[,，;；|]+", str(raw_open or ""))
+    )
+    valid_open_names = [
+        str(name or "").strip()
+        for name in open_names
+        if str(name or "").strip() in SHARED_AUTO_OPEN_ITEM_NAMES
+    ]
+    raw_discard = common.get("discardItemNames")
+    discard_names = (
+        list(raw_discard)
+        if isinstance(raw_discard, list)
+        else re.split(r"[,，;；|]+", str(raw_discard or ""))
+    )
+    has_discard_items = any(
+        str(name or "").strip() for name in discard_names
+    )
+    return bool(
+        (common.get("autoOpenEnabled") and valid_open_names)
+        or (
+            common.get("cleanInventory")
+            and (has_discard_items or common.get("discardEquipment"))
+        )
+    )
+
+
+def auto_inventory_worker(task_id: str) -> None:
+    """Inventory timing, mutation ledger and recovery live in shared Python."""
+
+    auto_brush_worker(task_id)
+
+
+def start_auto_inventory(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    sid = str(sess.get("sessionId") or "")
+    stopped_task_ids = request_stop_tasks_for_session_type(
+        sid,
+        "auto-inventory",
+        "收到新的背包整理设置，停止旧唤醒任务",
+    )
+    if not desktop_inventory_resident_enabled(settings):
+        return {
+            "started": False,
+            "disabled": True,
+            "stoppedTaskIds": stopped_task_ids,
+            "reason": "自动开箱和背包清理均未开启",
+        }
+    task_id = uuid4().hex[:12]
+    task = {
+        "taskId": task_id,
+        "type": "auto-inventory",
+        "sessionId": sid,
+        "status": "starting",
+        "cycle": 0,
+        "createdAt": now_ms(),
+        "updatedAt": now_ms(),
+        "config": {"sessionId": sid, **dict(settings)},
+        "logs": [],
+        "stopEvent": threading.Event(),
+        "schedulerState": "checking",
+        "schedulerRunnable": True,
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES["inventory"],
+        "schedulerGeneralIds": [],
+        "schedulerMessage": "等待执行共享背包整理",
+    }
+    thread = threading.Thread(
+        target=auto_inventory_worker,
+        args=(task_id,),
+        name=f"auto-inventory-{sid}",
+        daemon=True,
+    )
+    task["thread"] = thread
+    with TASK_LOCK:
+        AUTO_TASKS[task_id] = task
+    thread.start()
+    return {
+        "started": True,
+        "stoppedOldTaskIds": stopped_task_ids,
+        "task": task_public(task),
+    }
+
+
+def desktop_alarm_resident_enabled(settings: dict[str, Any]) -> bool:
+    return bool(
+        settings.get("incomingEnabled")
+        or settings.get("militaryEnabled")
+    )
+
+
+def start_auto_alarm(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Create only a wake owner; Python owns refresh, dedupe and delivery."""
+
+    sid = str(sess.get("sessionId") or "")
+    stopped_task_ids = request_stop_tasks_for_session_type(
+        sid,
+        "auto-alarm",
+        "收到新的军情警报设置，停止旧唤醒任务",
+    )
+    if not desktop_alarm_resident_enabled(settings):
+        return {
+            "started": False,
+            "disabled": True,
+            "stoppedTaskIds": stopped_task_ids,
+            "reason": "来袭警报和军情提醒均未开启",
+        }
+    task_id = uuid4().hex[:12]
+    task = {
+        "taskId": task_id,
+        "type": "auto-alarm",
+        "sessionId": sid,
+        "status": "starting",
+        "cycle": 0,
+        "createdAt": now_ms(),
+        "updatedAt": now_ms(),
+        "config": {"sessionId": sid, **dict(settings)},
+        "logs": [],
+        "stopEvent": threading.Event(),
+        "schedulerState": "checking",
+        "schedulerRunnable": True,
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES["alarm"],
+        "schedulerGeneralIds": [],
+        "schedulerMessage": "等待共享军情警报检查",
+    }
+    thread = threading.Thread(
+        target=auto_brush_worker,
+        args=(task_id,),
+        name=f"auto-alarm-{sid}",
+        daemon=True,
+    )
+    task["thread"] = thread
+    with TASK_LOCK:
+        AUTO_TASKS[task_id] = task
+    thread.start()
+    return {
+        "started": True,
+        "stoppedOldTaskIds": stopped_task_ids,
+        "task": task_public(task),
+    }
 
 
 def start_auto_ministry(
@@ -34421,27 +35275,32 @@ def resume_saved_common_tasks(sess: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         errors["daily"] = str(e)
     try:
-        one_time["autoOpen"] = (
-            auto_open_inventory_items(
-                sess,
-                list(saved_common.get("autoOpenItemNames") or []),
-            )
-            if saved_common.get("autoOpenEnabled")
-            else {"actions": [], "skipped": [], "opened": 0, "disabled": True}
-        )
+        inventory_start = start_auto_inventory(sess, saved_common)
+        one_time["autoOpen"] = {
+            "sharedResident": True,
+            "queued": bool(inventory_start.get("started")),
+            "disabled": bool(inventory_start.get("disabled")),
+        }
+        if inventory_start.get("started"):
+            resumed["inventory"] = inventory_start
     except Exception as e:
-        errors["autoOpen"] = str(e)
+        errors["inventory"] = str(e)
     try:
         domestic = saved_common.get("domestic") if isinstance(saved_common.get("domestic"), dict) else {}
-        if domestic.get("enabled"):
-            resumed["autoDomestic"] = start_auto_domestic(sess, domestic)
+        if domestic.get("enabled") or domestic.get("upgradeTechnology"):
+            shared_domestic = (
+                start_auto_domestic(sess, domestic)
+                if domestic.get("enabled")
+                else start_auto_technology(sess, domestic)
+            )
+            resumed["autoDomestic"] = shared_domestic
+            if domestic.get("upgradeTechnology"):
+                resumed["autoTechnology"] = {
+                    **shared_domestic,
+                    "sharedResident": True,
+                }
     except Exception as e:
         errors["autoDomestic"] = str(e)
-    try:
-        if domestic.get("upgradeTechnology"):
-            resumed["autoTechnology"] = start_auto_technology(sess, domestic)
-    except Exception as e:
-        errors["autoTechnology"] = str(e)
     return {"resumed": resumed, "oneTime": one_time, "errors": errors}
 
 
@@ -34461,16 +35320,6 @@ def resume_saved_resident_tasks(sess: dict[str, Any]) -> dict[str, Any]:
             resumed["mine"] = start_auto_mine(sess, mine_settings)
     except Exception as e:
         errors["mine"] = str(e)
-
-    saved_ministry = habits.get("ministry") if isinstance(habits.get("ministry"), dict) else {}
-    try:
-        if saved_ministry:
-            ministry_settings = normalize_ministry_settings(saved_ministry)
-            ministry_start = start_auto_ministry(sess, ministry_settings)
-            if ministry_start.get("started"):
-                resumed["ministry"] = ministry_start
-    except Exception as e:
-        errors["ministry"] = str(e)
 
     lossless_settings = normalize_military_future_settings(
         "lossless",
@@ -34532,6 +35381,43 @@ def resume_saved_resident_tasks(sess: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         errors["dungeon"] = str(e)
 
+    try:
+        general_settings = desktop_general_resident_settings(saved_common)
+        general_start = start_auto_general(sess, general_settings)
+        if general_start.get("started"):
+            resumed["general"] = general_start
+    except Exception as e:
+        errors["general"] = str(e)
+
+    try:
+        inventory_start = start_auto_inventory(sess, saved_common)
+        if inventory_start.get("started"):
+            resumed["inventory"] = inventory_start
+    except Exception as e:
+        errors["inventory"] = str(e)
+
+    try:
+        alarm_settings = (
+            dict(saved_common.get("alarm") or {})
+            if isinstance(saved_common.get("alarm"), dict)
+            else {}
+        )
+        alarm_start = start_auto_alarm(sess, alarm_settings)
+        if alarm_start.get("started"):
+            resumed["alarm"] = alarm_start
+    except Exception as e:
+        errors["alarm"] = str(e)
+
+    saved_ministry = habits.get("ministry") if isinstance(habits.get("ministry"), dict) else {}
+    try:
+        if saved_ministry:
+            ministry_settings = normalize_ministry_settings(saved_ministry)
+            ministry_start = start_auto_ministry(sess, ministry_settings)
+            if ministry_start.get("started"):
+                resumed["ministry"] = ministry_start
+    except Exception as e:
+        errors["ministry"] = str(e)
+
     if resumed:
         account_log(
             sid,
@@ -34550,6 +35436,209 @@ def resume_saved_resident_tasks(sess: dict[str, Any]) -> dict[str, Any]:
     sess["savedTasksStartedAt"] = now_ms()
     persist_runtime_state()
     return {"resumed": resumed, "oneTime": one_time, "errors": errors}
+
+
+def _resident_recovery_lock(session_id: str) -> threading.RLock:
+    sid = str(session_id or "")
+    with ACCOUNT_RESIDENT_RECOVERY_LOCKS_LOCK:
+        lock = ACCOUNT_RESIDENT_RECOVERY_LOCKS.get(sid)
+        if lock is None:
+            lock = threading.RLock()
+            ACCOUNT_RESIDENT_RECOVERY_LOCKS[sid] = lock
+        return lock
+
+
+def _resident_recovery_intent(session_id: str, sess: dict[str, Any]) -> bool:
+    sid = str(session_id or "")
+    with ACCOUNT_LOCK:
+        acc = ACCOUNTS.get(sid) or {}
+        return bool(
+            acc.get("resumeResidentTasksAfterNetworkRecovery")
+            or acc.get("resumeResidentTasksAfterReconnect")
+            or acc.get("savedTasksStarted")
+            or sess.get("savedTasksStarted")
+        )
+
+
+def _resident_recovery_pending(session_id: str) -> bool:
+    sid = str(session_id or "")
+    with ACCOUNT_LOCK:
+        acc = ACCOUNTS.get(sid) or {}
+        return bool(
+            acc.get("resumeResidentTasksAfterNetworkRecovery")
+            or acc.get("resumeResidentTasksAfterReconnect")
+        )
+
+
+def _set_resident_recovery_intent(session_id: str, enabled: bool) -> None:
+    sid = str(session_id or "")
+    with ACCOUNT_LOCK:
+        acc = ACCOUNTS.get(sid)
+        if not acc:
+            return
+        acc["resumeResidentTasksAfterNetworkRecovery"] = bool(enabled)
+        acc["resumeResidentTasksAfterReconnect"] = bool(enabled)
+
+
+def _reconcile_resident_ledgers_for_recovery(
+    sess: dict[str, Any],
+) -> dict[str, Any]:
+    """Drain each ledger independently while configured writes stay disabled."""
+
+    sid = str(sess.get("sessionId") or "")
+    results: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    pending = _shared_resident_pending_features(sid, strict=True)
+    # One feature is isolated per tick. A blocked or malformed ledger cannot
+    # prevent the coordinator from checking the remaining independent ledgers.
+    for feature in pending:
+        try:
+            result = execute_shared_resident_automation_tick(
+                sess,
+                configured_execution_allowed=False,
+                allowed_features=[feature],
+            )
+            results[feature] = dict(result)
+            result_feature = str(result.get("feature") or "")
+            if result_feature:
+                sync_shared_resident_feature_notice(
+                    sid,
+                    result_feature,
+                    result,
+                )
+            state = str(result.get("state") or "")
+            if not bool(result.get("requiresAttention")) and state in {
+                "all-clear", "chest-opened", "completed", "cooldown",
+                "dispatched", "fighting", "reconciled", "recovered-ready",
+                "retry", "settled", "settlement-recovered", "waiting",
+                "waiting-generals", "waiting-return", "waiting-unlock",
+            }:
+                notice_feature = (
+                    "brushYellow" if feature == "brush" else feature
+                )
+                database_resolve_important_notice(
+                    account_storage_key(session_id=sid),
+                    f"task:{notice_feature}",
+                )
+        except Exception as error:
+            errors[feature] = str(error) or error.__class__.__name__
+            account_log(
+                sid,
+                f"常驻恢复对账已隔离功能 {feature}；{errors[feature]}",
+                level=(
+                    "warning"
+                    if not is_network_failure_message(errors[feature])
+                    else "error"
+                ),
+                source="resident-recovery",
+                detail={"feature": feature},
+            )
+            # A real transport failure is account-wide. Stop immediately and
+            # keep the intent for the next confirmed heartbeat/relogin.
+            if is_network_failure_message(errors[feature]):
+                break
+    return {
+        "pendingBefore": pending,
+        "pendingAfter": _shared_resident_pending_features(sid, strict=True),
+        "results": results,
+        "errors": errors,
+    }
+
+
+def coordinate_resident_recovery(
+    sess: dict[str, Any],
+    *,
+    trigger: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Reconcile durable ledgers, then rebuild the user's saved task plan."""
+
+    sid = str(sess.get("sessionId") or "").strip()
+    if not sid:
+        raise RuntimeError("常驻恢复协调器缺少账号")
+    lock = _resident_recovery_lock(sid)
+    with lock:
+        generation = ACCOUNT_RESIDENT_RECOVERY_GENERATIONS.get(sid, 0) + 1
+        ACCOUNT_RESIDENT_RECOVERY_GENERATIONS[sid] = generation
+        intended = bool(force or _resident_recovery_intent(sid, sess))
+        if not intended:
+            return {
+                "ok": True,
+                "complete": True,
+                "skipped": True,
+                "reason": "resident-intent-disabled",
+                "sessionId": sid,
+                "trigger": str(trigger),
+                "generation": generation,
+            }
+
+        _set_resident_recovery_intent(sid, True)
+        require_account_online(sid, "恢复常驻任务")
+        account_log(
+            sid,
+            f"常驻恢复协调器开始：trigger={trigger} generation={generation}",
+            source="resident-recovery",
+        )
+        result: dict[str, Any] = {
+            "ok": False,
+            "complete": False,
+            "sessionId": sid,
+            "trigger": str(trigger),
+            "generation": generation,
+            "intended": True,
+        }
+        try:
+            # Freeze the latest local settings in shared storage before any
+            # evidence check. Activation remains false until display workers
+            # are recreated below, so no new configured mutation can race the
+            # reconciliation pass.
+            _desktop_sync_shared_account(sid)
+            SHARED_PYTHON_CORE.configure_resident_automation_from_habits(
+                sid,
+                load_account_habits(sess),
+            )
+            SHARED_PYTHON_CORE.set_resident_automation_activation(
+                sid,
+                False,
+                [],
+            )
+            reconciliation = _reconcile_resident_ledgers_for_recovery(sess)
+            result["reconciliation"] = reconciliation
+            network_errors = {
+                feature: message
+                for feature, message in reconciliation["errors"].items()
+                if is_network_failure_message(message)
+            }
+            if network_errors:
+                result["errors"] = {"network": network_errors}
+                return result
+
+            resumed = resume_saved_resident_tasks(sess)
+            result["resume"] = resumed
+            resume_errors = dict(resumed.get("errors") or {})
+            if resume_errors:
+                result["errors"] = {"resume": resume_errors}
+                return result
+
+            result.update({"ok": True, "complete": True})
+            _set_resident_recovery_intent(sid, False)
+            return result
+        except Exception as error:
+            result["errors"] = {
+                "coordinator": str(error) or error.__class__.__name__
+            }
+            account_log(
+                sid,
+                f"常驻恢复协调器未完成，已保留重试意图：{error}",
+                level="warning",
+                source="resident-recovery",
+                detail={"trigger": str(trigger), "generation": generation},
+            )
+            return result
+        finally:
+            if not result.get("complete"):
+                _set_resident_recovery_intent(sid, True)
+            persist_runtime_state()
 
 
 def resume_saved_tasks_for_all_running_accounts() -> dict[str, Any]:
@@ -35128,6 +36217,14 @@ class Handler(SimpleHTTPRequestHandler):
             # completed. Do not generate a second error response and traceback.
             self.close_connection = True
 
+    def copyfile(self, source: Any, outputfile: Any) -> None:
+        """Serve static assets without traceback noise on page reload."""
+
+        try:
+            super().copyfile(source, outputfile)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
     def read_json(self) -> dict[str, Any]:
         ln = int(self.headers.get("Content-Length") or "0")
         if ln <= 0:
@@ -35623,12 +36720,36 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed_request.path.startswith("/api/") and not self._require_legacy_api_auth_for_remote():
             return
         self._mobile_rewrite_legacy_query()
+        if parsed_request.path == "/api/core/operations/status":
+            operation_id = str(
+                (urllib.parse.parse_qs(parsed_request.query).get("operationId") or [""])[0]
+                or ""
+            ).strip()
+            if not operation_id:
+                self.send_json({"ok": False, "error": "缺少 operationId"}, 400)
+                return
+            result = SHARED_PYTHON_CORE.operation_status(operation_id)
+            self.send_json(result, 200 if result.get("ok") else 404)
+            return
         if parsed_request.path == "/api/reference/guide":
             try:
-                payload = guide_reference_payload(
-                    urllib.parse.parse_qs(parsed_request.query, keep_blank_values=True)
+                projected = SHARED_PYTHON_CORE.dispatch(
+                    "GET",
+                    "/api/reference/guide",
+                    guide_reference_request_body(
+                        urllib.parse.parse_qs(
+                            parsed_request.query,
+                            keep_blank_values=True,
+                        )
+                    ),
+                    {
+                        "requestId": f"desktop-reference-guide-{now_ms()}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                        "nowMillis": now_ms(),
+                    },
                 )
-                self.send_json(payload, 200 if payload.get("ok") else 404)
+                self.send_json(projected.body, projected.status)
             except (OSError, UnicodeError, ValueError) as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 400)
             return
@@ -35725,23 +36846,36 @@ class Handler(SimpleHTTPRequestHandler):
                 limit,
                 after_id=after_id,
             )
-            self.send_json({
-                "ok": True,
-                "limit": limit,
-                "entries": entries,
-                "cursorId": cursor_id,
-                "latestId": latest_id,
-                "hasMore": cursor_id < latest_id,
-                "storage": "sqlite",
-                "maxLines": SYSTEM_LOG_MAX_LINES,
-            })
+            self.send_json(shared_local_view(
+                "GET",
+                "/api/logs/system",
+                {
+                    "limit": limit,
+                    "afterId": after_id,
+                    "entries": entries,
+                    "cursorId": cursor_id,
+                    "latestId": latest_id,
+                    "storage": "sqlite",
+                    "maxLines": SYSTEM_LOG_MAX_LINES,
+                },
+            ))
             return
         if self.path.startswith("/api/logs/account"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             sid = (query.get("sessionId") or [""])[0]
             limit = max(1, min(int((query.get("limit") or [str(ACCOUNT_LOG_MAX_LINES)])[0] or ACCOUNT_LOG_MAX_LINES), ACCOUNT_LOG_MAX_LINES))
             key, entries = read_account_log(sid, limit)
-            self.send_json({"ok": True, "accountKey": key, "limit": limit, "entries": entries, "maxLines": ACCOUNT_LOG_MAX_LINES})
+            self.send_json(shared_local_view(
+                "GET",
+                "/api/logs/account",
+                {
+                    "accountRef": sid,
+                    "accountKey": key,
+                    "limit": limit,
+                    "entries": entries,
+                    "maxLines": ACCOUNT_LOG_MAX_LINES,
+                },
+            ))
             return
         if self.path.startswith("/api/success-records"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -35751,14 +36885,17 @@ class Handler(SimpleHTTPRequestHandler):
             key, entries = read_success_records(
                 sid, limit, category=category,
             )
-            self.send_json({
-                "ok": True,
-                "accountKey": key,
-                "limit": limit,
-                "category": category,
-                "entries": entries,
-                "maxLines": 50,
-            })
+            self.send_json(shared_local_view(
+                "GET",
+                "/api/success-records",
+                {
+                    "accountRef": sid,
+                    "accountKey": key,
+                    "limit": limit,
+                    "category": category,
+                    "records": entries,
+                },
+            ))
             return
         if self.path.startswith("/api/proxy/nodes"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -35862,7 +36999,21 @@ class Handler(SimpleHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             platform = str((query.get("platform") or [""])[0] or "")
             catalog = read_area_catalog(platform)
-            self.send_json({"ok": True, **catalog})
+            # Loading the add-account dropdown is also a cheap reconciliation
+            # point for an already-cached complete directory.  The sync runs
+            # in the background and never delays this response.
+            sync_area_catalog_to_cloud(catalog)
+            projected = SHARED_PYTHON_CORE.dispatch(
+                "GET",
+                "/api/areas",
+                catalog,
+                {
+                    "requestId": f"desktop-areas-{now_ms()}",
+                    "source": "desktop-http",
+                    "platform": "desktop",
+                },
+            )
+            self.send_json(projected.body, projected.status)
             return
         if self.path.startswith("/api/dashboard"):
             self.send_json(current_dashboard_snapshot())
@@ -35893,15 +37044,11 @@ class Handler(SimpleHTTPRequestHandler):
             summary_only = str((query.get("summary") or ["0"])[0]).lower() in {
                 "1", "true", "yes",
             }
-            with ACCOUNT_LOCK:
-                serializer = public_account_summary if summary_only else public_account
-                accounts = [serializer(a) for a in ACCOUNTS.values()]
-            accounts.sort(key=lambda x: x.get("createdAt", 0))
-            self.send_json({
-                "ok": True,
-                "accounts": accounts,
-                "summary": summary_only,
-            })
+            projected = _desktop_shared_accounts_response(
+                summary_only=summary_only,
+                request_id=f"desktop-accounts-{now_ms()}",
+            )
+            self.send_json(projected.body, projected.status)
             return
         if self.path.startswith("/api/maps/bandits"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -35955,17 +37102,18 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/api/heartbeat"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            sid = (query.get("sessionId") or [""])[0]
-            sess = get_session(sid)
-            hb = execute_heartbeat(sess)
-            with ACCOUNT_LOCK:
-                acc = ACCOUNTS.get(sid)
-                if acc:
-                    acc["lastHeartbeat"] = hb
-                    acc["status"] = "online" if hb.get("online") else "offline"
-                    acc["lastError"] = "" if hb.get("online") else hb.get("message", "")
-            persist_runtime_state()
-            self.send_json({"ok": True, **hb})
+            sid = str((query.get("sessionId") or [""])[0] or "")
+            dispatched = SHARED_PYTHON_CORE.dispatch(
+                "GET",
+                "/api/heartbeat",
+                {"accountRef": sid},
+                {
+                    "requestId": f"desktop-heartbeat-{now_ms()}-{sid}",
+                    "source": "desktop-http",
+                    "platform": "desktop",
+                },
+            )
+            self.send_json(dispatched.body, dispatched.status)
             return
         if self.path.startswith("/api/automation/status"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -35978,58 +37126,47 @@ class Handler(SimpleHTTPRequestHandler):
             ]
             tasks.sort(key=lambda x: x.get("createdAt", 0), reverse=True)
             sess = SESSIONS.get(sid)
-            self.send_json({
-                "ok": True,
-                "tasks": tasks[:10],
-                "taskOverview": current_task_overview(sess) if sess else None,
-                # 军情页 2 秒轮询同一接口即可拿到“辅助此刻行动”，不发游戏请求。
-                "assistantOperations": assistant_live_operations(sess) if sess else [],
-            })
+            self.send_json(shared_local_view(
+                "GET",
+                "/api/automation/status",
+                {
+                    "tasks": tasks,
+                    "taskOverview": current_task_overview(sess) if sess else None,
+                    # 军情页 2 秒轮询同一本地接口，不发游戏请求。
+                    "assistantOperations": assistant_live_operations(sess) if sess else [],
+                },
+            ))
             return
         if self.path.startswith("/api/state/refresh"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            sid = (query.get("sessionId") or [""])[0]
-            scope = (query.get("scope") or ["all"])[0]
-            try:
-                sess = get_session(sid)
-                if scope in {"all", "role", "role-queues", "generals", "army", "status"}:
-                    refresh_generals(sess)
-                if scope in {"all", "role-queues"}:
-                    try:
-                        refresh_role_queue_summary(sess)
-                    except Exception as queue_exc:
-                        sess["roleQueueSummaryError"] = str(queue_exc)
-                if scope in {"all", "inventory"}:
-                    refresh_inventory(sess)
-                if scope in {"all", "military"}:
-                    # 军情页要的是“此刻的军情”，来源是 0x1600/0x8600 列表，
-                    # 不再用 0xa110 心跳混合包关键词捞文本。
-                    refresh_military_snapshot(sess)
-                with ACCOUNT_LOCK:
-                    acc = ACCOUNTS.get(sid)
-                    if acc:
-                        acc["status"] = "online"
-                        acc["lastError"] = ""
-                persist_runtime_state()
-                self.send_json({"ok": True, **public_session(sess)})
-            except Exception as e:
-                msg = str(e)
-                mark_account_offline_if_session_invalid(sid, msg)
-                with ACCOUNT_LOCK:
-                    acc = ACCOUNTS.get(sid)
-                    if acc:
-                        acc["status"] = "offline"
-                        acc["lastError"] = msg
-                        acc["lastHeartbeat"] = {"online": False, "message": msg, "checkedAt": now_ms()}
-                persist_runtime_state()
-                self.send_json({"ok": False, "error": msg}, 200)
+            sid = str((query.get("sessionId") or [""])[0] or "")
+            scope = str((query.get("scope") or ["all"])[0] or "all")
+            dispatched = SHARED_PYTHON_CORE.dispatch(
+                "GET",
+                "/api/state/refresh",
+                {"accountRef": sid, "scope": scope},
+                {
+                    "requestId": f"desktop-state-refresh-{now_ms()}-{sid}-{scope}",
+                    "source": "desktop-http",
+                    "platform": "desktop",
+                },
+            )
+            self.send_json(dispatched.body, dispatched.status)
             return
         if self.path.startswith("/api/military/intel"):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            sid = (query.get("sessionId") or [""])[0]
-            sess = get_session(sid)
-            refresh_military_snapshot(sess)
-            self.send_json({"ok": True, **public_session(sess)})
+            sid = str((query.get("sessionId") or [""])[0] or "")
+            dispatched = SHARED_PYTHON_CORE.dispatch(
+                "GET",
+                "/api/military/intel",
+                {"accountRef": sid},
+                {
+                    "requestId": f"desktop-military-intel-{now_ms()}-{sid}",
+                    "source": "desktop-http",
+                    "platform": "desktop",
+                },
+            )
+            self.send_json(dispatched.body, dispatched.status)
             return
         super().do_GET()
 
@@ -36054,8 +37191,17 @@ class Handler(SimpleHTTPRequestHandler):
             if self._is_mobile_web_request():
                 body = self._mobile_rewrite_legacy_body(body)
             if self.path == "/api/logs/system/clear":
+                shared_local_write_plan(self.path, body)
                 clear_system_logs()
                 self.send_json({"ok": True, "cleared": True})
+                return
+            if parsed_request.path == "/api/core/operations/cancel":
+                operation_id = str(body.get("operationId") or "").strip()
+                if not operation_id:
+                    self.send_json({"ok": False, "error": "缺少 operationId"}, 400)
+                    return
+                result = SHARED_PYTHON_CORE.cancel_operation(operation_id)
+                self.send_json(result, 200 if result.get("ok") else 404)
                 return
             if (
                 self.path != "/api/logs/account"
@@ -36064,10 +37210,15 @@ class Handler(SimpleHTTPRequestHandler):
             ):
                 system_log(f"收到请求 {self.path}", source="http", session_id=str(body.get("sessionId") or body.get("config", {}).get("sessionId") or ""))
             if self.path == "/api/logs/account":
-                sid = str(body.get("sessionId") or "")
-                msg = str(body.get("message") or "").strip()
-                if msg:
-                    account_log(sid, msg, level=str(body.get("level") or "info"), source=str(body.get("source") or "frontend"))
+                plan = shared_local_write_plan(self.path, body)
+                write = dict(plan.get("write") or {})
+                sid = str(write.get("accountRef") or "")
+                account_log(
+                    sid,
+                    str(write.get("message") or ""),
+                    level=str(write.get("level") or "info"),
+                    source=str(write.get("source") or "frontend"),
+                )
                 self.send_json({"ok": True})
                 return
             if self.path == "/api/automation/start-saved-all":
@@ -36076,280 +37227,166 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if self.path == "/api/automation/start-saved":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "开始执行保存任务")
-                if sess.get("savedTasksStarted"):
+                with ACCOUNT_LOCK:
+                    acc = dict(ACCOUNTS.get(sid) or {})
+                if not acc:
+                    raise RuntimeError("账号记录不存在")
+                sess = SESSIONS.get(sid)
+                sess = sess if isinstance(sess, dict) else None
+                drain_requested = "drainConfirmedFeatures" in body
+                if drain_requested:
+                    if str(body.get("confirm") or "") != (
+                        OPERATOR_DRAIN_CONFIRM
+                    ):
+                        self.send_json({
+                            "ok": False,
+                            "error": (
+                                "单步接管已确认战斗需要 confirm="
+                                + OPERATOR_DRAIN_CONFIRM
+                            ),
+                        }, 400)
+                        return
+                    if sess is None:
+                        raise RuntimeError("单步接管需要在线宿主 Session")
+                    try:
+                        drained = drain_confirmed_expeditions(
+                            sess,
+                            body.get("drainConfirmedFeatures"),
+                        )
+                    except ValueError as error:
+                        self.send_json({
+                            "ok": False,
+                            "error": str(error),
+                        }, 400)
+                        return
+                    self.send_json(
+                        drained,
+                        200 if drained.get("ok") else 409,
+                    )
+                    return
+                reconcile_requested = "reconcileUncertainFeatures" in body
+                if reconcile_requested:
+                    if str(body.get("confirm") or "") != (
+                        OPERATOR_RECONCILIATION_CONFIRM
+                    ):
+                        self.send_json({
+                            "ok": False,
+                            "error": (
+                                "人工结清旧出征账本需要 confirm="
+                                + OPERATOR_RECONCILIATION_CONFIRM
+                            ),
+                        }, 400)
+                        return
+                    if sess is None:
+                        raise RuntimeError("人工结清需要在线宿主 Session")
+                    try:
+                        reconciliation = reconcile_uncertain_expeditions(
+                            sess,
+                            body.get("reconcileUncertainFeatures"),
+                            resume_after_reconciliation=bool(
+                                body.get("resumeAfterReconcile", False)
+                            ),
+                        )
+                    except ValueError as error:
+                        self.send_json({
+                            "ok": False,
+                            "error": str(error),
+                        }, 400)
+                        return
+                    self.send_json(
+                        reconciliation,
+                        200 if reconciliation.get("ok") else 409,
+                    )
+                    return
+                plan = shared_local_write_plan(
+                    self.path,
+                    {
+                        **body,
+                        "accountRef": sid,
+                        "accountEnabled": bool(acc.get("started")),
+                        "loginState": str(acc.get("status") or "stopped"),
+                        "hasLiveSession": sess is not None,
+                        "savedTasksStarted": bool(
+                            (sess or {}).get("savedTasksStarted")
+                            or acc.get("savedTasksStarted")
+                        ),
+                        "executionOwnerActive": True,
+                    },
+                )
+                write = dict(plan.get("write") or {})
+                response_plan = dict(plan.get("response") or {})
+                if response_plan.get("alreadyStarted"):
                     self.send_json({
                         "ok": True,
                         "alreadyStarted": True,
+                        "waitingForAccountStart": False,
                         "result": {"resumed": {}, "oneTime": {}, "errors": {}},
-                        "taskOverview": current_task_overview(sess),
+                        "taskOverview": current_task_overview(sess or {}),
                     })
                     return
-                result = resume_saved_resident_tasks(sess)
+                activate_now = bool(write.get("activateNow"))
+                if activate_now:
+                    if sess is None:
+                        raise RuntimeError("共享任务计划要求立即执行，但宿主 Session 已不存在")
+                    result = resume_saved_resident_tasks(sess)
+                else:
+                    with ACCOUNT_LOCK:
+                        if sid in ACCOUNTS:
+                            ACCOUNTS[sid]["savedTasksStarted"] = bool(
+                                write.get("savedTasksStarted", True)
+                            )
+                    if sess is not None:
+                        sess["savedTasksStarted"] = bool(
+                            write.get("savedTasksStarted", True)
+                        )
+                        sess["savedTasksStartedAt"] = now_ms()
+                    persist_runtime_state()
+                    result = {"resumed": {}, "oneTime": {}, "errors": {}}
                 account_log(
                     sid,
-                    "用户点击开始执行任务，已按该账号保存设置提交全部可恢复任务",
+                    (
+                        "用户点击开始执行任务，已提交全部保存任务"
+                        if activate_now
+                        else "已保存开始任务意图，等待账号启动后执行"
+                    ),
                     source="frontend",
                     detail=result,
                 )
                 self.send_json({
                     "ok": True,
                     "alreadyStarted": False,
-                    "result": result,
-                    "taskOverview": current_task_overview(sess),
-                })
-                return
-            if self.path == "/api/daily/arena-coins/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "领取竞技币")
-                result = claim_arena_coins(sess)
-                if result.get("success"):
-                    record_daily_task_completion(
-                        sess,
-                        "arenaCoins",
-                        source=("manual-duplicate" if result.get("duplicateClaim") else "manual"),
-                    )
-                log_arena_coin_claim_result(
-                    sess,
-                    result,
-                    source="automation",
-                )
-                self.send_json({
-                    "ok": True,
-                    "result": result,
-                    "taskOverview": current_task_overview(sess),
-                })
-                return
-            if self.path == "/api/daily/donate/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "国家捐献")
-                with daily_feature_lock(sess, "autoDonate"):
-                    if daily_task_is_completed(sess, "autoDonate"):
-                        self.send_json({
-                            "ok": True,
-                            "alreadyCompleted": True,
-                            "result": {"success": True, "message": "今日已经完成捐献"},
-                            "taskOverview": current_task_overview(sess),
-                        })
-                        return
-                    result = execute_daily_country_donations(sess)
-                    if result.get("completed"):
-                        record_daily_task_completion(sess, "autoDonate", source="manual")
-                    if result.get("success"):
-                        record_success_action(
-                            sid,
-                            "捐献",
-                            str(result.get("message") or "三项捐献已完成"),
-                            detail=result,
-                        )
-                    log_daily_feature_result(
-                        sess,
-                        "autoDonate",
-                        result,
-                        source="manual",
-                    )
-                self.send_json({
-                    "ok": True,
-                    "alreadyCompleted": False,
-                    "result": result,
-                    "taskOverview": current_task_overview(sess),
-                })
-                return
-            if self.path == "/api/daily/general-visit/candidates":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "查询可拜访名将")
-                try:
-                    result = query_general_visit_candidates(sess)
-                except GameApplicationResponseError as exc:
-                    # Lacking an office, having no visit quota, or a similar
-                    # game-rule rejection is an expected business outcome,
-                    # not a backend traceback.  Preserve a machine-readable
-                    # 422 so both the WebView and native client can explain
-                    # why the candidate list is unavailable.
-                    self.send_json({
-                        "ok": False,
-                        "code": "GENERAL_VISIT_UNAVAILABLE",
-                        "error": str(exc),
-                        "businessRejected": True,
-                        "generals": [],
-                        "candidates": [],
-                    }, 422)
-                    return
-                self.send_json({"ok": True, **result})
-                return
-            if self.path == "/api/daily/salary/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "领取国家俸禄")
-                with daily_feature_lock(sess, "salary"):
-                    already_completed = daily_task_is_completed(sess, "salary")
-                    if already_completed:
-                        result = {"success": True, "completed": True, "message": "今日已经领取国家俸禄"}
-                    else:
-                        result = claim_national_salary(sess)
-                        result["completed"] = bool(result.get("success"))
-                        if result.get("success"):
-                            if result.get("skipped"):
-                                record_daily_task_completion(
-                                    sess, "salary", source="manual", result=result,
-                                )
-                            else:
-                                record_daily_task_completion(sess, "salary", source="manual")
-                        log_daily_feature_result(sess, "salary", result, source="manual")
-                self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
-                return
-            if self.path == "/api/daily/national-collect/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "国家征收")
-                with daily_feature_lock(sess, "nationalCollect"):
-                    already_completed = daily_task_is_completed(sess, "nationalCollect")
-                    if already_completed:
-                        result = {"success": True, "completed": True, "message": "今日已经完成国家征收"}
-                    else:
-                        result = execute_national_collect(sess)
-                        if result.get("completed"):
-                            if result.get("skipped"):
-                                record_daily_task_completion(
-                                    sess, "nationalCollect", source="manual", result=result,
-                                )
-                            else:
-                                record_daily_task_completion(
-                                    sess, "nationalCollect", source="manual",
-                                )
-                        log_daily_feature_result(sess, "nationalCollect", result, source="manual")
-                self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
-                return
-            if self.path == "/api/daily/city-lord-collect/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "城主征收")
-                with daily_feature_lock(sess, "cityLordCollect"):
-                    already_completed = daily_task_is_completed(sess, "cityLordCollect")
-                    if already_completed:
-                        result = {"success": True, "completed": True, "message": "今日已经完成城主征收"}
-                    else:
-                        result = execute_city_lord_collect(sess)
-                        if result.get("completed"):
-                            record_daily_task_completion(sess, "cityLordCollect", source="manual")
-                        log_daily_feature_result(sess, "cityLordCollect", result, source="manual")
-                self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
-                return
-            if self.path == "/api/daily/general-visit/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "名将拜访")
-                selected = normalize_general_visit_ids(body.get("generalVisitGeneralIds"))
-                with daily_feature_lock(sess, "generalVisit"):
-                    already_completed = daily_task_is_completed(sess, "generalVisit")
-                    if already_completed:
-                        result = {"success": True, "completed": True, "message": "今日已经完成名将拜访"}
-                    else:
-                        result = execute_general_visit(sess, selected)
-                        if result.get("completed"):
-                            if result.get("skipped"):
-                                record_daily_task_completion(
-                                    sess, "generalVisit", source="manual", result=result,
-                                )
-                            else:
-                                record_daily_task_completion(
-                                    sess, "generalVisit", source="manual",
-                                )
-                        log_daily_feature_result(sess, "generalVisit", result, source="manual")
-                self.send_json({"ok": True, "alreadyCompleted": already_completed, "result": result, "taskOverview": current_task_overview(sess)})
-                return
-            if self.path == "/api/daily/donate/custom":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "国家捐献")
-                limits = country_donation_limits(sess)
-                role_state = sess.get("roleState") or {}
-                requested = {
-                    "copper": max(0, int(body.get("copper") or 0)),
-                    "food": max(0, int(body.get("food") or 0)),
-                }
-                available = {
-                    "copper": max(0, int(role_state.get("copper") or 0)),
-                    "food": max(0, int(role_state.get("food") or 0)),
-                }
-                actions = []
-                for resource in ("copper", "food"):
-                    amount = min(
-                        requested[resource],
-                        available[resource],
-                        int(limits[resource]),
-                    )
-                    if amount > 0:
-                        actions.append(execute_country_donation(
-                            sess,
-                            resource=resource,
-                            amount=amount,
-                        ))
-                success = bool(actions) and all(
-                    action.get("success") for action in actions
-                )
-                result = {
-                    "success": success,
-                    "message": (
-                        "自定义国家捐献完成："
-                        + "、".join(
-                            f"{action.get('amount')}粮食"
-                            if action.get("resource") == "food"
-                            else f"{action.get('amount')}铜钱"
-                            for action in actions
-                        )
-                        if success else "没有可执行的捐献或游戏服未确认成功"
+                    "waitingForAccountStart": bool(
+                        response_plan.get("waitingForAccountStart")
                     ),
-                    "actions": actions,
-                    "limits": limits,
-                }
-                if success:
-                    record_success_action(
-                        sid,
-                        "捐献",
-                        result["message"],
-                        detail=result,
-                    )
-                    record_daily_task_completion(
-                        sess,
-                        "autoDonate",
-                        source="manual-custom",
-                    )
-                account_log(
-                    sid,
-                    result["message"],
-                    level=("info" if success else "error"),
-                    source="manual-donate",
-                    detail=result,
-                )
-                self.send_json({"ok": True, "result": result})
-                return
-            if self.path == "/api/daily/sign-in/claim":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "自动签到")
-                result = claim_daily_sign_in(sess)
-                if result.get("success"):
-                    record_daily_task_completion(
-                        sess,
-                        "autoSignIn",
-                        source=("manual-duplicate" if result.get("duplicateClaim") else "manual"),
-                    )
-                log_daily_sign_in_result(sess, result, source="automation")
-                self.send_json({
-                    "ok": True,
                     "result": result,
-                    "taskOverview": current_task_overview(sess),
+                    "taskOverview": current_task_overview(sess or {}),
                 })
+                return
+            if parsed_request.path in DESKTOP_SHARED_DAILY_OPERATION_ROUTES:
+                sid = str(body.get("sessionId") or body.get("accountRef") or "")
+                get_session(sid)
+                require_account_online(sid, "共享核心日常操作")
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    parsed_request.path,
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": (
+                            f"desktop-daily-{now_ms()}-{sid}-"
+                            f"{parsed_request.path.rsplit('/', 1)[-1]}"
+                        ),
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/notices/dismiss":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                notice_key = str(body.get("noticeKey") or "")
+                sess, _has_live_session = get_local_settings_context(sid)
+                plan = shared_local_write_plan(self.path, body)
+                write = dict(plan.get("write") or {})
+                notice_key = str(write.get("noticeKey") or "")
                 deleted = dismiss_important_notice(sess, notice_key)
                 self.send_json({
                     "ok": True,
@@ -36686,23 +37723,69 @@ class Handler(SimpleHTTPRequestHandler):
                 server_query = str(
                     body.get("serverQuery") or default_server_query(platform)
                 )
+                prepared = SHARED_PYTHON_CORE.account_add_prepare({
+                    **body,
+                    "passwordPresent": bool(password),
+                    "supportedPlatformKeys": ["sglm", "downjoy"],
+                })
+                plan = dict(prepared.get("plan") or {})
+                if plan.get("networkRequired") is not False:
+                    raise RuntimeError("共享账号草稿计划无效")
+                record = dict(plan.get("record") or {})
                 acc = add_local_account(
                     username,
                     password,
                     server_query,
                     platform=platform,
                     serial=str(body.get("serial") or "0"),
+                    account_ref=str(record.get("accountRef") or ""),
                 )
-                account_log(str(acc.get("sessionId") or ""), f"添加账号记录：{username}@{server_query}", source="server")
-                self.send_json({"ok": True, "account": acc})
+                account_ref = str(acc.get("sessionId") or "")
+                if account_ref != str(record.get("accountRef") or ""):
+                    record["accountRef"] = account_ref
+                    record["id"] = account_ref
+                SHARED_PYTHON_CORE.account_record_upsert(record)
+                account_log(
+                    account_ref,
+                    f"已安全保存账号草稿，正在验证真实登录：{username}@{server_query}",
+                    source="server",
+                )
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/accounts/add",
+                    {"accountRef": account_ref},
+                    {
+                        "requestId": f"desktop-account-add-{now_ms()}-{account_ref}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/accounts/start":
-                acc = start_account(str(body.get("sessionId") or ""))
-                account_log(str(acc.get("sessionId") or ""), f"账号启动：{acc.get('statusText') or acc.get('status')}", source="server")
-                self.send_json({"ok": True, "account": acc})
+                sid = str(body.get("sessionId") or body.get("accountRef") or "")
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/accounts/start",
+                    {"accountRef": sid},
+                    {
+                        "requestId": f"desktop-account-start-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/accounts/stop":
-                acc = stop_account(str(body.get("sessionId") or ""))
+                sid = str(body.get("sessionId") or "")
+                plan = shared_local_write_plan(
+                    self.path,
+                    {**body, "accountRef": sid},
+                )
+                write = dict(plan.get("write") or {})
+                if str(write.get("accountRef") or "") != sid:
+                    raise RuntimeError("共享停止账号计划账号不匹配")
+                acc = stop_account(sid)
                 account_log(str(acc.get("sessionId") or ""), "账号关闭", source="server")
                 self.send_json({"ok": True, "account": acc})
                 return
@@ -36710,6 +37793,13 @@ class Handler(SimpleHTTPRequestHandler):
                 sid = str(body.get("sessionId") or "")
                 if not sid:
                     raise RuntimeError("缺少 sessionId")
+                plan = shared_local_write_plan(
+                    self.path,
+                    {**body, "accountRef": sid},
+                )
+                write = dict(plan.get("write") or {})
+                if not bool(write.get("deleteCredentialFirst")):
+                    raise RuntimeError("共享删除账号计划未要求先删凭据")
                 account_log(sid, "删除账号记录", source="server")
                 delete_account(sid)
                 with ACCOUNT_LOCK:
@@ -36718,56 +37808,99 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if self.path == "/api/brush/search":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "找黄")
-                require_brush_level(sess)
-                brush_general_state_preflight(sess, str(body.get("generalId") or ""), "找黄", require_saved_formation=True)
-                self.send_json({"ok": True, **search_targets(sess, body)})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/brush/search",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-brush-search-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/brush/execute":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "出征")
-                require_brush_level(sess)
-                raw_general_ids = body.get("generalIds")
-                general_ids = raw_general_ids if isinstance(raw_general_ids, list) else [body.get("generalId")]
-                for general_id in general_ids:
-                    if str(general_id or "").strip():
-                        brush_general_state_preflight(sess, str(general_id), "出征", require_saved_formation=True)
-                result = execute_brush(sess, body)
-                if result.get("success"):
-                    result["settlementPending"] = True
-                    result["counted"] = False
-                    result["dailyBrushCount"] = get_daily_brush_count(sess)
-                    result["dailyStats"] = current_daily_stats(sess)
-                self.send_json({"ok": True, **result})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/brush/execute",
+                    _desktop_expedition_body({**body, "accountRef": sid}),
+                    {
+                        "requestId": f"desktop-brush-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/mine/search":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "找矿")
-                self.send_json({"ok": True, **search_mine_targets(sess, body)})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/mine/search",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-mine-search-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/mine/execute":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "打矿")
-                self.send_json({"ok": True, **execute_mine(sess, body)})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/mine/execute",
+                    _desktop_expedition_body({**body, "accountRef": sid}),
+                    {
+                        "requestId": f"desktop-mine-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/liubu/hubu/query":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "读取户部种植")
-                self.send_json({"ok": True, **query_hubu_plant_state(sess)})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/liubu/hubu/query",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-hubu-query-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/liubu/hubu/plant":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "批量种菜")
-                self.send_json({"ok": True, **execute_hubu_batch_plant(
-                    sess,
-                    confirm=str(body.get("confirm") or ""),
-                )})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/liubu/hubu/plant",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-hubu-plant-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/liubu/save":
                 sid = str(body.get("sessionId") or "")
@@ -36854,22 +37987,50 @@ class Handler(SimpleHTTPRequestHandler):
                     if isinstance(body.get("settings"), dict)
                     else body
                 )
-                settings = normalize_mine_settings(sess, raw_settings)
-                persisted = {
-                    "speed": settings.get("speed"),
-                    "fullLoyalty": settings.get("fullLoyalty"),
-                    "replenishTroops": settings.get("replenishTroops"),
-                    "maxMarchMinutes": settings.get("maxMarchMinutes"),
-                    "centerX": settings.get("centerX"),
-                    "centerY": settings.get("centerY"),
-                    "targetPlayerName": settings.get("targetPlayerName"),
-                    "rows": settings.get("uiRows") or [],
+                write_plan = shared_settings_write_plan(
+                    self.path,
+                    {
+                        "settings": raw_settings,
+                        "knownGenerals": list(sess.get("generals") or []),
+                    },
+                )
+                response_fields = write_plan.get("response") or {}
+                persisted = dict(response_fields.get("settings") or {})
+                execution_rows = list(response_fields.get("executionRows") or [])
+                execution_settings = {
+                    **persisted,
+                    "rows": execution_rows,
+                    "uiRows": list(persisted.get("rows") or []),
                 }
                 saved_files = save_account_habits(sess, mine=persisted)
-                if settings.get("rows"):
-                    require_account_online(sid, "启动打矿")
-                    mine_task = start_auto_mine(sess, settings)
+                resident_automation_sync = try_sync_shared_resident_automation(
+                    sess
+                )
+                with ACCOUNT_LOCK:
+                    account_started = bool(
+                        (ACCOUNTS.get(sid) or {}).get("started")
+                    )
+                if write_plan.get("activationAllowed") and account_started:
+                    try:
+                        mine_task = start_auto_mine(sess, execution_settings)
+                    except Exception as exc:
+                        mine_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，打矿任务启动失败",
+                        }
                     stopped_task_ids: list[str] = []
+                elif write_plan.get("activationAllowed"):
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "auto-mine",
+                        "打矿设置已保存，等待用户开始执行任务",
+                    )
+                    mine_task = {
+                        "started": False,
+                        "waitingForAccountStart": True,
+                        "reason": "设置已保存，等待用户开始执行任务",
+                    }
                 else:
                     stopped_task_ids = request_stop_tasks_for_session_type(
                         sid,
@@ -36883,24 +38044,33 @@ class Handler(SimpleHTTPRequestHandler):
                     }
                 account_log(
                     sid,
-                    f"保存打矿配置：启用 {len(settings.get('rows') or [])} 条",
+                    f"保存打矿配置：启用 {len(execution_rows)} 条",
                     source="server",
                     detail={
                         "settings": persisted,
-                        "executionRows": settings.get("rows") or [],
+                        "executionRows": execution_rows,
                         "savedFiles": saved_files,
                     },
                 )
                 self.send_json({
                     "ok": True,
                     "saved": True,
-                    "disabled": not bool(settings.get("rows")),
+                    "disabled": bool(write_plan.get("disabled")),
                     "settings": persisted,
-                    "executionRows": settings.get("rows") or [],
+                    "executionRows": execution_rows,
                     "savedFiles": saved_files,
+                    "residentAutomationSync": resident_automation_sync,
                     "mineTask": mine_task,
                     "task": mine_task.get("task"),
                     "stoppedTaskIds": stopped_task_ids,
+                    "reason": mine_task.get("reason") or response_fields.get("reason"),
+                    "execution": {
+                        "accepted": bool(write_plan.get("activationAllowed")),
+                        "started": bool(mine_task.get("started")),
+                        "waitingForAccountStart": bool(
+                            mine_task.get("waitingForAccountStart")
+                        ),
+                    },
                     "accountHabits": load_account_habits(sess),
                     "taskOverview": current_task_overview(sess),
                 })
@@ -36916,58 +38086,129 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if self.path == "/api/raid/fiefs":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "查询掠夺目标")
-                player_name = str(body.get("playerName") or "").strip()
-                result = query_raid_fiefs(sess, player_name)
-                self.send_json({"ok": True, **result})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/raid/fiefs",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-raid-fiefs-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/raid/execute":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "掠夺")
-                if str(body.get("confirm") or "") != "raid":
-                    raise RuntimeError("真实掠夺需要 confirm=raid")
-                rows = normalize_raid_rows(sess, body)
-                account_log(sid, f"保存掠夺请求：{len(rows)} 条规则", source="server", detail={"rows": rows})
-                saved_files = save_account_habits(sess, raid={
-                    "fullTroops": bool(rows[0].get("fullTroops", True)) if rows else True,
-                    "duration": str(rows[0].get("duration") or body.get("duration") or "立即出征") if rows else "立即出征",
-                    "fullLoyalty": bool(rows[0].get("fullLoyalty", False)) if rows else False,
-                    "rows": rows,
-                })
-                raid_task = start_raid_task(sess, rows)
+                sess, has_live_session = get_local_settings_context(sid)
+                planning_body = dict(body)
+                planning_body["knownGenerals"] = list(sess.get("generals") or [])
+                write_plan = shared_settings_write_plan(self.path, planning_body)
+                response_fields = write_plan.get("response") or {}
+                persisted = dict(response_fields.get("settings") or {})
+                ui_rows = list(response_fields.get("rows") or [])
+                execution_rows = list(response_fields.get("executionRows") or [])
+                saved_files = save_account_habits(sess, raid=persisted)
+                with ACCOUNT_LOCK:
+                    account_started = bool((ACCOUNTS.get(sid) or {}).get("started"))
+                stopped_task_ids: list[str] = []
+                if (
+                    write_plan.get("activationAllowed")
+                    and account_started
+                    and has_live_session
+                ):
+                    try:
+                        raid_task = start_raid_task(sess, execution_rows)
+                    except Exception as exc:
+                        raid_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，掠夺任务启动失败",
+                        }
+                elif write_plan.get("activationAllowed"):
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "raid",
+                        "掠夺设置已保存，等待用户开始执行任务",
+                    )
+                    raid_task = {
+                        "started": False,
+                        "waitingForAccountStart": True,
+                        "reason": "设置已保存，等待用户开始执行任务",
+                    }
+                else:
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "raid",
+                        "掠夺配置已关闭",
+                    )
+                    raid_task = {
+                        "started": False,
+                        "disabled": True,
+                        "reason": str(response_fields.get("reason") or "掠夺任务已关闭"),
+                    }
+                account_log(
+                    sid,
+                    f"保存掠夺请求：{len(execution_rows)} 条启用规则",
+                    source="server",
+                    detail={
+                        "settings": persisted,
+                        "executionRows": execution_rows,
+                        "savedFiles": saved_files,
+                    },
+                )
                 self.send_json({
                     "ok": True,
                     "saved": True,
+                    "disabled": bool(write_plan.get("disabled")),
                     "savedFiles": saved_files,
-                    "rows": rows,
+                    "settings": persisted,
+                    "rows": ui_rows,
+                    "executionRows": execution_rows,
                     "raidTask": raid_task,
                     "task": raid_task.get("task") if raid_task.get("started") else None,
+                    "stoppedTaskIds": stopped_task_ids,
+                    "reason": raid_task.get("reason") or response_fields.get("reason"),
+                    "execution": {
+                        "accepted": bool(write_plan.get("activationAllowed")),
+                        "started": bool(raid_task.get("started")),
+                        "waitingForAccountStart": bool(
+                            raid_task.get("waitingForAccountStart")
+                        ),
+                    },
                     "accountHabits": load_account_habits(sess),
+                    "taskOverview": current_task_overview(sess),
                 })
                 return
             if self.path == "/api/lossless/execute":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "无损")
-                if str(body.get("confirm") or "") != "lossless":
-                    raise RuntimeError("真实无损需要confirm=lossless")
-                raw_settings = body.get("settings") if isinstance(body.get("settings"), dict) else body
-                ui_settings = normalize_military_future_settings("lossless", raw_settings)
-                ui_rows = list(ui_settings.get("rows") or [])
-                execution_rows = normalize_lossless_rows(sess, ui_settings)
-                account_log(
-                    sid,
-                    f"保存无损请求：启用{len(execution_rows)}条，共配置{len(ui_rows)}条",
-                    source="server",
-                    detail={"settings": ui_settings, "executionRows": execution_rows},
-                )
+                sess, has_live_session = get_local_settings_context(sid)
+                planning_body = dict(body)
+                planning_body["knownGenerals"] = list(sess.get("generals") or [])
+                write_plan = shared_settings_write_plan(self.path, planning_body)
+                response_fields = write_plan.get("response") or {}
+                ui_settings = dict(response_fields.get("settings") or {})
+                ui_rows = list(response_fields.get("rows") or [])
+                execution_rows = list(response_fields.get("executionRows") or [])
                 saved_files = save_account_habits(
                     sess,
                     military_future={"lossless": ui_settings},
                 )
-                if not execution_rows:
+                account_log(
+                    sid,
+                    f"保存无损请求：启用{len(execution_rows)}条，共配置{len(ui_rows)}条",
+                    source="server",
+                    detail={
+                        "settings": ui_settings,
+                        "executionRows": execution_rows,
+                        "savedFiles": saved_files,
+                    },
+                )
+                with ACCOUNT_LOCK:
+                    account_started = bool((ACCOUNTS.get(sid) or {}).get("started"))
+                if not write_plan.get("activationAllowed"):
                     stopped_task_ids = request_stop_tasks_for_session_type(
                         sid,
                         "lossless",
@@ -36979,73 +38220,99 @@ class Handler(SimpleHTTPRequestHandler):
                         "reason": "未启用任何无损编队，无损常驻任务已关闭",
                         "stoppedTaskIds": stopped_task_ids,
                     }
-                    self.send_json({
-                        "ok": True,
-                        "saved": True,
-                        "disabled": True,
-                        "savedFiles": saved_files,
-                        "settings": ui_settings,
-                        "rows": ui_rows,
-                        "executionRows": [],
-                        "stoppedTaskIds": stopped_task_ids,
-                        "losslessTask": lossless_task,
-                        "task": None,
-                        "accountHabits": load_account_habits(sess),
-                        "taskOverview": current_task_overview(sess),
-                    })
-                    return
-                lossless_task = start_lossless_task(sess, execution_rows)
+                elif account_started and has_live_session:
+                    try:
+                        lossless_task = start_lossless_task(sess, execution_rows)
+                        stopped_task_ids = list(
+                            lossless_task.get("stoppedOldTaskIds") or []
+                        )
+                    except Exception as exc:
+                        stopped_task_ids = []
+                        lossless_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，无损任务启动失败",
+                        }
+                else:
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "lossless",
+                        "无损设置已保存，等待用户开始执行任务",
+                    )
+                    lossless_task = {
+                        "started": False,
+                        "waitingForAccountStart": True,
+                        "reason": "设置已保存，等待用户开始执行任务",
+                    }
                 self.send_json({
                     "ok": True,
                     "saved": True,
+                    "disabled": bool(write_plan.get("disabled")),
                     "savedFiles": saved_files,
                     "settings": ui_settings,
                     "rows": ui_rows,
                     "executionRows": execution_rows,
                     "losslessTask": lossless_task,
                     "task": lossless_task.get("task") if lossless_task.get("started") else None,
+                    "stoppedTaskIds": stopped_task_ids,
+                    "reason": lossless_task.get("reason") or response_fields.get("reason"),
+                    "execution": {
+                        "accepted": bool(write_plan.get("activationAllowed")),
+                        "started": bool(lossless_task.get("started")),
+                        "waitingForAccountStart": bool(
+                            lossless_task.get("waitingForAccountStart")
+                        ),
+                    },
                     "accountHabits": load_account_habits(sess),
                     "taskOverview": current_task_overview(sess),
                 })
                 return
             if self.path == "/api/dungeon/execute":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
-                require_account_online(sid, "副本")
-                if str(body.get("confirm") or "") != "dungeon":
-                    raise RuntimeError("真实副本需要 confirm=dungeon")
-                raw_rows = body.get("rows")
-                if not isinstance(raw_rows, list):
-                    raw_rows = [body]
-                ui_settings = normalize_military_future_settings(
-                    "dungeon",
-                    {
-                        "rows": raw_rows,
-                        "mode": body.get("mode"),
-                        "clearStages": body.get("clearStages"),
-                    },
-                )
-                ui_rows = ui_settings.get("rows") or []
-                dungeon_mode = normalize_dungeon_mode(ui_settings.get("mode"))
-                rows = normalize_dungeon_rows(
+                sess, has_live_session = get_local_settings_context(sid)
+                planning_body = dict(body)
+                planning_body["knownGenerals"] = list(sess.get("generals") or [])
+                write_plan = shared_settings_write_plan(self.path, planning_body)
+                response_fields = write_plan.get("response") or {}
+                ui_settings = dict(response_fields.get("settings") or {})
+                ui_rows = list(response_fields.get("rows") or [])
+                dungeon_mode = str(response_fields.get("mode") or DUNGEON_MODE_LOOP)
+                rows = list(response_fields.get("executionRows") or [])
+                saved_files = save_account_habits(
                     sess,
-                    {"rows": ui_rows},
-                    mode=dungeon_mode,
+                    military_future={"dungeon": ui_settings},
                 )
+                defeat_acknowledgement = {
+                    "ok": True,
+                    "acknowledged": False,
+                    "reason": "dungeon-config-disabled",
+                }
+                if write_plan.get("acknowledgeDefeatOnSave"):
+                    try:
+                        defeat_acknowledgement = (
+                            SHARED_PYTHON_CORE.acknowledge_dungeon_defeat(sid)
+                        )
+                    except Exception as exc:
+                        defeat_acknowledgement = {
+                            "ok": False,
+                            "acknowledged": False,
+                            "reason": str(exc),
+                        }
                 account_log(
                     sid,
                     f"保存副本请求：模式={'打通副本' if dungeon_mode == DUNGEON_MODE_CLEAR else '循环刷指定关卡'}；"
                     f"启用 {len(rows)} 条，共配置 {len(ui_rows)} 条",
                     source="server",
-                    detail={"mode": dungeon_mode, "rows": ui_rows, "executionRows": rows},
-                )
-                saved_files = save_account_habits(
-                    sess,
-                    military_future={
-                        "dungeon": {"mode": dungeon_mode, "rows": ui_rows},
+                    detail={
+                        "mode": dungeon_mode,
+                        "rows": ui_rows,
+                        "executionRows": rows,
+                        "savedFiles": saved_files,
                     },
                 )
-                if not rows:
+                with ACCOUNT_LOCK:
+                    account_started = bool((ACCOUNTS.get(sid) or {}).get("started"))
+                if not write_plan.get("activationAllowed"):
                     stopped_task_ids = request_stop_tasks_for_session_type(
                         sid,
                         "dungeon",
@@ -37057,35 +38324,57 @@ class Handler(SimpleHTTPRequestHandler):
                         "reason": "未启用任何副本编队，副本循环任务已关闭",
                         "stoppedTaskIds": stopped_task_ids,
                     }
-                    self.send_json({
-                        "ok": True,
-                        "saved": True,
-                        "disabled": True,
-                        "savedFiles": saved_files,
-                        "rows": ui_rows,
-                        "mode": dungeon_mode,
-                        "executionRows": [],
-                        "stoppedTaskIds": stopped_task_ids,
-                        "dungeonTask": dungeon_task,
-                        "task": None,
-                        "accountHabits": load_account_habits(sess),
-                    })
-                    return
-                dungeon_task = (
-                    start_dungeon_task(sess, rows, mode=dungeon_mode)
-                    if dungeon_mode == DUNGEON_MODE_CLEAR
-                    else start_dungeon_task(sess, rows)
-                )
+                elif account_started and has_live_session:
+                    try:
+                        dungeon_task = start_dungeon_task(
+                            sess,
+                            rows,
+                            mode=dungeon_mode,
+                        )
+                        stopped_task_ids = list(
+                            dungeon_task.get("stoppedOldTaskIds") or []
+                        )
+                    except Exception as exc:
+                        stopped_task_ids = []
+                        dungeon_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，副本任务启动失败",
+                        }
+                else:
+                    stopped_task_ids = request_stop_tasks_for_session_type(
+                        sid,
+                        "dungeon",
+                        "副本设置已保存，等待用户开始执行任务",
+                    )
+                    dungeon_task = {
+                        "started": False,
+                        "waitingForAccountStart": True,
+                        "reason": "设置已保存，等待用户开始执行任务",
+                    }
                 self.send_json({
                     "ok": True,
                     "saved": True,
+                    "disabled": bool(write_plan.get("disabled")),
                     "savedFiles": saved_files,
+                    "settings": ui_settings,
                     "rows": ui_rows,
                     "mode": dungeon_mode,
                     "executionRows": rows,
+                    "defeatPauseAcknowledgement": defeat_acknowledgement,
                     "dungeonTask": dungeon_task,
                     "task": dungeon_task.get("task") if dungeon_task.get("started") else None,
+                    "stoppedTaskIds": stopped_task_ids,
+                    "reason": dungeon_task.get("reason") or response_fields.get("reason"),
+                    "execution": {
+                        "accepted": bool(write_plan.get("activationAllowed")),
+                        "started": bool(dungeon_task.get("started")),
+                        "waitingForAccountStart": bool(
+                            dungeon_task.get("waitingForAccountStart")
+                        ),
+                    },
                     "accountHabits": load_account_habits(sess),
+                    "taskOverview": current_task_overview(sess),
                 })
                 return
             if self.path == "/api/military/future/save":
@@ -37110,101 +38399,84 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if self.path == "/api/troops/refill":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "补兵")
-                general_ids = [str(x) for x in (body.get("generalIds") or ([body.get("generalId")] if body.get("generalId") else []))]
-                self.send_json({"ok": True, **execute_refill_troops(sess, general_ids, confirm=str(body.get("confirm") or ""))})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/troops/refill",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-troops-refill-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/inventory/open-one":
-                sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                sid = str(body.get("sessionId") or body.get("accountRef") or "")
+                get_session(sid)
                 require_account_online(sid, "开启宝箱")
-                if str(body.get("confirm") or "") != "open-one":
-                    raise RuntimeError("单次开箱需要 confirm=open-one")
-                name = str(body.get("itemName") or "").strip()
-                if name not in AUTO_OPEN_ITEM_NAMES:
-                    raise RuntimeError("该物品不在自动开箱允许范围")
-                inventory = refresh_inventory(sess)
-                by_name = {
-                    str(item.get("name") or ""): item
-                    for item in inventory.get("items") or []
-                }
-                item = by_name.get(name)
-                if not item or int(item.get("count") or 0) <= 0:
-                    raise RuntimeError(f"背包中没有{name}")
-                required_key = AUTO_OPEN_KEY_REQUIREMENTS.get(name)
-                if required_key and int((by_name.get(required_key) or {}).get("count") or 0) <= 0:
-                    raise RuntimeError(f"缺少{required_key}")
-                result = use_inventory_item(
-                    sess,
-                    int(item.get("itemId") or 0),
-                    1,
-                    item_name=name,
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/inventory/open-one",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-inventory-open-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
                 )
-                refresh_inventory(sess)
-                if result.get("success"):
-                    reward_text = (
-                        inventory_reward_log_text(result.get("message"))
-                        or "服务器确认成功，未返回奖励说明"
-                    )
-                    account_log(
-                        sid,
-                        f"自动开箱成功：{name} → {reward_text}",
-                        source="manual",
-                    )
-                else:
-                    account_log(
-                        sid,
-                        f"自动开箱中止：{name}；"
-                        f"{result.get('message') or '服务器未确认成功'}",
-                        level="error",
-                        source="manual",
-                    )
-                self.send_json({"ok": True, "result": result})
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/brush/recommended-center":
                 sid = str(body.get("sessionId") or "")
                 sess = get_session(sid)
-                require_account_online(sid, "计算刷黄中心坐标")
-                require_brush_level(sess)
                 general_ids = [str(value) for value in body.get("generalIds") or []]
                 self.send_json({
                     "ok": True,
-                    **recommend_brush_center(sess, general_ids),
+                    **recommend_brush_center(
+                        sess,
+                        general_ids,
+                        enforce_role_level=True,
+                    ),
                 })
                 return
             if self.path == "/api/troops/assign":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "配兵")
-                self.send_json({"ok": True, **execute_assign_troops(
-                    sess,
-                    str(body.get("generalId") or ""),
-                    body.get("soldierType") or body.get("soldierTypeCode") or "轻骑兵",
-                    int(body.get("soldierCount") or 0),
-                    group=int(body.get("group") or 0),
-                    confirm=str(body.get("confirm") or ""),
-                )})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/troops/assign",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-troops-assign-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/troops/heal":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "治疗伤兵")
-                formation = {
-                    "generalId": str(body.get("generalId") or ""),
-                    "soldierType": body.get("soldierType") or "轻骑兵",
-                    "woundedCount": body.get("woundedCount"),
-                    "fiefId": body.get("fiefId") or body.get("placeID"),
-                }
-                self.send_json({"ok": True, **execute_heal_wounded(
-                    sess,
-                    formation,
-                    confirm=str(body.get("confirm") or ""),
-                    allow_all_if_count_unknown=bool(body.get("healAllIfCountUnknown", True)),
-                )})
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/troops/heal",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-troops-heal-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/formations/save":
-                sess = get_session(str(body.get("sessionId") or ""))
+                sid = str(body.get("sessionId") or "")
+                sess, has_live_session = get_local_settings_context(sid)
                 planning_body = dict(body)
                 planning_body["knownGenerals"] = list(sess.get("generals") or [])
                 write_plan = shared_settings_write_plan(self.path, planning_body)
@@ -37217,6 +38489,9 @@ class Handler(SimpleHTTPRequestHandler):
                 sess["unresolvedFormationGeneralIds"] = unresolved_ids
                 saved_files = save_account_habits(sess, formations=ui_formations, formation_options=formation_options)
                 persist_runtime_state()
+                resident_automation_sync = try_sync_shared_resident_automation(
+                    sess
+                )
                 account_log(
                     sess["sessionId"],
                     f"保存配兵习惯：{len(formations)} 条规则"
@@ -37236,15 +38511,40 @@ class Handler(SimpleHTTPRequestHandler):
                     account_started = bool(
                         (ACCOUNTS.get(str(sess["sessionId"])) or {}).get("started")
                     )
-                if write_plan.get("activationAllowed") and account_started:
+                if (
+                    write_plan.get("activationAllowed")
+                    and account_started
+                    and has_live_session
+                ):
                     try:
-                        apply_task = start_apply_formations_task(
-                            sess,
-                            formations,
-                            clear_other_generals=bool(
-                                formation_options.get("clearOtherGenerals")
-                            ),
+                        dispatched = SHARED_PYTHON_CORE.dispatch(
+                            "POST",
+                            "/api/formations/apply",
+                            {
+                                "accountRef": sid,
+                                "confirm": "apply-formations",
+                                "formations": formations,
+                                "formationOptions": formation_options,
+                            },
+                            {
+                                "requestId": f"desktop-formations-apply-{now_ms()}-{sid}",
+                                "source": "desktop-http-follow-up",
+                                "platform": "desktop",
+                            },
                         )
+                        if dispatched.status != 202 or not dispatched.body.get("operationId"):
+                            raise RuntimeError(
+                                str(
+                                    dispatched.body.get("error")
+                                    or "共享核心未受理实际配兵 operation"
+                                )
+                            )
+                        apply_task = {
+                            "started": True,
+                            "operationId": str(dispatched.body["operationId"]),
+                            "status": str(dispatched.body.get("status") or "QUEUED"),
+                            "deduplicated": bool(dispatched.body.get("deduplicated")),
+                        }
                     except Exception as exc:
                         apply_task = {
                             "started": False,
@@ -37256,12 +38556,12 @@ class Handler(SimpleHTTPRequestHandler):
                         "started": False,
                         "waitingForAccountStart": bool(
                             write_plan.get("activationAllowed")
-                            and not account_started
+                            and (not account_started or not has_live_session)
                         ),
                         "reason": (
                             "设置已保存，等待用户开始执行任务"
                             if write_plan.get("activationAllowed")
-                            and not account_started
+                            and (not account_started or not has_live_session)
                             else str(response_fields.get("applyReason") or "")
                         ),
                     }
@@ -37274,6 +38574,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "normalizedFormations": formations,
                     "formationOptions": formation_options,
                     "unresolvedGeneralIds": unresolved_ids,
+                    "residentAutomationSync": resident_automation_sync,
                     "applyTask": apply_task,
                     "task": apply_task.get("task") if apply_task.get("started") else None,
                     "execution": {
@@ -37286,19 +38587,37 @@ class Handler(SimpleHTTPRequestHandler):
                     "accountHabits": load_account_habits(sess),
                 })
                 return
+            if self.path == "/api/formations/apply":
+                sid = str(body.get("sessionId") or body.get("accountRef") or "")
+                get_session(sid)
+                require_account_online(sid, "实际配兵")
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/formations/apply",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-formations-apply-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
+                return
             if self.path == "/api/formations/unassign-all":
                 sid = str(body.get("sessionId") or "")
-                sess = get_session(sid)
+                get_session(sid)
                 require_account_online(sid, "一键卸兵")
-                if str(body.get("confirm") or "") != "unassign-all-troops":
-                    raise RuntimeError("一键卸兵需要 confirm=unassign-all-troops")
-                result = unassign_all_idle_generals(sess)
-                self.send_json({
-                    "ok": True,
-                    **result,
-                    "army": sess.get("army") or [],
-                    "roleState": sess.get("roleState") or {},
-                })
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/formations/unassign-all",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-unassign-all-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/settings/save":
                 sess = get_session(str(body.get("sessionId") or body.get("config", {}).get("sessionId") or ""))
@@ -37308,81 +38627,270 @@ class Handler(SimpleHTTPRequestHandler):
                     old_cfg = habits.get("config") if isinstance(habits.get("config"), dict) else {}
                 scope = str(body.get("scope") or "").strip()
                 scoped_save = bool(scope)
-                settings_warnings: list[str] = []
-                if scope == "common.daily":
-                    raw_patch = body.get("patch") if isinstance(body.get("patch"), dict) else {}
-                    raw_daily = raw_patch.get("dailyTasks") if isinstance(raw_patch.get("dailyTasks"), dict) else {}
-                    if (
-                        raw_daily.get("generalVisit")
-                        and not normalize_general_visit_ids(
-                            raw_patch.get("generalVisitGeneralIds")
-                        )
-                        and not role_is_national_citizen(sess)
-                    ):
-                        settings_warnings.append(
-                            "名将拜访未选择将领，本项未开启；其他日常设置已正常保存"
-                        )
-                if scoped_save:
-                    cfg = normalize_settings_scope_patch(
-                        sess,
-                        old_cfg,
-                        scope,
-                        body.get("patch"),
-                    )
-                else:
-                    # Backward compatibility for older desktop/mobile clients.
-                    cfg = normalize_auto_config(sess, body)
                 brush_scope_saved = not scoped_save or scope == "brush"
-                require_brush_save_level(
-                    sess,
-                    cfg,
-                    brush_scope_saved=brush_scope_saved,
+                general_scope_saved = (
+                    not scoped_save or scope == "common.frequent"
+                )
+                domestic_scope_saved = (
+                    not scoped_save or scope == "common.frequent"
+                )
+                inventory_scope_saved = (
+                    not scoped_save or scope == "common.items"
+                )
+                alarm_scope_saved = (
+                    not scoped_save or scope == "common.alarm"
+                )
+                planning_body = dict(body)
+                planning_body.update({
+                    "oldConfig": old_cfg,
+                    "session": {
+                        "sessionId": sess.get("sessionId"),
+                        "role": dict(sess.get("role") or {}),
+                        "roleState": dict(sess.get("roleState") or {}),
+                    },
+                    "knownGenerals": list(sess.get("generals") or []),
+                    "savedFormations": (
+                        heal_saved_formation_rules(sess)
+                        if brush_scope_saved else []
+                    ),
+                    "roleLevel": session_role_level(sess),
+                })
+                write_plan = shared_settings_write_plan(self.path, planning_body)
+                response_fields = write_plan.get("response") or {}
+                cfg = dict(response_fields.get("config") or {})
+                settings_warnings = list(
+                    response_fields.get("settingsWarnings") or []
                 )
                 change_summary = settings_change_summary(sess, old_cfg, cfg)
                 SAVED_CONFIGS[sess["sessionId"]] = cfg
                 saved_files = save_account_habits(sess, config=cfg)
                 persist_runtime_state()
+                if brush_scope_saved:
+                    resolve_brush_high_level_troops_notices(sess)
+                resident_automation_sync = try_sync_shared_resident_automation(
+                    sess
+                )
                 account_log(
                     sess["sessionId"],
                     change_summary,
                     source="frontend",
                     detail={"before": old_cfg, "after": cfg},
                 )
-                # 常规保存默认不重跑整天日常；但若某个日常开关本次从关→开，
-                # 只补跑这些新开项，避免“勾了俸禄却要等到明天/重登”的空洞。
-                daily_results: dict[str, Any] = {}
-                if (not scoped_save) or scope == "common.daily":
+                follow_ups = list(write_plan.get("followUpOperations") or [])
+                follow_up_kinds = {
+                    str(item.get("kind") or "")
+                    for item in follow_ups
+                    if isinstance(item, dict)
+                }
+                daily_keys = next((
+                    list(item.get("keys") or [])
+                    for item in follow_ups
+                    if isinstance(item, dict)
+                    and item.get("kind") == "run-new-daily"
+                ), [])
+                daily_results: dict[str, Any] = {
+                    "accepted": bool(daily_keys),
+                    "queuedKeys": daily_keys,
+                }
+                if daily_keys:
+                    threading.Thread(
+                        target=execute_newly_enabled_daily_tasks_on_save,
+                        args=(sess, old_cfg, cfg),
+                        name=f"settings-daily-{sess['sessionId']}",
+                        daemon=True,
+                    ).start()
+                auto_open_queued = "auto-open-inventory" in follow_up_kinds
+                inventory_enabled = desktop_inventory_resident_enabled(cfg)
+                if inventory_scope_saved and inventory_enabled:
                     try:
-                        daily_results = execute_newly_enabled_daily_tasks_on_save(
-                            sess,
-                            old_cfg,
-                            cfg,
-                        ) or {}
+                        inventory_task = start_auto_inventory(sess, cfg)
                     except Exception as exc:
-                        daily_results = {"error": str(exc)}
-                        try:
-                            account_log(
-                                sess["sessionId"],
-                                f"新开启日常项补跑失败：{exc}",
-                                level="error",
-                                source="automation",
-                            )
-                        except Exception:
-                            pass
-                auto_open_result = (
-                    auto_open_inventory_items(
-                        sess,
-                        list(cfg.get("autoOpenItemNames") or []),
+                        inventory_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，共享背包整理启动失败",
+                        }
+                        settings_warnings.append(
+                            f"设置已保存，共享背包整理启动失败：{exc}"
+                        )
+                elif inventory_scope_saved:
+                    stopped_inventory_ids = request_stop_tasks_for_session_type(
+                        sess["sessionId"],
+                        "auto-inventory",
+                        "自动开箱和背包清理均已关闭，停止旧唤醒任务",
                     )
-                    if cfg.get("autoOpenEnabled") and (not scoped_save or scope == "common.items")
-                    else {"actions": [], "skipped": [], "opened": 0, "disabled": True}
-                )
-                if not scoped_save or scope == "common.frequent":
-                    domestic_task = start_auto_domestic(sess, cfg.get("domestic") or {})
-                    technology_task = start_auto_technology(sess, cfg.get("domestic") or {})
+                    inventory_task = {
+                        "started": False,
+                        "disabled": True,
+                        "stoppedTaskIds": stopped_inventory_ids,
+                        "reason": "自动开箱和背包清理均未开启",
+                    }
                 else:
-                    domestic_task = {"started": False, "skipped": True, "reason": "本次未保存常规-常用"}
-                    technology_task = {"started": False, "skipped": True, "reason": "本次未保存常规-常用"}
+                    inventory_task = {
+                        "started": False,
+                        "skipped": True,
+                        "reason": "本次没有修改主号物品设置",
+                    }
+                auto_open_result = {
+                    "accepted": bool(
+                        auto_open_queued and inventory_task.get("started")
+                    ),
+                    "queued": bool(
+                        auto_open_queued and inventory_task.get("started")
+                    ),
+                    "disabled": not auto_open_queued,
+                    "sharedResident": True,
+                    "taskId": str(
+                        (inventory_task.get("task") or {}).get("taskId") or ""
+                    ),
+                }
+                domestic_config = (
+                    dict(cfg.get("domestic") or {})
+                    if domestic_scope_saved else {}
+                )
+                domestic_enabled = bool(
+                    domestic_config.get("enabled")
+                    or domestic_config.get("upgradeTechnology")
+                )
+                if domestic_scope_saved and domestic_enabled:
+                    if sess.get("savedTasksStarted"):
+                        try:
+                            domestic_task = (
+                                start_auto_domestic(sess, domestic_config)
+                                if domestic_config.get("enabled")
+                                else start_auto_technology(sess, domestic_config)
+                            )
+                        except Exception as exc:
+                            domestic_task = {
+                                "started": False,
+                                "activationError": str(exc),
+                                "reason": "设置已保存，共享自动内政启动失败",
+                            }
+                    else:
+                        domestic_task = {
+                            "started": False,
+                            "waitingForAccountStart": True,
+                            "reason": "设置已保存，等待用户开始执行任务",
+                        }
+                    technology_task = {
+                        **domestic_task,
+                        "sharedResident": True,
+                        "enabled": bool(domestic_config.get("upgradeTechnology")),
+                    }
+                elif domestic_scope_saved:
+                    stopped_domestic_ids = request_stop_tasks_for_session_type(
+                        sess["sessionId"],
+                        "auto-domestic",
+                        "自动内政和升级科技均已关闭，停止旧唤醒任务",
+                    )
+                    stopped_domestic_ids.extend(
+                        request_stop_tasks_for_session_type(
+                            sess["sessionId"],
+                            "auto-technology",
+                            "自动内政和升级科技均已关闭，停止旧唤醒任务",
+                        )
+                    )
+                    domestic_task = {
+                        "started": False,
+                        "disabled": True,
+                        "stoppedTaskIds": stopped_domestic_ids,
+                        "reason": "自动内政和升级科技均未开启",
+                    }
+                    technology_task = {
+                        **domestic_task,
+                        "sharedResident": True,
+                    }
+                else:
+                    domestic_task = {
+                        "started": False,
+                        "skipped": True,
+                        "reason": "本次没有修改自动内政设置",
+                    }
+                    technology_task = {
+                        **domestic_task,
+                        "sharedResident": True,
+                    }
+                if general_scope_saved:
+                    general_settings = desktop_general_resident_settings(cfg)
+                    general_enabled = any(
+                        bool(general_settings.get(key))
+                        for key in (
+                            "autoHeal", "autoEnergy", "keepFullLoyalty",
+                        )
+                    )
+                    if general_enabled and sess.get("savedTasksStarted"):
+                        try:
+                            general_task = start_auto_general(
+                                sess, general_settings
+                            )
+                        except Exception as exc:
+                            general_task = {
+                                "started": False,
+                                "activationError": str(exc),
+                                "reason": "设置已保存，将领维护启动失败",
+                            }
+                    elif general_enabled:
+                        general_task = {
+                            "started": False,
+                            "waitingForAccountStart": True,
+                            "reason": "设置已保存，等待用户开始执行任务",
+                        }
+                    else:
+                        general_stopped_ids = request_stop_tasks_for_session_type(
+                            sess["sessionId"],
+                            "auto-general",
+                            "将领维护开关均已关闭，停止旧唤醒任务",
+                        )
+                        general_task = {
+                            "started": False,
+                            "disabled": True,
+                            "stoppedTaskIds": general_stopped_ids,
+                            "reason": "治疗、加体和加忠均未开启",
+                        }
+                else:
+                    general_task = {
+                        "started": False,
+                        "skipped": True,
+                        "reason": "本次没有修改将领维护设置",
+                    }
+                alarm_config = (
+                    dict(cfg.get("alarm") or {})
+                    if alarm_scope_saved and isinstance(cfg.get("alarm"), dict)
+                    else {}
+                )
+                alarm_enabled = desktop_alarm_resident_enabled(alarm_config)
+                if alarm_scope_saved and alarm_enabled and sess.get("savedTasksStarted"):
+                    try:
+                        alarm_task = start_auto_alarm(sess, alarm_config)
+                    except Exception as exc:
+                        alarm_task = {
+                            "started": False,
+                            "activationError": str(exc),
+                            "reason": "设置已保存，共享军情警报启动失败",
+                        }
+                elif alarm_scope_saved and alarm_enabled:
+                    alarm_task = {
+                        "started": False,
+                        "waitingForAccountStart": True,
+                        "reason": "设置已保存，等待用户开始执行任务",
+                    }
+                elif alarm_scope_saved:
+                    alarm_task = {
+                        "started": False,
+                        "disabled": True,
+                        "stoppedTaskIds": request_stop_tasks_for_session_type(
+                            sess["sessionId"],
+                            "auto-alarm",
+                            "来袭和军情提醒均已关闭，停止旧唤醒任务",
+                        ),
+                        "reason": "来袭警报和军情提醒均未开启",
+                    }
+                else:
+                    alarm_task = {
+                        "started": False,
+                        "skipped": True,
+                        "reason": "本次没有修改军情警报设置",
+                    }
                 if brush_scope_saved and cfg.get("autoStart", True):
                     account_log(
                         sess["sessionId"],
@@ -37390,11 +38898,15 @@ class Handler(SimpleHTTPRequestHandler):
                         source="server",
                         detail={"config": cfg, "savedFiles": saved_files},
                     )
-                    task = (
-                        start_auto_brush(cfg)
-                        if sess.get("savedTasksStarted")
-                        else None
-                    )
+                    try:
+                        task = (
+                            start_auto_brush(cfg)
+                            if sess.get("savedTasksStarted")
+                            else None
+                        )
+                    except Exception as exc:
+                        task = None
+                        settings_warnings.append(f"设置已保存，刷黄任务启动失败：{exc}")
                     if task is None:
                         account_log(
                             sess["sessionId"],
@@ -37433,11 +38945,20 @@ class Handler(SimpleHTTPRequestHandler):
                     "stoppedTaskIds": stopped_task_ids,
                     "savedFile": saved_files.get("configFile", ""),
                     "savedFiles": saved_files,
-                    "dailyResults": daily_results,
+                    # Follow-up daily work is asynchronous.  Keep the old
+                    # result-map field empty so cached frontends do not treat
+                    # queue metadata as one failed result per property.
+                    "dailyResults": {},
+                    "dailyExecution": daily_results,
                     "autoOpenResult": auto_open_result,
+                    "inventoryTask": inventory_task,
                     "domesticTask": domestic_task,
                     "technologyTask": technology_task,
+                    "generalTask": general_task,
+                    "alarmTask": alarm_task,
                     "settingsWarnings": settings_warnings,
+                    "residentAutomationSync": resident_automation_sync,
+                    "followUpOperations": follow_ups,
                     "config": cfg,
                     "task": task,
                     "waitingForMilitaryStart": bool(
@@ -37449,39 +38970,67 @@ class Handler(SimpleHTTPRequestHandler):
                 })
                 return
             if self.path == "/api/domestic/query":
-                sess = get_session(str(body.get("sessionId") or ""))
-                refresh_generals(sess)
-                fief_ids = query_all_owned_fief_ids(sess)
-                states = [query_fief_buildings(sess, fief_id) for fief_id in fief_ids]
-                self.send_json({"ok": True, "fiefIds": fief_ids, "fiefs": states, "updatedAt": now_ms()})
+                sid = str(body.get("sessionId") or "")
+                get_session(sid)
+                require_account_online(sid, "读取内政状态")
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/domestic/query",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-domestic-query-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/domestic/action":
-                if str(body.get("confirm") or "") != "auto-domestic":
-                    raise RuntimeError("自动内政单项操作需要 confirm=auto-domestic")
-                sess = get_session(str(body.get("sessionId") or ""))
-                action = str(body.get("action") or "")
-                fief_id = int(body.get("fiefId") or 0)
-                if action == "building":
-                    result = execute_building_action(
-                        sess, fief_id, int(body.get("slot")), int(body.get("buildingType")),
-                    )
-                elif action == "technology":
-                    result = execute_technology_upgrade(
-                        sess, fief_id, int(body.get("academySlot")),
-                        int(body.get("technologyId", 5)), int(body.get("targetLevel")),
-                    )
-                else:
-                    raise RuntimeError("未知自动内政单项操作")
-                self.send_json({"ok": bool(result.get("success")), "result": result}, 200 if result.get("success") else 409)
+                sid = str(body.get("sessionId") or "")
+                get_session(sid)
+                require_account_online(sid, "执行内政动作")
+                dispatched = SHARED_PYTHON_CORE.dispatch(
+                    "POST",
+                    "/api/domestic/action",
+                    _desktop_shared_operation_body(body),
+                    {
+                        "requestId": f"desktop-domestic-action-{now_ms()}-{sid}",
+                        "source": "desktop-http",
+                        "platform": "desktop",
+                    },
+                )
+                self.send_json(dispatched.body, dispatched.status)
                 return
             if self.path == "/api/automation/stop":
                 tid = str(body.get("taskId") or "")
                 sid = str(body.get("sessionId") or "")
+                plan = shared_local_write_plan(
+                    self.path,
+                    {**body, "accountRef": sid},
+                )
+                write = dict(plan.get("write") or {})
                 stopped = []
                 with TASK_LOCK:
                     for task in AUTO_TASKS.values():
-                        if (tid and task.get("taskId") == tid) or (sid and task.get("sessionId") == sid and task.get("status") in {"starting", "running"}):
+                        if (
+                            (write.get("scope") == "task" and task.get("taskId") == tid)
+                            or (
+                                write.get("scope") == "account"
+                                and sid
+                                and task.get("sessionId") == sid
+                                and task.get("status") in {"starting", "running"}
+                            )
+                        ):
                             task["stopEvent"].set(); stopped.append(task.get("taskId"))
+                if write.get("scope") == "account":
+                    sess = SESSIONS.get(sid)
+                    if isinstance(sess, dict):
+                        sess["savedTasksStarted"] = False
+                        sess["savedTasksStartedAt"] = None
+                    with ACCOUNT_LOCK:
+                        if sid in ACCOUNTS:
+                            ACCOUNTS[sid]["savedTasksStarted"] = False
+                    persist_runtime_state()
                 self.send_json({"ok": True, "stopped": stopped})
                 return
             if self.path == "/api/server/shutdown":
@@ -37493,6 +39042,13 @@ class Handler(SimpleHTTPRequestHandler):
                 ).start()
                 return
             self.send_json({"ok": False, "error": "unknown api"}, 404)
+        except SharedSettingsValidationError as e:
+            system_log(
+                f"设置校验未通过 {self.path}: {e}",
+                level="warning",
+                source="http",
+            )
+            self.send_json({"ok": False, "error": str(e)}, 400)
         except Exception as e:
             task_key = DAILY_API_TASK_KEYS.get(self.path)
             sid = str(body.get("sessionId") or "") if isinstance(body, dict) else ""
@@ -37543,6 +39099,15 @@ def main() -> int:
     load_proxy_outbound_ip_cache()
     migrate_recent_game_activity_json()
     restore_runtime_state()
+    reconcile_restored_live_session_reconnect_states()
+    try:
+        sync_restored_accounts_to_shared_core()
+    except Exception as error:
+        system_log(
+            f"启动时同步共享账号账本失败：{error}",
+            level="error",
+            source="account",
+        )
     restored_started = []
     with ACCOUNT_LOCK:
         restored_started = [
@@ -37554,13 +39119,28 @@ def main() -> int:
         if sess:
             sess["savedCommonTasksStarted"] = False
             sess["savedCommonTasksStartedAt"] = None
-        start_heartbeat_thread(sid)
-        start_idle_bandit_map_thread(sid)
     for sid in restored_started:
         sess = SESSIONS.get(sid)
         if sess:
+            restored_intent = bool(
+                sess.get("savedTasksStarted")
+                or (ACCOUNTS.get(sid) or {}).get("savedTasksStarted")
+                or (ACCOUNTS.get(sid) or {}).get(
+                    "resumeResidentTasksAfterNetworkRecovery"
+                )
+                or (ACCOUNTS.get(sid) or {}).get(
+                    "resumeResidentTasksAfterReconnect"
+                )
+            )
+            if restored_intent:
+                _set_resident_recovery_intent(sid, True)
+            # The first verified heartbeat owns the actual resume. Keep the
+            # durable intent, but do not claim display workers already exist.
             sess["savedTasksStarted"] = False
             sess["savedTasksStartedAt"] = None
+    for sid in restored_started:
+        start_heartbeat_thread(sid)
+        start_idle_bandit_map_thread(sid)
     with ACCOUNT_RECONNECT_LOCK:
         already_scheduled_reconnects = set(ACCOUNT_RECONNECT_JOBS)
     with ACCOUNT_LOCK:

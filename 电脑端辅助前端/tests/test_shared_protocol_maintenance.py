@@ -15,6 +15,8 @@ if str(CORE_SOURCE) not in sys.path:
     sys.path.insert(0, str(CORE_SOURCE))
 
 from dwpm_core.features.maintenance import (
+    apply_full_loyalty_receipt,
+    apply_general_energy_receipt,
     build_add_loyalty_payload,
     build_delete_all_mail_payload,
     build_discard_inventory_payload,
@@ -27,6 +29,8 @@ from dwpm_core.features.maintenance import (
     parse_discard_inventory_response,
     parse_resource_exchange_response,
     parse_use_general_item_response,
+    plan_general_energy_use,
+    plan_generals_full_loyalty,
 )
 from dwpm_core.hashing import source_manifest
 
@@ -110,6 +114,78 @@ class SharedMaintenanceProtocolTests(unittest.TestCase):
             parsed["inventory"]["itemCount"],
             self.fixture["expected"]["energyInventoryItemCount"],
         )
+
+    def test_energy_and_full_loyalty_business_plans_are_shared(self) -> None:
+        energy = plan_general_energy_use(
+            {
+                "id": 101,
+                "name": "统弓2",
+                "tili": 5,
+                "energyReliable": True,
+            },
+            {"items": [{"itemId": 12, "name": "活血丹", "count": 2}]},
+            enabled=True,
+            threshold=40,
+            action_name="刷黄",
+        )
+        self.assertTrue(energy["actionRequired"])
+        self.assertEqual(energy["payloadHex"], build_use_general_item_payload(101, 12, 1).hex())
+        confirmed_energy = apply_general_energy_receipt(
+            energy,
+            {"success": True, "message": "活血丹使用成功"},
+            action_name="刷黄",
+        )
+        self.assertEqual(confirmed_energy["after"], 55)
+        self.assertIn("由5更新为55", confirmed_energy["message"])
+        with self.assertRaisesRegex(ValueError, "宝库没有活血丹"):
+            plan_general_energy_use(
+                {
+                    "id": 101,
+                    "name": "统弓2",
+                    "tili": 5,
+                    "energyReliable": True,
+                },
+                {"items": []},
+                enabled=True,
+                threshold=40,
+                action_name="刷黄",
+            )
+
+        plans = plan_generals_full_loyalty(
+            [
+                {"id": 1, "name": "满忠将", "loyalty": 100, "loyaltyLimit": 100},
+                {"id": 2, "name": "低忠将", "loyalty": 59, "loyaltyLimit": 100},
+            ],
+            action_name="打矿",
+        )
+        self.assertTrue(plans[0]["skipped"])
+        self.assertFalse(plans[1]["skipped"])
+        self.assertEqual(plans[1]["delta"], 41)
+        self.assertEqual(
+            plans[1]["payloadHex"],
+            build_add_loyalty_payload(2, 41).hex(),
+        )
+        loyalty_receipt = {
+            "success": True,
+            "actualCost": 5125,
+            "copper": 94875,
+            "generals": [
+                {"generalId": 2, "loyalty": 100, "loyaltyLimit": 100},
+            ],
+        }
+        confirmed_loyalty = apply_full_loyalty_receipt(
+            plans[1],
+            loyalty_receipt,
+            action_name="打矿",
+        )
+        self.assertEqual(confirmed_loyalty["loyalty"], 100)
+        self.assertEqual(confirmed_loyalty["copper"], 94875)
+        with self.assertRaisesRegex(ValueError, "响应未包含该将领"):
+            apply_full_loyalty_receipt(
+                plans[1],
+                {"success": True, "generals": []},
+                action_name="打矿",
+            )
 
     def test_resource_mail_and_discard_protocols_are_shared(self) -> None:
         fixture = self.fixture
@@ -196,6 +272,7 @@ class SharedMaintenanceProtocolTests(unittest.TestCase):
     def test_equipment_discard_guard_is_shared(self) -> None:
         safe = {
             "instanceId": 1,
+            "equipmentMetadataComplete": True,
             "famous": False,
             "strengthen": 0,
             "extraText": "",

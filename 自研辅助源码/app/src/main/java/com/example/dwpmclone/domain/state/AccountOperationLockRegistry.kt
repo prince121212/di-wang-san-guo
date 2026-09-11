@@ -23,6 +23,9 @@ object AccountOperationLockRegistry {
         lock.unlock()
     }
 
+    fun isHeldByCurrentThread(accountId: Long): Boolean =
+        accountId > 0L && locks[accountId]?.isHeldByCurrentThread == true
+
     private fun lockFor(accountId: Long): ReentrantLock =
         locks.getOrPut(accountId) { ReentrantLock(true) }
 }

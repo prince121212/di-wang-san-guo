@@ -15,7 +15,7 @@ import org.junit.Test
 
 class StrictStepResultTaskTest {
     @Test
-    fun militaryOnlyAlarmDoesNotRequireIncomingKeywords() {
+    fun legacyAlarmTaskPrepareFailsClosedForSharedOwner() {
         val task = AlarmTask(
             1L,
             AlarmConfig(
@@ -28,26 +28,25 @@ class StrictStepResultTaskTest {
 
         val decision = SuspendRunner.run { task.prepare(context(MockGameProtocolClient())) }
 
-        assertEquals(TaskDecision.Continue, decision)
+        assertEquals(
+            TaskDecision.Stop("军情警报 已由共享 Python 常驻核心执行，Kotlin 任务不得发包"),
+            decision,
+        )
     }
 
     @Test
-    fun rejectedAlarmScanStopsInsteadOfSleeping() {
-        val protocol = object : GameProtocolClient by MockGameProtocolClient() {
-            override suspend fun scanAlarms(
-                session: GameSession,
-                config: AlarmConfig
-            ): ProtocolResult<StepResult> =
-                ProtocolResult.Ok(StepResult(false, "警报扫描失败"))
-        }
+    fun legacyAlarmTaskStepFailsClosedWithoutCallingProtocol() {
         val task = AlarmTask(
             1L,
             AlarmConfig(enabled = true)
         )
 
-        val decision = SuspendRunner.run { task.step(context(protocol)) }
+        val decision = SuspendRunner.run { task.step(context(MockGameProtocolClient())) }
 
-        assertEquals(TaskDecision.Stop("警报扫描失败"), decision)
+        assertEquals(
+            TaskDecision.Stop("军情警报 已由共享 Python 常驻核心执行，Kotlin 任务不得发包"),
+            decision,
+        )
     }
 
     @Test

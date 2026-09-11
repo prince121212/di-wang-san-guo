@@ -32,6 +32,50 @@ MINE_BUSINESS_IDS = {
     "二级牧场": 12,
     "三级牧场": 13,
 }
+# The Android model stores the stable enum name while the protocol response uses
+# Chinese display labels.  Keep both spellings in the shared core so filtering
+# and persistence do not drift between hosts.
+MINE_TYPE_ALIASES = {
+    "GOLD": "GOLD",
+    "金矿": "GOLD",
+    "SILVER": "SILVER",
+    "银矿": "SILVER",
+    "BING_YU": "BING_YU",
+    "冰玉": "BING_YU",
+    "冰玉矿": "BING_YU",
+    "XIAN_ZHI": "XIAN_ZHI",
+    "仙芝": "XIAN_ZHI",
+    "仙芝园": "XIAN_ZHI",
+    "XUAN_TIE": "XUAN_TIE",
+    "玄铁": "XUAN_TIE",
+    "玄铁矿": "XUAN_TIE",
+    "YU_LU": "YU_LU",
+    "玉露": "YU_LU",
+    "玉露园": "YU_LU",
+    "PASTURE_LV1": "PASTURE_LV1",
+    "一级牧场": "PASTURE_LV1",
+    "牧场1": "PASTURE_LV1",
+    "PASTURE_LV2": "PASTURE_LV2",
+    "二级牧场": "PASTURE_LV2",
+    "牧场2": "PASTURE_LV2",
+    "PASTURE_LV3": "PASTURE_LV3",
+    "三级牧场": "PASTURE_LV3",
+    "牧场3": "PASTURE_LV3",
+    "CRYSTAL": "CRYSTAL",
+    "水晶": "CRYSTAL",
+    "水晶矿": "CRYSTAL",
+    "LING_CAO": "LING_CAO",
+    "灵草": "LING_CAO",
+    "灵草园": "LING_CAO",
+    "BIN_TIE": "BIN_TIE",
+    "镔铁": "BIN_TIE",
+    "镔铁矿": "BIN_TIE",
+    "宾铁": "BIN_TIE",
+    "宾铁矿": "BIN_TIE",
+    "JIANG_GUO": "JIANG_GUO",
+    "浆果": "JIANG_GUO",
+    "浆果园": "JIANG_GUO",
+}
 KIND_MARKERS = {
     "E5B1B1E8B38A": "山贼",
     "E5B1B1E8B4BC": "山贼",
@@ -53,6 +97,48 @@ WORLD_Y_MIN = int(WORLD_CONTRACT["yMin"])
 WORLD_Y_MAX = int(WORLD_CONTRACT["yMax"])
 WORLD_STEP = int(WORLD_CONTRACT["step"])
 FULL_SCAN_LIMIT = int(MAP_SEARCH_CONTRACT["fullRequestLimit"])
+
+
+def normalize_mine_type(value: Any) -> str:
+    """Return the stable MineType enum name for a UI or wire label."""
+
+    raw = str(value or "").strip()
+    if not raw or raw == "请选择":
+        return ""
+    direct = MINE_TYPE_ALIASES.get(raw)
+    if direct:
+        return direct
+    upper = raw.upper().replace("-", "_").replace(" ", "_")
+    if upper in MINE_TYPE_ALIASES:
+        return MINE_TYPE_ALIASES[upper]
+    # Be permissive with labels such as “2级牧场” while keeping the decision
+    # in one shared function.
+    if "牧场" in raw or "牧場" in raw:
+        if "3" in raw:
+            return "PASTURE_LV3"
+        if "2" in raw:
+            return "PASTURE_LV2"
+        if "1" in raw:
+            return "PASTURE_LV1"
+    for label, canonical in MINE_TYPE_ALIASES.items():
+        if label and label in raw:
+            return canonical
+    return upper
+
+
+def normalize_mine_resource_types(values: Any) -> List[str]:
+    if isinstance(values, (list, tuple, set)):
+        raw_values = list(values)
+    elif values not in (None, ""):
+        raw_values = re.split(r"[,，;；|\s]+", str(values))
+    else:
+        raw_values = []
+    output: List[str] = []
+    for value in raw_values:
+        normalized = normalize_mine_type(value)
+        if normalized and normalized not in output:
+            output.append(normalized)
+    return output
 
 
 def action_target_hex(target: Dict[str, Any]) -> str:
@@ -469,11 +555,13 @@ def parse_mine_resources(payload: bytes) -> List[Dict[str, Any]]:
         owner_name = str(detail.get("ownerName") or "").strip()
         owner_country = str(detail.get("ownerCountry") or "").strip()
         player_occupied = bool(owner_name or owner_country)
+        mine_type = normalize_mine_type(kind)
         resources.append(
             {
                 "id": resource_id,
                 "idHex": f"{resource_id & 0xffffffffffffffff:016x}",
                 "kind": kind,
+                "mineType": mine_type,
                 "protocolKind": protocol_name,
                 "name": kind if type_code == 0x05 else f"{level}级{kind}",
                 "typeCode": type_code,
@@ -613,13 +701,12 @@ def mine_target_matches(
     exact_x: Optional[int] = None,
     exact_y: Optional[int] = None,
 ) -> bool:
-    type_names = {
-        str(value or "").strip()
-        for value in resource_types or []
-        if str(value or "").strip() and str(value or "").strip() != "请选择"
-    }
+    type_names = set(normalize_mine_resource_types(resource_types or []))
     level_values = {int(value) for value in levels or []}
-    if type_names and str(target.get("kind") or "") not in type_names:
+    target_type = normalize_mine_type(
+        target.get("mineType") or target.get("kind") or target.get("type")
+    )
+    if type_names and target_type not in type_names:
         return False
     if level_values and int(target.get("level") or 0) not in level_values:
         return False

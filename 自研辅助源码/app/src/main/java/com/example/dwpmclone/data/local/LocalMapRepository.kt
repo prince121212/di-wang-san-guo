@@ -17,6 +17,37 @@ class LocalMapRepository(context: Context) : LocalMapStore {
         load().firstOrNull { it.query == query }
     }
 
+    override fun readShared(query: LocalMapQueryKey): LocalMapSnapshot? =
+        synchronized(PROCESS_LOCK) {
+            val contributing = load().filter {
+                it.query.serverId == query.serverId &&
+                    it.query.kind == query.kind &&
+                    it.query.fingerprint == query.fingerprint
+            }
+            if (contributing.isEmpty()) return@synchronized null
+            // Keep the newest record per target: an invalidation by any account
+            // means the bandit is gone for everyone, and a later re-validation
+            // means it is back.
+            val merged = contributing.asSequence()
+                .flatMap { it.targets.asSequence() }
+                .groupBy { it.targetId }
+                .values
+                .mapNotNull { records ->
+                    records.maxByOrNull {
+                        it.invalidatedAtMillis ?: it.lastValidatedAtMillis
+                    }
+                }
+                .sortedWith(
+                    compareBy<LocalMapTargetRecord> { it.coordinate.y }
+                        .thenBy { it.coordinate.x }
+                )
+            LocalMapSnapshot(
+                query = query,
+                scannedAtMillis = contributing.maxOf { it.scannedAtMillis },
+                targets = merged
+            )
+        }
+
     override fun replace(snapshot: LocalMapSnapshot) = synchronized(PROCESS_LOCK) {
         write(LocalMapSnapshotReducer.replace(load(), snapshot))
     }
@@ -56,6 +87,33 @@ class LocalMapRepository(context: Context) : LocalMapStore {
 
     override fun clearAccount(accountId: Long) = synchronized(PROCESS_LOCK) {
         write(load().filterNot { it.query.accountId == accountId })
+    }
+
+    /** Invalidates one observed target in every matching search fingerprint. */
+    fun invalidateAcrossKind(
+        accountId: Long,
+        serverId: String,
+        kind: com.example.dwpmclone.domain.localmap.LocalMapKind,
+        targetId: Long,
+        invalidatedAtMillis: Long,
+        reason: String
+    ) = synchronized(PROCESS_LOCK) {
+        write(load().map { snapshot ->
+            if (
+                snapshot.query.accountId != accountId ||
+                snapshot.query.serverId != serverId ||
+                snapshot.query.kind != kind
+            ) {
+                snapshot
+            } else {
+                snapshot.copy(targets = snapshot.targets.map { target ->
+                    if (target.targetId != targetId) target else target.copy(
+                        invalidatedAtMillis = invalidatedAtMillis,
+                        invalidReason = reason.take(240)
+                    )
+                })
+            }
+        })
     }
 
     private fun load(): List<LocalMapSnapshot> {

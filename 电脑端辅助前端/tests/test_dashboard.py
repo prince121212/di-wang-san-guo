@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -30,6 +32,7 @@ class DashboardTests(unittest.TestCase):
         sid = "dashboard-session"
         self.sess = {
             "sessionId": sid,
+            "createdAt": 100,
             "username": "1608600",
             "role": {
                 "roleId": 100,
@@ -130,6 +133,32 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(account["dailyProgress"]["dungeon"]["current"], 2)
         self.assertEqual(account["resources"]["resourcePointCurrent"], 1)
 
+    def test_desktop_sync_preserves_negative_signed_dm_secret(self) -> None:
+        sid = self.sess["sessionId"]
+        self.sess.update({
+            "dm": -0x102030405060708,
+            "gameHttp": "https://fixture.invalid/kingWapServer/HttpClient",
+        })
+        SERVER._desktop_delete_shared_session_secrets(sid)
+        try:
+            with patch.object(
+                SERVER.SHARED_PYTHON_CORE,
+                "account_record_json",
+                return_value='{"account":null}',
+            ), patch.object(
+                SERVER.SHARED_PYTHON_CORE,
+                "account_record_upsert",
+            ) as upsert:
+                SERVER._desktop_sync_shared_account(sid)
+
+            self.assertEqual(
+                SERVER._desktop_load_shared_session_secrets(sid)["dm"],
+                str(self.sess["dm"]),
+            )
+            upsert.assert_called_once()
+        finally:
+            SERVER._desktop_delete_shared_session_secrets(sid)
+
     def test_dashboard_country_short_name_supports_all_countries(self) -> None:
         names = ("汉", "魏", "蜀", "吴", "楚", "胡", "赵", "秦", "羌", "鲁", "蛮", "燕", "晋", "陈")
         for name in names:
@@ -153,6 +182,176 @@ class DashboardTests(unittest.TestCase):
         SERVER.DAILY_BRUSH_COUNTS[daily_key] = 10
         updated = SERVER.public_account_summary(account)
         self.assertEqual(updated["dailyStats"]["brushYellowCount"], 10)
+
+    def test_migrated_daily_counts_come_from_shared_resident_state(self) -> None:
+        day_key = (int(SERVER.time.time() * 1000) + 8 * 60 * 60 * 1000) // (
+            24 * 60 * 60 * 1000
+        )
+        shared_record = {
+            "account": {
+                "session": {
+                    "publicState": {
+                        "residentAutomationConfigJson": json.dumps(
+                            {"schemaVersion": 2}
+                        ),
+                        "residentAutomationStateJson": json.dumps({
+                            "brush": {"dayKey": day_key, "usedCount": 13},
+                            "dungeon": {"dayKey": day_key, "usedCount": 4},
+                        }),
+                    }
+                }
+            }
+        }
+        with patch.object(
+            SERVER.SHARED_PYTHON_CORE,
+            "account_record_json",
+            return_value=json.dumps(shared_record),
+        ):
+            stats = SERVER.current_daily_stats(self.sess)
+            overview = SERVER.current_task_overview(self.sess)
+
+        dungeon = next(
+            item for item in overview["resident"] if item["key"] == "dungeon"
+        )
+        self.assertEqual(stats["brushYellowCount"], 13)
+        self.assertEqual(stats["dungeonCount"], 4)
+        self.assertEqual(dungeon["dailyDungeonCount"], 4)
+
+    def test_lossless_progress_survives_task_object_rotation(self) -> None:
+        now_millis = SERVER.now_ms()
+        SERVER.AUTO_TASKS = {
+            "lossless-live": {
+                "taskId": "lossless-live",
+                "type": "lossless",
+                "sessionId": self.sess["sessionId"],
+                "status": "running",
+                "schedulerState": "checking",
+                "createdAt": now_millis - 60_000,
+                "updatedAt": now_millis,
+                # Deliberately no lastLosslessStatus: this is the exact shape
+                # after the desktop task object has been recreated.
+            }
+        }
+        shared_record = {
+            "account": {
+                "session": {
+                    "publicState": {
+                        "residentAutomationConfigJson": json.dumps(
+                            {"schemaVersion": 2}
+                        ),
+                        "residentAutomationStateJson": json.dumps({
+                            "lossless": {
+                                "lastState": "cooldown",
+                            }
+                        }),
+                        "losslessLastStatusJson": json.dumps({
+                            "mode": 0,
+                            "phase": "cooldown",
+                            "usedAttempts": 3,
+                            "remainingAttempts": 2,
+                            "cooldownSec": 60,
+                            "updatedAt": now_millis,
+                        }),
+                    }
+                }
+            }
+        }
+        with patch.object(
+            SERVER.SHARED_PYTHON_CORE,
+            "account_record_json",
+            return_value=json.dumps(shared_record),
+        ):
+            overview = SERVER.current_task_overview(self.sess)
+
+        lossless = next(
+            item for item in overview["resident"] if item["key"] == "lossless"
+        )
+        stack_item = next(
+            item for item in overview["taskStack"] if item["key"] == "lossless"
+        )
+        self.assertEqual(lossless["usedAttempts"], 3)
+        self.assertEqual(lossless["remainingAttempts"], 2)
+        self.assertEqual(lossless["schedulerState"], "cooldown")
+        self.assertEqual(stack_item["remainingAttempts"], 2)
+
+    def test_migrated_stale_daily_counts_reset_instead_of_using_legacy_values(self) -> None:
+        shared_record = {
+            "account": {
+                "session": {
+                    "publicState": {
+                        "residentAutomationConfigJson": '{"schemaVersion":2}',
+                        "residentAutomationStateJson": json.dumps({
+                            "brush": {"dayKey": 1, "usedCount": 13},
+                            "dungeon": {"dayKey": 1, "usedCount": 4},
+                        }),
+                    }
+                }
+            }
+        }
+        with patch.object(
+            SERVER.SHARED_PYTHON_CORE,
+            "account_record_json",
+            return_value=json.dumps(shared_record),
+        ):
+            stats = SERVER.current_daily_stats(self.sess)
+
+        self.assertEqual(stats["brushYellowCount"], 0)
+        self.assertEqual(stats["dungeonCount"], 0)
+
+    def test_desktop_account_route_uses_shared_projection_and_summary_shape(self) -> None:
+        account = SERVER.ACCOUNTS[self.sess["sessionId"]]
+        account.update({
+            "password": "must-never-leave-host",
+            "displayName": "测试账号",
+            "createdAt": 100,
+            "proxyMode": "local",
+            "proxyIp": "127.0.0.1",
+        })
+        old_core = SERVER.SHARED_PYTHON_CORE
+        with tempfile.TemporaryDirectory() as directory:
+            SERVER.SHARED_PYTHON_CORE = SERVER.CoreFacade(
+                ROOT / "shared_core",
+                str(Path(directory) / "operations.json"),
+            )
+            try:
+                with patch.object(
+                    SERVER,
+                    "load_account_habits",
+                    return_value={"config": {"dailyLimit": 500}},
+                ), patch.object(
+                    SERVER,
+                    "recent_game_requests",
+                    return_value=[],
+                ), patch.object(
+                    SERVER,
+                    "current_important_notices",
+                    return_value=[],
+                ):
+                    full = SERVER._desktop_shared_accounts_response(
+                        summary_only=False,
+                        request_id="desktop-accounts-full",
+                    )
+                    summary = SERVER._desktop_shared_accounts_response(
+                        summary_only=True,
+                        request_id="desktop-accounts-summary",
+                    )
+                full_account = full.body["accounts"][0]
+                summary_account = summary.body["accounts"][0]
+                self.assertEqual(full.status, 200)
+                self.assertEqual(full_account["status"], "online")
+                self.assertEqual(full_account["roleName"], "测试角色")
+                self.assertEqual(full_account["session"]["role"]["roleName"], "测试角色")
+                self.assertEqual(full_account["proxyMode"], "local")
+                self.assertNotIn(
+                    "must-never-leave-host",
+                    json.dumps(full.body, ensure_ascii=False),
+                )
+                self.assertTrue(summary.body["summary"])
+                self.assertNotIn("session", summary_account)
+                self.assertNotIn("accountHabits", summary_account)
+            finally:
+                SERVER.SHARED_PYTHON_CORE.close()
+                SERVER.SHARED_PYTHON_CORE = old_core
 
     def test_start_all_saved_tasks_only_targets_started_online_accounts(self) -> None:
         self.sess["savedTasksStarted"] = False

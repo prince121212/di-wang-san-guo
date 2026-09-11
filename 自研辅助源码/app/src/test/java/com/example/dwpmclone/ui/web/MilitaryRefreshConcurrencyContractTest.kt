@@ -7,19 +7,15 @@ import org.junit.Test
 
 class MilitaryRefreshConcurrencyContractTest {
     @Test
-    fun stateAndMilitaryRefreshBypassTheLongRunningSchedulerMutex() {
+    fun stateAndMilitaryRefreshHaveNoKotlinNetworkAdapter() {
         val source = operationServiceSource()
-        val stateRefresh = source
-            .substringAfter("private fun stateRefresh")
-            .substringBefore("private fun brushSearch")
-        val militaryRefresh = source
-            .substringAfter("private fun militaryIntel")
-            .substringBefore("private fun heartbeat")
 
-        assertTrue(stateRefresh.contains("runner.executeImmediateReadOnly("))
-        assertFalse(stateRefresh.contains("runner.execute(accountId"))
-        assertTrue(militaryRefresh.contains("runner.executeImmediateReadOnly("))
-        assertFalse(militaryRefresh.contains("runner.execute(accountId"))
+        assertFalse(source.contains("private fun stateRefresh"))
+        assertFalse(source.contains("private fun militaryIntel"))
+        assertFalse(source.contains("private fun heartbeat"))
+        assertFalse(source.contains("handleSharedCoreNetwork"))
+        assertFalse(source.contains("SessionAwareGameProtocolClient"))
+        assertTrue(source.contains("Local-only presentation adapter"))
     }
 
     private fun operationServiceSource(): String {

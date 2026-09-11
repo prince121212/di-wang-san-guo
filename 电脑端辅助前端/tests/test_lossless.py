@@ -274,16 +274,23 @@ class CommandCenterTests(unittest.TestCase):
         blockers = SERVER._command_center_blockers(brush, ["g1"])
         self.assertEqual([blocker["taskKey"] for blocker in blockers], ["lossless"])
 
-    def test_mine_ready_blocks_lossless_with_shared_general(self) -> None:
+    def test_lossless_ready_blocks_mine_with_shared_general(self) -> None:
+        self.task("lossless", "lossless", "ready", True, ["g1"])
+        mine = self.task("mine", "auto-mine", "ready", True, ["g1"])
+        blockers = SERVER._command_center_blockers(mine, ["g1"])
+        self.assertEqual([blocker["taskKey"] for blocker in blockers], ["lossless"])
+
+    def test_mine_must_not_block_lossless_with_shared_general(self) -> None:
+        """无损 outranks 打矿, so a ready 打矿 may not hold 无损 back."""
+
         self.task("mine", "auto-mine", "ready", True, ["g1"])
         lossless = self.task("lossless", "lossless", "ready", True, ["g1"])
-        blockers = SERVER._command_center_blockers(lossless, ["g1"])
-        self.assertEqual([blocker["taskKey"] for blocker in blockers], ["mine"])
-
-    def test_mine_without_target_yields_to_lossless(self) -> None:
-        self.task("mine", "auto-mine", "waiting_target", False, ["g1"])
-        lossless = self.task("lossless", "lossless", "ready", True, ["g1"])
         self.assertEqual(SERVER._command_center_blockers(lossless, ["g1"]), [])
+
+    def test_lossless_without_target_yields_to_mine(self) -> None:
+        self.task("lossless", "lossless", "waiting_target", False, ["g1"])
+        mine = self.task("mine", "auto-mine", "ready", True, ["g1"])
+        self.assertEqual(SERVER._command_center_blockers(mine, ["g1"]), [])
 
     def test_waiting_high_priority_task_with_busy_formation_yields_shared_idle_general(self) -> None:
         self.task(
@@ -319,16 +326,27 @@ class CommandCenterTests(unittest.TestCase):
         brush = self.task("brush", "auto-brush-yellow", "ready", True, ["g1"])
         self.assertEqual(SERVER._command_center_blockers(brush, ["g1"]), [])
 
-    def test_brush_ready_blocks_dungeon(self) -> None:
+    def test_dungeon_ready_blocks_brush(self) -> None:
+        self.task("dungeon", "dungeon", "checking", True, ["g1"])
+        brush = self.task("brush", "auto-brush-yellow", "ready", True, ["g1"])
+        blockers = SERVER._command_center_blockers(brush, ["g1"])
+        self.assertEqual([blocker["taskKey"] for blocker in blockers], ["dungeon"])
+
+    def test_brush_must_not_block_dungeon(self) -> None:
+        """副本 outranks 刷黄.
+
+        Reversed, this is the exact starvation seen on a real account: a brush
+        loop that is due on every tick kept 副本 at zero runs for 70 hours.
+        """
+
         self.task("brush", "auto-brush-yellow", "checking", True, ["g1"])
         dungeon = self.task("dungeon", "dungeon", "ready", True, ["g1"])
-        blockers = SERVER._command_center_blockers(dungeon, ["g1"])
-        self.assertEqual([blocker["taskKey"] for blocker in blockers], ["brushYellow"])
-
-    def test_brush_without_target_yields_to_dungeon(self) -> None:
-        self.task("brush", "auto-brush-yellow", "waiting_target", False, ["g1"])
-        dungeon = self.task("dungeon", "dungeon", "ready", True, ["g1"])
         self.assertEqual(SERVER._command_center_blockers(dungeon, ["g1"]), [])
+
+    def test_dungeon_without_target_yields_to_brush(self) -> None:
+        self.task("dungeon", "dungeon", "waiting_target", False, ["g1"])
+        brush = self.task("brush", "auto-brush-yellow", "ready", True, ["g1"])
+        self.assertEqual(SERVER._command_center_blockers(brush, ["g1"]), [])
 
     def test_disjoint_generals_do_not_block(self) -> None:
         self.task("lossless", "lossless", "ready", True, ["g1"])
@@ -436,6 +454,7 @@ class ResidentRestoreTests(unittest.TestCase):
             "start_lossless_task": SERVER.start_lossless_task,
             "start_auto_brush": SERVER.start_auto_brush,
             "start_dungeon_task": SERVER.start_dungeon_task,
+            "start_auto_general": SERVER.start_auto_general,
             "account_log": SERVER.account_log,
         }
         calls = []
@@ -480,14 +499,21 @@ class ResidentRestoreTests(unittest.TestCase):
             SERVER.start_lossless_task = lambda sess, rows: calls.append("lossless") or {"started": True}
             SERVER.start_auto_brush = lambda config: calls.append("brushYellow") or {"taskId": "brush"}
             SERVER.start_dungeon_task = lambda sess, rows: calls.append("dungeon") or {"started": True}
+            SERVER.start_auto_general = lambda sess, settings: calls.append("general") or {"started": True}
             SERVER.account_log = lambda *args, **kwargs: None
             session = {
                 "sessionId": "session-1",
                 "generals": [{"id": 1, "idHex": "0000000000000001"}],
             }
             result = SERVER.resume_saved_resident_tasks(session)
-            self.assertEqual(calls, ["mine", "lossless", "brushYellow", "dungeon"])
-            self.assertEqual(list(result["resumed"]), ["mine", "lossless", "brushYellow", "dungeon"])
+            self.assertEqual(
+                calls,
+                ["mine", "lossless", "brushYellow", "dungeon", "general"],
+            )
+            self.assertEqual(
+                list(result["resumed"]),
+                ["mine", "lossless", "brushYellow", "dungeon", "general"],
+            )
             self.assertEqual(result["errors"], {})
         finally:
             for name, value in saved.items():

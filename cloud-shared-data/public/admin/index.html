@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>共享数据管理 · 帝王三国</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <section class="login-shell" id="loginView" hidden>
+    <div class="login-atmosphere" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <main class="login-card">
+      <div class="brand-mark" aria-hidden="true">共</div>
+      <p class="eyebrow">帝王三国</p>
+      <h1>共享数据管理</h1>
+      <p class="login-intro">查看区服在线协作、山贼地图、资源点地图与任务协调状态。</p>
+      <form id="loginForm" autocomplete="on">
+        <label class="field-label" for="username">管理员账号</label>
+        <div class="input-wrap">
+          <span aria-hidden="true">人</span>
+          <input id="username" name="username" type="text" autocomplete="username" maxlength="120" required>
+        </div>
+        <label class="field-label" for="password">密码</label>
+        <div class="input-wrap">
+          <span aria-hidden="true">锁</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" maxlength="240" required>
+          <button class="password-toggle" id="passwordToggle" type="button" aria-label="显示密码">显示</button>
+        </div>
+        <p class="form-error" id="loginError" role="alert" hidden></p>
+        <button class="login-button" id="loginButton" type="submit">
+          <span>登录管理后台</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      </form>
+      <div class="privacy-note">
+        <span aria-hidden="true">盾</span>
+        <p>本后台仅展示共享公共数据，不保存或展示游戏账号密码、Session、角色资料和任务日志。</p>
+      </div>
+    </main>
+  </section>
+
+  <div class="dashboard-shell" id="dashboardView" hidden>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-mark small" aria-hidden="true">共</div>
+        <div>
+          <p class="eyebrow">帝王三国</p>
+          <h1>共享数据管理</h1>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="service-state"><i></i>服务正常</span>
+        <span class="updated-at" id="updatedAt">尚未刷新</span>
+        <button class="icon-button" id="refreshButton" type="button" title="刷新所有数据" aria-label="刷新所有数据">↻</button>
+        <div class="admin-user">
+          <span class="admin-avatar" aria-hidden="true">管</span>
+          <span id="adminName">管理员</span>
+        </div>
+        <button class="logout-button" id="logoutButton" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="dashboard-content">
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">实时协作状态</p>
+          <h2>共享数据总览</h2>
+          <p>数据来自 Cloudflare D1，山贼保留30分钟，资源点保留3小时。</p>
+        </div>
+        <span class="readonly-pill">只读模式</span>
+      </section>
+
+      <section class="kpi-grid" id="kpiGrid" aria-label="共享数据指标">
+        <article class="kpi-card"><span class="kpi-icon slate">区</span><div><p>区服数</p><strong id="kpiServers">—</strong><small>已收录公共区服</small></div></article>
+        <article class="kpi-card"><span class="kpi-icon cyan">在</span><div><p>在线账号</p><strong id="kpiOnline">—</strong><small>90秒内匿名心跳</small></div></article>
+        <article class="kpi-card"><span class="kpi-icon green">云</span><div><p>云共享区服</p><strong id="kpiShared">—</strong><small>同区服至少2个账号</small></div></article>
+        <article class="kpi-card"><span class="kpi-icon amber">贼</span><div><p>山贼目标</p><strong id="kpiBandits">—</strong><small>当前有效公共点位</small></div></article>
+        <article class="kpi-card"><span class="kpi-icon violet">矿</span><div><p>资源点</p><strong id="kpiMines">—</strong><small>当前有效公共点位</small></div></article>
+        <article class="kpi-card"><span class="kpi-icon red">约</span><div><p>活动租约</p><strong id="kpiLeases">—</strong><small>正在扫描的地图分块</small></div></article>
+      </section>
+
+      <section class="panel server-panel">
+        <header class="panel-heading">
+          <div><h3>游戏平台与区服目录</h3><p>展开游戏平台查看所属全部区服，点击区服可查看共享地图和协调状态。</p></div>
+          <span class="count-pill" id="serverCountPill">0 个区服</span>
+        </header>
+        <div class="table-scroll">
+          <table class="data-table server-table">
+            <thead><tr><th>平台 / 区服</th><th>共享模式</th><th>在线</th><th>山贼 / 资源点</th><th>扫描分块</th><th>运行观测</th><th></th></tr></thead>
+            <tbody id="serverTableBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state compact" id="serverEmpty" hidden><span>空</span><p>尚未收录任何区服。</p></div>
+      </section>
+
+      <section class="server-detail" id="serverDetail" hidden>
+        <header class="detail-heading">
+          <div>
+            <div class="detail-title-row"><h2 id="detailServerName">区服详情</h2><span class="mode-badge" id="detailModeBadge">本地模式</span></div>
+            <p id="detailServerMeta">—</p>
+          </div>
+          <label class="server-select-label">
+            <span>切换区服</span>
+            <select id="serverSelect"></select>
+          </label>
+        </header>
+
+        <div class="detail-grid">
+          <aside class="panel detail-side">
+            <header class="panel-heading small"><div><h3>在线协作</h3><p>只显示打码后的匿名角色ID。</p></div></header>
+            <div class="mode-explainer" id="modeExplainer"></div>
+            <div class="actor-list" id="actorList"></div>
+            <div class="side-divider"></div>
+            <dl class="server-facts" id="serverFacts"></dl>
+          </aside>
+
+          <section class="panel map-panel">
+            <header class="map-heading">
+              <div class="map-tabs" role="tablist" aria-label="地图类型">
+                <button class="map-tab active" data-map-kind="bandit" type="button" role="tab" aria-selected="true">山贼地图</button>
+                <button class="map-tab" data-map-kind="mine" type="button" role="tab" aria-selected="false">资源点地图</button>
+              </div>
+              <div class="map-actions">
+                <button class="secondary-button" id="filterToggle" type="button">筛选</button>
+                <button class="square-button" id="zoomOut" type="button" aria-label="缩小地图">−</button>
+                <span class="zoom-label" id="zoomLabel">100%</span>
+                <button class="square-button" id="zoomIn" type="button" aria-label="放大地图">+</button>
+                <button class="primary-button" id="mapRefresh" type="button">刷新地图</button>
+              </div>
+            </header>
+
+            <section class="filter-panel" id="filterPanel" hidden>
+              <div class="filter-fields" id="banditFilters">
+                <label><span>山贼等级</span><select id="banditLevel"><option value="0">全部等级</option></select></label>
+                <fieldset><legend>战利品类别</legend><label><input class="drop-filter" type="checkbox" value="资源" checked>资源</label><label><input class="drop-filter" type="checkbox" value="宝箱" checked>宝箱</label><label><input class="drop-filter" type="checkbox" value="装备" checked>装备</label><label><input class="drop-filter" type="checkbox" value="宝物" checked>宝物</label></fieldset>
+                <label class="composition-label"><span>步弓骑车上限</span><span class="composition-selects" id="compositionFilters"></span></label>
+              </div>
+              <div class="filter-fields" id="mineFilters" hidden>
+                <label><span>资源类型</span><select id="mineKind"><option value="">全部资源</option></select></label>
+                <label><span>玩家归属</span><select id="mineOwner"><option value="">全部</option><option value="free">未被玩家占领</option><option value="occupied">玩家已占领</option></select></label>
+              </div>
+              <div class="filter-common">
+                <label><span>协调状态</span><select id="statusFilter"><option value="">全部状态</option><option value="available">可用</option><option value="reserved">已预占</option><option value="dispatching">出征中</option><option value="dispatched">已出征</option><option value="rejected">已拒绝</option><option value="missing">已消失</option><option value="uncertain">待确认</option></select></label>
+                <fieldset><legend>图层</legend><label><input id="showRegions" type="checkbox" checked>扫描分块</label><label><input id="showLeases" type="checkbox" checked>活动租约</label></fieldset>
+              </div>
+              <div class="filter-buttons"><button class="secondary-button" id="filterReset" type="button">重置</button><button class="primary-button" id="filterApply" type="button">应用筛选</button></div>
+            </section>
+
+            <div class="map-meta-row">
+              <p id="mapMeta">请选择区服。</p>
+              <div class="map-legend" id="mapLegend"></div>
+            </div>
+            <div class="map-scroll" id="mapScroll">
+              <svg id="mapCanvas" class="map-canvas" role="img" aria-label="共享地图坐标可视化"></svg>
+              <div class="empty-state map-empty" id="mapEmpty" hidden><span>图</span><p>当前区服暂无有效地图数据。</p></div>
+              <div class="map-loading" id="mapLoading" hidden><i></i><p>正在读取共享地图…</p></div>
+            </div>
+            <aside class="point-popup" id="pointPopup" hidden>
+              <button id="closePointPopup" type="button" aria-label="关闭详情">×</button>
+              <div id="pointPopupContent"></div>
+            </aside>
+          </section>
+        </div>
+
+        <section class="panel records-panel">
+          <header class="panel-heading">
+            <div><h3 id="recordsTitle">地图目标明细</h3><p>与上方地图使用同一组筛选条件，点击行可在地图中定位。</p></div>
+            <span class="count-pill" id="targetCountPill">0 个目标</span>
+          </header>
+          <div class="table-scroll target-table-scroll">
+            <table class="data-table target-table">
+              <thead id="targetTableHead"></thead>
+              <tbody id="targetTableBody"></tbody>
+            </table>
+          </div>
+          <div class="empty-state compact" id="targetEmpty" hidden><span>空</span><p>当前筛选条件下暂无目标。</p></div>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+  </div>
+
+  <script src="/admin/admin.js" defer></script>
+</body>
+</html>

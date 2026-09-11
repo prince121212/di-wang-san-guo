@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from .ports import PlatformPorts
+from .ports import NullDailyCompletionPort, PlatformPorts
 
 
 class HostedCredentialPort:
@@ -102,6 +102,264 @@ class HostedEventPort:
         self._bridge.publishEvent(_json(event))
 
 
+class HostedDailyCompletionPort:
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def count(self, account_ref: str, key: str, now_millis: int) -> int:
+        return max(
+            0,
+            int(
+                self._bridge.dailyCompletionCount(
+                    str(account_ref), str(key), int(now_millis)
+                )
+            ),
+        )
+
+    def add(
+        self,
+        account_ref: str,
+        key: str,
+        count: int,
+        now_millis: int,
+    ) -> int:
+        return max(
+            0,
+            int(
+                self._bridge.addDailyCompletion(
+                    str(account_ref),
+                    str(key),
+                    int(count),
+                    int(now_millis),
+                )
+            ),
+        )
+
+
+class HostedMapSnapshotPort:
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def save(self, snapshot: Mapping[str, object]) -> None:
+        self._bridge.saveMapSnapshot(_json(snapshot))
+
+    def load(
+        self,
+        account_ref: str,
+        kind: str,
+        fingerprint: str,
+    ) -> Optional[Mapping[str, object]]:
+        loader = getattr(self._bridge, "loadMapSnapshot", None)
+        if loader is None:
+            return None
+        raw = loader(str(account_ref), str(kind), str(fingerprint))
+        if not raw:
+            return None
+        try:
+            snapshot = json.loads(str(raw))
+        except Exception:
+            return None
+        return snapshot if isinstance(snapshot, dict) and snapshot else None
+
+    def invalidate(
+        self,
+        account_ref: str,
+        kind: str,
+        target_id: int,
+        reason: str,
+        invalidated_at_millis: int,
+    ) -> None:
+        self._bridge.invalidateMapTarget(
+            str(account_ref),
+            str(kind),
+            int(target_id),
+            str(reason),
+            int(invalidated_at_millis),
+        )
+
+
+class HostGameCommandError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "HOST_GAME_COMMAND_FAILED",
+        status: int = 500,
+    ) -> None:
+        super().__init__(message)
+        self.code = str(code or "HOST_GAME_COMMAND_FAILED")
+        self.status = int(status)
+
+
+class HostedGameCommandPort:
+    """Calls Android's generic authenticated transport without adding rules."""
+
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def execute(
+        self,
+        account_ref: str,
+        opcode: int,
+        payload: bytes,
+        phase: str,
+        context: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        raw = self._bridge.executeGameCommand(
+            str(account_ref),
+            _json({
+                "opcode": int(opcode),
+                "payloadHex": bytes(payload).hex(),
+                "phase": str(phase),
+                "readOnly": bool(context.get("readOnly", False)),
+            }),
+            _json(context),
+        )
+        try:
+            response = json.loads(str(raw or "{}"))
+        except json.JSONDecodeError as error:
+            raise HostGameCommandError(
+                "Android raw game transport returned invalid JSON"
+            ) from error
+        if not isinstance(response, dict):
+            raise HostGameCommandError(
+                "Android raw game transport response must be an object"
+            )
+        status = int(response.get("status") or 500)
+        body = response.get("body")
+        if not isinstance(body, dict):
+            raise HostGameCommandError(
+                "Android raw game transport body must be an object",
+                status=status,
+            )
+        if not 200 <= status < 300 or body.get("ok") is False:
+            raise HostGameCommandError(
+                str(
+                    body.get("error")
+                    or body.get("message")
+                    or f"Android raw game transport failed with status {status}"
+                ),
+                code=str(body.get("code") or "HOST_GAME_COMMAND_FAILED"),
+                status=status,
+            )
+        fact = body.get("gameCommandFact")
+        if not isinstance(fact, dict):
+            raise HostGameCommandError(
+                "Android raw game transport did not return gameCommandFact",
+                status=status,
+            )
+        return dict(fact)
+
+
+class HostedRawHttpPort:
+    """Adapts a host's byte-only HTTP transport to the shared core port."""
+
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def exchange(
+        self,
+        request: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        body = request.get("body")
+        if body is None:
+            body_bytes = b""
+        elif isinstance(body, (bytes, bytearray)):
+            body_bytes = bytes(body)
+        else:
+            raise TypeError("raw HTTP request body must be bytes")
+        wire_request = {
+            key: value
+            for key, value in request.items()
+            if key != "body"
+        }
+        wire_request["bodyHex"] = body_bytes.hex()
+        raw = self._bridge.executeRawHttp(_json(wire_request))
+        try:
+            response = json.loads(str(raw or "{}"))
+        except json.JSONDecodeError as error:
+            raise RuntimeError("host raw HTTP transport returned invalid JSON") from error
+        if not isinstance(response, dict):
+            raise RuntimeError("host raw HTTP transport response must be an object")
+        try:
+            status = int(response.get("status") or 0)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("host raw HTTP transport status is invalid") from error
+        body_hex = str(response.get("bodyHex") or "")
+        try:
+            response_body = bytes.fromhex(body_hex) if body_hex else b""
+        except ValueError as error:
+            raise RuntimeError("host raw HTTP transport bodyHex is invalid") from error
+        headers = response.get("headers")
+        return {
+            "status": status,
+            "body": response_body,
+            "headers": dict(headers) if isinstance(headers, dict) else {},
+        }
+
+
+class HostedCloudSharedDataPort:
+    """Keeps the Worker URL/token in Android while returning JSON facts."""
+
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def configured(self) -> bool:
+        return bool(self._bridge.cloudSharedDataConfigured())
+
+    def exchange(
+        self,
+        request: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        raw = self._bridge.executeCloudRequest(_json(request))
+        try:
+            response = json.loads(str(raw or "{}"))
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                "host cloud shared-data transport returned invalid JSON"
+            ) from error
+        if not isinstance(response, dict):
+            raise RuntimeError(
+                "host cloud shared-data transport response must be an object"
+            )
+        status = int(response.get("status") or 0)
+        body = response.get("body")
+        if not isinstance(body, dict):
+            raise RuntimeError(
+                "host cloud shared-data transport body must be an object"
+            )
+        return {"status": status, "body": dict(body)}
+
+
+class HostedAccountRuntimePort:
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def commit_login(
+        self,
+        previous_account_ref: str,
+        account_ref: str,
+        runtime: Mapping[str, object],
+        mode: str,
+    ) -> None:
+        self._bridge.commitAccountRuntime(
+            str(previous_account_ref),
+            str(account_ref),
+            _json(runtime),
+            str(mode),
+        )
+
+    def start_hosting(self, account_ref: str) -> None:
+        self._bridge.startAccountHosting(str(account_ref))
+
+    def is_hosting(self, account_ref: str) -> Optional[bool]:
+        if hasattr(self._bridge, "isAccountHosting"):
+            return bool(self._bridge.isAccountHosting(str(account_ref)))
+        if hasattr(self._bridge, "executionOwnerActive"):
+            return bool(self._bridge.executionOwnerActive())
+        return None
+
+
 def platform_ports_from_host_bridge(bridge: Any) -> PlatformPorts:
     return PlatformPorts(
         credentials=HostedCredentialPort(bridge),
@@ -112,6 +370,40 @@ def platform_ports_from_host_bridge(bridge: Any) -> PlatformPorts:
         wake=HostedWakePort(bridge),
         logs=HostedLogPort(bridge),
         events=HostedEventPort(bridge),
+        daily_completions=(
+            HostedDailyCompletionPort(bridge)
+            if hasattr(bridge, "dailyCompletionCount")
+            and hasattr(bridge, "addDailyCompletion")
+            else NullDailyCompletionPort()
+        ),
+        game_commands=(
+            HostedGameCommandPort(bridge)
+            if hasattr(bridge, "executeGameCommand")
+            else None
+        ),
+        raw_http=(
+            HostedRawHttpPort(bridge)
+            if hasattr(bridge, "executeRawHttp")
+            else None
+        ),
+        cloud_shared_data=(
+            HostedCloudSharedDataPort(bridge)
+            if hasattr(bridge, "cloudSharedDataConfigured")
+            and hasattr(bridge, "executeCloudRequest")
+            else None
+        ),
+        account_runtime=(
+            HostedAccountRuntimePort(bridge)
+            if hasattr(bridge, "commitAccountRuntime")
+            and hasattr(bridge, "startAccountHosting")
+            else None
+        ) or PlatformPorts().account_runtime,
+        map_snapshots=(
+            HostedMapSnapshotPort(bridge)
+            if hasattr(bridge, "saveMapSnapshot")
+            and hasattr(bridge, "invalidateMapTarget")
+            else None
+        ),
     )
 
 

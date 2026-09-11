@@ -17,11 +17,9 @@ object TaskFactory {
             ?.let { add(LosslessTask(accountId, it)) }
         configs.shuaHuang?.takeIf { it.enabled }?.let {
             add(ShuaHuangTask(accountId, it))
-            add(BanditPrefetchTask(accountId, it))
         }
         configs.mine?.takeIf { it.enabled || it.backgroundSearch }?.let {
             add(MineTask(accountId, it))
-            if (it.enabled) add(MinePrefetchTask(accountId, it))
         }
         configs.daily?.takeIf { it.enabledSteps.isNotEmpty() }?.let { daily ->
             // The desktop scheduler locks/completes sign-in and arena coins
@@ -44,22 +42,17 @@ object TaskFactory {
         configs.dailyNationalCollect?.takeIf { it.enabled }?.let { add(DailyNationalCollectTask(accountId, it)) }
         configs.dailyCityLordCollect?.takeIf { it.enabled }?.let { add(DailyCityLordCollectTask(accountId, it)) }
         configs.dailyGeneralVisit?.takeIf { it.enabled }?.let { add(DailyGeneralVisitTask(accountId, it)) }
-        configs.general?.takeIf {
-            it.autoHeal || it.keepFullLoyalty || it.autoEnergy || it.autoRescue
-        }?.let { add(GeneralMaintenanceTask(accountId, it)) }
-        configs.foodToCopper?.takeIf { it.enabled }
-            ?.let { add(FoodToCopperTask(accountId, it)) }
-        configs.internalAffairs?.takeIf { it.enabled || it.upgradeTechnology }
-            ?.let { add(InternalAffairsTask(accountId, it)) }
+        // Periodic general maintenance is owned by the shared Python resident
+        // tick.  Keep GeneralConfig only as host input; Kotlin must not create
+        // a second production task which can send the same mutations.
+        // Automatic domestic/technology work is configured here but executed
+        // only by the shared Python resident tick.
         configs.dungeon?.takeIf { it.enabled }?.let { add(DungeonTask(accountId, it)) }
         configs.inventory?.takeIf { it.enabled }?.let { add(InventoryCleanupTask(accountId, it)) }
         configs.autoLoot?.takeIf { it.enabled }?.let { add(AutoLootTask(accountId, it)) }
         configs.sixMinistries
             ?.takeIf { it.cropEnabled && it.crop == MinistryProtocolCrop.VERIFIED_NAME }
             ?.let { add(SixMinistriesTask(accountId, it)) }
-        // 心跳只证明会话在线；电脑端另有定时的角色/将领/军情刷新。
-        // 手机端同样保留一条独立观察通道，它不与每日、内政或背包互相抑制。
-        add(StateRefreshTask(accountId))
         configs.alarm?.takeIf {
             it.enabled && (it.incomingEnabled || it.militaryEnabled)
         }?.let { add(AlarmTask(accountId, it)) }
@@ -77,7 +70,6 @@ data class AssistantConfigBundle(
     val dailyCityLordCollect: DailyCityLordCollectConfig? = null,
     val dailyGeneralVisit: DailyGeneralVisitConfig? = null,
     val general: GeneralConfig? = null,
-    val foodToCopper: FoodToCopperConfig? = null,
     val formations: List<FormationConfig> = emptyList(),
     val internalAffairs: InternalAffairsConfig? = null,
     val dungeon: DungeonConfig? = null,

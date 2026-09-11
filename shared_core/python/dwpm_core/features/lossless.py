@@ -59,6 +59,42 @@ def lossless_status_phase(status: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def lossless_stage_context(
+    status: Dict[str, Any],
+    catalog: Dict[str, Any] | None = None,
+    lineup: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Project the current level/stage without depending on either host."""
+
+    stage_id = (lineup or {}).get("stageId")
+    if stage_id is None:
+        stage_id = status.get("stageId")
+    stage = (
+        ((catalog or {}).get("stageById") or {}).get(str(stage_id))
+        if stage_id is not None
+        else None
+    )
+    stage = dict(stage) if isinstance(stage, dict) else {}
+    level_name = (lineup or {}).get("levelName") or stage.get("levelName")
+    stage_name = (lineup or {}).get("stageName") or stage.get("name")
+    if not stage_name and stage_id is not None:
+        suffix = int(stage_id) & 0xFF
+        if 0x11 <= suffix <= 0x15:
+            stage_name = LOSSLESS_STAGE_NAMES[suffix - 0x11]
+    selected_level = status.get("selectedLevel")
+    return {
+        "stageId": stage_id,
+        "stageIdHex": (
+            f"{int(stage_id):04x}" if stage_id is not None else None
+        ),
+        "level": stage.get("level") or selected_level,
+        "levelName": level_name or (
+            f"{selected_level}级关卡" if selected_level else ""
+        ),
+        "stageName": stage_name or "未知阶段",
+    }
+
+
 def parse_lossless_status(payload: bytes) -> Dict[str, Any]:
     output: Dict[str, Any] = {
         "rawHex": payload.hex(),

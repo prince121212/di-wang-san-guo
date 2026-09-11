@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import calendar
 import struct
 import sys
 import time
@@ -358,6 +359,7 @@ class DailyInventoryProtocolTests(unittest.TestCase):
                 "level": 1,
                 "quality": 1,
                 "qualityName": "良好",
+                "equipmentMetadataComplete": True,
                 "famous": False,
                 "strengthen": 0,
                 "extraText": "",
@@ -410,78 +412,6 @@ class DailyInventoryProtocolTests(unittest.TestCase):
         self.assertEqual(result["actionCount"], 0)
         record_success.assert_not_called()
 
-    def test_daily_tasks_only_request_unfinished_enabled_items(self) -> None:
-        calls = []
-
-        def fake_post(_url, commands, _dm, account_id=None):
-            calls.append(commands[0][0])
-            if commands[0][0] == 0x6260:
-                return 200, b"", [packet(0xE260, b"")]
-            return 200, b"", [packet(0xE266, b"\x00" + SERVER.utf("领取成功"))]
-
-        states = [
-            {"key": "autoSignIn", "completed": True},
-            {"key": "arenaCoins", "completed": False},
-            {"key": "autoDonate", "completed": False},
-            {"key": "salary", "completed": False},
-        ]
-        with patch.object(SERVER, "current_daily_task_completions", return_value=states), \
-             patch.object(SERVER, "post_game", side_effect=fake_post), \
-             patch.object(SERVER, "record_daily_task_completion") as record:
-            result = SERVER.execute_daily_once_tasks(
-                self.sess,
-                {"autoSignIn": True, "arenaCoins": True},
-            )
-
-        self.assertNotIn("autoSignIn", result)
-        self.assertTrue(result["arenaCoins"]["success"])
-        self.assertEqual(calls, [0x6260, 0x6266])
-        record.assert_called_once_with(self.sess, "arenaCoins")
-
-    def test_auto_sign_in_then_claims_daily_diamond_box(self) -> None:
-        calls = []
-
-        def fake_post(_url, commands, _dm, account_id=None):
-            calls.append((commands, account_id))
-            opcode = commands[0][0]
-            if opcode == 0x6202:
-                return 200, b"", [packet(
-                    0x8134,
-                    b"\x00\x00\x0bactivity-list"
-                    + SERVER.utf("铜钱:10000获得成功。粮食:30000获得成功。"),
-                )]
-            if opcode == 0x1134:
-                return 200, b"", [packet(
-                    0x8134,
-                    b"\x00\x00\x0bactivity-list"
-                    + SERVER.utf("惊喜宝箱+1获得成功。"),
-                )]
-            raise AssertionError(f"unexpected opcode {opcode:#x}")
-
-        states = [
-            {"key": "autoSignIn", "completed": False},
-            {"key": "arenaCoins", "completed": False},
-            {"key": "autoDonate", "completed": False},
-            {"key": "salary", "completed": False},
-        ]
-        with patch.object(SERVER, "current_daily_task_completions", return_value=states), \
-             patch.object(SERVER, "post_game", side_effect=fake_post), \
-             patch.object(SERVER, "record_daily_task_completion") as record, \
-             patch.object(SERVER, "account_log"):
-            result = SERVER.execute_daily_once_tasks(self.sess, {"autoSignIn": True})
-
-        self.assertEqual(calls, [
-            ([(0x6202, b"")], "test-session"),
-            ([(0x1134, struct.pack(">qB", 0x0DE2B1, 0))], "test-session"),
-        ])
-        self.assertTrue(result["autoSignIn"]["success"])
-        self.assertTrue(result["autoSignIn"]["dailyDiamondBox"]["success"])
-        self.assertEqual(
-            result["autoSignIn"]["message"],
-            "铜钱:10000获得成功；粮食:30000获得成功；每日金钻宝箱：惊喜宝箱+1获得成功",
-        )
-        record.assert_called_once_with(self.sess, "autoSignIn")
-
     def test_activity_list_daily_box_success_uses_trailing_reward(self) -> None:
         payload = (
             b"\x00\x00\x0bactivity-list-data"
@@ -524,27 +454,6 @@ class DailyInventoryProtocolTests(unittest.TestCase):
         limits = SERVER.country_donation_limits(self.sess)
 
         self.assertEqual(limits, {"level": 44, "copper": 44000, "food": 132000})
-
-    def test_arena_coins_empty_failure_explains_time_or_already_claimed(self) -> None:
-        def fake_post(_url, commands, _dm, account_id=None):
-            if commands[0][0] == 0x6260:
-                return 200, b"", [packet(0xE260, b"")]
-            return 200, b"", [packet(0xE266, b"\x01\x00\x00")]
-
-        states = [
-            {"key": "autoSignIn", "completed": False},
-            {"key": "arenaCoins", "completed": False},
-            {"key": "autoDonate", "completed": False},
-            {"key": "salary", "completed": False},
-        ]
-        with patch.object(SERVER, "current_daily_task_completions", return_value=states), \
-             patch.object(SERVER, "post_game", side_effect=fake_post), \
-             patch.object(SERVER, "record_daily_task_completion") as record:
-            result = SERVER.execute_daily_once_tasks(self.sess, {"arenaCoins": True})
-
-        self.assertFalse(result["arenaCoins"]["success"])
-        self.assertIn("22点后", result["arenaCoins"]["message"])
-        record.assert_not_called()
 
     def test_daily_activity_only_refreshes_once_per_local_day(self) -> None:
         self.sess["dailyActivityDate"] = time.strftime("%Y-%m-%d", time.localtime())
@@ -598,6 +507,42 @@ class DailyInventoryProtocolTests(unittest.TestCase):
             self.assertEqual(states["arenaCoins"]["completedAt"], 123)
         finally:
             SERVER.DAILY_TASK_COMPLETIONS = old
+
+    def test_shared_completion_port_honors_explicit_arena_cycle_time(self) -> None:
+        before_millis = (
+            calendar.timegm((2026, 7, 12, 13, 59, 59, 0, 0, 0)) * 1000
+        )
+        boundary_millis = (
+            calendar.timegm((2026, 7, 12, 14, 0, 0, 0, 0, 0)) * 1000
+        )
+        with patch.object(SERVER, "SESSIONS", {"test-session": self.sess}), \
+             patch.object(SERVER, "DAILY_TASK_COMPLETIONS", {}), \
+             patch.object(SERVER, "ACCOUNT_STATE_DB_READY", False), \
+             patch.object(SERVER, "persist_runtime_state"):
+            self.assertEqual(
+                SERVER._desktop_add_daily_completion(
+                    "test-session", "arenaCoins", 1, before_millis
+                ),
+                1,
+            )
+            self.assertEqual(
+                SERVER._desktop_daily_completion_count(
+                    "test-session", "arenaCoins", before_millis
+                ),
+                1,
+            )
+            self.assertEqual(
+                SERVER._desktop_daily_completion_count(
+                    "test-session", "arenaCoins", boundary_millis
+                ),
+                0,
+            )
+            self.assertEqual(
+                SERVER._desktop_add_daily_completion(
+                    "test-session", "arenaCoins", 1, boundary_millis
+                ),
+                1,
+            )
 
     def test_settings_save_does_not_need_daily_execution_retry(self) -> None:
         self.sess["dailyAutomationAttemptDate"] = time.strftime("%Y-%m-%d", time.localtime())

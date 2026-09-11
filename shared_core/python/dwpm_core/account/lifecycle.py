@@ -137,6 +137,13 @@ class AccountLifecyclePolicy:
 
     started_requires_execution_owner: bool = True
     heartbeat_interval_millis: int = 20_000
+    session_validation_interval_millis: int = 60_000
+    session_probe_read_timeout_millis: int = 8_000
+    session_state_fallback_read_timeout_millis: int = 20_000
+    probe_failure_pause_threshold: int = 3
+    probe_failure_relogin_threshold: int = 4
+    degraded_probe_retry_millis: int = 5_000
+    successful_response_refresh_min_interval_millis: int = 5_000
     status_texts: Mapping[str, str] = field(
         default_factory=lambda: dict(DEFAULT_STATUS_TEXT)
     )
@@ -151,6 +158,34 @@ class AccountLifecyclePolicy:
             )
         if int(self.heartbeat_interval_millis) <= 0:
             raise ValueError("account lifecycle heartbeat interval must be positive")
+        if int(self.session_validation_interval_millis) <= 0:
+            raise ValueError(
+                "account lifecycle session validation interval must be positive"
+            )
+        if int(self.session_probe_read_timeout_millis) <= 0:
+            raise ValueError("account lifecycle probe timeout must be positive")
+        if int(self.session_state_fallback_read_timeout_millis) <= 0:
+            raise ValueError(
+                "account lifecycle state fallback timeout must be positive"
+            )
+        if int(self.probe_failure_pause_threshold) < 2:
+            raise ValueError(
+                "account lifecycle probe pause threshold must be at least two"
+            )
+        if int(self.probe_failure_relogin_threshold) <= int(
+            self.probe_failure_pause_threshold
+        ):
+            raise ValueError(
+                "account lifecycle probe relogin threshold must exceed pause threshold"
+            )
+        if int(self.degraded_probe_retry_millis) <= 0:
+            raise ValueError(
+                "account lifecycle degraded probe retry must be positive"
+            )
+        if int(self.successful_response_refresh_min_interval_millis) <= 0:
+            raise ValueError(
+                "account lifecycle response refresh interval must be positive"
+            )
         object.__setattr__(self, "status_texts", texts)
 
     @classmethod
@@ -170,6 +205,30 @@ class AccountLifecyclePolicy:
             ),
             heartbeat_interval_millis=int(
                 lifecycle.get("heartbeatIntervalMillis") or 0
+            ),
+            session_validation_interval_millis=int(
+                lifecycle.get("sessionValidationIntervalMillis")
+                or lifecycle.get("heartbeatIntervalMillis")
+                or 0
+            ),
+            session_probe_read_timeout_millis=int(
+                lifecycle.get("sessionProbeReadTimeoutMillis") or 0
+            ),
+            session_state_fallback_read_timeout_millis=int(
+                lifecycle.get("sessionStateFallbackReadTimeoutMillis") or 0
+            ),
+            probe_failure_pause_threshold=int(
+                lifecycle.get("probeFailurePauseThreshold") or 0
+            ),
+            probe_failure_relogin_threshold=int(
+                lifecycle.get("probeFailureReloginThreshold") or 0
+            ),
+            degraded_probe_retry_millis=int(
+                lifecycle.get("degradedProbeRetryMillis") or 0
+            ),
+            successful_response_refresh_min_interval_millis=int(
+                lifecycle.get("successfulResponseRefreshMinIntervalMillis")
+                or 0
             ),
             status_texts={str(key): str(value) for key, value in texts.items()},
         )
@@ -224,7 +283,7 @@ class AccountLifecyclePolicy:
             return True
         return (
             int(now_millis) - int(last_validated_at_millis)
-            >= int(self.heartbeat_interval_millis)
+            >= int(self.session_validation_interval_millis)
         )
 
     def snapshot(
@@ -261,6 +320,9 @@ class AccountLifecyclePolicy:
             "mayUseLiveSession": usable,
             "runnable": usable,
             "heartbeatIntervalMillis": int(self.heartbeat_interval_millis),
+            "sessionValidationIntervalMillis": int(
+                self.session_validation_interval_millis
+            ),
         }
 
 

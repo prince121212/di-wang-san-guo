@@ -113,40 +113,6 @@ class DailyCountryFeatureTests(unittest.TestCase):
         self.assertEqual(parsed["food"], 1190689)
         self.assertEqual(parsed["message"], "领取成功642850铜钱、1190689粮食")
 
-    def test_national_citizen_skips_office_gated_tasks_and_records_status(self) -> None:
-        self.sess["roleState"].update({"officeIdUnsigned": 0x0100, "officeName": "国民"})
-        with patch.object(SERVER, "ACCOUNT_STATE_DB_READY", False), \
-             patch.object(SERVER, "DAILY_TASK_COMPLETIONS", {}), \
-             patch.object(SERVER, "persist_runtime_state"), \
-             patch.object(SERVER, "post_game") as post_game, \
-             patch.object(SERVER, "query_national_cities") as query_cities, \
-             patch.object(SERVER, "query_general_visit_candidates") as query_candidates, \
-             patch.object(SERVER, "account_log"), \
-             patch.object(SERVER, "database_resolve_important_notice"):
-            result = SERVER.execute_daily_once_tasks(self.sess, {
-                "salary": True,
-                "nationalCollect": True,
-                "generalVisit": True,
-                "generalVisitGeneralIds": ["1001"],
-            })
-            states = {
-                item["key"]: item
-                for item in SERVER.current_daily_task_completions(self.sess)
-            }
-
-        post_game.assert_not_called()
-        query_cities.assert_not_called()
-        query_candidates.assert_not_called()
-        for key in ("salary", "nationalCollect", "generalVisit"):
-            with self.subTest(task=key):
-                self.assertTrue(result[key]["success"])
-                self.assertTrue(result[key]["completed"])
-                self.assertTrue(result[key]["skipped"])
-                self.assertEqual(result[key]["skipReason"], "national-citizen")
-                self.assertTrue(states[key]["completed"])
-                self.assertTrue(states[key]["skipped"])
-                self.assertEqual(states[key]["statusText"], "已做（国民跳过）")
-
     def test_national_citizen_candidate_query_does_not_send_game_request(self) -> None:
         self.sess["roleState"] = {"officeId": "0x0100"}
         with patch.object(SERVER, "post_game") as post_game:
@@ -567,47 +533,3 @@ class DailyCountryFeatureTests(unittest.TestCase):
         self.assertTrue(result["completed"])
         self.assertTrue(result["alreadyVisited"])
         self.assertEqual(result["generals"], [])
-
-    def test_daily_task_exception_does_not_block_sibling_tasks(self) -> None:
-        states = [{"key": key, "completed": False} for key in SERVER.DAILY_TASK_NAMES]
-        with patch.object(SERVER, "current_daily_task_completions", return_value=states), \
-             patch.object(SERVER, "execute_daily_country_donations", side_effect=RuntimeError("donate boom")), \
-             patch.object(SERVER, "claim_national_salary", return_value={"success": True, "completed": True}), \
-             patch.object(SERVER, "record_daily_task_completion"), \
-             patch.object(SERVER, "account_log"), \
-             patch.object(SERVER, "database_upsert_important_notice"), \
-             patch.object(SERVER, "database_resolve_important_notice"):
-            result = SERVER.execute_daily_once_tasks(
-                self.sess,
-                {"autoDonate": True, "salary": True},
-            )
-
-        self.assertIn("autoDonate", result)
-        self.assertIn("salary", result)
-        self.assertFalse(result["autoDonate"]["success"])
-        self.assertTrue(result["salary"]["success"])
-
-    def test_explicit_session_rejection_is_recorded_without_blocking_sibling_tasks(self) -> None:
-        states = [{"key": key, "completed": False} for key in SERVER.DAILY_TASK_NAMES]
-        with patch.object(SERVER, "current_daily_task_completions", return_value=states), \
-             patch.object(SERVER, "execute_daily_country_donations", side_effect=SERVER.GameServerRejected("会话失效")), \
-             patch.object(SERVER, "claim_national_salary", return_value={"success": True, "completed": True}), \
-             patch.object(SERVER, "mark_account_offline_if_session_invalid"), \
-             patch.object(SERVER, "record_daily_task_completion"), \
-             patch.object(SERVER, "record_success_action"), \
-             patch.object(SERVER, "account_log"), \
-             patch.object(SERVER, "database_upsert_important_notice"), \
-             patch.object(SERVER, "database_resolve_important_notice"):
-            result = SERVER.execute_daily_once_tasks(
-                self.sess,
-                {"autoDonate": True, "salary": True},
-            )
-
-        self.assertIn("autoDonate", result)
-        self.assertIn("salary", result)
-        self.assertTrue(result["autoDonate"].get("sessionInvalid"))
-        self.assertTrue(result["salary"]["success"])
-
-
-if __name__ == "__main__":
-    unittest.main()
