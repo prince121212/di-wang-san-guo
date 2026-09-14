@@ -363,7 +363,10 @@ async function observations(request: Request, env: Env, now: number): Promise<Re
   const mapKind = mapKindValue(input.mapKind);
   const mode = await requireSharedMode(env, serverScope, actorId, now);
   const regions = regionObservations(input.regions, mapKind);
-  await observeRegions(env.DB, serverScope, mapKind, actorId, regions, now);
+  await observeRegions(
+    env.DB, serverScope, mapKind, actorId, regions, now,
+    policy(env).scanFreshMillis,
+  );
   return json({ ok: true, ...mode, regionCount: regions.length });
 }
 

@@ -874,6 +874,7 @@ describe("D1 write scaling", () => {
           })),
         }],
         Date.now(),
+        120_000,
       );
       expect(prepared).toBe(6);
       expect(batchSize).toBe(6);
@@ -941,5 +942,51 @@ describe("D1 write scaling", () => {
     ).first<{ level: number; last_seen_at: number }>();
     expect(Number(changed?.level)).toBe(9);
     expect(Number(changed?.last_seen_at)).toBeGreaterThan(recent);
+  });
+
+  it("refreshes a region's scanned_at only once it leaves the claim window", async () => {
+    // scanned_at exists so scan claims can skip recently-read cells, and the
+    // claim window is 2 minutes - so a re-scan inside the window does not
+    // need to be recorded, and (with phones scanning around the clock) not
+    // recording it is where the write quota goes.
+    await enableSharedMode();
+    await observation(ACTOR_A, "bandit", []);
+
+    const insideWindow = Date.now() - 60_000;
+    await env.DB.prepare("UPDATE map_regions SET scanned_at=?").bind(insideWindow).run();
+    await observation(ACTOR_A, "bandit", []);
+    const kept = await env.DB.prepare(
+      "SELECT scanned_at FROM map_regions WHERE scan_x=84 AND scan_y=22",
+    ).first<{ scanned_at: number }>();
+    expect(Number(kept?.scanned_at)).toBe(insideWindow);
+
+    const outsideWindow = Date.now() - 180_000;
+    await env.DB.prepare("UPDATE map_regions SET scanned_at=?").bind(outsideWindow).run();
+    await observation(ACTOR_A, "bandit", []);
+    const renewed = await env.DB.prepare(
+      "SELECT scanned_at FROM map_regions WHERE scan_x=84 AND scan_y=22",
+    ).first<{ scanned_at: number }>();
+    expect(Number(renewed?.scanned_at)).toBeGreaterThan(outsideWindow);
+  });
+
+  it("stores one target row when overlapping regions report the same target", async () => {
+    await enableSharedMode();
+    const seen = { targetId: "twice", x: 84, y: 22, type: "山贼", level: 7, data: {} };
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      regions: [
+        { x: 84, y: 22, targets: [seen] },
+        { x: 85, y: 22, targets: [seen] },
+      ],
+    });
+    const rows = await env.DB.prepare(
+      "SELECT target_id, level FROM map_targets WHERE target_id='twice'",
+    ).all<{ target_id: string; level: number }>();
+    expect(rows.results).toEqual([{ target_id: "twice", level: 7 }]);
+    const links = await env.DB.prepare(
+      "SELECT scan_x FROM map_target_regions WHERE target_id='twice' ORDER BY scan_x",
+    ).all<{ scan_x: number }>();
+    expect(links.results.map((r) => r.scan_x)).toEqual([84, 85]);
   });
 });

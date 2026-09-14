@@ -100,12 +100,23 @@ export async function observeRegions(
   actorId: string,
   regions: RegionObservation[],
   now: number,
+  scanFreshMillis: number,
 ): Promise<void> {
   // One scan may contain hundreds of targets. Feeding validated JSON through
   // SQLite's json_each keeps the D1 write count constant instead of issuing
   // two statements per target.
   const encoded = JSON.stringify(regions);
   const staleBefore = now - OBSERVATION_REFRESH_MILLIS;
+  // A region row exists to tell scanners "this cell was read recently", and
+  // the claim window is scanFreshMillis - so the recorded time only needs
+  // that granularity.  Rewriting scanned_at on every observation (several a
+  // minute while a phone scans around the clock) bought nothing over that.
+  // Refreshing only once the recorded scan falls out of the fresh window
+  // collapses the write rate; the price is that a re-scan happening inside
+  // the window goes unrecorded, so another account may claim the cell up to
+  // one window earlier than the true last scan - a duplicate scan, not a
+  // correctness issue, and moot once scan coordination moves off the cloud.
+  const scanStaleBefore = now - scanFreshMillis;
   await db.batch([
     db.prepare(
       `INSERT INTO map_regions(
@@ -118,24 +129,33 @@ export async function observeRegions(
        FROM json_each(?) AS region
        WHERE 1
        ON CONFLICT(server_key,map_kind,scan_x,scan_y) DO UPDATE SET
-         scanned_at=excluded.scanned_at, observer_id=excluded.observer_id`,
-    ).bind(serverKey, mapKind, now, actorId, encoded),
+         scanned_at=excluded.scanned_at, observer_id=excluded.observer_id
+       WHERE map_regions.scanned_at < ?`,
+    ).bind(serverKey, mapKind, now, actorId, encoded, scanStaleBefore),
+    // Overlapping scan regions all report the targets they cover, so one
+    // target can appear once per region in this payload.  Without the GROUP
+    // BY, each appearance is a separate conflict-update of the same row.
+    // The grouped rows for one target carry identical data (same sighting),
+    // so keeping any one of them loses nothing.
     db.prepare(
       `INSERT INTO map_targets(
          server_key,map_kind,target_id,x,y,target_type,level,data_json,last_seen_at
        )
-       SELECT ?,?,
-              CAST(json_extract(target.value,'$.targetId') AS TEXT),
-              CAST(json_extract(target.value,'$.x') AS INTEGER),
-              CAST(json_extract(target.value,'$.y') AS INTEGER),
-              COALESCE(CAST(json_extract(target.value,'$.type') AS TEXT),''),
-              CASE WHEN json_type(target.value,'$.level') IN ('integer','real')
-                   THEN CAST(json_extract(target.value,'$.level') AS INTEGER)
-                   ELSE NULL END,
-              json(json_extract(target.value,'$.data')),
-              ?
-       FROM json_each(?) AS region
-       JOIN json_each(json_extract(region.value,'$.targets')) AS target
+       SELECT ?,?, target_id, x, y, target_type, level, data_json, ?
+       FROM (
+         SELECT
+           CAST(json_extract(target.value,'$.targetId') AS TEXT) AS target_id,
+           CAST(json_extract(target.value,'$.x') AS INTEGER) AS x,
+           CAST(json_extract(target.value,'$.y') AS INTEGER) AS y,
+           COALESCE(CAST(json_extract(target.value,'$.type') AS TEXT),'') AS target_type,
+           CASE WHEN json_type(target.value,'$.level') IN ('integer','real')
+                THEN CAST(json_extract(target.value,'$.level') AS INTEGER)
+                ELSE NULL END AS level,
+           json(json_extract(target.value,'$.data')) AS data_json
+         FROM json_each(?) AS region
+         JOIN json_each(json_extract(region.value,'$.targets')) AS target
+         GROUP BY target_id
+       )
        WHERE 1
        ON CONFLICT(server_key,map_kind,target_id) DO UPDATE SET
          x=excluded.x, y=excluded.y, target_type=excluded.target_type,
@@ -172,13 +192,16 @@ export async function observeRegions(
       `INSERT INTO map_target_regions(
          server_key,map_kind,target_id,scan_x,scan_y,last_seen_at
        )
-       SELECT ?,?,
-              CAST(json_extract(target.value,'$.targetId') AS TEXT),
-              CAST(json_extract(region.value,'$.x') AS INTEGER),
-              CAST(json_extract(region.value,'$.y') AS INTEGER),
-              ?
-       FROM json_each(?) AS region
-       JOIN json_each(json_extract(region.value,'$.targets')) AS target
+       SELECT ?,?, target_id, scan_x, scan_y, ?
+       FROM (
+         SELECT
+           CAST(json_extract(target.value,'$.targetId') AS TEXT) AS target_id,
+           CAST(json_extract(region.value,'$.x') AS INTEGER) AS scan_x,
+           CAST(json_extract(region.value,'$.y') AS INTEGER) AS scan_y
+         FROM json_each(?) AS region
+         JOIN json_each(json_extract(region.value,'$.targets')) AS target
+         GROUP BY target_id, scan_x, scan_y
+       )
        WHERE 1
        ON CONFLICT(server_key,map_kind,target_id,scan_x,scan_y) DO UPDATE SET
          last_seen_at=excluded.last_seen_at
