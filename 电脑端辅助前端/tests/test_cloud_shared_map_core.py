@@ -584,8 +584,12 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             )
             self.assertEqual(result["state"], "dispatched")
             paths = [call["path"] for call in cloud.calls]
+            # v2 的目标来源是本地副本：首轮先探测 /v1/maps/targets/sync，
+            # 本 fixture 扮演旧 Worker（无 v2 端点），本轮降级回 v1 全量
+            # 查询，后续行为不变。
             self.assertEqual(paths, [
                 "/v1/presence/heartbeat",
+                "/v1/maps/targets/sync",
                 "/v1/maps/targets/query",
                 "/v1/maps/targets/reserve",
                 "/v1/maps/targets/status",
@@ -781,8 +785,10 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             )
             self.assertEqual(result["state"], "dispatched")
             paths = [call["path"] for call in cloud.calls]
+            # 同刷黄：v2 副本先探测 sync，本 fixture 是旧 Worker，降级 v1。
             self.assertEqual(paths, [
                 "/v1/presence/heartbeat",
+                "/v1/maps/targets/sync",
                 "/v1/maps/targets/query",
                 "/v1/maps/targets/reserve",
                 "/v1/maps/targets/status",
@@ -828,9 +834,14 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             )
             self.assertTrue(result["cloudSharedMap"])
             self.assertEqual(result["count"], 1)
+            # v2 副本探测 sync 失败（旧 Worker）后降级 v1 全量查询。
             self.assertEqual(
                 [call["path"] for call in cloud.calls],
-                ["/v1/presence/heartbeat", "/v1/maps/targets/query"],
+                [
+                    "/v1/presence/heartbeat",
+                    "/v1/maps/targets/sync",
+                    "/v1/maps/targets/query",
+                ],
             )
         finally:
             facade.close()
@@ -875,9 +886,13 @@ class CloudSharedMapCoreTests(unittest.TestCase):
                 [call["path"] for call in cloud.calls],
                 [
                     "/v1/presence/heartbeat",
+                    # 旧 Worker：每次取目标都先探测 sync、失败后降级 v1 查询
+                    # （降级只对本轮有效，下轮仍按规格重试 v2）。
+                    "/v1/maps/targets/sync",
                     "/v1/maps/targets/query",
                     "/v1/maps/scans/claim",
                     "/v1/maps/observations",
+                    "/v1/maps/targets/sync",
                     "/v1/maps/targets/query",
                 ],
             )
@@ -1033,9 +1048,18 @@ class PresenceIsAboutRecencyTests(unittest.TestCase):
             directory.cleanup()
 
     def test_the_lease_is_renewed_well_inside_the_observed_expiry(self) -> None:
-        """Observed expiry on a real device was 60-90s; renewal must beat it."""
+        """v2：扫描租约废弃后心跳只剩在线证明，但仍须明显快于宽限期。
 
-        self.assertLessEqual(CLOUD_PRESENCE_RENEW_MILLIS * 3, 60_000)
+        v1 要求 20 秒续期，因为扫描租约实测 60-90 秒过期、靠心跳续命。
+        v2（cloud_event_sync_v2_spec）改用 onlineActorIds 确定性分片，
+        服务端 PRESENCE_TTL 放宽到 300 秒，续期 120 秒即可；约束改为：
+        宽限期必须盖住至少两个续期周期，模式才不会因一次迟到而抖动。
+        """
+
+        self.assertLessEqual(
+            CLOUD_PRESENCE_RENEW_MILLIS * 2,
+            CLOUD_PRESENCE_GRACE_MILLIS,
+        )
 
     def test_a_never_shared_account_is_not_promoted_by_grace(self) -> None:
         cloud = FakeCloudPort("LOCAL_ONLY")

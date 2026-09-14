@@ -48,6 +48,11 @@ from .features.alarm import (
     plan_alarm_observation,
     plan_error_alarm,
 )
+from .features.cloud_map_replica import (
+    VIEW_RADIUS_PADDING,
+    CloudMapReplicaStore,
+    shard_coordinates,
+)
 from .features.formation import (
     TroopShortageError,
     assignment_receipt_matches_plan,
@@ -394,15 +399,18 @@ SENSITIVE_EXACT_KEYS = frozenset(("dm", "session"))
 #: How often a same-server presence lease is renewed.
 #:
 #: A lease has to be renewed by a *clock*, at an interval well inside its
-#: expiry.  Renewal used to happen only as a side effect of a brush or mine
-#: tick, and those run minutes apart when the generals are out, so the lease
-#: expired between renewals: two accounts that were both running saw each other
-#: appear and disappear every one to two minutes.  The observed expiry was
-#: around 60-90 s, so this leaves a three-to-four-fold margin.
-CLOUD_PRESENCE_RENEW_MILLIS = 20_000
+#: expiry.  v1 把它定在 20 秒，是因为扫描租约（claim/release）靠心跳顺带
+#: 续期，而实测租约 60-90 秒就会过期：两个都在运行的账号会看到彼此每隔
+#: 一两分钟消失一次。  v2（cloud_event_sync_v2_spec）废弃了扫描租约——
+#: 扫描坐标改由心跳名单 onlineActorIds 确定性分片——心跳只剩"在线证明"
+#: 一个职责，服务端 PRESENCE_TTL 也放宽到 300 秒，所以 2 分钟续期足够，
+#: 且每次心跳不再顺带写区服目录，写入压力大幅下降。
+CLOUD_PRESENCE_RENEW_MILLIS = 120_000
 
 #: How long a positive sighting keeps shared mode alive without confirmation.
-CLOUD_PRESENCE_GRACE_MILLIS = 90_000
+#: 与服务端 PRESENCE_TTL_MILLIS（90_000 → 300_000）对齐：续期间隔放松到
+#: 120 秒后，宽限期必须盖住至少两个续期周期，模式才不会因一次迟到而抖动。
+CLOUD_PRESENCE_GRACE_MILLIS = 300_000
 
 #: Digit order used when a scan flattens a target's troop composition.
 _COMPOSITION_ARMS = ("foot", "bow", "cavalry", "chariot")
@@ -553,6 +561,7 @@ class CoreFacade:
         self._cloud_heartbeats_inflight: set[str] = set()
         self._cloud_directory_sync_inflight: set[str] = set()
         self._cloud_manual_scan_cursors: Dict[str, int] = {}
+        self._cloud_map_replicas: Dict[str, CloudMapReplicaStore] = {}
         self._automation_recovery_runner_registered = False
         self._raid_action_runner_registered = False
         self._lossless_action_runner_registered = False
@@ -12370,8 +12379,10 @@ class CoreFacade:
             # ordinary scan, exactly as it did before.
             cloud_targets = [
                 target
-                for target in self._cloud_query_map_targets(
-                    account_ref, "bandit"
+                for target in self._cloud_replica_targets(
+                    account_ref,
+                    "bandit",
+                    view=self._cloud_map_view(account_ref, search_body),
                 )
                 if matches_cloud_target(target)
             ]
@@ -12403,18 +12414,30 @@ class CoreFacade:
                 int(search_body["scanLimit"]),
             )
             batch_size = int(search_body["scanBatchSize"])
-            proposed = all_coordinates[scan_offset:scan_offset + batch_size]
-            claims = self._cloud_claim_map_scans(
-                account_ref, "bandit", proposed
+            scan_space = self._cloud_shard_scan_space(
+                account_ref, all_coordinates
             )
-            claim_tokens = {
-                (int(value["x"]), int(value["y"])): str(value["leaseToken"])
-                for value in claims
-            }
-            claimed_coordinates = [
-                coordinate for coordinate in proposed
-                if coordinate in claim_tokens
-            ]
+            if scan_space is not None:
+                # v2：扫描协调下云端——按心跳在线名单确定性分片，各账号扫
+                # 自己 index % N == i 的坐标，不再占用云端扫描租约。
+                proposed = scan_space[scan_offset:scan_offset + batch_size]
+                claim_tokens: Dict[tuple[int, int], str] = {}
+                claimed_coordinates = list(proposed)
+            else:
+                # 旧 Worker（心跳没有 onlineActorIds）：保留 v1 扫描租约。
+                scan_space = all_coordinates
+                proposed = all_coordinates[scan_offset:scan_offset + batch_size]
+                claims = self._cloud_claim_map_scans(
+                    account_ref, "bandit", proposed
+                )
+                claim_tokens = {
+                    (int(value["x"]), int(value["y"])): str(value["leaseToken"])
+                    for value in claims
+                }
+                claimed_coordinates = [
+                    coordinate for coordinate in proposed
+                    if coordinate in claim_tokens
+                ]
             cloud_search_body = {
                 **search_body,
                 "_scanCoordinatesOverride": [
@@ -12457,20 +12480,22 @@ class CoreFacade:
                     }
                     scanned_coordinates = set()
             except Exception:
+                if claim_tokens:
+                    self._cloud_release_map_scans(
+                        account_ref,
+                        "bandit",
+                        list(claim_tokens.values()),
+                    )
+                raise
+            if claim_tokens:
                 self._cloud_release_map_scans(
                     account_ref,
                     "bandit",
-                    list(claim_tokens.values()),
+                    [
+                        token for coordinate, token in claim_tokens.items()
+                        if coordinate not in scanned_coordinates
+                    ],
                 )
-                raise
-            self._cloud_release_map_scans(
-                account_ref,
-                "bandit",
-                [
-                    token for coordinate, token in claim_tokens.items()
-                    if coordinate not in scanned_coordinates
-                ],
-            )
             if scanned_coordinates:
                 positions = [
                     index for index, coordinate in enumerate(proposed)
@@ -12482,10 +12507,10 @@ class CoreFacade:
                 # another actor, so advancing cannot duplicate a scan.
                 advanced = len(proposed)
             next_offset = scan_offset + advanced
-            wrapped = next_offset >= len(all_coordinates)
+            wrapped = next_offset >= len(scan_space)
             searched.update({
                 "scanOffset": scan_offset,
-                "scanLimit": len(all_coordinates),
+                "scanLimit": len(scan_space),
                 "scanBatchSize": len(proposed),
                 "nextScanOffset": 0 if wrapped else next_offset,
                 "scanWrapped": wrapped,
@@ -12872,8 +12897,10 @@ class CoreFacade:
         if cloud_shared:
             cloud_targets = [
                 target
-                for target in self._cloud_query_map_targets(
-                    account_ref, "mine"
+                for target in self._cloud_replica_targets(
+                    account_ref,
+                    "mine",
+                    view=self._cloud_map_view(account_ref, search_body),
                 )
                 if mine_target_matches(
                     target,
@@ -12918,6 +12945,16 @@ class CoreFacade:
                     int(search_body["startY"]),
                     int(search_body["scanLimit"]),
                 )
+            sharded_space = self._cloud_shard_scan_space(
+                account_ref, all_coordinates
+            )
+            scan_sharded = sharded_space is not None
+            if scan_sharded:
+                scan_space = list(sharded_space)
+            else:
+                # 旧 Worker（心跳没有 onlineActorIds）：保留 v1 扫描租约，
+                # 扫描空间是完整坐标列表。
+                scan_space = all_coordinates
             scan_key = f"row:{cursor % len(rows)}"
             scan_fingerprint = hashlib.sha256(
                 self._json(search_body).encode("utf-8")
@@ -12936,21 +12973,27 @@ class CoreFacade:
                 scan_offset = 0
             if (
                 str(cursor_state.get("fingerprint") or "") != scan_fingerprint
-                or not 0 <= scan_offset < len(all_coordinates)
+                or not 0 <= scan_offset < len(scan_space)
             ):
                 scan_offset = 0
-            proposed = all_coordinates[scan_offset:scan_offset + 20]
-            claims = self._cloud_claim_map_scans(
-                account_ref, "mine", proposed
-            )
-            claim_tokens = {
-                (int(value["x"]), int(value["y"])): str(value["leaseToken"])
-                for value in claims
-            }
-            claimed_coordinates = [
-                coordinate for coordinate in proposed
-                if coordinate in claim_tokens
-            ]
+            proposed = scan_space[scan_offset:scan_offset + 20]
+            if scan_sharded:
+                # v2：按心跳在线名单确定性分片，不再占用云端扫描租约。
+                claim_tokens: Dict[tuple[int, int], str] = {}
+                claimed_coordinates = list(proposed)
+            else:
+                # 旧 Worker：v1 扫描租约决定本轮实际可扫的坐标。
+                claims = self._cloud_claim_map_scans(
+                    account_ref, "mine", proposed
+                )
+                claim_tokens = {
+                    (int(value["x"]), int(value["y"])): str(value["leaseToken"])
+                    for value in claims
+                }
+                claimed_coordinates = [
+                    coordinate for coordinate in proposed
+                    if coordinate in claim_tokens
+                ]
             cloud_search_body = {
                 **search_body,
                 "_scanCoordinatesOverride": [
@@ -12981,21 +13024,23 @@ class CoreFacade:
                     searched = {"ok": True, "targets": [], "mines": []}
                     scanned_coordinates = set()
             except Exception:
-                self._cloud_release_map_scans(
-                    account_ref, "mine", list(claim_tokens.values())
-                )
+                if claim_tokens:
+                    self._cloud_release_map_scans(
+                        account_ref, "mine", list(claim_tokens.values())
+                    )
                 raise
-            self._cloud_release_map_scans(
-                account_ref,
-                "mine",
-                [
-                    token for coordinate, token in claim_tokens.items()
-                    if coordinate not in scanned_coordinates
-                ],
-            )
+            if claim_tokens:
+                self._cloud_release_map_scans(
+                    account_ref,
+                    "mine",
+                    [
+                        token for coordinate, token in claim_tokens.items()
+                        if coordinate not in scanned_coordinates
+                    ],
+                )
             advanced = len(proposed)
             next_offset = scan_offset + advanced
-            wrapped = next_offset >= len(all_coordinates)
+            wrapped = next_offset >= len(scan_space)
             cloud_scan_cursors[scan_key] = {
                 "fingerprint": scan_fingerprint,
                 "nextScanOffset": 0 if wrapped else next_offset,
@@ -24292,6 +24337,14 @@ class CoreFacade:
                 "onlineAccountCount": online,
                 "threshold": max(2, int(payload.get("threshold") or 2)),
             }
+            if "onlineActorIds" in payload:
+                # v2 心跳才带在线名单，是扫描坐标确定性分片的依据；旧
+                # Worker 没有该字段，调用方按缺字段回退到扫描租约。
+                remembered["onlineActorIds"] = [
+                    str(value)
+                    for value in payload.get("onlineActorIds") or []
+                    if str(value or "").strip()
+                ]
             if mode == "CLOUD_SHARED":
                 remembered["sharedSeenAtMillis"] = now_millis
             return self._remember_cloud_mode(account_ref, remembered)
@@ -24650,6 +24703,194 @@ class CoreFacade:
                 result.append(target)
         return dedupe_targets(result)
 
+    def _cloud_map_replica(
+        self,
+        account_ref: str,
+        map_kind: str,
+    ) -> Optional[CloudMapReplicaStore]:
+        """Return the per-account local replica for one server/map pair.
+
+        v2（cloud_event_sync_v2_spec）的下行数据源：副本经 data_directory
+        端口持久化，宿主不提供该端口时退化为纯内存副本（重启后全量重同步，
+        语义不变）。
+        """
+
+        identity = self._cloud_shared_identity(account_ref)
+        if identity is None:
+            return None
+        normalized_kind = str(map_kind)
+        replica_key = (
+            f"{account_ref}\x00{identity['serverKey']}\x00{normalized_kind}"
+        )
+        with self._cloud_mode_lock:
+            replica = self._cloud_map_replicas.get(replica_key)
+        if replica is not None:
+            return replica
+        data_directory: Optional[Path] = None
+        port = self._ports.data_directory
+        if port is not None:
+            try:
+                data_directory = Path(port.data_directory())
+            except Exception as error:
+                self._ports.logs.write({
+                    "level": "warn",
+                    "source": "cloud-shared-data",
+                    "accountRef": str(account_ref),
+                    "message": f"云端地图副本目录不可用，改用内存副本：{error}",
+                })
+
+        def exchange(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+            return self._cloud_map_exchange(str(account_ref), path, body)
+
+        def logger(level: str, message: str) -> None:
+            self._ports.logs.write({
+                "level": str(level),
+                "source": "cloud-shared-data",
+                "accountRef": str(account_ref),
+                "mapKind": normalized_kind,
+                "message": str(message),
+            })
+
+        replica = CloudMapReplicaStore(
+            server_key=str(identity["serverKey"]),
+            map_kind=normalized_kind,
+            # 规格文件名只有 server+kind，但 uploadMemory/pending 队列都是
+            # 每账号状态；同服多号共用一份文件会把"我见过的格子"记混，
+            # 所以文件名带账号维度（匿名 actorId 前缀，不落角色标识）。
+            replica_id=str(identity["actorId"])[:12],
+            data_directory=data_directory,
+            exchange=exchange,
+            clock=lambda: int(self._ports.clock.now_millis()),
+            logger=logger,
+        )
+        with self._cloud_mode_lock:
+            existing = self._cloud_map_replicas.setdefault(
+                replica_key, replica
+            )
+        return existing
+
+    def _cloud_map_view(
+        self,
+        account_ref: str,
+        search_body: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, int]]:
+        """Resolve the replica's 视野：主城为中心、配置最远距离 +20 格的方形。
+
+        配置来源：刷黄/打矿常驻配置的 startX/startY（主城）与 maxDistance。
+        搜索请求自带 maxDistance 时优先按请求视野。 取不到中心或距离时返回
+        None——副本不做视野过滤（全图同步），行为与 v1 等价。
+        """
+
+        if search_body is not None:
+            try:
+                body_distance = int(search_body.get("maxDistance") or 0)
+                body_x = int(search_body.get("startX") or 0)
+                body_y = int(search_body.get("startY") or 0)
+            except (TypeError, ValueError):
+                body_distance, body_x, body_y = 0, 0, 0
+            if body_distance > 0 and (body_x or body_y):
+                return {
+                    "centerX": body_x,
+                    "centerY": body_y,
+                    "radius": body_distance + VIEW_RADIUS_PADDING,
+                }
+        public = self._account_public_state(str(account_ref))
+        config = self._public_json_object(
+            public.get("residentAutomationConfigJson")
+        )
+        brush = dict((config.get("common") or {}).get("brush") or {})
+        mine = dict(config.get("mine") or {})
+        mine_settings = dict(mine.get("settings") or {})
+
+        def configured_distance(source: Dict[str, Any]) -> int:
+            try:
+                return max(0, int(source.get("maxDistance") or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        center: Optional[tuple[int, int]] = None
+        for source, x_key, y_key in (
+            (brush, "startX", "startY"),
+            (mine_settings, "centerX", "centerY"),
+        ):
+            try:
+                x = int(source.get(x_key) or 0)
+                y = int(source.get(y_key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if x or y:
+                center = (x, y)
+                break
+        radius = max(
+            configured_distance(brush),
+            configured_distance(mine_settings),
+        )
+        if center is None or radius <= 0:
+            return None
+        return {
+            "centerX": center[0],
+            "centerY": center[1],
+            "radius": radius + VIEW_RADIUS_PADDING,
+        }
+
+    def _cloud_replica_targets(
+        self,
+        account_ref: str,
+        map_kind: str,
+        *,
+        view: Optional[Dict[str, int]] = None,
+    ) -> list[Dict[str, Any]]:
+        """v2 目标来源：本地副本 ensure_fresh 后本地筛选候选。
+
+        旧 Worker 没有 sync/changes 端点时 ensure_fresh 返回 False，本轮
+        回退到 v1 的 ``_cloud_query_map_targets`` 全量查询（降级结果只对
+        本轮有效，日志由副本记录）。
+        """
+
+        replica = self._cloud_map_replica(account_ref, map_kind)
+        if replica is not None:
+            if view is not None:
+                replica.set_view(
+                    int(view["centerX"]),
+                    int(view["centerY"]),
+                    int(view["radius"]),
+                )
+            if replica.ensure_fresh():
+                result: list[Dict[str, Any]] = []
+                for row in replica.candidate_targets():
+                    target = self._cloud_target_from_row(map_kind, row)
+                    if target is not None:
+                        result.append(target)
+                return dedupe_targets(result)
+        return self._cloud_query_map_targets(account_ref, map_kind)
+
+    def _cloud_shard_scan_space(
+        self,
+        account_ref: str,
+        coordinates: list[tuple[int, int]],
+    ) -> Optional[list[tuple[int, int]]]:
+        """v2 扫描协调：按心跳名单 onlineActorIds 做确定性分片。
+
+        返回本分片应扫的坐标子序列；名单缺失或自己不在名单内（旧 Worker）
+        返回 None，调用方回退 v1 的 claim/release 扫描租约。
+        """
+
+        presence = self._cloud_presence_mode(str(account_ref))
+        online_actor_ids = presence.get("onlineActorIds")
+        if not isinstance(online_actor_ids, list) or not online_actor_ids:
+            return None
+        identity = self._cloud_shared_identity(str(account_ref))
+        if identity is None:
+            return None
+        sharded = shard_coordinates(
+            str(identity["actorId"]),
+            [str(value) for value in online_actor_ids],
+            list(coordinates),
+        )
+        if sharded is None:
+            return None
+        return [(int(x), int(y)) for x, y in sharded]
+
     def _cloud_claim_map_scans(
         self,
         account_ref: str,
@@ -24716,6 +24957,44 @@ class CoreFacade:
             })
 
     def _cloud_publish_map_observations(
+        self,
+        account_ref: str,
+        map_kind: str,
+        scan_results: list[Dict[str, Any]],
+        lease_tokens: Dict[tuple[int, int], str],
+    ) -> None:
+        """Publish scan observations; v2 走副本比对 + 事件上报，失败回退 v1。
+
+        v2（cloud_event_sync_v2_spec）：逐格子调副本 apply_scan_observation
+        与上传记忆比对，只有真实变化才进 upserts/gone 队列，flush_uploads
+        成功才清队列、失败保留待下轮重试。 副本尚未完成全量同步（v2 端点
+        不可用、即旧 Worker）时保持 legacy regions 全量上报，保证部署顺序
+        中"新核心 + 旧 Worker"也能工作。
+        """
+
+        replica = self._cloud_map_replica(account_ref, map_kind)
+        if replica is None or not replica.full_sync_done:
+            self._cloud_publish_map_observations_legacy(
+                account_ref, map_kind, scan_results, lease_tokens
+            )
+            return
+        now_millis = int(self._ports.clock.now_millis())
+        for result in scan_results:
+            coord = result.get("scanCoord")
+            if not isinstance(coord, (list, tuple)) or len(coord) < 2:
+                continue
+            x, y = int(coord[0]), int(coord[1])
+            targets = []
+            for value in result.get("targets") or []:
+                if not isinstance(value, dict):
+                    continue
+                target = self._cloud_target_observation(map_kind, value)
+                if target is not None:
+                    targets.append(target)
+            replica.apply_scan_observation(x, y, targets, now_millis)
+        replica.flush_uploads()
+
+    def _cloud_publish_map_observations_legacy(
         self,
         account_ref: str,
         map_kind: str,
@@ -24883,6 +25162,12 @@ class CoreFacade:
         ],
     ) -> Dict[str, Any]:
         account_ref = str(body["accountRef"])
+        # v2：扫描坐标先按心跳在线名单确定性分片；拿不到名单（旧 Worker）
+        # 时保持完整坐标列表，窗口内坐标再由 v1 扫描租约裁定。
+        sharded_space = self._cloud_shard_scan_space(account_ref, coordinates)
+        scan_space = (
+            list(sharded_space) if sharded_space is not None else list(coordinates)
+        )
         (
             cursor_key,
             scan_offset,
@@ -24893,26 +25178,30 @@ class CoreFacade:
             account_ref,
             map_kind,
             body,
-            coordinates,
+            scan_space,
         )
-        claims = self._cloud_claim_map_scans(
-            account_ref, map_kind, proposed
-        )
+        if sharded_space is not None:
+            claim_tokens: Dict[tuple[int, int], str] = {}
+            claimed_coordinates = list(proposed)
+        else:
+            claims = self._cloud_claim_map_scans(
+                account_ref, map_kind, proposed
+            )
+            claim_tokens = {
+                (int(value["x"]), int(value["y"])): str(value["leaseToken"])
+                for value in claims
+            }
+            claimed_coordinates = [
+                coordinate for coordinate in proposed
+                if coordinate in claim_tokens
+            ]
         # A successful claim response is enough to advance: omitted positions
         # are fresh or leased elsewhere and must not be scanned locally.
         self._remember_cloud_manual_scan_cursor(cursor_key, next_scan_offset)
-        claim_tokens = {
-            (int(value["x"]), int(value["y"])): str(value["leaseToken"])
-            for value in claims
-        }
-        claimed_coordinates = [
-            coordinate for coordinate in proposed
-            if coordinate in claim_tokens
-        ]
         if not claimed_coordinates:
             return {
                 "scanOffset": scan_offset,
-                "scanLimit": len(coordinates),
+                "scanLimit": len(scan_space),
                 "scanBatchSize": len(proposed),
                 "scannedCount": 0,
                 "nextScanOffset": next_scan_offset,
@@ -24952,22 +25241,24 @@ class CoreFacade:
                 and len(value["scanCoord"]) >= 2
             }
         except Exception:
-            self._cloud_release_map_scans(
-                account_ref, map_kind, list(claim_tokens.values())
-            )
+            if claim_tokens:
+                self._cloud_release_map_scans(
+                    account_ref, map_kind, list(claim_tokens.values())
+                )
             raise
-        self._cloud_release_map_scans(
-            account_ref,
-            map_kind,
-            [
-                token for coordinate, token in claim_tokens.items()
-                if coordinate not in scanned_coordinates
-            ],
-        )
+        if claim_tokens:
+            self._cloud_release_map_scans(
+                account_ref,
+                map_kind,
+                [
+                    token for coordinate, token in claim_tokens.items()
+                    if coordinate not in scanned_coordinates
+                ],
+            )
         return {
             **searched,
             "scanOffset": scan_offset,
-            "scanLimit": len(coordinates),
+            "scanLimit": len(scan_space),
             "scanBatchSize": len(proposed),
             "scannedCount": len(scanned_coordinates),
             "nextScanOffset": next_scan_offset,
@@ -25009,7 +25300,11 @@ class CoreFacade:
 
         targets = [
             target
-            for target in self._cloud_query_map_targets(account_ref, "bandit")
+            for target in self._cloud_replica_targets(
+                account_ref,
+                "bandit",
+                view=self._cloud_map_view(account_ref, body),
+            )
             if matches(target)
         ]
         scan: Dict[str, Any] = {}
@@ -25029,8 +25324,10 @@ class CoreFacade:
             )
             targets = [
                 target
-                for target in self._cloud_query_map_targets(
-                    account_ref, "bandit"
+                for target in self._cloud_replica_targets(
+                    account_ref,
+                    "bandit",
+                    view=self._cloud_map_view(account_ref, body),
                 )
                 if matches(target)
             ]
@@ -25089,7 +25386,11 @@ class CoreFacade:
 
         targets = [
             target
-            for target in self._cloud_query_map_targets(account_ref, "mine")
+            for target in self._cloud_replica_targets(
+                account_ref,
+                "mine",
+                view=self._cloud_map_view(account_ref, body),
+            )
             if matches(target)
         ]
         scan: Dict[str, Any] = {}
@@ -25113,7 +25414,11 @@ class CoreFacade:
             )
             targets = [
                 target
-                for target in self._cloud_query_map_targets(account_ref, "mine")
+                for target in self._cloud_replica_targets(
+                    account_ref,
+                    "mine",
+                    view=self._cloud_map_view(account_ref, body),
+                )
                 if matches(target)
             ]
         targets.sort(key=lambda target: (

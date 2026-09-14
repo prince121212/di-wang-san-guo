@@ -612,9 +612,11 @@ describe("scan and target concurrency", () => {
   it("falls back immediately when the second presence expires", async () => {
     await enableSharedMode();
     const scope = JSON.stringify(["sanguo", "352"]);
+    // v2 raised PRESENCE_TTL_MILLIS to 300s (heartbeats now arrive every
+    // 2 minutes), so "expired" in this test moved from 100s to 400s of age.
     await env.DB.prepare(
       "UPDATE presence SET last_seen_at=? WHERE server_key=? AND actor_id=?",
-    ).bind(Date.now() - 100_000, scope, ACTOR_B).run();
+    ).bind(Date.now() - 400_000, scope, ACTOR_B).run();
 
     const result = await post("/v1/maps/targets/query", {
       ...identity(ACTOR_A), mapKind: "bandit",
@@ -790,10 +792,11 @@ describe("scan and target concurrency", () => {
            server_key,map_kind,scan_x,scan_y,owner,lease_token,lease_until
          ) VALUES(?,?,?,?,?,?,?)`,
       ).bind(scope, "bandit", 8, 8, ACTOR_A, "cron-expired-scan", now - 1),
+      // 400s old: past the v2 presence TTL of 300s, so cron must reap it.
       env.DB.prepare(
         `INSERT INTO presence(server_key,actor_id,last_seen_at) VALUES(?,?,?)
          ON CONFLICT(server_key,actor_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`,
-      ).bind(scope, ACTOR_C, now - 100_000),
+      ).bind(scope, ACTOR_C, now - 400_000),
     ]);
 
     await worker.scheduled(createScheduledController({
@@ -988,5 +991,291 @@ describe("D1 write scaling", () => {
       "SELECT scan_x FROM map_target_regions WHERE target_id='twice' ORDER BY scan_x",
     ).all<{ scan_x: number }>();
     expect(links.results.map((r) => r.scan_x)).toEqual([84, 85]);
+  });
+});
+
+describe("event-driven sync v2", () => {
+  async function seedTargets(
+    targets: Array<{
+      targetId: string;
+      x?: number;
+      y?: number;
+      lastSeenAt?: number;
+      changedAt?: number;
+      status?: string;
+    }>,
+  ) {
+    const scope = JSON.stringify(["sanguo", "352"]);
+    const now = Date.now();
+    const rows = targets.map((target, index) => ({
+      targetId: target.targetId,
+      x: target.x ?? index,
+      y: target.y ?? 0,
+      lastSeenAt: target.lastSeenAt ?? now,
+      changedAt: target.changedAt ?? now,
+      status: target.status ?? "available",
+    }));
+    await env.DB.prepare(
+      `INSERT INTO map_targets(
+         server_key,map_kind,target_id,x,y,target_type,level,data_json,
+         last_seen_at,changed_at,status
+       )
+       SELECT ?,?,
+         CAST(json_extract(row.value,'$.targetId') AS TEXT),
+         CAST(json_extract(row.value,'$.x') AS INTEGER),
+         CAST(json_extract(row.value,'$.y') AS INTEGER),
+         '山贼', 7, '{}',
+         CAST(json_extract(row.value,'$.lastSeenAt') AS INTEGER),
+         CAST(json_extract(row.value,'$.changedAt') AS INTEGER),
+         CAST(json_extract(row.value,'$.status') AS TEXT)
+       FROM json_each(?) AS row`,
+    ).bind(scope, "bandit", JSON.stringify(rows)).run();
+  }
+
+  function bulkTargets(count: number) {
+    const now = Date.now();
+    return Array.from({ length: count }, (_, index) => ({
+      targetId: `bulk-${String(index).padStart(4, "0")}`,
+      x: index % 100,
+      y: Math.floor(index / 100),
+      lastSeenAt: now - index,
+      changedAt: now - index,
+    }));
+  }
+
+  it("pages a full sync past 500 rows without loss or duplication", async () => {
+    await enableSharedMode();
+    await seedTargets(bulkTargets(600));
+
+    const first = await post("/v1/maps/targets/sync", {
+      ...identity(ACTOR_A), mapKind: "bandit", limit: 500,
+    });
+    expect(first.response.status).toBe(200);
+    const firstTargets = first.json.targets as Array<{ targetId: string }>;
+    expect(firstTargets).toHaveLength(500);
+    expect(first.json.nextCursor).not.toBeNull();
+
+    const second = await post("/v1/maps/targets/sync", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      limit: 500,
+      cursor: first.json.nextCursor,
+    });
+    const secondTargets = second.json.targets as Array<{ targetId: string }>;
+    expect(secondTargets).toHaveLength(100);
+    expect(second.json.nextCursor).toBeNull();
+
+    const ids = [...firstTargets, ...secondTargets].map((target) => target.targetId);
+    expect(new Set(ids).size).toBe(600);
+    expect([...ids].sort()).toEqual(bulkTargets(600).map((t) => t.targetId).sort());
+    expect(firstTargets[0]).toEqual(expect.objectContaining({
+      status: "available",
+      statusAtMillis: 0,
+      leaseUntilMillis: 0,
+      retryAfterMillis: 0,
+      changedAtMillis: expect.any(Number),
+      lastSeenAtMillis: expect.any(Number),
+      data: {},
+    }));
+  });
+
+  it("restricts a sync page to the requested viewport", async () => {
+    await enableSharedMode();
+    await seedTargets(bulkTargets(600));
+    const result = await post("/v1/maps/targets/sync", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      minX: 10,
+      maxX: 19,
+      minY: 0,
+      maxY: 0,
+    });
+    expect(result.response.status).toBe(200);
+    const targets = result.json.targets as Array<{ targetId: string; x: number; y: number }>;
+    expect(targets.map((target) => target.targetId).sort()).toEqual(
+      Array.from({ length: 10 }, (_, index) => `bulk-00${index + 10}`),
+    );
+    for (const target of targets) {
+      expect(target.x).toBeGreaterThanOrEqual(10);
+      expect(target.x).toBeLessThanOrEqual(19);
+      expect(target.y).toBe(0);
+    }
+    expect(result.json.nextCursor).toBeNull();
+  });
+
+  it("pages changes sharing one changed_at by target_id and echoes a spent cursor", async () => {
+    await enableSharedMode();
+    const changedAt = Date.now() - 1_000;
+    await seedTargets([
+      { targetId: "chg-a", changedAt },
+      { targetId: "chg-b", changedAt },
+      { targetId: "chg-c", changedAt },
+    ]);
+
+    const first = await post("/v1/maps/targets/changes", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      since: { changedAt: 0, targetId: "" },
+      limit: 2,
+    });
+    expect(first.response.status).toBe(200);
+    expect((first.json.targets as Array<{ targetId: string }>).map((t) => t.targetId))
+      .toEqual(["chg-a", "chg-b"]);
+    expect(first.json.cursor).toEqual({ changedAt, targetId: "chg-b" });
+
+    const second = await post("/v1/maps/targets/changes", {
+      ...identity(ACTOR_A), mapKind: "bandit", since: first.json.cursor, limit: 2,
+    });
+    expect((second.json.targets as Array<{ targetId: string }>).map((t) => t.targetId))
+      .toEqual(["chg-c"]);
+    expect(second.json.cursor).toEqual({ changedAt, targetId: "chg-c" });
+
+    const third = await post("/v1/maps/targets/changes", {
+      ...identity(ACTOR_A), mapKind: "bandit", since: second.json.cursor, limit: 2,
+    });
+    expect(third.json.targets).toEqual([]);
+    expect(third.json.cursor).toEqual(second.json.cursor);
+  });
+
+  it("writes v2 upserts without the sighting throttle and propagates gone as a tombstone", async () => {
+    await enableSharedMode();
+    const target = {
+      targetId: "v2-live", x: 10, y: 11, type: "山贼", level: 7, data: { name: "7级山贼" },
+    };
+    const uploaded = await post("/v1/maps/observations", {
+      ...identity(ACTOR_A), mapKind: "bandit", upserts: [target],
+    });
+    expect(uploaded.json).toMatchObject({ ok: true, upsertedCount: 1 });
+
+    // The legacy regions path would skip a rewrite this fresh; the v2 client
+    // only sends real changes, so the second write lands immediately.
+    const changed = await post("/v1/maps/observations", {
+      ...identity(ACTOR_A), mapKind: "bandit", upserts: [{ ...target, level: 9 }],
+    });
+    expect(changed.response.status).toBe(200);
+    const stored = await env.DB.prepare(
+      "SELECT level FROM map_targets WHERE target_id='v2-live'",
+    ).first<{ level: number }>();
+    expect(Number(stored?.level)).toBe(9);
+    // v2 writes keep no region links - those only feed the legacy orphan sweep.
+    expect(Number((await env.DB.prepare(
+      "SELECT COUNT(*) count FROM map_target_regions",
+    ).first<{ count: number }>())?.count)).toBe(0);
+
+    const tooMany = await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      upserts: Array.from({ length: 201 }, (_, index) => ({
+        targetId: `over-${index}`, x: 1, y: 1, type: "山贼", level: 1, data: {},
+      })),
+    });
+    expect(tooMany.response.status).toBe(400);
+
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      upserts: [{ targetId: "v2-dead", x: 1, y: 1, type: "山贼", level: 5, data: {} }],
+    });
+    const gone = await post("/v1/maps/observations", {
+      ...identity(ACTOR_A), mapKind: "bandit", gone: ["v2-dead"],
+    });
+    expect(gone.json).toMatchObject({ ok: true, goneCount: 1 });
+    const tombstone = await env.DB.prepare(
+      "SELECT status FROM map_targets WHERE target_id='v2-dead'",
+    ).first<{ status: string }>();
+    expect(tombstone?.status).toBe("missing");
+
+    // The tombstone is the only death signal replicas ever see, so the change
+    // feed must surface it rather than filter it out.
+    const changes = await post("/v1/maps/targets/changes", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      since: { changedAt: 0, targetId: "" },
+    });
+    const dead = (changes.json.targets as Array<{ targetId: string; status: string }>)
+      .find((row) => row.targetId === "v2-dead");
+    expect(dead?.status).toBe("missing");
+
+    // A fresh sighting of a tombstoned target reopens it, like the legacy path.
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      upserts: [{ targetId: "v2-dead", x: 1, y: 1, type: "山贼", level: 5, data: {} }],
+    });
+    const revived = await env.DB.prepare(
+      "SELECT status FROM map_targets WHERE target_id='v2-dead'",
+    ).first<{ status: string }>();
+    expect(revived?.status).toBe("available");
+  });
+
+  it("never tombstones a reserved or dispatching target through gone", async () => {
+    await enableSharedMode();
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      upserts: [
+        { targetId: "v2-flight", x: 2, y: 2, type: "山贼", level: 5, data: {} },
+        { targetId: "v2-held", x: 1, y: 1, type: "山贼", level: 5, data: {} },
+      ],
+    });
+    await post("/v1/maps/targets/reserve", {
+      ...identity(ACTOR_A), mapKind: "bandit", targetId: "v2-held",
+    });
+    const flightReservation = await post("/v1/maps/targets/reserve", {
+      ...identity(ACTOR_B), mapKind: "bandit", targetId: "v2-flight",
+    });
+    await post("/v1/maps/targets/status", {
+      ...identity(ACTOR_B),
+      mapKind: "bandit",
+      targetId: "v2-flight",
+      reservationToken: flightReservation.json.reservationToken,
+      status: "dispatching",
+    });
+
+    const gone = await post("/v1/maps/observations", {
+      ...identity(ACTOR_A), mapKind: "bandit", gone: ["v2-held", "v2-flight"],
+    });
+    expect(gone.json).toMatchObject({ ok: true, goneCount: 0 });
+    const rows = await env.DB.prepare(
+      "SELECT target_id,status FROM map_targets ORDER BY target_id",
+    ).all<{ target_id: string; status: string }>();
+    expect(rows.results).toEqual([
+      { target_id: "v2-flight", status: "dispatching" },
+      { target_id: "v2-held", status: "reserved" },
+    ]);
+  });
+
+  it("throttles repeated heartbeats and lists only live actors online", async () => {
+    await enableSharedMode();
+    const scope = JSON.stringify(["sanguo", "352"]);
+    // A row already inside the 90-second write threshold carries no new
+    // information, so a repeat heartbeat must leave it untouched.
+    const withinThreshold = Date.now() - 30_000;
+    await env.DB.prepare(
+      "UPDATE presence SET last_seen_at=? WHERE server_key=? AND actor_id=?",
+    ).bind(withinThreshold, scope, ACTOR_A).run();
+    const repeated = await heartbeat(ACTOR_A);
+    expect(repeated.json.onlineActorIds).toEqual(
+      expect.arrayContaining([ACTOR_A, ACTOR_B]),
+    );
+    const kept = await env.DB.prepare(
+      "SELECT last_seen_at FROM presence WHERE server_key=? AND actor_id=?",
+    ).bind(scope, ACTOR_A).first<{ last_seen_at: number }>();
+    expect(Number(kept?.last_seen_at)).toBe(withinThreshold);
+
+    // The directory upsert survives the heartbeat (old APKs have no other
+    // writer), but an unchanged row no longer ticks observation_count.
+    const catalog = await env.DB.prepare(
+      "SELECT observation_count FROM server_catalog WHERE platform_key='sanguo' AND server_key='352'",
+    ).first<{ observation_count: number }>();
+    expect(Number(catalog?.observation_count)).toBe(1);
+
+    await env.DB.prepare(
+      "UPDATE presence SET last_seen_at=? WHERE server_key=? AND actor_id=?",
+    ).bind(Date.now() - 400_000, scope, ACTOR_B).run();
+    const after = await heartbeat(ACTOR_A);
+    const ids = after.json.onlineActorIds as string[];
+    expect(ids).toContain(ACTOR_A);
+    expect(ids).not.toContain(ACTOR_B);
   });
 });

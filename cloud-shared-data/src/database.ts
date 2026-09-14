@@ -3,16 +3,27 @@ import type {
   MapKind,
   RegionObservation,
   SharedModeCheck,
+  TargetObservation,
 } from "./types";
 
-const BANDIT_TARGET_TTL_MILLIS = 30 * 60 * 1000;
-const MINE_TARGET_TTL_MILLIS = 3 * 60 * 60 * 1000;
+// v2 retired the per-target alive refresh: death now propagates through
+// explicit gone reports, so the TTL only collects rows every observer
+// abandoned - it bounds how long stale data lingers, not how fresh live data
+// is, and can therefore sit far above the old v1 windows.
+export const BANDIT_TARGET_TTL_MILLIS = 6 * 60 * 60 * 1000;
+export const MINE_TARGET_TTL_MILLIS = 24 * 60 * 60 * 1000;
+
+export function targetTtlMillis(mapKind: MapKind): number {
+  return mapKind === "bandit" ? BANDIT_TARGET_TTL_MILLIS : MINE_TARGET_TTL_MILLIS;
+}
+
 // A re-observation of an unchanged target only rewrites its row when the
 // stored sighting is older than this.  Every consumer of last_seen_at works
-// on TTLs of 30 minutes (bandit) or 3 hours (mine), so a 5-minute refresh
-// granularity changes no decision; without it, a phone scanning around the
-// clock rewrites every row it can see on every observation, and D1 bills
-// each touched row as a write whether or not any value changed.
+// on TTLs of hours, so a 5-minute refresh granularity changes no decision;
+// without it, a phone scanning around the clock rewrites every row it can
+// see on every observation, and D1 bills each touched row as a write whether
+// or not any value changed.  The legacy regions path keeps this throttle;
+// the v2 upserts path does not, because its clients only send real changes.
 const OBSERVATION_REFRESH_MILLIS = 5 * 60 * 1000;
 
 export async function cleanup(
@@ -42,9 +53,10 @@ export async function cleanup(
     // until its TTL deleted it.
     db.prepare(
       `UPDATE map_targets
-       SET status='uncertain', status_reason='dispatch lease expired', status_at=?
+       SET status='uncertain', status_reason='dispatch lease expired',
+           status_at=?, changed_at=?
        WHERE status='dispatching' AND lease_until<=?`,
-    ).bind(now, now),
+    ).bind(now, now, now),
     db.prepare(
       `DELETE FROM map_targets
        WHERE (map_kind='bandit' AND last_seen_at<?)
@@ -139,9 +151,10 @@ export async function observeRegions(
     // so keeping any one of them loses nothing.
     db.prepare(
       `INSERT INTO map_targets(
-         server_key,map_kind,target_id,x,y,target_type,level,data_json,last_seen_at
+         server_key,map_kind,target_id,x,y,target_type,level,data_json,
+         last_seen_at,changed_at
        )
-       SELECT ?,?, target_id, x, y, target_type, level, data_json, ?
+       SELECT ?,?, target_id, x, y, target_type, level, data_json, ?, ?
        FROM (
          SELECT
            CAST(json_extract(target.value,'$.targetId') AS TEXT) AS target_id,
@@ -178,7 +191,13 @@ export async function observeRegions(
          lease_until=CASE
            WHEN map_targets.status='missing'
              OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)
-             THEN 0 ELSE map_targets.lease_until END
+             THEN 0 ELSE map_targets.lease_until END,
+         -- The change feed replays rows by changed_at, so it must move exactly
+         -- when the row is rewritten - which the WHERE below decides, including
+         -- the 5-minute sighting throttle.  A refresh skipped by that throttle
+         -- must also skip changed_at, or subscribers would re-fetch rows whose
+         -- content never moved.
+         changed_at=?
        WHERE map_targets.x IS NOT excluded.x
           OR map_targets.y IS NOT excluded.y
           OR map_targets.target_type IS NOT excluded.target_type
@@ -187,7 +206,10 @@ export async function observeRegions(
           OR map_targets.last_seen_at < ?
           OR map_targets.status='missing'
           OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)`,
-    ).bind(serverKey, mapKind, now, encoded, now, now, now, now, staleBefore, now),
+    ).bind(
+      serverKey, mapKind, now, now, encoded,
+      now, now, now, now, now, staleBefore, now,
+    ),
     db.prepare(
       `INSERT INTO map_target_regions(
          server_key,map_kind,target_id,scan_x,scan_y,last_seen_at
@@ -295,4 +317,92 @@ export async function observeRegions(
          )`,
     ).bind(serverKey, mapKind, encoded),
   ]);
+}
+
+// v2 clients only report real changes (a new or changed target, a confirmed
+// disappearance), so each row below is written unconditionally - the legacy
+// 5-minute sighting throttle would delay exactly the information v2 exists to
+// deliver.  Neither statement touches map_target_regions: those links only
+// feed the legacy orphan sweep, and v2 removes targets explicitly.
+export async function applyUpserts(
+  db: D1Database,
+  serverKey: string,
+  mapKind: MapKind,
+  targets: TargetObservation[],
+  now: number,
+): Promise<void> {
+  if (targets.length === 0) return;
+  const encoded = JSON.stringify(targets);
+  await db.prepare(
+    `INSERT INTO map_targets(
+       server_key,map_kind,target_id,x,y,target_type,level,data_json,
+       last_seen_at,changed_at
+     )
+     SELECT ?,?,
+       CAST(json_extract(target.value,'$.targetId') AS TEXT),
+       CAST(json_extract(target.value,'$.x') AS INTEGER),
+       CAST(json_extract(target.value,'$.y') AS INTEGER),
+       COALESCE(CAST(json_extract(target.value,'$.type') AS TEXT),''),
+       CASE WHEN json_type(target.value,'$.level') IN ('integer','real')
+            THEN CAST(json_extract(target.value,'$.level') AS INTEGER)
+            ELSE NULL END,
+       json(json_extract(target.value,'$.data')),
+       ?,?
+     FROM json_each(?) AS target
+     WHERE 1
+     ON CONFLICT(server_key,map_kind,target_id) DO UPDATE SET
+       x=excluded.x, y=excluded.y, target_type=excluded.target_type,
+       level=excluded.level, data_json=excluded.data_json,
+       last_seen_at=excluded.last_seen_at, changed_at=excluded.changed_at,
+       status=CASE
+         WHEN map_targets.status='missing' THEN 'available'
+         WHEN map_targets.status='uncertain' AND map_targets.lease_until<=?
+           THEN 'available'
+         ELSE map_targets.status
+       END,
+       reserved_by=CASE
+         WHEN map_targets.status='missing'
+           OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)
+           THEN '' ELSE map_targets.reserved_by END,
+       reservation_token=CASE
+         WHEN map_targets.status='missing'
+           OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)
+           THEN '' ELSE map_targets.reservation_token END,
+       lease_until=CASE
+         WHEN map_targets.status='missing'
+           OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)
+           THEN 0 ELSE map_targets.lease_until END`,
+  ).bind(serverKey, mapKind, now, now, encoded, now, now, now, now).run();
+}
+
+export async function applyGone(
+  db: D1Database,
+  serverKey: string,
+  mapKind: MapKind,
+  targetIds: string[],
+  now: number,
+): Promise<number> {
+  if (targetIds.length === 0) return 0;
+  const placeholders = targetIds.map(() => "?").join(",");
+  // A tombstone, not a delete: status='missing' rows are the only channel the
+  // change feed has to tell replicas that a target died.  Physical removal
+  // stays with the TTL sweep.  'reserved' and 'dispatching' are excluded -
+  // their holder is mid-flight and outranks any scan that stopped seeing it.
+  const statements = [
+    db.prepare(
+      `UPDATE map_targets
+       SET status='missing', status_at=?, changed_at=?
+       WHERE server_key=? AND map_kind=?
+         AND target_id IN (${placeholders})
+         AND status NOT IN ('reserved','dispatching')`,
+    ).bind(now, now, serverKey, mapKind, ...targetIds),
+    // Stale links would let the legacy orphan logic or a future rescan keep
+    // the target alive in readers that still walk map_target_regions.
+    db.prepare(
+      `DELETE FROM map_target_regions
+       WHERE server_key=? AND map_kind=? AND target_id IN (${placeholders})`,
+    ).bind(serverKey, mapKind, ...targetIds),
+  ];
+  const [tombstoned] = await db.batch(statements);
+  return Number(tombstoned.meta.changes ?? 0);
 }

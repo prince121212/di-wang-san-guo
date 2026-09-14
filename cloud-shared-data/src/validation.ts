@@ -251,6 +251,23 @@ export function regionObservations(
   return regions;
 }
 
+export function upsertObservations(
+  value: unknown,
+  mapKind: MapKind,
+): TargetObservation[] {
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new RequestError("目标更新必须是数组且数量不超过200");
+  }
+  return value.map((item) => targetObservation(item, mapKind));
+}
+
+export function goneTargetIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new RequestError("消失目标必须是数组且数量不超过200");
+  }
+  return [...new Set(value.map((item) => textValue(item, "消失目标 ID", 160)))];
+}
+
 export function publicHttpUrl(value: unknown): string {
   const raw = optionalText(value, 500);
   if (!raw) return "";
