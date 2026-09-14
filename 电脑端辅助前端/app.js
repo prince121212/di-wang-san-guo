@@ -171,8 +171,11 @@ const appState = {
     rows: [{ enabled: false, generalIds: [], generalId: "", resourceType: "镔铁矿", x: 91, y: 26, scope: "附近" }]
   },
   ministrySettings: {
-    cropEnabled: true, crop: "金银花", highPriority: true,
+    cropEnabled: true, crop: "稻谷", highPriority: true,
     stealEnabled: true, courtesyEnabled: true, salaryRefresh: true
+  },
+  captiveSettings: {
+    enabled: false, growthThreshold: 70
   },
   militaryFutureSettings: null,
   automation: { taskId: null, status: "idle", lastLogs: [] },
@@ -549,6 +552,13 @@ function accountStatusClass(status) {
 function accountStatusText(status) {
   return ({ online: "已开启", offline: "掉线", checking: "检测中", stopped: "未开启" })[status] || "未开启";
 }
+function accountTasksStarted(acc) {
+  // Absent overview means the account has no live session yet; treat that as
+  // "unknown" rather than "idle" so a loading account is not accused of it.
+  const overview = acc?.session?.taskOverview;
+  if (!overview || typeof overview.savedTasksStarted === "undefined") return true;
+  return !!overview.savedTasksStarted;
+}
 function accountReconnectStatusText(acc) {
   if (!acc || acc.reconnectState !== "countdown") return "";
   const seconds = Math.max(0, Number(acc.reconnectRemainingSec || 0));
@@ -676,8 +686,20 @@ function updateAccountHeader() {
   if (renew) renew.textContent = "续期";
   if (enabled) {
     const status = acc?.status || "stopped";
-    enabled.textContent = accountStatusText(status) + accountReconnectStatusText(acc);
-    enabled.className = `enabled-text ${accountStatusClass(status)}`;
+    // 已开启 only ever meant "登录成功"; the saved tasks are started separately
+    // and that only showed as a button on the 任务 page.  An account could sit
+    // online for hours with every option ticked and nothing running - the bag
+    // never swept, no 出征 - while this badge said 已开启.  Say both here.
+    const tasksIdle = status === "online" && !accountTasksStarted(acc);
+    enabled.textContent = accountStatusText(status)
+      + (tasksIdle ? "·任务未启动" : "")
+      + accountReconnectStatusText(acc);
+    enabled.className = `enabled-text ${
+      tasksIdle ? "status-tasks-idle" : accountStatusClass(status)
+    }`;
+    enabled.title = tasksIdle
+      ? "账号已登录，但保存的任务还没有开始执行；到「角色 > 任务」页点「开始执行任务」"
+      : "";
   }
   renderRecentRequestDots(acc);
   renderProxySelect();
@@ -993,6 +1015,7 @@ function snapshotCurrentAccountUi() {
     raidSettings: JSON.parse(JSON.stringify(appState.raidSettings || defaultRaidSettings())),
     mineSettings: JSON.parse(JSON.stringify(appState.mineSettings || defaultMineSettings())),
     ministrySettings: JSON.parse(JSON.stringify(appState.ministrySettings || defaultMinistrySettings())),
+    captiveSettings: JSON.parse(JSON.stringify(appState.captiveSettings || defaultCaptiveSettings())),
     militaryFutureSettings: JSON.parse(JSON.stringify(appState.militaryFutureSettings || defaultMilitaryFutureSettings())),
     automation: JSON.parse(JSON.stringify(appState.automation || { taskId: null, status: "idle", lastLogs: [] })),
   };
@@ -1030,11 +1053,27 @@ function defaultMineSettings() {
 function defaultMinistrySettings() {
   return {
     cropEnabled: true,
-    crop: "金银花",
+    crop: "稻谷",
     highPriority: true,
     stealEnabled: true,
     courtesyEnabled: true,
     salaryRefresh: true,
+  };
+}
+
+function defaultCaptiveSettings() {
+  return {
+    enabled: false,
+    growthThreshold: 70,
+  };
+}
+
+function captiveSettingsFromHabits(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const threshold = Number(source.captivePersuadeGrowth ?? source.captiveReleaseBelowGrowth);
+  return {
+    enabled: !!(source.captiveRelease || source.captivePersuade),
+    growthThreshold: Number.isInteger(threshold) && threshold >= 1 && threshold <= 200 ? threshold : 70,
   };
 }
 
@@ -1196,6 +1235,9 @@ function applyServerHabits(data) {
   if (habits.ministry && typeof habits.ministry === "object") {
     appState.ministrySettings = { ...defaultMinistrySettings(), ...habits.ministry };
   }
+  if (habits.captives && typeof habits.captives === "object") {
+    appState.captiveSettings = captiveSettingsFromHabits(habits.captives);
+  }
   if (habits.militaryFuture && typeof habits.militaryFuture === "object") {
     appState.militaryFutureSettings = mergeMilitaryFutureSettings(habits.militaryFuture);
   }
@@ -1214,6 +1256,9 @@ function restoreAccountUi(sessionId) {
   appState.ministrySettings = saved?.ministrySettings
     ? JSON.parse(JSON.stringify(saved.ministrySettings))
     : defaultMinistrySettings();
+  appState.captiveSettings = saved?.captiveSettings
+    ? JSON.parse(JSON.stringify(saved.captiveSettings))
+    : defaultCaptiveSettings();
   appState.militaryFutureSettings = saved?.militaryFutureSettings ? mergeMilitaryFutureSettings(saved.militaryFutureSettings) : defaultMilitaryFutureSettings();
   appState.automation = saved?.automation ? JSON.parse(JSON.stringify(saved.automation)) : { taskId: null, status: "idle", lastLogs: [] };
 }
@@ -1670,6 +1715,7 @@ function syncGeneralVisitMultiUi(root = document.querySelector(".general-visit-m
 
 function renderCommon() {
   const b = appState.brushSettings;
+  const captive = { ...defaultCaptiveSettings(), ...(appState.captiveSettings || {}) };
   if (activeSide === "常用") return h`
     <div class="design-page common-design-page">
       <div class="design-card design-setting-card">
@@ -1682,8 +1728,8 @@ function renderCommon() {
         ${designRow("升级科技：", `${technologyMultiHtml(b.domestic?.technologyIds || [b.domestic?.technologyId ?? 5])}<input id="upgradeTechnology" class="design-check" type="checkbox" ${b.domestic?.upgradeTechnology ? "checked" : ""}>`)}
         ${designRow("建筑加速：", `<span>未接入</span><select class="design-select w-mid" disabled><option>不加速</option></select>`)}
         ${designRow("自动加体：", `<span>开启</span><input id="autoEnergy" class="design-check" type="checkbox" ${b.autoEnergy !== false ? "checked" : ""}><span>体力&lt;</span><input id="energyThreshold" class="design-input num-compact" type="number" min="20" max="100" value="${escAttr(b.energyThreshold ?? 20)}">`)}
-        ${designRow("释放俘虏：", `<span>未接入</span><input class="design-check" type="checkbox" disabled><span>成长&gt;</span><input class="design-input num-compact" type="number" value="80" disabled>`)}
-        ${designRow("劝降俘虏：", `<span>未接入</span><input class="design-check" type="checkbox" disabled><span>成长&gt;</span><input class="design-input num-compact" type="number" value="80" disabled><button class="table-btn design-mini-btn" type="button" disabled>铜钱劝降</button>`)}
+        ${designRow("俘虏处理：", `<span>开启</span><input id="captiveEnabled" class="design-check" type="checkbox" ${captive.enabled ? "checked" : ""}><span>成长值≥</span><input id="captiveGrowthThreshold" class="design-input num-compact" type="number" min="1" max="200" value="${escAttr(captive.growthThreshold ?? 70)}"><span>劝降，否则释放</span>`)}
+        ${designRow("俘虏说明：", `<span>劝降固定使用铜钱</span>`)}
         ${designRow("粮食转铜：", `<span>开启</span><input id="foodToCopper" class="design-check" type="checkbox" ${b.foodToCopper !== false ? "checked" : ""}><select id="copperFloorWan" class="design-select num-compact">${simpleOptionsHtml(copperFloorOptions, normalizeCopperFloor(b.copperFloorWan))}</select><span>万</span>`)}
       </div>
     </div>`;
@@ -1754,11 +1800,11 @@ function renderLiubu() {
   const settings = { ...defaultMinistrySettings(), ...(appState.ministrySettings || {}) };
   return h`<div class="design-page liubu-design-page">
     <div class="design-card design-setting-card">
-      ${designRow("种菜收菜：", `<span>开启</span><input class="design-check ministry-crop-enabled" type="checkbox" ${settings.cropEnabled ? "checked" : ""}><span>作物</span><select class="design-select w-short ministry-crop">${simpleOptionsHtml(["金银花", "草药", "稻谷", "棉花"], settings.crop || "金银花")}</select><span>高级优先</span><input class="design-check ministry-high-priority" type="checkbox" ${settings.highPriority ? "checked" : ""}>`)}
+      ${designRow("种菜收菜：", `<span>开启</span><input class="design-check ministry-crop-enabled" type="checkbox" ${settings.cropEnabled ? "checked" : ""}><span>作物</span><select class="design-select w-short ministry-crop">${simpleOptionsHtml(["金银花", "草药", "稻谷", "棉花"], settings.crop || "稻谷")}</select><span>高级优先</span><input class="design-check ministry-high-priority" type="checkbox" ${settings.highPriority ? "checked" : ""}>`)}
       ${designRow("偷菜：", `<span>开启</span><input class="design-check ministry-steal-enabled" type="checkbox" ${settings.stealEnabled ? "checked" : ""}>`)}
       ${designRow("礼部任务：", `<span>开启</span><input class="design-check ministry-courtesy-enabled" type="checkbox" ${settings.courtesyEnabled ? "checked" : ""}><span>使用俸禄刷新</span><input class="design-check ministry-salary-refresh" type="checkbox" ${settings.salaryRefresh ? "checked" : ""}>`)}
     </div>
-    ${note("金银花种植按已确认协议执行；偷菜目前只扫描候选菜地，不发送偷取动作。礼部任务与俸禄刷新未确认时会明确显示为暂不执行。")}
+    ${note("稻谷种植采摘与礼部任务委派按已确认协议执行；偷菜与俸禄刷新协议尚未确认，勾选也不会发送。")}
   </div>`;
 }
 function renderMine() {
@@ -2055,6 +2101,8 @@ function saveDailySettingsDom() {
 function buildCommonSettingsPatch(side = activeSide) {
   if (side === "常用") {
     const technologyIds = readPolicyMultiValues("technology-ids");
+    const captiveEnabled = !!document.getElementById("captiveEnabled")?.checked;
+    const captiveGrowthThreshold = Math.max(1, Math.min(200, Number(document.getElementById("captiveGrowthThreshold")?.value || 70)));
     return {
       dailyLimit: Math.max(1, Math.min(500, Number(document.getElementById("commonDailyLimit")?.value || 500))),
       healWounded: !!document.getElementById("healWounded")?.checked,
@@ -2067,6 +2115,12 @@ function buildCommonSettingsPatch(side = activeSide) {
         emptyBuildingType: Number(document.getElementById("emptyBuildingType")?.value || 1),
         upgradeTechnology: !!document.getElementById("upgradeTechnology")?.checked,
         technologyIds: (technologyIds || []).map(Number).filter(Number.isInteger),
+      },
+      captives: {
+        captiveRelease: captiveEnabled,
+        captiveReleaseBelowGrowth: captiveGrowthThreshold,
+        captivePersuade: captiveEnabled,
+        captivePersuadeGrowth: captiveGrowthThreshold,
       },
     };
   }
@@ -2298,7 +2352,7 @@ function saveMinistryDom() {
   if (!root) return;
   appState.ministrySettings = {
     cropEnabled: !!root.querySelector(".ministry-crop-enabled")?.checked,
-    crop: root.querySelector(".ministry-crop")?.value || "金银花",
+    crop: root.querySelector(".ministry-crop")?.value || "稻谷",
     highPriority: !!root.querySelector(".ministry-high-priority")?.checked,
     stealEnabled: !!root.querySelector(".ministry-steal-enabled")?.checked,
     courtesyEnabled: !!root.querySelector(".ministry-courtesy-enabled")?.checked,
@@ -2507,6 +2561,7 @@ function discardActivePageChanges() {
     ["dailyLimit", "healWounded", "autoEnergy", "energyThreshold", "foodToCopper", "copperFloorWan"]
       .forEach(key => { current[key] = clone(committed[key]); });
     current.domestic = clone(committed.domestic);
+    appState.captiveSettings = clone(saved.captiveSettings || defaultCaptiveSettings());
   } else if (activeSide === "日常") {
     current.dailyTasks = clone(committed.dailyTasks);
     current.generalVisitGeneralIds = clone(committed.generalVisitGeneralIds || []);
@@ -3134,33 +3189,86 @@ function renderRole() {
     </div>`;
   }
   if (activeSide === "宝物") {
-    const items = appState.inventory?.items || [];
-    const ownedItems = items.filter(it => Number(it.count ?? 0) > 0);
-    const query = treasureSearchQuery.trim().toLocaleLowerCase();
-    const visibleItems = ownedItems.filter(it => {
-      const name = String(it.name || `道具#${it.itemId ?? it.id}`);
-      return !query || name.toLocaleLowerCase().includes(query);
+    // The 宝库 has two tabs in the game - 道具 and 装备 - and an unworn piece of
+    // equipment takes a slot exactly like a stack of items does.  Both come
+    // from the same 0x8104 packet; this page used to draw only the first.
+    const inventory = appState.inventory || {};
+    const isEquipment = it => String(it.type || "").toLowerCase() === "equipment"
+      || (it.instanceId !== undefined && it.instanceId !== null && it.instanceId !== "");
+    const rawItems = inventory.items || [];
+    const ownedItems = rawItems.filter(it => !isEquipment(it) && Number(it.count ?? 0) > 0);
+    const equipment = (inventory.equipment && inventory.equipment.length
+      ? inventory.equipment
+      : rawItems.filter(isEquipment));
+    // Identical pieces (same template, quality, strengthen) collapse into one
+    // row with a piece count; every piece still counts as its own slot above.
+    const equipmentGroups = new Map();
+    equipment.forEach(eq => {
+      const name = String(eq.name || `装备#${eq.templateId ?? eq.id ?? ""}`);
+      const quality = String(eq.qualityName || (eq.quality !== undefined && eq.quality !== null ? `品质${eq.quality}` : "")).trim();
+      const strengthen = Number(eq.strengthen ?? 0);
+      const level = Number(eq.level ?? 0);
+      const key = [name, quality, strengthen, level].join("|");
+      const group = equipmentGroups.get(key) || { name, quality, strengthen, level, pieces: 0 };
+      group.pieces += 1;
+      equipmentGroups.set(key, group);
     });
-    const rows = visibleItems
-      .map(it => [escHtml(it.name || `道具#${it.itemId ?? it.id}`), fmtNum(it.count)]);
-    if (!ownedItems.length) {
-      return table(["实时宝物数据"], [[appState.inventory?.parseError ? escHtml(appState.inventory.parseError) : "当前账号背包为空或暂未解析到 0x8104 背包数据"]]);
+    const equipmentRows = [...equipmentGroups.values()]
+      .sort((a, b) => a.name.localeCompare(b.name, "zh") || b.strengthen - a.strengthen);
+    const query = treasureSearchQuery.trim().toLocaleLowerCase();
+    const matches = text => !query || String(text).toLocaleLowerCase().includes(query);
+    const visibleItems = ownedItems.filter(it => matches(it.name || `道具#${it.itemId ?? it.id}`));
+    const visibleEquipment = equipmentRows.filter(eq => matches(`${eq.name} ${eq.quality}`));
+    if (!ownedItems.length && !equipment.length) {
+      return table(["实时宝物数据"], [[inventory.parseError ? escHtml(inventory.parseError) : "当前账号背包为空或暂未解析到 0x8104 背包数据"]]);
     }
+    // 已占 = 道具种数 + 装备件数, the two counts the server sends; the limit is
+    // the trailer value the game itself shows as 背包上限.
+    // Number(null) is 0, so "unknown" has to be tested before coercing.
+    const known = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+    const capacity = known(inventory.capacity) ? Number(inventory.capacity) : NaN;
+    const slotsUsed = known(inventory.slotsUsed)
+      ? Number(inventory.slotsUsed)
+      : ownedItems.length + equipment.length;
+    // A record this build has never rewritten has no limit in it yet; that is
+    // "还没读过", not "读不出来", and the next bag change fixes it by itself.
+    const slotsText = Number.isFinite(capacity) && capacity > 0
+      ? `格子 ${slotsUsed}/${capacity}`
+      : (inventory.capacityPending
+        ? `已占 ${slotsUsed} 格（上限待刷新，启动该账号后自动读取）`
+        : `已占 ${slotsUsed} 格（上限未知）`);
+    const slotsClass = Number.isFinite(capacity) && capacity > 0 && slotsUsed >= capacity
+      ? "treasure-slots is-full"
+      : "treasure-slots";
+    const composition = `道具 ${ownedItems.length} 种 · 装备 ${equipment.length} 件`;
     const countText = query
-      ? `找到 ${visibleItems.length} 种 / 共 ${ownedItems.length} 种宝物`
-      : `共 ${ownedItems.length} 种宝物`;
+      ? `找到 ${visibleItems.length + visibleEquipment.length} 项 / ${composition}`
+      : composition;
+    const sectionRow = (label, count, unit) =>
+      `<tr class="treasure-section"><td colspan="2">${escHtml(label)}（${count} ${unit}）</td></tr>`;
+    const itemRows = visibleItems
+      .map(it => `<tr><td>${escHtml(it.name || `道具#${it.itemId ?? it.id}`)}</td><td>${fmtNum(it.count)}</td></tr>`);
+    const equipRows = visibleEquipment.map(eq => {
+      const meta = [eq.quality, eq.strengthen > 0 ? `+${eq.strengthen}` : "", eq.level > 0 ? `Lv.${eq.level}` : ""]
+        .filter(Boolean).join(" · ");
+      return `<tr class="treasure-equipment-row"><td>${escHtml(eq.name)}${meta ? ` <span class="treasure-equip-meta">${escHtml(meta)}</span>` : ""}</td><td>${fmtNum(eq.pieces)}</td></tr>`;
+    });
+    const body = [
+      ...(itemRows.length ? [sectionRow("道具", visibleItems.length, "种"), ...itemRows] : []),
+      ...(equipRows.length ? [sectionRow("装备", visibleEquipment.reduce((sum, eq) => sum + eq.pieces, 0), "件"), ...equipRows] : []),
+    ];
     return `<section class="treasure-browser">
       <div class="treasure-toolbar">
         <label class="treasure-search">
           <span aria-hidden="true">⌕</span>
-          <input id="treasureSearchInput" type="search" value="${escAttr(treasureSearchQuery)}" placeholder="搜索宝物名称" autocomplete="off">
+          <input id="treasureSearchInput" type="search" value="${escAttr(treasureSearchQuery)}" placeholder="搜索道具或装备名称" autocomplete="off">
         </label>
-        <span id="treasureCount" class="treasure-count">${countText}</span>
+        <span id="treasureCount" class="treasure-count"><span class="${slotsClass}">${escHtml(slotsText)}</span>${escHtml(countText)}</span>
       </div>
       <div class="treasure-table-scroll">
-        ${rows.length
-          ? table(["名称", "数量"], rows, "treasure-table")
-          : `<div class="treasure-empty">没有找到匹配的宝物</div>`}
+        ${body.length
+          ? `<table class="grid-table treasure-table"><thead><tr><th>名称</th><th>数量</th></tr></thead><tbody>${body.join("")}</tbody></table>`
+          : `<div class="treasure-empty">没有找到匹配的道具或装备</div>`}
       </div>
     </section>`;
   }
@@ -6013,7 +6121,7 @@ async function saveLiubuSettings() {
       appendLog(`六部常驻任务已加入任务栈：${data.task.taskId}`);
       startStatusPolling();
     } else if (data.ministryTask?.started) {
-      appendLog("六部设置已保存，手机本地调度器已开始执行金银花种植");
+      appendLog("六部设置已保存，手机本地调度器已开始执行稻谷种植");
       startStatusPolling();
     } else {
       appendLog(data.reason || "六部设置已保存；当前没有可执行的已确认动作");
@@ -6157,7 +6265,8 @@ async function saveCommonSettings() {
       appendLog(
         `常规-常用保存成功：治疗伤兵=${patch.healWounded ? "开启" : "关闭"}，` +
         `自动加体=${patch.autoEnergy ? `开启（体力<${patch.energyThreshold}）` : "关闭"}，` +
-        `自动内政=${patch.domestic.enabled ? "开启" : "关闭"}，粮食转铜=${patch.foodToCopper ? "开启" : "关闭"}；` +
+        `自动内政=${patch.domestic.enabled ? "开启" : "关闭"}，粮食转铜=${patch.foodToCopper ? "开启" : "关闭"}，` +
+        `俘虏处理=${patch.captives.captivePersuade ? `开启（成长≥${patch.captives.captivePersuadeGrowth}劝降，否则释放）` : "关闭"}；` +
         "其他子页面设置未修改。"
       );
       if (data.domesticTask && !data.domesticTask.skipped) {
@@ -6169,6 +6278,11 @@ async function saveCommonSettings() {
         appendLog(data.technologyTask.started
           ? `升级科技已启动：任务 ${data.technologyTask.task?.taskId || "已创建"}`
           : `升级科技未启动：${data.technologyTask.reason || "开关已关闭"}`);
+      }
+      if (data.captivesTask && !data.captivesTask.skipped) {
+        appendLog(data.captivesTask.started
+          ? `俘虏营已启动：任务 ${data.captivesTask.task?.taskId || "已创建"}`
+          : `俘虏营未启动：${data.captivesTask.reason || "开关已关闭"}`);
       }
     } else if (side === "日常") {
       const enabled = Object.entries(patch.dailyTasks)

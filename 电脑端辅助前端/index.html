@@ -4,7 +4,12 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; object-src 'none'; base-uri 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'" />
-  <meta id="viewportMeta" name="viewport" content="width=1080, maximum-scale=3.0, user-scalable=yes" />
+  <!-- The layout is a fixed 1080px design scaled to fit, so nothing in it needs
+       a user zoom.  Leaving the page zoomable let the Android WebView zoom
+       itself into a focused text field - tapping 宝物 搜索框 blew the whole UI
+       up - and because pinch zoom is disabled in the host there was then no way
+       back out.  A non-zoomable viewport pins min=max=fit, so neither happens. -->
+  <meta id="viewportMeta" name="viewport" content="width=1080, user-scalable=no" />
   <title>帝王三国电脑端辅助</title>
   <link rel="stylesheet" href="./styles.css?v=V0.0.19" />
 </head>

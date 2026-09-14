@@ -18,6 +18,27 @@ from shared_raw_http_test_host import (
 )
 
 
+def _occupied_garden_hex(fixture: dict) -> str:
+    """Flow-062 empty garden with plot 0 replaced by one occupied record.
+
+    The 0xe320 layout swaps a plot's 7B empty entry for a 32B occupied
+    record, so the frame grows by 25 bytes per occupied plot.
+    """
+    garden = bytes.fromhex(fixture["emptyGardenResponseHex"])
+    record = (
+        b"\x00"                    # plotIndex 0
+        b"\x00\x01"                # cropId 1 (稻谷)
+        + (36000).to_bytes(4, "big")   # totalSeconds
+        + (0).to_bytes(4, "big")       # remainingSeconds
+        + b"\x64"                  # percent
+        + (100).to_bytes(2, "big")     # plantCount
+        + b"\x00" * 18
+    )
+    assert len(record) == 32
+    header, entries, tail = garden[:26], garden[26:96], garden[96:]
+    return (header + record + entries[7:] + tail).hex()
+
+
 class SharedMinistryOperationTests(unittest.TestCase):
     def test_hubu_query_and_verified_plant_use_shared_raw_workflows(self) -> None:
         fixture = json.loads(
@@ -52,7 +73,7 @@ class SharedMinistryOperationTests(unittest.TestCase):
                     self.status_calls += 1
                     payload = fixture["emptyGardenResponseHex"]
                     if self.status_calls > 1:
-                        payload += "00" * 25
+                        payload = _occupied_garden_hex(fixture)
                     response_opcode = 0xE320
                 else:
                     payload = fixture["plantResponseHex"]
@@ -109,7 +130,10 @@ class SharedMinistryOperationTests(unittest.TestCase):
                 self.assertEqual(query.status, 202)
                 query_result = wait(facade, query.body["operationId"])
                 self.assertEqual(query_result["status"], "SUCCEEDED")
-                self.assertEqual(query_result["result"]["garden"]["emptyCount"], 10)
+                self.assertEqual(query_result["result"]["garden"]["emptyCount"], 5)
+                self.assertEqual(
+                    query_result["result"]["garden"]["unlockedCount"], 5
+                )
                 self.assertFalse(query_result["requestSent"])
 
                 # Each operation receives its own before/after garden snapshot.
@@ -121,7 +145,7 @@ class SharedMinistryOperationTests(unittest.TestCase):
                     {
                         "accountRef": "202",
                         "confirm": "hubu-batch-plant",
-                        "crop": "金银花",
+                        "crop": "稻谷",
                     },
                     {"requestId": "hubu-plant"},
                 )
@@ -168,7 +192,7 @@ class SharedMinistryOperationTests(unittest.TestCase):
                     self.status_calls += 1
                     payload = fixture["emptyGardenResponseHex"]
                     if self.status_calls > 1:
-                        payload += "00" * 25
+                        payload = _occupied_garden_hex(fixture)
                     packets = [{"opcode": 0xE320, "payloadHex": payload}]
                 else:
                     # The first mutation crosses the send boundary but loses
@@ -217,7 +241,7 @@ class SharedMinistryOperationTests(unittest.TestCase):
                 body = {
                     "accountRef": "202",
                     "confirm": "hubu-batch-plant",
-                    "crop": "金银花",
+                    "crop": "稻谷",
                 }
                 first = facade.dispatch(
                     "POST", "/api/liubu/hubu/plant", body,

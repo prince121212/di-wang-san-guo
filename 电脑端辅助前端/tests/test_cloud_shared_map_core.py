@@ -186,6 +186,69 @@ class CloudSharedMapCoreTests(unittest.TestCase):
         state = json.loads(public["residentAutomationStateJson"])
         return facade, clock, directory, config, state
 
+    def test_the_area_catalog_is_fetched_from_the_cloud_at_most_once(self) -> None:
+        # The phone is where this list comes from: every login answers with the
+        # game's complete area list, which is why login uploads it.  Android had
+        # nowhere to keep a copy, so it passed an empty catalog in and every
+        # /api/areas call went back out to read the whole platform directory -
+        # for a list that changes about monthly - and then discarded it.
+        cloud = FakeCloudPort("LOCAL_ONLY")
+        facade, _clock, directory, _config, _state = self._facade(cloud)
+        try:
+            def area_queries() -> int:
+                return sum(
+                    1 for call in cloud.calls
+                    if call["path"] == "/v1/servers/directory/query"
+                )
+
+            first = facade.dispatch("GET", "/api/areas", {"platform": "sglm"}, {})
+            self.assertEqual(first.body["source"], "cloud-shared-data")
+            self.assertEqual([a["serverKey"] for a in first.body["areas"]], ["qzone_351"])
+            self.assertEqual(area_queries(), 1)
+
+            for _ in range(5):
+                again = facade.dispatch("GET", "/api/areas", {"platform": "sglm"}, {})
+                self.assertEqual(again.body["source"], "local-cache")
+                self.assertEqual(
+                    [a["serverKey"] for a in again.body["areas"]], ["qzone_351"]
+                )
+            self.assertEqual(area_queries(), 1, "cloud must not be asked twice")
+
+            # A host that keeps its own copy still wins outright.
+            supplied = facade.dispatch("GET", "/api/areas", {
+                "platform": "sglm",
+                "areas": [{"areaName": "周年服999区", "serverKey": "qzone_999"}],
+            }, {})
+            self.assertEqual(supplied.body["source"], "local-cache")
+            self.assertEqual(
+                [a["serverKey"] for a in supplied.body["areas"]], ["qzone_999"]
+            )
+            self.assertEqual(area_queries(), 1)
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_a_login_refreshes_the_local_catalog_without_the_cloud(self) -> None:
+        cloud = FakeCloudPort("LOCAL_ONLY")
+        cloud.fail = True          # cloud down: the local copy must still update
+        facade, _clock, directory, _config, _state = self._facade(cloud)
+        try:
+            facade._schedule_cloud_directory_sync("sglm", [{  # noqa: SLF001
+                "serverKey": "qzone_352",
+                "areaId": "area-352",
+                "areaName": "周年服352区",
+                "target": "2,4",
+                "serverUrl": "https://game.example/base",
+            }])
+            served = facade.dispatch("GET", "/api/areas", {"platform": "sglm"}, {})
+            self.assertEqual(served.body["source"], "local-cache")
+            self.assertEqual(
+                [a["serverKey"] for a in served.body["areas"]], ["qzone_352"]
+            )
+        finally:
+            facade.close()
+            directory.cleanup()
+
     def test_complete_directory_sync_is_public_and_account_independent(self) -> None:
         cloud = FakeCloudPort("LOCAL_ONLY")
         facade, _clock, directory, _config, _state = self._facade(cloud)

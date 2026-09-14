@@ -156,6 +156,8 @@ class SharedPythonCoreTests(unittest.TestCase):
                     "cropEnabled": True,
                     "crop": "草药",
                     "stealEnabled": True,
+                    "courtesyEnabled": False,
+                    "salaryRefresh": False,
                 }
             },
         )
@@ -165,9 +167,21 @@ class SharedPythonCoreTests(unittest.TestCase):
             {
                 "settings": {
                     "cropEnabled": True,
-                    "crop": "金银花",
+                    "crop": "稻谷",
                     "stealEnabled": False,
                     "courtesyEnabled": False,
+                    "salaryRefresh": False,
+                }
+            },
+        )
+        courtesy_only = facade.dispatch(
+            "POST",
+            "/api/liubu/save",
+            {
+                "settings": {
+                    "cropEnabled": False,
+                    "stealEnabled": False,
+                    "courtesyEnabled": True,
                     "salaryRefresh": False,
                 }
             },
@@ -185,6 +199,12 @@ class SharedPythonCoreTests(unittest.TestCase):
         self.assertTrue(
             verified_plan["configs"]["six_ministries"]["supportedEnabled"]
         )
+        courtesy_plan = courtesy_only.body["plan"]
+        self.assertTrue(courtesy_plan["activationAllowed"])
+        self.assertTrue(
+            courtesy_plan["configs"]["six_ministries"]["supportedEnabled"]
+        )
+        self.assertIn("礼部任务委派", courtesy_plan["response"]["reason"])
         missing = facade.dispatch(
             "POST",
             "/api/liubu/save",

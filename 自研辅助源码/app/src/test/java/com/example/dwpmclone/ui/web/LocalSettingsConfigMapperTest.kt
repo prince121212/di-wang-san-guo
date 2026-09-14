@@ -48,7 +48,7 @@ class LocalSettingsConfigMapperTest {
                 .put("y", 8)))
         values[LocalSettingsConfigMapper.MINISTRIES] = JSONObject()
             .put("cropEnabled", true)
-            .put("crop", "金银花")
+            .put("crop", "稻谷")
             .put("highPriority", true)
             .put("stealEnabled", false)
             .put("courtesyEnabled", false)

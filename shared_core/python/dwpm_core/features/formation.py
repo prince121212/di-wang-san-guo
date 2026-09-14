@@ -89,6 +89,50 @@ def positive_game_id(value: Any, field: str = "ID") -> int:
     return result
 
 
+class TroopShortageError(ValueError):
+    """The saved formation asks for more idle troops than the account has.
+
+    A ``ValueError`` like every other precheck refusal, so nothing that catches
+    the family changes; but it also carries the numbers, because callers that
+    want to *act* on a shortage - pause the formation, tell the account holder
+    what to recruit - must not have to parse them back out of the sentence.
+    """
+
+    def __init__(
+        self,
+        *,
+        general_id: int,
+        general_name: str,
+        soldier_type_code: int,
+        soldier_type: str,
+        target_count: int,
+        available_count: int,
+    ) -> None:
+        self.general_id = int(general_id)
+        self.general_name = str(general_name)
+        self.soldier_type_code = int(soldier_type_code)
+        self.soldier_type = str(soldier_type)
+        self.target_count = int(target_count)
+        self.available_count = int(available_count)
+        self.shortage = max(0, self.target_count - self.available_count)
+        super().__init__(
+            f"{self.general_name}缺少{self.shortage}{self.soldier_type}；"
+            f"目标{self.target_count}，可用{self.available_count}，"
+            "已保持原配兵不变"
+        )
+
+    def details(self) -> Dict[str, Any]:
+        return {
+            "generalId": self.general_id,
+            "generalName": self.general_name,
+            "soldierTypeCode": self.soldier_type_code,
+            "soldierType": self.soldier_type,
+            "targetCount": self.target_count,
+            "availableCount": self.available_count,
+            "shortage": self.shortage,
+        }
+
+
 def plan_troop_assignment(
     generals: Sequence[Mapping[str, Any]],
     army_rows: Sequence[Mapping[str, Any]],
@@ -180,10 +224,13 @@ def plan_troop_assignment(
         and not already_satisfied
         and effective_count > available
     ):
-        raise ValueError(
-            f"{general.get('name') or general_id}缺少"
-            f"{effective_count - available}{target_name}；目标{effective_count}，"
-            f"可用{available}，已保持原配兵不变"
+        raise TroopShortageError(
+            general_id=general_id,
+            general_name=str(general.get("name") or general_id),
+            soldier_type_code=target_code,
+            soldier_type=target_name,
+            target_count=effective_count,
+            available_count=available,
         )
     return {
         "generalId": general_id,

@@ -491,11 +491,15 @@ class EnergyShortagePauseTests(unittest.TestCase):
         )
 
         self.assertEqual(result["feature"], "brush")
-        self.assertEqual(result["state"], "retry")
+        # A paused formation is a held decision with a deadline, not a poll:
+        # it has its own state so the narrator can announce it (and the
+        # resume) instead of hiding it inside a silent ``retry``.
+        self.assertEqual(result["state"], "formation-paused")
         self.assertFalse(result["requiresAttention"])
         self.assertEqual(result["nextWakeAtMillis"], until)
         state = json.loads(self._public()["residentAutomationStateJson"])
         self.assertEqual(state["brush"]["nextWakeAtMillis"], until)
+        self.assertEqual(state["brush"]["lastState"], "formation-paused")
 
     # -- 副本 defer ---------------------------------------------------------
 

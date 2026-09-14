@@ -195,7 +195,7 @@ class SharedResidentAutomationTests(unittest.TestCase):
         }
         habits["ministry"] = {
             "cropEnabled": True,
-            "crop": "金银花",
+            "crop": "稻谷",
             "highPriority": True,
             "stealEnabled": False,
             "courtesyEnabled": False,
@@ -301,7 +301,7 @@ class SharedResidentAutomationTests(unittest.TestCase):
                 "settings": {"dailyTimes": 2},
                 "rows": [{"enabled": True}],
             },
-            "ministry": {"enabled": True, "settings": {"crop": "金银花"}},
+            "ministry": {"enabled": True, "settings": {"crop": "稻谷"}},
         }
         first = resident_due_decision(
             configs,
@@ -369,7 +369,7 @@ class SharedResidentAutomationTests(unittest.TestCase):
             self.assertEqual(config["raid"]["rows"][0]["playerName"], "目标甲")
             self.assertEqual(len(config["lossless"]["rows"]), 2)
             self.assertEqual(config["dungeon"]["settings"]["dailyTimes"], 2)
-            self.assertEqual(config["ministry"]["settings"]["crop"], "金银花")
+            self.assertEqual(config["ministry"]["settings"]["crop"], "稻谷")
             activation = facade.set_resident_automation_activation(
                 "303", True, None
             )
@@ -1347,7 +1347,7 @@ class SharedResidentAutomationTests(unittest.TestCase):
             self.assertEqual(result["feature"], "ministry")
             self.assertEqual(result["state"], "completed")
             self.assertEqual(captured["confirm"], "hubu-batch-plant")
-            self.assertEqual(captured["crop"], "金银花")
+            self.assertEqual(captured["crop"], "稻谷")
             self.assertEqual(
                 result["nextWakeAtMillis"],
                 clock.value + 10 * 60 * 1000,
@@ -1633,6 +1633,73 @@ class SharedResidentAutomationTests(unittest.TestCase):
                 captured["hostSettings"]["formations"][0]["generalId"],
                 "7",
             )
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_mine_at_the_resource_point_cap_waits_without_scanning(self) -> None:
+        """The cap is a fact about the account, so it is decided before any scan.
+
+        Until now the only check sat at the send boundary, after the map scan
+        and (in cloud mode) after reserving a shared target: a full account
+        re-scanned every ten seconds only to be refused.  Now the tick stops at
+        the cap, reports it as its own state so the panel can say why, and
+        rechecks on the session probe's cadence - the count cannot change in
+        our view any faster than that.  Below the cap the scan runs as before.
+        """
+
+        facade, clock, directory = self._facade()
+        try:
+            facade.configure_resident_automation_from_habits(
+                "303", self._habits()
+            )
+            searches: list[dict[str, object]] = []
+            facade._run_mine_search_game_workflow = types.MethodType(  # noqa: SLF001
+                lambda _self, _execution, body, _context: (
+                    searches.append(dict(body)) or {"targets": []}
+                ),
+                facade,
+            )
+            facade._update_account_public_state(  # noqa: SLF001
+                "303",
+                {"roleStateJson": json.dumps(
+                    {"resourcePointCurrent": 5, "resourcePointCap": 5}
+                )},
+            )
+
+            result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                FakeExecution(), "303", {"allowedFeatures": ["mine"]}
+            )
+
+            self.assertEqual(result["feature"], "mine")
+            self.assertEqual(result["state"], "capacity-full")
+            self.assertTrue(result["success"])
+            self.assertIn("5/5", result["message"])
+            self.assertEqual(
+                result["nextWakeAtMillis"], clock.value + 60_000,
+                "rechecked on the probe cadence, not the 10s target retry",
+            )
+            self.assertEqual(searches, [], "no map scan while the cap holds")
+            stored = json.loads(facade.account_record_json("303"))["account"]
+            mine_state = json.loads(
+                stored["session"]["publicState"]["residentAutomationStateJson"]
+            )["mine"]
+            self.assertEqual(mine_state["lastState"], "capacity-full")
+
+            facade._update_account_public_state(  # noqa: SLF001
+                "303",
+                {"roleStateJson": json.dumps(
+                    {"resourcePointCurrent": 4, "resourcePointCap": 5}
+                )},
+            )
+            clock.value += 60_000
+            result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                FakeExecution(), "303", {"allowedFeatures": ["mine"]}
+            )
+
+            self.assertEqual(result["feature"], "mine")
+            self.assertEqual(result["state"], "no-targets")
+            self.assertEqual(len(searches), 1, "one slot free: the scan runs")
         finally:
             facade.close()
             directory.cleanup()

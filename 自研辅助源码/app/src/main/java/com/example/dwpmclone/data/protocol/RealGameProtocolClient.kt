@@ -87,7 +87,10 @@ class RealGameProtocolClient(
     )
 
     data class InventoryState(
-        val capacity: Int,
+        /** Bag limit from the 0x8104 trailer; null when the trailer could not be read. */
+        val capacity: Int?,
+        /** Declared stack count + declared equipment count: the game's "49" in "49/50". */
+        val slotsUsed: Int,
         val itemCount: Int,
         val items: List<InventoryStack>,
         val equipment: List<InventoryEquipment>,
@@ -479,7 +482,11 @@ class RealGameProtocolClient(
 
     internal fun parse8104Inventory(payload: ByteArray, sourceOpcode: String): InventoryState {
         require(payload.size >= 18) { "0x8104 背包响应过短：${payload.size}" }
-        val capacity = payload.u16At(14)
+        // The original client opens this packet with readLong, readLong, readShort:
+        // two account-wide asset counters, then the stack count.  Bytes 14..16 are the
+        // low half of the second counter - reading them as the bag limit gave 1863 on
+        // an account whose limit is 50.  The limit is the first short of the trailer
+        // after the equipment bank (mirrors shared_core parse_8104_footer).
         val itemCount = payload.u16At(16)
         require(itemCount in 0..512) { "0x8104 背包条目数异常：$itemCount" }
         val itemsEnd = 18 + itemCount * INVENTORY_ITEM_RECORD_LEN
@@ -502,8 +509,17 @@ class RealGameProtocolClient(
             )
         }
         val equipmentResult = parse8104Equipment(payload, itemsEnd)
+        val declaredEquipmentCount = if (itemsEnd + 2 <= payload.size) payload.u16At(itemsEnd) else 0
+        // Only trust the trailer once every equipment record parsed cleanly;
+        // otherwise its offset is unknown and a value read there is a guess.
+        val capacity = if (equipmentResult.error == null && equipmentResult.endOffset + 2 <= payload.size) {
+            payload.u16At(equipmentResult.endOffset).takeIf { it in 1..4096 }
+        } else {
+            null
+        }
         return InventoryState(
             capacity = capacity,
+            slotsUsed = itemCount + declaredEquipmentCount,
             itemCount = itemCount,
             items = items,
             equipment = equipmentResult.items,

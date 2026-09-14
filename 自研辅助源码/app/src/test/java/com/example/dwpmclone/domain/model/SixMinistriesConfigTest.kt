@@ -6,15 +6,15 @@ import org.junit.Test
 
 class SixMinistriesConfigTest {
     @Test
-    fun onlyCapturedGoldSilverFlowerPlantingCanPrepare() {
-        assertNull(config(cropEnabled = true, crop = "金银花").preparationError())
+    fun onlyCapturedRicePlantingCanPrepare() {
+        assertNull(config(cropEnabled = true, crop = "稻谷").preparationError())
         assertEquals(
             "unverified ministry crop selected: 草药",
             config(cropEnabled = true, crop = "草药").preparationError()
         )
         assertEquals(
             "verified ministry planting disabled; steal and courtesy actions are not confirmed",
-            config(cropEnabled = false, crop = "金银花", stealEnabled = true).preparationError()
+            config(cropEnabled = false, crop = "稻谷", stealEnabled = true).preparationError()
         )
     }
 

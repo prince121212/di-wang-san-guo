@@ -434,6 +434,36 @@ def resident_success_record(
             },
         )
 
+    if feature == "captives" and state == "completed":
+        action = result.get("captiveAction")
+        action = action if isinstance(action, dict) else {}
+        action_kind = str(action.get("action") or "").strip()
+        if action_kind not in {"persuade", "release"}:
+            return None
+        try:
+            captive_id = int(action.get("captiveId") or 0)
+        except (TypeError, ValueError):
+            captive_id = 0
+        name = (
+            str(action.get("name") or captive_id or "未知俘虏").strip()
+            or "未知俘虏"
+        )
+        growth = int(action.get("growth") or 0)
+        verb = "劝降成功" if action_kind == "persuade" else "已释放"
+        return _resident_success_record(
+            timestamp=timestamp,
+            category="俘虏",
+            message=f"{verb} {name}（成长{growth}）",
+            # One captive can be persuaded or released only once; the id alone
+            # is the natural unique key.
+            dedupe_key=f"captives:{action_kind}:{captive_id}",
+            detail={
+                "feature": "captives",
+                "state": state,
+                "action": deepcopy(action),
+            },
+        )
+
     canonical = _canonical_resident_feature(feature)
     if (
         canonical in _EXPEDITION_SUCCESS_LABELS
@@ -585,6 +615,164 @@ def general_energy_success_record(
         # bucket therefore folds the same event together no matter which path
         # reported it, without ever folding two real uses.
         dedupe_key=f"general:energy:{general_id}:{timestamp // 60_000}",
+        detail=detail,
+    )
+
+
+def ministry_harvest_success_record(
+    receipt: Any,
+    *,
+    now_millis: int,
+) -> Optional[Dict[str, Any]]:
+    """Turn one accepted 0xe324 harvest receipt into a 六部 success fact.
+
+    The receipt is the evidence: the server confirmed the harvest, named the
+    gain in its own message and returned the cleared plot.  A plot needs the
+    full growth cycle before it can mature again, so a minute bucket folds
+    only duplicate reports of the same harvest.
+    """
+
+    if not isinstance(receipt, dict) or not bool(receipt.get("success")):
+        return None
+    try:
+        plot_index = int(receipt.get("plotIndex"))
+    except (TypeError, ValueError):
+        return None
+    gain = _positive_int(receipt.get("gain"))
+    new_pool = _nonnegative_int(receipt.get("newPool"))
+    timestamp = max(0, int(now_millis))
+    message = f"采摘坑位{plot_index + 1}成功"
+    if gain is not None:
+        message += f"，俸禄+{gain}株"
+    if new_pool is not None:
+        message += f"（俸禄池{new_pool}）"
+    detail: Dict[str, Any] = {
+        "feature": "ministry",
+        "action": "harvest",
+        "plotIndex": plot_index,
+        "message": str(receipt.get("message") or ""),
+    }
+    if gain is not None:
+        detail["gain"] = gain
+    if new_pool is not None:
+        detail["newPool"] = new_pool
+    return _resident_success_record(
+        timestamp=timestamp,
+        category="六部",
+        message=message,
+        dedupe_key=f"ministry:harvest:{plot_index}:{timestamp // 60_000}",
+        detail=detail,
+    )
+
+
+def ministry_plant_success_record(
+    receipt: Any,
+    *,
+    crop: str,
+    occupied_after: Any,
+    plot_count: Any,
+    now_millis: int,
+) -> Optional[Dict[str, Any]]:
+    """Turn one accepted 0xe328 plant receipt into a 六部 success fact.
+
+    The receipt is the evidence: the server confirmed the planting, debited
+    the salary pool and returned the newly occupied plot record.  A plot
+    needs the full growth cycle plus a harvest before it can be planted
+    again, so a (plot, minute) bucket folds only duplicate reports.
+    """
+
+    if not isinstance(receipt, dict) or not bool(receipt.get("success")):
+        return None
+    records = [
+        dict(value)
+        for value in receipt.get("records") or []
+        if isinstance(value, dict)
+    ]
+    plot_indexes = [
+        int(value["plotIndex"])
+        for value in records
+        if isinstance(value.get("plotIndex"), int)
+    ]
+    new_pool = _nonnegative_int(receipt.get("newPool"))
+    timestamp = max(0, int(now_millis))
+    label = str(crop or "").strip() or "作物"
+    if plot_indexes:
+        message = f"已种植{label}，坑位{'、'.join(str(i + 1) for i in plot_indexes)}"
+    else:
+        message = f"已种植{label}"
+    occupied = _nonnegative_int(occupied_after)
+    total = _nonnegative_int(plot_count)
+    if occupied is not None and total is not None:
+        message += f"（菜地{occupied}/{total}）"
+    if new_pool is not None:
+        message += f"（俸禄池{new_pool}）"
+    detail: Dict[str, Any] = {
+        "feature": "ministry",
+        "action": "plant",
+        "crop": label,
+        "plotIndexes": plot_indexes,
+        "message": str(receipt.get("message") or ""),
+    }
+    if new_pool is not None:
+        detail["newPool"] = new_pool
+    plot_part = ",".join(str(i) for i in plot_indexes) or "unknown"
+    return _resident_success_record(
+        timestamp=timestamp,
+        category="六部",
+        message=message,
+        dedupe_key=f"ministry:plant:{plot_part}:{timestamp // 60_000}",
+        detail=detail,
+    )
+
+
+def ministry_delegate_success_record(
+    receipt: Any,
+    *,
+    official_name: str,
+    refresh_at_millis: int,
+    now_millis: int,
+) -> Optional[Dict[str, Any]]:
+    """Turn one accepted 0xe342 delegation receipt into a 六部 success fact.
+
+    The task list's daily refresh timestamp identifies the task batch, so the
+    same (task, official, batch) triple can be recorded once while tomorrow's
+    delegation of the same task still counts.
+    """
+
+    if not isinstance(receipt, dict) or not bool(receipt.get("success")):
+        return None
+    try:
+        task_id = int(receipt.get("taskId") or 0)
+        official_id = int(receipt.get("officialId") or 0)
+    except (TypeError, ValueError):
+        return None
+    if task_id <= 0 or official_id <= 0:
+        return None
+    task = receipt.get("task")
+    task = task if isinstance(task, dict) else {}
+    task_name = str(task.get("name") or f"任务{task_id}").strip()
+    name = str(official_name or "").strip() or f"文官{official_id}"
+    remaining = _nonnegative_int(task.get("remainingSeconds"))
+    timestamp = max(0, int(now_millis))
+    detail: Dict[str, Any] = {
+        "feature": "ministry",
+        "action": "courtesy-delegate",
+        "taskId": task_id,
+        "taskName": task_name,
+        "officialId": official_id,
+        "officialName": name,
+        "refreshAtMillis": int(refresh_at_millis or 0),
+    }
+    if remaining is not None:
+        detail["remainingSeconds"] = remaining
+    return _resident_success_record(
+        timestamp=timestamp,
+        category="六部",
+        message=f"已委派{name}执行礼部任务「{task_name}」",
+        dedupe_key=(
+            f"ministry:delegate:{task_id}:{official_id}:"
+            f"{int(refresh_at_millis or 0)}"
+        ),
         detail=detail,
     )
 

@@ -46,6 +46,18 @@ NARRATED_STATES = {
     # lives with for hours, so it is the clearest case of "nothing is
     # happening, and here is why".
     "uncertain": "{label}已暂停：{reason}",
+    # The account holds as many resource points as the server allows.  Like a
+    # block this is a conclusion held until the count falls, not a sample, so
+    # it is announced at once; leaving it says "已恢复运行" like any other.
+    "capacity-full": "{label}已暂停：{reason}",
+    # A general cannot march for want of a resource the game replenishes or
+    # the account holder supplies - stamina with no 活血丹, or fewer idle
+    # troops than the saved formation asks for.  The feature holds until a
+    # named deadline and then tries again by itself.  It used to surface only
+    # as "存在未确认操作，已隔离并禁止自动重发，请人工核对" when the failing
+    # preflight happened to follow a sent heal; the honest line names the
+    # general, the shortfall and what would end the pause.
+    "formation-paused": "{label}已暂停：{reason}",
 }
 
 #: Narrated states that are a *sample* rather than a *decision*.
@@ -88,6 +100,7 @@ FEATURE_LABELS = {
     "domestic": "内政",
     "inventory": "背包整理",
     "alarm": "军情警报",
+    "captives": "俘虏",
 }
 
 #: Names for the daily tasks, which schedule themselves independently.
@@ -493,6 +506,7 @@ def resident_due_decision(
     updated["domestic"] = dict(updated.get("domestic") or {})
     updated["inventory"] = dict(updated.get("inventory") or {})
     updated["alarm"] = dict(updated.get("alarm") or {})
+    updated["captives"] = dict(updated.get("captives") or {})
     if not saved_tasks_started:
         return {
             "feature": None,
@@ -662,6 +676,17 @@ def resident_due_decision(
             updated["alarm"],
             feature="alarm",
             priority=priorities.get("alarm"),
+            now=now,
+        )
+
+    captives = dict(configs.get("captives") or {})
+    if bool(captives.get("enabled")) and "captives" in active_keys:
+        _add_resident_candidate(
+            candidates,
+            blocked,
+            updated["captives"],
+            feature="captives",
+            priority=priorities.get("captives"),
             now=now,
         )
 

@@ -17,8 +17,17 @@
       "custom_domain": true
     }
   ],
+  // `cleanup` is garbage collection, and every statement left in it costs a
+  // scan of the table it prunes - so its price is set by how much is stored,
+  // while its value is set by how much has expired, which accrues slowly.  At
+  // five-minute cadence that was ~1.3M row reads a day to keep a 0.16 MB
+  // database tidy, a quarter of the account's whole D1 read allowance.
+  // Nothing needs the shorter period: presence, scan leases, target leases and
+  // TTLs are all re-derived from the clock by the readers that care
+  // (`sharedMode`, `claimScans`, `queryTargets`, `reserveTarget`), so pruning
+  // only reclaims space.
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": ["*/30 * * * *"]
   },
   "vars": {
     "SHARED_ACCOUNT_THRESHOLD": "2",

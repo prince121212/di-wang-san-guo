@@ -48,6 +48,13 @@ import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * Version marker the shared core stamps on its bag projection once the 0x8104
+ * trailer (where the bag limit really lives) is read.  Must match
+ * `INVENTORY_PARSER_VERSION` in `shared_core/python/dwpm_core/facade.py`.
+ */
+internal const val INVENTORY_PARSER_VERSION = "8104-trailer-v1"
+
 /** Small allow-listed adapter from the shared Web UI contract to on-device repositories. */
 class LocalAssistantApiController(
     context: Context,
@@ -669,7 +676,12 @@ class LocalAssistantApiController(
         // This route only persists the user's "run all saved resident tasks"
         // intent. The foreground scheduler will materialize configured tasks;
         // the page request must not rebuild the task plan or wait for login.
-        val residentKeys = behaviorContract.scheduler.residentPriority.keys
+        val captivesValues = configs.loadFeatureConfig(account.id, LocalSettingsConfigMapper.CAPTIVES)
+            ?.optJSONObject("values")
+        val captivesEnabled = captivesValues?.optBoolean("captiveRelease", false) == true ||
+            captivesValues?.optBoolean("captivePersuade", false) == true
+        val residentKeys = behaviorContract.scheduler.residentPriority.keys +
+            (if (captivesEnabled) setOf("captives") else emptySet())
         setSavedTasksStarted(
             account.id,
             write.optBoolean("savedTasksStarted", true),
@@ -814,6 +826,23 @@ class LocalAssistantApiController(
         )
         mapping.configs.forEach { (featureId, values) ->
             configs.saveFeatureConfig(account.id, featureId, JSONObject().put("values", values))
+        }
+        // 俘虏营设置不在共享 config 白名单内，同六部一样按独立 feature 段落库。
+        if (route == "/api/settings/save" && body.optString("scope") == "common.frequent") {
+            body.optJSONObject("patch")?.optJSONObject("captives")?.let { captives ->
+                val values = JSONObject()
+                listOf(
+                    "captiveRelease",
+                    "captiveReleaseBelowGrowth",
+                    "captivePersuade",
+                    "captivePersuadeGrowth"
+                ).filter(captives::has).forEach { key -> values.put(key, captives.opt(key)) }
+                configs.saveFeatureConfig(
+                    account.id,
+                    LocalSettingsConfigMapper.CAPTIVES,
+                    JSONObject().put("values", values)
+                )
+            }
         }
         val defeatPauseAcknowledgement = if (
             route == "/api/dungeon/execute" &&
@@ -977,7 +1006,7 @@ class LocalAssistantApiController(
                     taskStarted && supported,
                     !supported,
                     data.optString("reason").ifBlank { "当前没有可执行的已确认动作" },
-                    "账号启动后执行金银花种植"
+                    "账号启动后执行稻谷种植"
                 ))
             }
             "/api/lossless/execute" -> {
@@ -1389,8 +1418,26 @@ class LocalAssistantApiController(
                 items.put(entry)
             }
         }
+        // Blank/0 means the core could not read the limit.  A record without the
+        // trailer parser's version marker was written by an older build, whose
+        // "capacity" was an unrelated header counter (1863 on a real account):
+        // unknown as well, until the next bag refresh rewrites it.  The page
+        // then shows "上限未知" rather than "47/1863".
+        val trailerRead = extra["inventoryParserVersion"] == INVENTORY_PARSER_VERSION
+        val capacity = extra["inventoryCapacity"]?.toIntOrNull()?.takeIf { trailerRead && it > 0 }
+        // The server sends the stack count and the equipment count, never their
+        // sum; the core adds them.  Fall back to the rows we hold for records
+        // written before the core stored the sum.
+        val slotsUsed = extra["inventorySlotsUsed"]?.toIntOrNull()
+            ?: (items.length() + equipment.length())
         return JSONObject()
-            .put("capacity", extra["inventoryCapacity"]?.toIntOrNull() ?: JSONObject.NULL)
+            .put("capacity", capacity ?: JSONObject.NULL)
+            // Why the limit is missing, so the page can distinguish "not read
+            // yet by this build" from "unreadable"; the former resolves on the
+            // account's next bag refresh with no action from the user.
+            .put("capacityPending", !trailerRead && (items.length() + equipment.length()) > 0)
+            .put("slotsUsed", slotsUsed)
+            .put("slotsFree", capacity?.let { maxOf(0, it - slotsUsed) } ?: JSONObject.NULL)
             .put("itemCount", items.length())
             .put("items", items)
             .put("equipmentCount", equipment.length())
@@ -1781,7 +1828,11 @@ class LocalAssistantApiController(
                 when {
                     entry.message.containsAny("失败", "异常", "中止", "暂停", "未完成") ->
                         active[spec.key] = spec to entry
-                    entry.message.containsAny("完成", "成功", "重复", "已领取", "已做") ->
+                    // "已恢复运行" is the shared core's own edge line for leaving a
+                    // narrated pause ("打矿已暂停：…") and "隔离已解除" for an old
+                    // ledger it settled; both end the condition the notice was
+                    // raised for, even though no 完成/成功 line follows.
+                    entry.message.containsAny("完成", "成功", "重复", "已领取", "已做", "已恢复", "已解除") ->
                         active.remove(spec.key)
                 }
             }
@@ -1943,6 +1994,14 @@ class LocalAssistantApiController(
             )
         "/api/settings/save" -> when (body.optString("scope")) {
             "brush" -> "brushYellow" to !mapping.disabled
+            "common.frequent" -> body.optJSONObject("patch")
+                ?.optJSONObject("captives")
+                ?.let { captives ->
+                    "captives" to (
+                        captives.optBoolean("captiveRelease", false) ||
+                            captives.optBoolean("captivePersuade", false)
+                        )
+                }
             "common.alarm" -> {
                 val alarm = mapping.configs[LocalSettingsConfigMapper.ALARM]
                 "alarm" to (

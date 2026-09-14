@@ -1,0 +1,16 @@
+{
+ "source": "passive_pcap_hotspot_20260914_111430/live_analyzed/013",
+ "note": "查劝降费用：0x8233 铜125/金1",
+ "request": [
+  {
+   "opcode": 4659,
+   "payloadHex": "0000000000000c0820"
+  }
+ ],
+ "response": [
+  {
+   "opcode": 33331,
+   "payloadHex": "0000000000000000007d0000000000000001"
+  }
+ ]
+}

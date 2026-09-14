@@ -604,6 +604,46 @@ def parse_8104_equipment_records(
         return equipment, position, str(error)
 
 
+#: Largest bag the footer may plausibly declare; anything past it is a misread.
+_MAX_PLAUSIBLE_BAG_CAPACITY = 4096
+
+
+def parse_8104_footer(payload: bytes, offset: int) -> Dict[str, Any]:
+    """Read the trailer the original client keeps after the equipment bank.
+
+    The client's 0x8104 reader ends with ``readShort`` ×3 and ``readByte``;
+    the first short is what its 宝物 screen shows as the bag limit (``ev``,
+    "背包上限").  Two real captures from different accounts both end in
+    ``0032 01f4 000a 05`` - 50, 500, 10, 5 - and 50 is exactly the limit the
+    game displays for them.  The remaining values are kept raw and unnamed
+    rather than guessed at.
+
+    ``capacity`` is ``None`` when the trailer is missing or implausible, never
+    a number read from somewhere else: an unknown limit is displayable as
+    unknown, a wrong one is not.
+    """
+
+    tail = payload[offset:]
+    values: List[int] = []
+    position = 0
+    for _ in range(3):
+        if position + 2 > len(tail):
+            break
+        values.append(int.from_bytes(tail[position:position + 2], "big"))
+        position += 2
+    if position + 1 <= len(tail):
+        values.append(tail[position])
+    capacity = values[0] if values else None
+    if capacity is not None and not 0 < capacity <= _MAX_PLAUSIBLE_BAG_CAPACITY:
+        capacity = None
+    return {
+        "capacity": capacity,
+        "values": values,
+        "rawHex": tail.hex(),
+        "offset": offset,
+    }
+
+
 def parse_8104_inventory(
     payload: bytes,
     source_opcode: str = "0x1104/0x8104",
@@ -618,7 +658,13 @@ def parse_8104_inventory(
             "items": [],
             "parseError": f"0x8104 payload too short: {len(payload)}",
         }
-    capacity = int.from_bytes(payload[14:16], "big", signed=False)
+    # The original client opens this packet with readLong, readLong, readShort:
+    # two account-wide asset counters and then the stack count.  Bytes 14..16
+    # are therefore the low half of the second long, and reading them as the
+    # bag limit gave 1863 / 1386 / 1150 on three live accounts whose limit is
+    # 50.  The limit lives in the trailer; see :func:`parse_8104_footer`.
+    header_long1 = int.from_bytes(payload[0:8], "big", signed=False)
+    header_long2 = int.from_bytes(payload[8:16], "big", signed=False)
     item_count = int.from_bytes(payload[16:18], "big", signed=False)
     names = dict(item_names or DEFAULT_ITEM_NAMES)
     items = []
@@ -668,6 +714,14 @@ def parse_8104_inventory(
     if item_count > 0 and table_offset + table_length <= len(payload):
         fixed_rows = []
         fixed_valid = True
+        # Each row is u16 id, u16 count, then a per-stack long the original
+        # client reads as data (an expiry / unique id).  It is usually zero, so
+        # an earlier version of this parser required it to be - and any account
+        # holding one item that carried a value fell out of this branch into
+        # the scan fallback, which reports no equipment and no bag limit at
+        # all.  The row's own shape cannot prove the layout; what proves it is
+        # that the equipment bank and its trailer line up immediately after
+        # the table, so that is checked below instead.
         for index in range(item_count):
             offset = table_offset + index * 12
             item_id = int.from_bytes(
@@ -680,15 +734,30 @@ def parse_8104_inventory(
                 "big",
                 signed=False,
             )
-            reserved = payload[offset + 4:offset + 12]
-            if (
-                count <= 0
-                or count > 500000
-                or reserved != b"\x00" * 8
-            ):
+            if count <= 0 or count > 500000:
                 fixed_valid = False
                 break
             fixed_rows.append((offset, item_id, count))
+        equipment_table_offset = table_offset + table_length
+        equipment, v5_end, equipment_error = (
+            parse_8104_equipment_records(
+                payload,
+                equipment_table_offset,
+                equipment_templates,
+                quality_names,
+            )
+            if fixed_valid
+            else ([], equipment_table_offset, "跳过：道具表未通过校验")
+        )
+        if fixed_valid and equipment_error:
+            # The equipment bank did not line up.  Accept the table anyway
+            # only when every per-stack long is zero, which is the corroborating
+            # evidence the old check relied on; otherwise this is not the
+            # layout we think it is and the scan fallback is the honest answer.
+            fixed_valid = all(
+                payload[offset + 4:offset + 12] == b"\x00" * 8
+                for offset, _item_id, _count in fixed_rows
+            )
         if fixed_valid and (fixed_rows or item_count == 0):
             for offset, item_id, count in fixed_rows:
                 add_item(
@@ -698,21 +767,47 @@ def parse_8104_inventory(
                     "u16-id-u16-count-reserved8",
                     12,
                 )
-            equipment, v5_end, equipment_error = (
-                parse_8104_equipment_records(
-                    payload,
-                    table_offset + table_length,
-                    equipment_templates,
-                    quality_names,
+            # The server sends the two counts that make up bag occupancy - the
+            # stack count in the header and the equipment count that opens the
+            # equipment bank - but never their sum; the game client adds them
+            # for its "49/50".  Sum the declared counts, not the rows we
+            # happened to decode, so a template we cannot name still counts
+            # as the slot it occupies.
+            declared_equipment_count = (
+                int.from_bytes(
+                    payload[equipment_table_offset:equipment_table_offset + 2],
+                    "big",
+                    signed=False,
                 )
+                if equipment_table_offset + 2 <= len(payload)
+                else len(equipment)
             )
+            slots_used = item_count + declared_equipment_count
+            # A trailer read from the wrong offset is worse than no trailer:
+            # only trust it once every equipment record parsed cleanly.
+            footer = (
+                parse_8104_footer(payload, v5_end)
+                if not equipment_error
+                else {"capacity": None, "values": [], "rawHex": "", "offset": v5_end}
+            )
+            capacity = footer["capacity"]
             parsed: Dict[str, Any] = {
                 "sourceOpcode": source_opcode,
                 "capacity": capacity,
+                "slotsUsed": slots_used,
+                "slotsFree": (
+                    max(0, int(capacity) - slots_used)
+                    if capacity is not None
+                    else None
+                ),
+                "headerLong1": header_long1,
+                "headerLong2": header_long2,
                 "itemCount": item_count,
                 "items": items,
                 "equipmentCount": len(equipment),
+                "declaredEquipmentCount": declared_equipment_count,
                 "equipment": equipment,
+                "footer": footer,
                 "payloadByteCount": len(payload),
                 "parsedItemCount": len(items),
                 "dictionarySize": len(names),
@@ -787,9 +882,15 @@ def parse_8104_inventory(
             )
         if len(items) >= item_count:
             break
+    # The scan fallback cannot locate the equipment bank, so it cannot reach
+    # the trailer either; the limit and the occupancy are simply unknown here.
     parsed = {
         "sourceOpcode": source_opcode,
-        "capacity": capacity,
+        "capacity": None,
+        "slotsUsed": None,
+        "slotsFree": None,
+        "headerLong1": header_long1,
+        "headerLong2": header_long2,
         "itemCount": item_count,
         "items": items,
         "equipmentCount": 0,

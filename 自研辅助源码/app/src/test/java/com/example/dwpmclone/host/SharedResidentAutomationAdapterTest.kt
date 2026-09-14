@@ -141,7 +141,7 @@ class SharedResidentAutomationAdapterTest {
         assertTrue(configured)
         assertTrue(submitted)
         assertEquals(
-            listOf("mine", "lossless", "brush", "raid", "dungeon", "general", "ministry", "domestic", "inventory", "alarm", "daily"),
+            listOf("mine", "lossless", "brush", "raid", "dungeon", "general", "ministry", "captives", "domestic", "inventory", "alarm", "daily"),
             allowedFeatures
         )
         assertEquals("mine", result.feature)

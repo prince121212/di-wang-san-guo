@@ -296,6 +296,47 @@ class SharedUserLogNarrationTests(unittest.TestCase):
         self.assertIn("打矿", line, "the notice is matched by feature name")
         self.assertIn("失败", line, "and raised by this word")
 
+    def test_a_full_resource_point_cap_is_a_decision_announced_at_once(
+        self,
+    ) -> None:
+        """打矿 at the server's resource-point cap is a stop, not a sample.
+
+        The count is a server fact refreshed by the session probe, so it does
+        not flap the way "no targets in this scan" does: it is announced the
+        moment it is reached (no persistence wait), holds silently through the
+        one-minute rechecks, and resuming says so once.
+        """
+
+        self.facade._save_resident_automation_state(  # noqa: SLF001
+            "176",
+            {"mine": {
+                "lastState": "capacity-full",
+                "lastMessage": "资源点数量已满(5/5)，等待矿点数量回落后自动继续",
+            }},
+        )
+        for _ in range(3):
+            self.clock.advance(60_000)
+            self.facade._save_resident_automation_state(  # noqa: SLF001
+                "176",
+                {"mine": {
+                    "lastState": "capacity-full",
+                    "lastMessage": "资源点数量已满(5/5)，等待矿点数量回落后自动继续",
+                }},
+            )
+        self.facade._save_resident_automation_state(  # noqa: SLF001
+            "176",
+            {"mine": {"lastState": "dispatched", "lastMessage": "出征已确认"}},
+        )
+
+        self.assertEqual(
+            [
+                "打矿已暂停：资源点数量已满(5/5)，等待矿点数量回落后自动继续",
+                "打矿已恢复运行",
+            ],
+            self.logs.user_messages(),
+        )
+        self.assertIn("暂停", self.logs.user_messages()[0], "raised on the 提示 page")
+
     def test_a_machine_event_carries_no_user_audience(self) -> None:
         self.facade._publish_operation_event(  # noqa: SLF001
             {

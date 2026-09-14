@@ -34,6 +34,7 @@ from .features.lossless import (
     lossless_level_number,
 )
 from .features.ministries import (
+    ministry_courtesy_allowed,
     ministry_planting_allowed,
     normalize_ministry_settings,
     unconfirmed_ministry_actions,
@@ -373,7 +374,9 @@ def _ministry_write_plan(
     if not isinstance(raw_settings, dict):
         raise ValueError("六部保存缺少 settings")
     settings = normalize_ministry_settings({"settings": raw_settings})
-    supported = ministry_planting_allowed(settings)
+    planting_supported = ministry_planting_allowed(settings)
+    courtesy_supported = ministry_courtesy_allowed(settings)
+    supported = planting_supported or courtesy_supported
     requested = any(
         settings.get(key)
         for key in (
@@ -389,14 +392,19 @@ def _ministry_write_plan(
         "supportedEnabled": supported,
         "requested": requested,
     }
+    verified = []
+    if planting_supported:
+        verified.append("稻谷种植采摘")
+    if courtesy_supported:
+        verified.append("礼部任务委派")
     if not requested:
         reason = "六部任务已关闭"
     elif supported:
-        reason = "六部设置已保存，由账号任务队列执行金银花种植"
+        reason = f"六部设置已保存，由账号任务队列执行{'、'.join(verified)}"
     elif settings.get("cropEnabled"):
         reason = f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送"
     else:
-        reason = "种菜收菜未开启；偷菜、礼部和俸禄刷新协议尚未完整确认，当前不发送"
+        reason = "种菜收菜和礼部未开启；偷菜和俸禄刷新协议尚未完整确认，当前不发送"
     return {
         "route": route,
         "configs": {"six_ministries": config},

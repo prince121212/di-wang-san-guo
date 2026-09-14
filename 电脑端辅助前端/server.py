@@ -263,11 +263,15 @@ from dwpm_core.features.internal_affairs import (
     parse_technology_states_from_8004 as shared_parse_technology_states_from_8004,
     should_continue_filling_build_queues as shared_should_continue_filling_build_queues,
 )
+from dwpm_core.features.captives import (
+    normalize_captive_policy as shared_normalize_captive_policy,
+)
 from dwpm_core.features.ministries import (
     MINISTRY_CROP_OPTIONS as SHARED_MINISTRY_CROP_OPTIONS,
     VERIFIED_MINISTRY_CROP as SHARED_VERIFIED_MINISTRY_CROP,
     build_hubu_batch_plant_payload as shared_build_hubu_batch_plant_payload,
     build_hubu_status_query_payload as shared_build_hubu_status_query_payload,
+    ministry_courtesy_allowed as shared_ministry_courtesy_allowed,
     ministry_planting_allowed as shared_ministry_planting_allowed,
     normalize_ministry_settings as shared_normalize_ministry_settings,
     parse_hubu_plant_response as shared_parse_hubu_plant_response,
@@ -6166,6 +6170,7 @@ def load_account_settings_payload(
             "raid": military_payload.get("raid") if isinstance(military_payload, dict) else None,
             "mine": military_payload.get("mine") if isinstance(military_payload, dict) else None,
             "ministry": None,
+            "captives": None,
             "militaryFuture": military_payload.get("militaryFuture") if isinstance(military_payload, dict) else {},
         }
         database_save_account_habits(account_key, payload)
@@ -6182,6 +6187,7 @@ def load_account_habits(sess: dict[str, Any]) -> dict[str, Any]:
     raid = payload.get("raid")
     mine = payload.get("mine")
     ministry = payload.get("ministry")
+    captives = payload.get("captives")
     military_future = payload.get("militaryFuture")
     if isinstance(config, dict):
         config = dict(config)
@@ -6197,6 +6203,7 @@ def load_account_habits(sess: dict[str, Any]) -> dict[str, Any]:
         "raid": raid if isinstance(raid, dict) else None,
         "mine": mine if isinstance(mine, dict) else None,
         "ministry": ministry if isinstance(ministry, dict) else None,
+        "captives": captives if isinstance(captives, dict) else None,
         "militaryFuture": military_future if isinstance(military_future, dict) else {},
     }
 
@@ -6232,6 +6239,7 @@ def save_account_habits(
     raid: dict[str, Any] | None = None,
     mine: dict[str, Any] | None = None,
     ministry: dict[str, Any] | None = None,
+    captives: dict[str, Any] | None = None,
     military_future: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     saved: dict[str, str] = {}
@@ -6251,6 +6259,8 @@ def save_account_habits(
             payload["mine"] = mine
         if ministry is not None:
             payload["ministry"] = ministry
+        if captives is not None:
+            payload["captives"] = captives
         if military_future is not None:
             old_future = payload.get("militaryFuture") if isinstance(payload.get("militaryFuture"), dict) else {}
             next_future = dict(old_future or {})
@@ -6274,6 +6284,8 @@ def save_account_habits(
         saved["militaryFile"] = sqlite_uri
     if ministry is not None:
         saved["ministryFile"] = sqlite_uri
+    if captives is not None:
+        saved["captivesFile"] = sqlite_uri
     saved["settingsFile"] = sqlite_uri
     return saved
 
@@ -11824,6 +11836,8 @@ def _desktop_active_shared_resident_keys(session_id: str) -> list[str]:
             keys.add("general")
         if task_type == "auto-ministry":
             keys.add("ministry")
+        if task_type == "auto-captives":
+            keys.add("captives")
         if task_type in {"auto-domestic", "auto-technology"}:
             keys.add("domestic")
         if task_type == "auto-inventory":
@@ -11874,6 +11888,7 @@ def _shared_resident_pending(session_id: str) -> bool:
             "dungeonPendingRunJson",
             "generalMaintenancePendingJson",
             "ministryPendingPlantJson",
+            "captivesPendingActionJson",
             "domesticPendingActionJson",
             "inventoryPendingActionJson",
             "alarmPendingEventsJson",
@@ -11902,6 +11917,7 @@ def _shared_resident_pending_features(
         ("dungeonPendingRunJson", "dungeon"),
         ("generalMaintenancePendingJson", "general"),
         ("ministryPendingPlantJson", "ministry"),
+        ("captivesPendingActionJson", "captives"),
         ("domesticPendingActionJson", "domestic"),
         ("inventoryPendingActionJson", "inventory"),
     )
@@ -11953,7 +11969,8 @@ def execute_shared_resident_automation_tick(
             if allowed_features is not None
             else [
                 "mine", "lossless", "brush", "raid", "dungeon",
-                "general", "ministry", "domestic", "inventory", "alarm", "daily",
+                "general", "ministry", "captives", "domestic", "inventory",
+                "alarm", "daily",
             ]
         ),
         "configuredExecutionAllowed": bool(configured_execution_allowed),
@@ -29267,6 +29284,7 @@ TASK_NOTICE_DISPLAY = {
     "raid": ("raid", "掠夺"),
     "auto-general": ("general", "将领维护"),
     "auto-ministry": ("ministry", "六部"),
+    "auto-captives": ("captives", "俘虏营"),
     "apply-formations": ("formations", "配兵"),
     "auto-domestic": ("autoDomestic", "自动内政"),
     "auto-technology": ("autoTechnology", "升级科技"),
@@ -30810,6 +30828,7 @@ AUTO_TASK_OVERVIEW_KEYS = {
     "raid": "raid",
     "auto-general": "general",
     "auto-ministry": "ministry",
+    "auto-captives": "captives",
     "auto-domestic": "domestic",
     "auto-technology": "domestic",
     "auto-inventory": "inventory",
@@ -30831,6 +30850,7 @@ TASK_STACK_TYPE_META = {
     "auto-mine": ("mine", "打矿", "resident"),
     "attack-mine": ("mine", "打矿", "resident"),
     "auto-ministry": ("ministry", "六部", "resident"),
+    "auto-captives": ("captives", "俘虏营", "resident"),
     "raid": ("raid", "掠夺", "resident"),
     "auto-general": ("general", "将领维护", "resident"),
     "auto-domestic": ("domestic", "自动内政", "resident"),
@@ -31504,7 +31524,7 @@ def important_notice_advice(notice_key: str) -> str:
         return "检查账号在线状态、军情读取和警报配置；该任务不依赖将领体力。"
     if key in {
         "task:mine", "task:raid", "task:lossless", "task:dungeon",
-        "task:formations", "task:ministry",
+        "task:formations", "task:ministry", "task:captives",
         "task:autoDomestic", "task:autoTechnology",
     }:
         return "根据原因检查将领状态、配兵和任务配置，修正后重新启动该任务。"
@@ -34313,7 +34333,7 @@ def auto_brush_worker(task_id: str) -> None:
                     },
                 )
             if feature in {
-                "ministry", "general", "domestic", "inventory",
+                "ministry", "general", "domestic", "inventory", "captives",
             } and state == "completed":
                 if result_task is not None:
                     result_task["cycle"] = (
@@ -34326,6 +34346,7 @@ def auto_brush_worker(task_id: str) -> None:
                         "general": "将领维护",
                         "domestic": "自动内政",
                         "inventory": "背包整理",
+                        "captives": "俘虏营",
                     }[feature],
                     message,
                     detail={
@@ -34969,6 +34990,12 @@ def auto_ministry_worker(task_id: str) -> None:
     auto_brush_worker(task_id)
 
 
+def auto_captives_worker(task_id: str) -> None:
+    """Captives timing and persuade/release decisions use the shared Python tick."""
+
+    auto_brush_worker(task_id)
+
+
 def desktop_general_resident_settings(
     common: dict[str, Any],
 ) -> dict[str, Any]:
@@ -35206,20 +35233,22 @@ def start_auto_ministry(
         "auto-ministry",
         "收到新的六部设置，停止旧六部任务",
     )
-    if not settings.get("cropEnabled"):
+    planting_allowed = bool(
+        settings.get("cropEnabled")
+    ) and shared_ministry_planting_allowed(settings)
+    courtesy_allowed = shared_ministry_courtesy_allowed(settings)
+    if not planting_allowed and not courtesy_allowed:
         return {
             "started": False,
             "disabled": not any(
                 settings.get(key)
-                for key in ("stealEnabled", "courtesyEnabled")
+                for key in ("cropEnabled", "stealEnabled", "courtesyEnabled")
             ),
-            "reason": "种菜收菜未开启；偷菜和礼部动作协议尚未完整确认，当前不发送",
-        }
-    if not shared_ministry_planting_allowed(settings):
-        return {
-            "started": False,
-            "disabled": False,
-            "reason": f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送",
+            "reason": (
+                f"{settings.get('crop')}协议尚未确认；配置已保存但不会发送"
+                if settings.get("cropEnabled")
+                else "种菜收菜和礼部未开启；偷菜和俸禄刷新协议尚未完整确认，当前不发送"
+            ),
         }
     task_id = uuid4().hex[:12]
     config = {**settings, "sessionId": sid}
@@ -35242,6 +35271,56 @@ def start_auto_ministry(
     }
     thread = threading.Thread(
         target=auto_ministry_worker,
+        args=(task_id,),
+        daemon=True,
+    )
+    task["thread"] = thread
+    with TASK_LOCK:
+        AUTO_TASKS[task_id] = task
+    thread.start()
+    return {"started": True, "task": task_public(task)}
+
+
+def start_auto_captives(
+    sess: dict[str, Any],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    sid = str(sess.get("sessionId") or "")
+    request_stop_tasks_for_session_type(
+        sid,
+        "auto-captives",
+        "收到新的俘虏营设置，停止旧唤醒任务",
+    )
+    policy = shared_normalize_captive_policy(settings)
+    if not (policy["releaseEnabled"] or policy["persuadeEnabled"]):
+        return {
+            "started": False,
+            "disabled": True,
+            "reason": "俘虏释放和劝降均未开启",
+        }
+    task_id = uuid4().hex[:12]
+    config = {**settings, "sessionId": sid}
+    task = {
+        "taskId": task_id,
+        "type": "auto-captives",
+        "sessionId": sid,
+        "status": "starting",
+        "cycle": 0,
+        "createdAt": now_ms(),
+        "updatedAt": now_ms(),
+        "config": config,
+        "logs": [],
+        "stopEvent": threading.Event(),
+        "schedulerState": "checking",
+        "schedulerRunnable": True,
+        # The behavior contract pins ten ranked residents; the shared core
+        # falls back to priority 0 for captives, and so does the display row.
+        "schedulerPriority": RESIDENT_TASK_PRIORITIES.get("captives", 0),
+        "schedulerGeneralIds": [],
+        "schedulerMessage": "等待执行俘虏营任务",
+    }
+    thread = threading.Thread(
+        target=auto_captives_worker,
         args=(task_id,),
         daemon=True,
     )
@@ -35417,6 +35496,15 @@ def resume_saved_resident_tasks(sess: dict[str, Any]) -> dict[str, Any]:
                 resumed["ministry"] = ministry_start
     except Exception as e:
         errors["ministry"] = str(e)
+
+    saved_captives = habits.get("captives") if isinstance(habits.get("captives"), dict) else {}
+    try:
+        if saved_captives:
+            captives_start = start_auto_captives(sess, saved_captives)
+            if captives_start.get("started"):
+                resumed["captives"] = captives_start
+    except Exception as e:
+        errors["captives"] = str(e)
 
     if resumed:
         account_log(
@@ -36147,6 +36235,8 @@ def mobile_patch_settings(
         save_account_habits(sess, mine=dict(patch or {}))
     elif scope == "ministry":
         save_account_habits(sess, ministry=dict(patch or {}))
+    elif scope == "captives":
+        save_account_habits(sess, captives=dict(patch or {}))
     elif scope == "militaryFuture":
         save_account_habits(sess, military_future=dict(patch or {}))
     else:
@@ -38634,6 +38724,9 @@ class Handler(SimpleHTTPRequestHandler):
                 domestic_scope_saved = (
                     not scoped_save or scope == "common.frequent"
                 )
+                captives_scope_saved = (
+                    not scoped_save or scope == "common.frequent"
+                )
                 inventory_scope_saved = (
                     not scoped_save or scope == "common.items"
                 )
@@ -38664,6 +38757,27 @@ class Handler(SimpleHTTPRequestHandler):
                 change_summary = settings_change_summary(sess, old_cfg, cfg)
                 SAVED_CONFIGS[sess["sessionId"]] = cfg
                 saved_files = save_account_habits(sess, config=cfg)
+                # 俘虏营设置不进共享 config 白名单，同六部一样落在 habits 独立段。
+                captives_patch = (
+                    (body.get("patch") or {}).get("captives")
+                    if captives_scope_saved and isinstance(body.get("patch"), dict)
+                    else None
+                )
+                captives_settings: dict[str, Any] | None = None
+                if isinstance(captives_patch, dict):
+                    captives_settings = {
+                        key: captives_patch[key]
+                        for key in (
+                            "captiveRelease",
+                            "captiveReleaseBelowGrowth",
+                            "captivePersuade",
+                            "captivePersuadeGrowth",
+                        )
+                        if key in captives_patch
+                    }
+                    saved_files.update(
+                        save_account_habits(sess, captives=captives_settings)
+                    )
                 persist_runtime_state()
                 if brush_scope_saved:
                     resolve_brush_high_level_troops_notices(sess)
@@ -38853,6 +38967,49 @@ class Handler(SimpleHTTPRequestHandler):
                         "skipped": True,
                         "reason": "本次没有修改将领维护设置",
                     }
+                if captives_settings is not None:
+                    captives_enabled = bool(
+                        shared_normalize_captive_policy(captives_settings)[
+                            "releaseEnabled"
+                        ]
+                        or shared_normalize_captive_policy(captives_settings)[
+                            "persuadeEnabled"
+                        ]
+                    )
+                    if captives_enabled and sess.get("savedTasksStarted"):
+                        try:
+                            captives_task = start_auto_captives(
+                                sess, captives_settings
+                            )
+                        except Exception as exc:
+                            captives_task = {
+                                "started": False,
+                                "activationError": str(exc),
+                                "reason": "设置已保存，俘虏营启动失败",
+                            }
+                    elif captives_enabled:
+                        captives_task = {
+                            "started": False,
+                            "waitingForAccountStart": True,
+                            "reason": "设置已保存，等待用户开始执行任务",
+                        }
+                    else:
+                        captives_task = {
+                            "started": False,
+                            "disabled": True,
+                            "stoppedTaskIds": request_stop_tasks_for_session_type(
+                                sess["sessionId"],
+                                "auto-captives",
+                                "俘虏释放和劝降均已关闭，停止旧唤醒任务",
+                            ),
+                            "reason": "俘虏释放和劝降均未开启",
+                        }
+                else:
+                    captives_task = {
+                        "started": False,
+                        "skipped": True,
+                        "reason": "本次没有修改俘虏营设置",
+                    }
                 alarm_config = (
                     dict(cfg.get("alarm") or {})
                     if alarm_scope_saved and isinstance(cfg.get("alarm"), dict)
@@ -38955,6 +39112,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "domesticTask": domestic_task,
                     "technologyTask": technology_task,
                     "generalTask": general_task,
+                    "captivesTask": captives_task,
                     "alarmTask": alarm_task,
                     "settingsWarnings": settings_warnings,
                     "residentAutomationSync": resident_automation_sync,

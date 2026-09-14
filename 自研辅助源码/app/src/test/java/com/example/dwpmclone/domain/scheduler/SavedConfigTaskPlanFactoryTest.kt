@@ -465,7 +465,7 @@ class SavedConfigTaskPlanFactoryTest {
     fun savedSixMinistriesConfigCreatesVerifiedBackgroundTask() {
         val values = JSONObject()
             .put("cropEnabled", true)
-            .put("crop", "金银花")
+            .put("crop", "稻谷")
             .put("highPriority", false)
             .put("stealEnabled", true)
             .put("courtesyEnabled", false)

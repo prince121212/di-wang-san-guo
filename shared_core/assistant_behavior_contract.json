@@ -37,6 +37,7 @@
     "ministryPollMillis": 600000,
     "generalMaintenancePollMillis": 600000,
     "energyShortageFormationPauseMillis": 1800000,
+    "troopShortageFormationPauseMillis": 1800000,
     "domesticPollMillis": 600000,
     "inventoryPollMillis": 3600000,
     "inventoryActionDelayMillis": 1000,
@@ -330,7 +331,8 @@
       "formationShortageRetryMillis": 60000,
       "mapPreparationIdlePauseMillis": 2000,
       "settlementFullRefreshMillis": 30000,
-      "settlementRecheckGraceMillis": 300000
+      "settlementRecheckGraceMillis": 300000,
+      "dispatchUncertainAutoSettleGraceMillis": 1800000
     }
   },
   "mine": {
@@ -372,7 +374,8 @@
       "garrisonPollMillis": 10000,
       "missingMilitaryGraceMillis": 120000,
       "settlementTimeoutMillis": 14400000,
-      "postCycleSleepMillis": 30000
+      "postCycleSleepMillis": 30000,
+      "resourceCapacityFullRetryMillis": 60000
     },
     "speed": {
       "requestOpcode": "0x1524",
@@ -655,13 +658,24 @@
     "technologyCostsComeFromLiveGameState": true
   },
   "sixMinistries": {
-    "verifiedCrop": "金银花",
+    "verifiedCrop": "稻谷",
     "onlyVerifiedPlantingMaySend": true,
-    "unconfirmedHarvestStealAndCourtesyMustNotSend": true,
+    "verifiedCourtesyDelegateMaySend": true,
+    "unconfirmedStealAndSalaryRefreshMustNotSend": true,
     "statusRequestOpcode": "0x6320",
     "statusResponseOpcode": "0xe320",
+    "harvestRequestOpcode": "0x6324",
+    "harvestResponseOpcode": "0xe324",
     "plantRequestOpcode": "0x6328",
-    "plantResponseOpcode": "0xe328"
+    "plantResponseOpcode": "0xe328",
+    "courtesyTaskListRequestOpcode": "0x6340",
+    "courtesyTaskListResponseOpcode": "0xe340",
+    "courtesyDelegateRequestOpcode": "0x6342",
+    "courtesyDelegateResponseOpcode": "0xe342",
+    "courtesyOfficialsRequestOpcode": "0x6301",
+    "courtesyOfficialsResponseOpcode": "0xe301",
+    "courtesyMaxDelegationsPerTick": 1,
+    "plantPoolCostPerPlot": 100
   },
   "brushCenter": {
     "source": "loginOwnedFiefCoordinateCache",

@@ -476,6 +476,54 @@ class SharedAutomationRecoveryWorkflowTests(unittest.TestCase):
             facade.close()
             directory.cleanup()
 
+    def test_isolated_uncertain_dispatch_reenters_and_settles_itself(self):
+        """刷黄 01:31 的真实形状：sendState=sending + requiresAttention。
+
+        The gate used to strand exactly this record forever - the probe saw
+        an ambiguous formal send and refused re-entry, so the adjudicator
+        added in this change could never run.  With an accepted preflight
+        the workflow only reads state, so the pending must come back in and
+        settle itself once the grace has passed.
+        """
+
+        facade, clock, directory = self._facade()
+        try:
+            pending = self._uncertain_dispatch_pending(
+                clock,
+                createdAtMillis=clock.value - 31 * 60_000,
+                sendingAtMillis=clock.value - 31 * 60_000,
+                blockedAtMillis=clock.value - 30 * 60_000,
+                isolatedAtMillis=clock.value - 30 * 60_000,
+            )
+            facade._update_account_public_state(  # noqa: SLF001
+                "202",
+                {"brushPendingRecoveryJson": json.dumps(pending, ensure_ascii=False)},
+            )
+            facade._fresh_formation_state = types.MethodType(  # noqa: SLF001
+                lambda _self, *_args, **_kwargs: (
+                    "00",
+                    [self._general(1, 0), self._general(2, 0)],
+                    [],
+                ),
+                facade,
+            )
+            result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                FakeExecution(),
+                "202",
+                {
+                    "allowedFeatures": ["brush", "inventory"],
+                    "configuredExecutionAllowed": True,
+                },
+            )
+            self.assertEqual(result["feature"], "brushYellow", result)
+            self.assertEqual(result["state"], "reconciled", result)
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            self.assertEqual(public["brushPendingRecoveryJson"], "{}")
+        finally:
+            facade.close()
+            directory.cleanup()
+
     def test_pending_known_failure_returns_feature_scoped_result(self) -> None:
         facade, clock, directory = self._facade()
         try:
@@ -827,6 +875,194 @@ class SharedAutomationRecoveryWorkflowTests(unittest.TestCase):
                 reconciliation["maintenanceAttempt"]["state"],
                 "completed",
             )
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def _uncertain_dispatch_pending(self, clock, **overrides):
+        pending = {
+            "generalIds": [1, 2],
+            "formationId": 1,
+            "targetId": 99,
+            "targetX": 86,
+            "targetY": 29,
+            "createdAtMillis": clock.value - 60_000,
+            "sendingAtMillis": clock.value - 60_000,
+            "preDispatchMutationState": "accepted",
+            "preDispatchRequestMetadata": {
+                "feature": "troop-heal",
+                "opcode": "0x1230",
+            },
+            "dispatchRequestMetadata": {
+                "feature": "brush-execute",
+                "opcode": "0x1520",
+                "phase": "prepare",
+            },
+            "sendState": "sending",
+            "requiresAttention": True,
+        }
+        pending.update(overrides)
+        return pending
+
+    def _run_recovery_with_generals(self, facade, pending, generals):
+        facade._update_account_public_state(  # noqa: SLF001
+            "202",
+            {"brushPendingRecoveryJson": json.dumps(pending, ensure_ascii=False)},
+        )
+        facade._fresh_formation_state = types.MethodType(  # noqa: SLF001
+            lambda _self, *_args, **_kwargs: ("00", generals, []),
+            facade,
+        )
+        return facade._run_brush_recovery_game_workflow(  # noqa: SLF001
+            FakeExecution(), "202", pending, {}
+        )
+
+    def test_uncertain_dispatch_waits_out_the_grace_before_settling(self):
+        facade, clock, directory = self._facade()
+        try:
+            pending = self._uncertain_dispatch_pending(clock)
+            result = self._run_recovery_with_generals(
+                facade,
+                pending,
+                [
+                    self._general(1, 0),
+                    self._general(2, 0),
+                ],
+            )
+            self.assertEqual(result["state"], "waiting")
+            self.assertFalse(result["requiresAttention"])
+            # 宽限期 30 分钟，从发送时刻起算，而不是从观察时刻起算。
+            self.assertEqual(
+                result["nextWakeAtMillis"],
+                pending["sendingAtMillis"] + 1_800_000,
+            )
+            self.assertIn("自动结清", result["message"])
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            kept = json.loads(public["brushPendingRecoveryJson"])
+            self.assertEqual(kept["lastDecision"], "wait-auto-settle-grace")
+            self.assertFalse(kept["requiresAttention"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_aged_uncertain_dispatch_with_all_generals_idle_auto_settles(
+        self,
+    ):
+        facade, clock, directory = self._facade()
+        try:
+            pending = self._uncertain_dispatch_pending(
+                clock,
+                createdAtMillis=clock.value - 31 * 60_000,
+                sendingAtMillis=clock.value - 31 * 60_000,
+            )
+            result = self._run_recovery_with_generals(
+                facade,
+                pending,
+                [
+                    self._general(1, 0),
+                    self._general(2, 0),
+                ],
+            )
+            self.assertEqual(result["state"], "reconciled")
+            self.assertTrue(result["success"])
+            self.assertFalse(result["requiresAttention"])
+            self.assertEqual(
+                result["nextWakeAtMillis"], clock.value + 10_000
+            )
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            self.assertEqual(public["brushPendingRecoveryJson"], "{}")
+            archived = json.loads(public["brushLastReconciliationJson"])
+            self.assertEqual(
+                archived["reconciliationReason"],
+                "auto-aged-uncertain-dispatch-and-all-idle",
+            )
+            self.assertFalse(archived["requiresAttention"])
+            self.assertEqual(
+                archived["reconciliationEvidence"]["idleGeneralIds"], [1, 2]
+            )
+            state = json.loads(public["residentAutomationStateJson"])
+            self.assertTrue(state["brush"]["skipHealOnce"])
+            self.assertEqual(
+                state["brush"]["skipHealReason"],
+                "auto-reconciled-uncertain-dispatch",
+            )
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_aged_uncertain_dispatch_with_busy_general_keeps_watching(self):
+        facade, clock, directory = self._facade()
+        try:
+            pending = self._uncertain_dispatch_pending(
+                clock,
+                createdAtMillis=clock.value - 31 * 60_000,
+                sendingAtMillis=clock.value - 31 * 60_000,
+            )
+            result = self._run_recovery_with_generals(
+                facade,
+                pending,
+                [
+                    self._general(1, 6),  # 仍在行军/战斗
+                    self._general(2, 0),
+                ],
+            )
+            self.assertEqual(result["state"], "waiting")
+            self.assertFalse(result["requiresAttention"])
+            self.assertIn("等待回闲后自动结清", result["message"])
+            self.assertEqual(result["nextWakeAtMillis"], clock.value + 30_000)
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            kept = json.loads(public["brushPendingRecoveryJson"])
+            self.assertEqual(kept["lastDecision"], "wait-auto-settle-busy")
+            self.assertFalse(kept["requiresAttention"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_uncertain_dispatch_with_missing_general_still_blocks(self):
+        facade, clock, directory = self._facade()
+        try:
+            pending = self._uncertain_dispatch_pending(
+                clock,
+                createdAtMillis=clock.value - 31 * 60_000,
+                sendingAtMillis=clock.value - 31 * 60_000,
+            )
+            result = self._run_recovery_with_generals(
+                facade,
+                pending,
+                [self._general(1, 0)],  # 将领2不在最新状态里，无法裁决
+            )
+            self.assertEqual(result["state"], "blocked")
+            self.assertTrue(result["requiresAttention"])
+            self.assertIn("禁止自动重做", result["message"])
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            self.assertNotEqual(public["brushPendingRecoveryJson"], "{}")
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_auto_settle_does_not_apply_to_uncertain_heal(self):
+        facade, clock, directory = self._facade()
+        try:
+            pending = self._uncertain_dispatch_pending(
+                clock,
+                createdAtMillis=clock.value - 31 * 60_000,
+                sendingAtMillis=clock.value - 31 * 60_000,
+                preDispatchMutationState="sending",
+            )
+            result = self._run_recovery_with_generals(
+                facade,
+                pending,
+                [
+                    self._general(1, 0),
+                    self._general(2, 0),
+                ],
+            )
+            self.assertEqual(result["state"], "blocked")
+            self.assertTrue(result["requiresAttention"])
         finally:
             facade.close()
             directory.cleanup()

@@ -3680,8 +3680,35 @@ body.mobile-local-mode .modal-card label.credential-consent-row { display: grid;
 }
 .treasure-count {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
   color: #58616a;
   font-size: 20px;
+}
+.treasure-slots {
+  padding: 2px 12px;
+  border: 2px solid #3f87d7;
+  border-radius: 6px;
+  color: #2d6fbf;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.treasure-slots.is-full {
+  border-color: #e8515b;
+  color: #c93a44;
+}
+.treasure-table .treasure-section td {
+  background: #f3f5f7;
+  color: #3b4650;
+  font-weight: 600;
+  text-align: left;
+}
+.treasure-equip-meta {
+  margin-left: 8px;
+  color: #7a838c;
+  font-size: 0.85em;
 }
 .treasure-table-scroll {
   max-height: min(62vh, 680px);
@@ -4293,6 +4320,9 @@ body.mobile-local-mode .modal-card label.credential-consent-row { display: grid;
 .enabled-text.status-offline { color: #b9bec5; font-weight: 700; }
 .enabled-text.status-stopped { color: #d6d6d6; font-weight: 700; }
 .enabled-text.status-checking { color: #f2bf58; font-weight: 700; }
+/* Logged in, but the saved tasks have not been started: not a fault, and not
+   the green that reads as "everything is running" either. */
+.enabled-text.status-tasks-idle { color: #f2bf58; font-weight: 700; }
 .server-input option.offline-option { color: #888; }
 
 /* 设计图还原：未接入真实动作的配置页也使用真实可交互控件 */

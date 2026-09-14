@@ -107,6 +107,8 @@ class AssistantForegroundService : Service() {
         Thread(runnable, "assistant-scheduler").apply { isDaemon = true }
     }
     private var wakeLock: PowerManager.WakeLock? = null
+    /** When the held lock's platform timeout fires; 0 when no lock is held. */
+    private var wakeLockExpiresAtElapsedMillis = 0L
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var running = false
@@ -532,15 +534,45 @@ class AssistantForegroundService : Service() {
     @android.annotation.SuppressLint("WakelockTimeout")
     private fun acquireWakeLock(timeoutMillis: Long = TICK_WAKELOCK_TIMEOUT_MILLIS) {
         if (wakeLock?.isHeld == true) return
+        val bounded = timeoutMillis.coerceIn(1_000L, MAX_TICK_WAKELOCK_TIMEOUT_MILLIS)
         val pm = getSystemService(PowerManager::class.java)
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dwpmclone:assistant_keepalive").apply {
             setReferenceCounted(false)
-            // A wake lock is a short execution lease, not a process-lifetime
-            // keepalive. Holding it continuously makes OEM CPU cleaners more
-            // likely to classify this process as an active background worker.
-            acquire(timeoutMillis.coerceIn(1_000L, MAX_TICK_WAKELOCK_TIMEOUT_MILLIS))
+            // A wake lock is a bounded lease: it covers a tick, an operation
+            // still executing, or a deadline the scheduler has named, and
+            // expires on its own if this process forgets to release it.
+            acquire(bounded)
         }
+        wakeLockExpiresAtElapsedMillis = SystemClock.elapsedRealtime() + bounded
         logs.append("wakelock acquired for scheduler window", tag = "keepalive")
+    }
+
+    /**
+     * Extend the lease without ever passing through a released state, and
+     * never shorten it.
+     *
+     * In deep Doze the kernel suspends within the same millisecond the last
+     * wake lock is dropped, so a release-then-acquire renew left a window in
+     * which the device slept mid-operation (device log: `released reason=renew`
+     * at 09:24:16, matching `acquired` only at 09:25:50 when the alarm fired).
+     * A non-reference-counted lock re-arms its timeout on a repeated acquire,
+     * which is exactly the primitive a renew needs; taking the longer of the
+     * current and requested expiry keeps every reason for holding the CPU
+     * satisfied at once.
+     */
+    @android.annotation.SuppressLint("WakelockTimeout")
+    private fun renewWakeLock(timeoutMillis: Long) {
+        val bounded = timeoutMillis.coerceIn(1_000L, MAX_TICK_WAKELOCK_TIMEOUT_MILLIS)
+        val held = wakeLock
+        if (held?.isHeld != true) {
+            acquireWakeLock(bounded)
+            return
+        }
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val remaining = wakeLockExpiresAtElapsedMillis - nowElapsed
+        if (remaining >= bounded) return
+        held.acquire(bounded)
+        wakeLockExpiresAtElapsedMillis = nowElapsed + bounded
     }
 
     private fun releaseWakeLock(reason: String = "scheduler window finished") {
@@ -548,31 +580,60 @@ class AssistantForegroundService : Service() {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         }
         wakeLock = null
+        wakeLockExpiresAtElapsedMillis = 0L
         logs.append("wakelock released reason=$reason", tag = "keepalive")
     }
 
     /**
-     * Keep the CPU awake only for the bounded hand-over window in which a
-     * shared Python operation is known to still be executing.  Business state
-     * and replay safety remain owned by the durable operation ledger.
+     * Keep the CPU awake for two bounded reasons only: a shared Python
+     * operation is known to still be executing, or the scheduler has already
+     * declared that the next tick is imminent.  Business state and replay
+     * safety remain owned by the durable operation ledger.
+     *
+     * @param nextDelayMillis the gap the scheduler chose before the next tick,
+     *   or null when no follow-up tick will be scheduled.
      */
-    private fun finishSchedulerWakeWindow() {
+    private fun finishSchedulerWakeWindow(nextDelayMillis: Long?) {
         val nowElapsed = SystemClock.elapsedRealtime()
         val lease = pendingOperationWakeLease.snapshot(nowElapsed)
+        // Two independent reasons keep the CPU: an operation still executing,
+        // and a deadline the scheduler has named.  Either one suffices; the
+        // lease is the longer of what the two ask for.  The Handler only fires
+        // while the CPU is awake, and the alarm behind it is Doze-deferred by
+        // minutes, so a named deadline handed to the alarm is a missed deadline.
+        val tickHoldMillis = nextDelayMillis
+            ?.takeIf { SchedulerTickPolicy.shouldHoldWakeLockAcross(it) }
+            ?.let { SchedulerTickPolicy.wakeHoldTimeoutMillis(it) }
         when {
             lease.active -> {
                 val remaining = ((lease.deadlineElapsedMillis ?: nowElapsed) - nowElapsed)
                     .coerceAtLeast(1_000L)
-                // Re-acquiring renews the platform timeout only up to the
-                // original per-operation hard deadline.
-                releaseWakeLock(reason = "renew bounded pending-operation lease")
-                acquireWakeLock(remaining)
+                // Renewing re-arms the platform timeout up to the operation's
+                // hard deadline, or to the next tick if that is further out.
+                renewWakeLock(maxOf(remaining, tickHoldMillis ?: 0L))
                 pendingWakeLeaseExpiredLogged = false
                 logs.append(
                     "pending operation wake lease active operations=" +
                         "${lease.pendingOperationIds.size} remainingMillis=$remaining",
                     tag = "keepalive",
                 )
+            }
+            tickHoldMillis != null -> {
+                renewWakeLock(tickHoldMillis)
+                logs.append(
+                    "wakelock held across imminent tick delayMillis=$nextDelayMillis",
+                    tag = "keepalive",
+                )
+                if (lease.expired && !pendingWakeLeaseExpiredLogged) {
+                    // The operation's own budget is spent; the CPU stays only
+                    // because the next tick - the one that will observe its
+                    // terminal state - is already due.
+                    pendingWakeLeaseExpiredLogged = true
+                    logs.append(
+                        "pending operation wake lease expired; CPU kept for the scheduled tick, durable recovery owns the operation",
+                        tag = "scheduler-health",
+                    )
+                }
             }
             lease.expired -> {
                 releaseWakeLock(reason = "pending-operation lease hard limit reached")
@@ -835,7 +896,9 @@ class AssistantForegroundService : Service() {
             )
         }
         tickCount += 1
-        acquireWakeLock()
+        // The tick itself always gets a full window, whatever remains of the
+        // lease that carried the CPU across the gap.
+        renewWakeLock(TICK_WAKELOCK_TIMEOUT_MILLIS)
         runLocalSchedulerTick(tickCount)
     }
 
@@ -1322,7 +1385,6 @@ class AssistantForegroundService : Service() {
                 } else {
                     armExecutionWatchdog()
                 }
-                finishSchedulerWakeWindow()
                 val delay = synchronized(tickScheduleLock) {
                     schedulerBusy = false
                     if (immediateTickRequested) {
@@ -1332,7 +1394,12 @@ class AssistantForegroundService : Service() {
                         nextDelayMillis
                     }
                 }
-                if (running && executionOwnerActive && hostingPreferences.isEnabled()) {
+                val willScheduleNext =
+                    running && executionOwnerActive && hostingPreferences.isEnabled()
+                // Decide the CPU lease with the real gap in hand: a short gap
+                // keeps the lock, a long one (or no follow-up) releases it.
+                finishSchedulerWakeWindow(if (willScheduleNext) delay else null)
+                if (willScheduleNext) {
                     hostingRuntime.heartbeat(
                         nowMillis = System.currentTimeMillis(),
                         tick = tick,
@@ -1643,7 +1710,11 @@ class AssistantForegroundService : Service() {
         private const val SCHEDULER_WAKEUP_REQUEST_CODE = 1002
         private const val EXECUTION_WATCHDOG_REQUEST_CODE = 1003
         private const val TICK_WAKELOCK_TIMEOUT_MILLIS = 90_000L
-        private const val MAX_TICK_WAKELOCK_TIMEOUT_MILLIS = 5L * 60L * 1_000L
+        // The hard cap is a leak guard, so it sits just above the longest lease
+        // the policy can legitimately ask for; a smaller cap would silently
+        // truncate a hold across the longest named deadline.
+        private const val MAX_TICK_WAKELOCK_TIMEOUT_MILLIS =
+            SchedulerTickPolicy.MAX_WAKE_HOLD_TIMEOUT_MILLIS
         private const val PENDING_OPERATION_WAKE_LEASE_MILLIS = 2L * 60L * 1_000L
         private const val EXECUTION_WATCHDOG_DELAY_MILLIS = 2L * 60L * 1_000L
         private const val TASK_REMOVED_RESTART_DELAY_MILLIS = 5_000L

@@ -220,7 +220,7 @@ class SharedResidentAutomationAdapter(
                     .put("platform", "android")
                     .put(
                         "allowedFeatures",
-                        JSONArray(listOf("mine", "lossless", "brush", "raid", "dungeon", "general", "ministry", "domestic", "inventory", "alarm", "daily"))
+                        JSONArray(listOf("mine", "lossless", "brush", "raid", "dungeon", "general", "ministry", "captives", "domestic", "inventory", "alarm", "daily"))
                     )
                     .put("requestId", tickKey),
             )
@@ -329,7 +329,7 @@ class SharedResidentAutomationAdapter(
         .put("platform", "android")
         .put(
             "allowedFeatures",
-            JSONArray(listOf("mine", "lossless", "brush", "raid", "dungeon", "general", "ministry", "domestic", "inventory", "alarm", "daily"))
+            JSONArray(listOf("mine", "lossless", "brush", "raid", "dungeon", "general", "ministry", "captives", "domestic", "inventory", "alarm", "daily"))
         )
         .put("requestId", tickKey)
 
@@ -468,6 +468,8 @@ class SharedResidentAutomationAdapter(
             phase.startsWith("resident-ministry") ||
                 phase.startsWith("garden-") ||
                 phase == "planted" || phase == "plant-recovered" -> "ministry"
+            phase.startsWith("resident-captives") ||
+                phase.startsWith("shared-core/captives") -> "captives"
             phase.startsWith("resident-domestic") ||
                 phase == "refreshing-role-queues" -> "domestic"
             phase.startsWith("inventory-") ||

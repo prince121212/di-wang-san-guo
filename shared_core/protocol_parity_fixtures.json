@@ -9,8 +9,14 @@
         "timestampMillis": 1700000000123,
         "dm": 123456789,
         "commands": [
-          { "opcode": "0x1016", "payloadHex": "0102" },
-          { "opcode": "0x3110", "payloadHex": "" }
+          {
+            "opcode": "0x1016",
+            "payloadHex": "0102"
+          },
+          {
+            "opcode": "0x3110",
+            "payloadHex": ""
+          }
         ],
         "expectedHex": "000b74657374606865616465720000018bcfe5687b0200000000075bcd150000000000000000000210160000010200000000075bcd150000000000000000000031100000"
       },
@@ -19,7 +25,11 @@
       "obfuscatedResponseHex": "0101000000000000000100000000000000020100000003801600f433e6",
       "obfuscatedResponsePayloadHex": "0102ff",
       "expectedOpcode": "0x8016",
-      "xy": { "x": 18, "y": 255, "hex": "001200ff" }
+      "xy": {
+        "x": 18,
+        "y": 255,
+        "hex": "001200ff"
+      }
     },
     "accountLogin8003": {
       "responseHex": "00000ce799bbe5bd95e68890e58a9f00000000075bcd150000018bcfe56800000000010000000200000000000003e9015f0009e8a792e889b2e794b21e0003e9ad8f0006e5b9b3e6b09100000000000003ea01600009e8a792e889b2e4b9992d0003e89c800006e5a4aae5ae88aa",
@@ -39,9 +49,18 @@
     "accountPassportAreas": {
       "responseText": "session-token`user-1\ntargetA`351`1区 测试服`http://game-1`x4`x5`x6`x7`x8`x9`x10`qzone_1\ntargetB`352`2区 测试服`http://game-2`x4`x5`x6`x7`x8`x9`x10`qzone_2\n",
       "queries": [
-        { "query": "qzone_1", "expectedServerKey": "qzone_1" },
-        { "query": "第2区", "expectedServerKey": "qzone_2" },
-        { "query": "测试服", "expectedServerKey": "qzone_1" }
+        {
+          "query": "qzone_1",
+          "expectedServerKey": "qzone_1"
+        },
+        {
+          "query": "第2区",
+          "expectedServerKey": "qzone_2"
+        },
+        {
+          "query": "测试服",
+          "expectedServerKey": "qzone_1"
+        }
       ],
       "expected": {
         "session": "session-token",
@@ -52,15 +71,43 @@
       }
     },
     "brushCenterMajorityFief": {
-      "generalIds": [11, 12, 13],
+      "generalIds": [
+        11,
+        12,
+        13
+      ],
       "generals": [
-        { "id": 11, "name": "甲", "fiefId": 101 },
-        { "id": 12, "name": "乙", "fiefId": 202 },
-        { "id": 13, "name": "丙", "fiefId": 202 }
+        {
+          "id": 11,
+          "name": "甲",
+          "fiefId": 101
+        },
+        {
+          "id": 12,
+          "name": "乙",
+          "fiefId": 202
+        },
+        {
+          "id": 13,
+          "name": "丙",
+          "fiefId": 202
+        }
       ],
       "fiefs": [
-        { "targetId": 101, "name": "一号封地", "cityName": "洛阳", "x": 30, "y": 20 },
-        { "targetId": 202, "name": "二号封地", "cityName": "成都", "x": 190, "y": 72 }
+        {
+          "targetId": 101,
+          "name": "一号封地",
+          "cityName": "洛阳",
+          "x": 30,
+          "y": 20
+        },
+        {
+          "targetId": 202,
+          "name": "二号封地",
+          "cityName": "成都",
+          "x": 190,
+          "y": 72
+        }
       ],
       "expected": {
         "fiefId": 202,
@@ -68,7 +115,10 @@
         "y": 55,
         "worldX": 186,
         "worldY": 72,
-        "fiefCounts": { "101": 1, "202": 2 }
+        "fiefCounts": {
+          "101": 1,
+          "202": 2
+        }
       }
     },
     "dailyCompletionCycles": {
@@ -136,16 +186,32 @@
         "y": 42,
         "resource1": 47,
         "resource2": 116,
-        "lootIds": [4, 5],
+        "lootIds": [
+          4,
+          5
+        ],
         "compositionCode": "1111",
         "compositionSource": "8540-units",
         "source": "8540-structured",
-        "unitSoldierTypeCodes": [10, 11, 12, 13],
-        "unitSoldierCounts": [1200, 900, 800, 700]
+        "unitSoldierTypeCodes": [
+          10,
+          11,
+          12,
+          13
+        ],
+        "unitSoldierCounts": [
+          1200,
+          900,
+          800,
+          700
+        ]
       }
     },
     "brushYellowActionType3": {
-      "generalIdHexChunks": ["0000000000000001", "0000000000000002"],
+      "generalIdHexChunks": [
+        "0000000000000001",
+        "0000000000000002"
+      ],
       "targetIdHex": "0000000000000065",
       "expected": {
         "actionType": 3,
@@ -154,12 +220,60 @@
       }
     },
     "brushYellowCanonicalGridCenter100x30": {
-      "center": {"x": 100, "y": 30},
+      "center": {
+        "x": 100,
+        "y": 30
+      },
       "limit": 12,
       "expectedCoordinates": [
-        [102, 30], [96, 30], [102, 24], [102, 36],
-        [96, 24], [96, 36], [108, 30], [90, 30],
-        [108, 24], [108, 36], [90, 24], [90, 36]
+        [
+          102,
+          30
+        ],
+        [
+          96,
+          30
+        ],
+        [
+          102,
+          24
+        ],
+        [
+          102,
+          36
+        ],
+        [
+          96,
+          24
+        ],
+        [
+          96,
+          36
+        ],
+        [
+          108,
+          30
+        ],
+        [
+          90,
+          30
+        ],
+        [
+          108,
+          24
+        ],
+        [
+          108,
+          36
+        ],
+        [
+          90,
+          24
+        ],
+        [
+          90,
+          36
+        ]
       ]
     },
     "brushYellowDispatchReceipts": {
@@ -168,16 +282,42 @@
       "expectedBattleId": 7094993
     },
     "brushYellowExactLevels": {
-      "selectedLevels": [7, 8],
+      "selectedLevels": [
+        7,
+        8
+      ],
       "targets": [
-        {"id": 701, "kind": "山贼", "level": 7, "matches": true},
-        {"id": 702, "kind": "山贼", "level": 8, "matches": true},
-        {"id": 703, "kind": "山贼", "level": 6, "matches": false},
-        {"id": 704, "kind": "山贼", "level": 9, "matches": false}
+        {
+          "id": 701,
+          "kind": "山贼",
+          "level": 7,
+          "matches": true
+        },
+        {
+          "id": 702,
+          "kind": "山贼",
+          "level": 8,
+          "matches": true
+        },
+        {
+          "id": 703,
+          "kind": "山贼",
+          "level": 6,
+          "matches": false
+        },
+        {
+          "id": 704,
+          "kind": "山贼",
+          "level": 9,
+          "matches": false
+        }
       ]
     },
     "mineActionType2": {
-      "generalIds": [1, 2],
+      "generalIds": [
+        1,
+        2
+      ],
       "targetId": 101,
       "expected": {
         "actionType": 2,
@@ -242,23 +382,64 @@
       "mismatchedResponseHex": "000000000000007c"
     },
     "mineExactLevelAndOwnership": {
-      "selectedLevels": [5],
-      "selectedMineTypes": ["GOLD"],
+      "selectedLevels": [
+        5
+      ],
+      "selectedMineTypes": [
+        "GOLD"
+      ],
       "onlyEmpty": true,
       "targets": [
-        {"id": 301, "mineType": "GOLD", "level": 5, "isEmpty": true, "playerOccupied": false, "matches": true},
-        {"id": 302, "mineType": "GOLD", "level": 4, "isEmpty": true, "playerOccupied": false, "matches": false},
-        {"id": 303, "mineType": "GOLD", "level": 5, "isEmpty": false, "playerOccupied": true, "matches": false},
-        {"id": 304, "mineType": "SILVER", "level": 5, "isEmpty": true, "playerOccupied": false, "matches": false}
+        {
+          "id": 301,
+          "mineType": "GOLD",
+          "level": 5,
+          "isEmpty": true,
+          "playerOccupied": false,
+          "matches": true
+        },
+        {
+          "id": 302,
+          "mineType": "GOLD",
+          "level": 4,
+          "isEmpty": true,
+          "playerOccupied": false,
+          "matches": false
+        },
+        {
+          "id": 303,
+          "mineType": "GOLD",
+          "level": 5,
+          "isEmpty": false,
+          "playerOccupied": true,
+          "matches": false
+        },
+        {
+          "id": 304,
+          "mineType": "SILVER",
+          "level": 5,
+          "isEmpty": true,
+          "playerOccupied": false,
+          "matches": false
+        }
       ]
     },
     "mineSmartSpeed": {
       "remainingSeconds": 3700,
       "inventory": [
-        {"itemId": 76, "count": 1},
-        {"itemId": 78, "count": 1}
+        {
+          "itemId": 76,
+          "count": 1
+        },
+        {
+          "itemId": 78,
+          "count": 1
+        }
       ],
-      "expectedItemIds": [78, 76]
+      "expectedItemIds": [
+        78,
+        76
+      ]
     },
     "mineMarchSpeed8524": {
       "battleId": 9649515,
@@ -286,7 +467,12 @@
       "responseHex": "0035e38090e9a9bbe5ae88e38091e6ada5312ce6ada5322ce8bda6312ce8bda632e9a9bbe5ae88e59ca8e789a7e59cba2839332c333029000100000001000000000098b4340400000000006b4d9a0000000000006b4dac0000000000006b4dae000000000000686b9900000000000000a51b02000a31e7baa7e789a7e59cba005d001e",
       "expected": {
         "battleId": 10007604,
-        "generalIds": [7032218, 7032236, 7032238, 6843289],
+        "generalIds": [
+          7032218,
+          7032236,
+          7032238,
+          6843289
+        ],
         "targetId": 42267,
         "targetName": "1级牧场",
         "x": 93,
@@ -342,7 +528,10 @@
       ]
     },
     "generalStatusA110": {
-      "general": {"id": 528290, "name": "步2"},
+      "general": {
+        "id": 528290,
+        "name": "步2"
+      },
       "responseHex": "0000000000080fa20004e6ada532000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080fa200000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000ffff",
       "expected": {
         "id": 528290,
@@ -353,8 +542,11 @@
       }
     },
     "inventory8104Compact": {
-      "responseHex": "000000000000000000000000000000320002004c00030000000000000000000c000500000000000000000001000000000000007b0000020203000a01020004000500060006e6b58be8af95",
-      "itemNames": {"12": "活血丹", "76": "初级行军符"},
+      "responseHex": "000000000000004400000000000007470002004c00030000000000000000000c000500000000000000000001000000000000007b0000020203000a01020004000500060006e6b58be8af95003201f4000a05",
+      "itemNames": {
+        "12": "活血丹",
+        "76": "初级行军符"
+      },
       "equipmentTemplates": {
         "0": {
           "templateId": 0,
@@ -367,9 +559,25 @@
       },
       "expected": {
         "capacity": 50,
+        "slotsUsed": 3,
+        "slotsFree": 47,
+        "headerLong1": 68,
+        "headerLong2": 1863,
+        "footerValues": [
+          50,
+          500,
+          10,
+          5
+        ],
         "itemCount": 2,
-        "itemIds": [76, 12],
-        "itemCounts": [3, 5],
+        "itemIds": [
+          76,
+          12
+        ],
+        "itemCounts": [
+          3,
+          5
+        ],
         "equipmentCount": 1,
         "equipmentName": "短剑",
         "equipmentQuality": "优秀",
@@ -377,7 +585,10 @@
       }
     },
     "raidActionType1": {
-      "generalIds": [1, 2],
+      "generalIds": [
+        1,
+        2
+      ],
       "targetId": 101,
       "expected": {
         "actionType": 1,
@@ -388,16 +599,16 @@
       }
     },
     "raidFief8310": {
-      "playerName": "\u76ee\u6807\u73a9\u5bb6",
+      "playerName": "目标玩家",
       "requestPayloadHex": "0001000ce79baee6a087e78ea9e5aeb6",
       "responseHex": "0001000ce79baee6a087e78ea9e5aeb60003e9ad8f020000000000000065000ce4b880e58fb7e5b081e59cb0010006e6b49be998b301005b001a0000000000000066000ce4ba8ce58fb7e5b081e59cb0020006e995bfe5ae8901005d001c",
       "expected": {
-        "playerName": "\u76ee\u6807\u73a9\u5bb6",
-        "country": "\u9b4f",
+        "playerName": "目标玩家",
+        "country": "魏",
         "count": 2,
         "firstTargetId": 101,
-        "firstName": "\u4e00\u53f7\u5c01\u5730",
-        "firstCityName": "\u6d1b\u9633",
+        "firstName": "一号封地",
+        "firstCityName": "洛阳",
         "firstX": 91,
         "firstY": 26
       }
@@ -430,7 +641,13 @@
       }
     },
     "losslessActionType11": {
-      "generalIds": [16249023, 14717560, 16332113, 16332111, 14628737],
+      "generalIds": [
+        16249023,
+        14717560,
+        16332113,
+        16332111,
+        14628737
+      ],
       "roleId": 928,
       "expected": {
         "actionType": 11,
@@ -441,15 +658,31 @@
     "losslessLevel10LastChariot": {
       "stageId": 12305,
       "stageName": "卫兵",
-      "soldierTypes": ["投石车", "弩车", "弓兵", "冲车", "投石车"],
+      "soldierTypes": [
+        "投石车",
+        "弩车",
+        "弓兵",
+        "冲车",
+        "投石车"
+      ],
       "expected": {
         "qualified": true,
-        "chariotPositions": [1, 2, 4, 5],
-        "catapultPositions": [1, 5]
+        "chariotPositions": [
+          1,
+          2,
+          4,
+          5
+        ],
+        "catapultPositions": [
+          1,
+          5
+        ]
       }
     },
     "dungeonActionType14": {
-      "generalIds": [4660],
+      "generalIds": [
+        4660
+      ],
       "stageCode": 2,
       "expected": {
         "actionType": 14,
@@ -679,21 +912,69 @@
       }
     },
     "ministryHubuVerifiedPlant": {
-      "crop": "金银花",
+      "crop": "稻谷",
       "statusQueryPayloadHex": "",
       "plantPayloadHex": "0100000001",
-      "emptyGardenResponseHex": "000000010000000000000028000003e80032020005002800000a000000000000000100000000000002000000000000030000000000000400000000000005000000000000060000000000000700000000000008000000000000090000000000000200000007000100010d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000",
-      "plantResponseHex": "00000fe6938de4bd9ce68890e58a9fe38082000003840100000100008ca000008ca0006400645a000000000000000000000000000032000100000000",
+      "emptyGardenResponseHex": "000000010000000000000028000005210032020005002800000a000000000000000100000000000002000000000000030000000000000400000000000005000000000000060000000000000700000000000008000000000000090000000000000200000008000100000d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000",
+      "plantResponseHex": "00000fe6938de4bd9ce68890e58a9fe38082000004bd0100000100008ca000008ca0006400645a00000000000000000000000000000032000100000000",
       "expected": {
         "garden": {
           "plotCount": 10,
+          "unlockedCount": 5,
           "occupiedCount": 0,
-          "emptyCount": 10
+          "emptyCount": 5,
+          "level": 1,
+          "salaryPool": 1313,
+          "gardenName": "",
+          "plots": [
+            {
+              "plotIndex": 0,
+              "occupied": false
+            },
+            {
+              "plotIndex": 1,
+              "occupied": false
+            },
+            {
+              "plotIndex": 2,
+              "occupied": false
+            },
+            {
+              "plotIndex": 3,
+              "occupied": false
+            },
+            {
+              "plotIndex": 4,
+              "occupied": false
+            },
+            {
+              "plotIndex": 5,
+              "occupied": false
+            },
+            {
+              "plotIndex": 6,
+              "occupied": false
+            },
+            {
+              "plotIndex": 7,
+              "occupied": false
+            },
+            {
+              "plotIndex": 8,
+              "occupied": false
+            },
+            {
+              "plotIndex": 9,
+              "occupied": false
+            }
+          ],
+          "tailHex": "0200000008000100000d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000"
         },
         "receipt": {
           "success": true,
           "status": 0,
-          "message": "操作成功。"
+          "message": "操作成功。",
+          "newPool": 1213
         }
       }
     },
@@ -710,13 +991,15 @@
       },
       "expected": {
         "cropEnabled": true,
-        "crop": "金银花",
+        "crop": "稻谷",
         "highPriority": false,
         "stealEnabled": true,
         "courtesyEnabled": true,
         "salaryRefresh": false,
         "plantingAllowed": true,
-        "unconfirmedActions": ["偷菜", "礼部任务"]
+        "unconfirmedActions": [
+          "偷菜"
+        ]
       }
     },
     "formationAssign1226": {
@@ -734,7 +1017,10 @@
       }
     },
     "formationRefill1229": {
-      "generalIds": [7032238, 7032218],
+      "generalIds": [
+        7032238,
+        7032218
+      ],
       "requestPayloadHex": "0200000000006b4dae00000000006b4d9a",
       "successResponseHex": "000012e689b9e9878fe8a1a5e6bba1e68890e58a9f0200000000006b4dae010000009600000000006b4d9a080000000a00000000000007550103000000c0",
       "expected": {
@@ -743,6 +1029,361 @@
         "entryCount": 2,
         "firstSoldierType": 1,
         "firstSoldierCount": 150
+      }
+    },
+    "ministryHubuGardenOccupied049": {
+      "responseHex": "000000010000000000000028000001f40032020005002800000a00000100008ca000000000003500641e0000000000000000000000000000003201000100008ca000000000003200641e0000000000000000000000000000003202000100008ca000000000003200641e0000000000000000000000000000003203000100008ca000000000003800641e0000000000000000000000000000003204000100008ca000000000003e00641e0000000000000000000000000000003205000000000000060000000000000700000000000008000000000000090000000000000200000008000100000d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000",
+      "expected": {
+        "plotCount": 10,
+        "unlockedCount": 5,
+        "occupiedCount": 5,
+        "emptyCount": 0,
+        "level": 1,
+        "salaryPool": 500,
+        "gardenName": "",
+        "plots": [
+          {
+            "plotIndex": 0,
+            "occupied": true,
+            "cropId": 1,
+            "totalSeconds": 36000,
+            "remainingSeconds": 0,
+            "percent": 53,
+            "plantCount": 100
+          },
+          {
+            "plotIndex": 1,
+            "occupied": true,
+            "cropId": 1,
+            "totalSeconds": 36000,
+            "remainingSeconds": 0,
+            "percent": 50,
+            "plantCount": 100
+          },
+          {
+            "plotIndex": 2,
+            "occupied": true,
+            "cropId": 1,
+            "totalSeconds": 36000,
+            "remainingSeconds": 0,
+            "percent": 50,
+            "plantCount": 100
+          },
+          {
+            "plotIndex": 3,
+            "occupied": true,
+            "cropId": 1,
+            "totalSeconds": 36000,
+            "remainingSeconds": 0,
+            "percent": 56,
+            "plantCount": 100
+          },
+          {
+            "plotIndex": 4,
+            "occupied": true,
+            "cropId": 1,
+            "totalSeconds": 36000,
+            "remainingSeconds": 0,
+            "percent": 62,
+            "plantCount": 100
+          },
+          {
+            "plotIndex": 5,
+            "occupied": false
+          },
+          {
+            "plotIndex": 6,
+            "occupied": false
+          },
+          {
+            "plotIndex": 7,
+            "occupied": false
+          },
+          {
+            "plotIndex": 8,
+            "occupied": false
+          },
+          {
+            "plotIndex": 9,
+            "occupied": false
+          }
+        ],
+        "tailHex": "0200000008000100000d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000"
+      }
+    },
+    "ministryHubuGardenNamedFief176": {
+      "note": "设备账号 176（户部 2 级、封地“乌吉”）的真实 0xe320：固定 24B 头之后是 u8 长度封地名，再是 u8 总坑数；空名账号（202）的名字长度为 0。",
+      "responseHex": "000000020000000000000050000007fb003202000500280006e4b98ce590890a000000000000000100000000000002000000000000030000000000000400000000000005000000000000060000000000000700000000000008000000000000090000000000000200000000000100000d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000",
+      "expected": {
+        "plotCount": 10,
+        "unlockedCount": 5,
+        "occupiedCount": 0,
+        "emptyCount": 5,
+        "level": 2,
+        "salaryPool": 2043,
+        "gardenName": "乌吉",
+        "plots": [
+          { "plotIndex": 0, "occupied": false },
+          { "plotIndex": 1, "occupied": false },
+          { "plotIndex": 2, "occupied": false },
+          { "plotIndex": 3, "occupied": false },
+          { "plotIndex": 4, "occupied": false },
+          { "plotIndex": 5, "occupied": false },
+          { "plotIndex": 6, "occupied": false },
+          { "plotIndex": 7, "occupied": false },
+          { "plotIndex": 8, "occupied": false },
+          { "plotIndex": 9, "occupied": false }
+        ],
+        "tailHex": "0200000000000100000d000100000002000000030000000400000005000000060000000700000008000000090000000a0000000b0000000c0000000d0000"
+      }
+    },
+    "ministryHubuHarvestFlows": {
+      "052": {
+        "requestPayloadHex": "0000000000000000ca",
+        "responseHex": "00001fe98787e69198e68890e58a9fefbc8ce4bfb8e7a6842b313539e6a0aae3808200000000000000ca000002930000000000000000000000000000000000000000000000000000000000000032",
+        "expected": {
+          "success": true,
+          "status": 0,
+          "message": "采摘成功，俸禄+159株。",
+          "hostId": 202,
+          "newPool": 659,
+          "plotIndex": 0,
+          "gain": 159
+        }
+      },
+      "054": {
+        "requestPayloadHex": "0100000000000000ca",
+        "responseHex": "00001fe98787e69198e68890e58a9fefbc8ce4bfb8e7a6842b313530e6a0aae3808200000000000000ca000003290100000000000000000000000000000000000000000000000000000000000032",
+        "expected": {
+          "success": true,
+          "status": 0,
+          "message": "采摘成功，俸禄+150株。",
+          "hostId": 202,
+          "newPool": 809,
+          "plotIndex": 1,
+          "gain": 150
+        }
+      },
+      "056": {
+        "requestPayloadHex": "0200000000000000ca",
+        "responseHex": "00001fe98787e69198e68890e58a9fefbc8ce4bfb8e7a6842b313530e6a0aae3808200000000000000ca000003bf0200000000000000000000000000000000000000000000000000000000000032",
+        "expected": {
+          "success": true,
+          "status": 0,
+          "message": "采摘成功，俸禄+150株。",
+          "hostId": 202,
+          "newPool": 959,
+          "plotIndex": 2,
+          "gain": 150
+        }
+      },
+      "058": {
+        "requestPayloadHex": "0300000000000000ca",
+        "responseHex": "00001fe98787e69198e68890e58a9fefbc8ce4bfb8e7a6842b313638e6a0aae3808200000000000000ca000004670300000000000000000000000000000000000000000000000000000000000032",
+        "expected": {
+          "success": true,
+          "status": 0,
+          "message": "采摘成功，俸禄+168株。",
+          "hostId": 202,
+          "newPool": 1127,
+          "plotIndex": 3,
+          "gain": 168
+        }
+      },
+      "059": {
+        "requestPayloadHex": "0400000000000000ca",
+        "responseHex": "00001fe98787e69198e68890e58a9fefbc8ce4bfb8e7a6842b313836e6a0aae3808200000000000000ca000005210400000000000000000000000000000000000000000000000000000000000032",
+        "expected": {
+          "success": true,
+          "status": 0,
+          "message": "采摘成功，俸禄+186株。",
+          "hostId": 202,
+          "newPool": 1313,
+          "plotIndex": 4,
+          "gain": 186
+        }
+      }
+    },
+    "ministryLibuTaskList086": {
+      "requestPayloadHex": "",
+      "responseHex": "000000000003f501000001a09e126200000000c8000001a0a0a590000a0000009002000000010007000ee5be81e694b65be58d93e784b65d020101000200130018010000000708000007080000007801ffff01000001180000000002001b0006e5b7a1e980bb020101000400130018010000000708000007080000007801024e01000000000000",
+      "expected": {
+        "salaryPool": 1013,
+        "refreshAtMillis": 1789358400000,
+        "resetAtMillis": 1789401600000,
+        "tasks": [
+          {
+            "taskId": 1,
+            "templateId": 7,
+            "name": "征收[卓然]",
+            "state": 0,
+            "durationSeconds": 1800,
+            "remainingSeconds": 1800,
+            "tailHex": "020101000200130018010000000708000007080000007801ffff010000011800"
+          },
+          {
+            "taskId": 2,
+            "templateId": 27,
+            "name": "巡逻",
+            "state": 0,
+            "durationSeconds": 1800,
+            "remainingSeconds": 1800,
+            "tailHex": "020101000400130018010000000708000007080000007801024e010000000000"
+          }
+        ]
+      }
+    },
+    "ministryLibuTaskList096": {
+      "requestPayloadHex": "",
+      "responseHex": "000000000003f500000001a09e126200000000c8000001a0a0a590000a0000009004000000010007000ee5be81e694b65be58d93e784b65d0201010002001300180101000006780000065e0000007801ffff01000001180300000003000b000ce4b89be69e97e4b98be59cb005010100110014001a010000000708000007080000007801024d01000000000000000004004f000fe983bde698afe68891e79a84efbc8101010100010013001c0100000007080000070800000078010264010000000000000000050007000ee5be81e694b65be69fa5e688915d05010100060014001b0101000006780000066f0000007801ffff01000001350000",
+      "expected": {
+        "salaryPool": 1013,
+        "refreshAtMillis": 1789358400000,
+        "resetAtMillis": 1789401600000,
+        "tasks": [
+          {
+            "taskId": 1,
+            "templateId": 7,
+            "name": "征收[卓然]",
+            "state": 1,
+            "durationSeconds": 1656,
+            "remainingSeconds": 1630,
+            "tailHex": "0201010002001300180101000006780000065e0000007801ffff010000011803"
+          },
+          {
+            "taskId": 3,
+            "templateId": 11,
+            "name": "丛林之地",
+            "state": 0,
+            "durationSeconds": 1800,
+            "remainingSeconds": 1800,
+            "tailHex": "05010100110014001a010000000708000007080000007801024d010000000000"
+          },
+          {
+            "taskId": 4,
+            "templateId": 79,
+            "name": "都是我的！",
+            "state": 0,
+            "durationSeconds": 1800,
+            "remainingSeconds": 1800,
+            "tailHex": "01010100010013001c0100000007080000070800000078010264010000000000"
+          },
+          {
+            "taskId": 5,
+            "templateId": 7,
+            "name": "征收[查我]",
+            "state": 1,
+            "durationSeconds": 1656,
+            "remainingSeconds": 1647,
+            "tailHex": "05010100060014001b0101000006780000066f0000007801ffff010000013500"
+          }
+        ]
+      }
+    },
+    "ministryLibuDelegate091": {
+      "taskId": 1,
+      "officialId": 6082,
+      "requestPayloadHex": "000000010100000000000017c2",
+      "responseHex": "00000fe6938de4bd9ce68890e58a9fe38082000000010007000ee5be81e694b65be58d93e784b65d020101000200130018010100000678000006780000007801ffff010000011803000000010100000000000017c24e",
+      "expected": {
+        "success": true,
+        "status": 0,
+        "message": "操作成功。",
+        "task": {
+          "taskId": 1,
+          "templateId": 7,
+          "name": "征收[卓然]",
+          "state": 1,
+          "durationSeconds": 1656,
+          "remainingSeconds": 1656,
+          "tailHex": "020101000200130018010100000678000006780000007801ffff010000011803"
+        },
+        "taskId": 1,
+        "officialId": 6082
+      }
+    },
+    "ministryLibuDelegate094": {
+      "taskId": 5,
+      "officialId": 6084,
+      "requestPayloadHex": "000000050100000000000017c4",
+      "responseHex": "00000fe6938de4bd9ce68890e58a9fe38082000000050007000ee5be81e694b65be69fa5e688915d05010100060014001b010100000678000006780000007801ffff010000013500000000050100000000000017c44e",
+      "expected": {
+        "success": true,
+        "status": 0,
+        "message": "操作成功。",
+        "task": {
+          "taskId": 5,
+          "templateId": 7,
+          "name": "征收[查我]",
+          "state": 1,
+          "durationSeconds": 1656,
+          "remainingSeconds": 1656,
+          "tailHex": "05010100060014001b010100000678000006780000007801ffff010000013500"
+        },
+        "taskId": 5,
+        "officialId": 6084
+      }
+    },
+    "ministryOfficials088": {
+      "requestPayloadHex": "",
+      "responseHex": "0000000800010050000a000003f503000000000000023430110006e6aeb7e6878f0150000000006aa7694f6aa7694f010037020050004700050001000000000005dc00000000000000023330160009e8bda9e8be95e586890150000000096aa767cc6aa7657401003c020061005a00060003000000000004b00000000000000017c230160006e69d9fe8beb90150000000000000000000000000020013000b02005d00540007000000000000000960000300000000000017c230160006e69d9fe8beb901020013000b02005d0054000701096000000000000017c330170009e590b4e7a5bae790a60102003c000b02005d004a000a00070800000000000017c430190006e69fafe6b8a90102003d000c020048004e000400096000",
+      "expected": {
+        "salaryPool": 1013,
+        "officials": [
+          {
+            "officialId": 564,
+            "name": "殷懏",
+            "busyTaskId": 0,
+            "idle": true
+          },
+          {
+            "officialId": 563,
+            "name": "轩辕冉",
+            "busyTaskId": 0,
+            "idle": true
+          },
+          {
+            "officialId": 6082,
+            "name": "束边",
+            "busyTaskId": 0,
+            "idle": true
+          }
+        ],
+        "candidateCount": 3
+      }
+    },
+    "ministryOfficials099": {
+      "requestPayloadHex": "",
+      "responseHex": "0000000800010050000a000003f504000000000000023430110006e6aeb7e6878f0150000000006aa7694f6aa7694f010037020050004700050001000000000005dc00000000000000023330160009e8bda9e8be95e586890150000000096aa767cc6aa7657401003c020061005a00060003000000000004b00000000000000017c230160006e69d9fe8beb9014e000000000000000000000000020013000b02005d005400070000000000010009600000000000000017c430190006e69fafe6b8a9014e00000000000000000000000002003d000c020048004e0004000000000005000960000300000000000017c230160006e69d9fe8beb901020013000b02005d0054000701096000000000000017c330170009e590b4e7a5bae790a60102003c000b02005d004a000a00070800000000000017c430190006e69fafe6b8a90102003d000c020048004e000401096000",
+      "expected": {
+        "salaryPool": 1013,
+        "officials": [
+          {
+            "officialId": 564,
+            "name": "殷懏",
+            "busyTaskId": 0,
+            "idle": true
+          },
+          {
+            "officialId": 563,
+            "name": "轩辕冉",
+            "busyTaskId": 0,
+            "idle": true
+          },
+          {
+            "officialId": 6082,
+            "name": "束边",
+            "busyTaskId": 1,
+            "idle": false
+          },
+          {
+            "officialId": 6084,
+            "name": "柯温",
+            "busyTaskId": 5,
+            "idle": false
+          }
+        ],
+        "candidateCount": 3
       }
     }
   }

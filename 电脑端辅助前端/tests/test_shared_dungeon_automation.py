@@ -596,9 +596,16 @@ class SharedDungeonAutomationTests(unittest.TestCase):
                     "feature": "formation",
                     "opcode": "0x1226",
                 })
+                # Shaped like the real energy step: the defer is decided from
+                # the ``retryableResourceShortage`` fact it attaches, not from
+                # the code, so the fixture has to carry it too.
                 raise OperationKnownFailureError(
                     "副本检查到赵云体力=28，低于自动加体阈值40，但宝库没有活血丹",
                     code="EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                    details={
+                        "retryableResourceShortage": True,
+                        "resource": "活血丹",
+                    },
                 )
 
             facade._run_expedition_preflight = types.MethodType(  # noqa: SLF001

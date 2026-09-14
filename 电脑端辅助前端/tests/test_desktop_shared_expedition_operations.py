@@ -440,7 +440,7 @@ class DesktopSharedExpeditionOperationTests(unittest.TestCase):
         )
         self.assertEqual(operation["status"], "SUCCEEDED", operation)
         self.assertFalse(operation["requestSent"])
-        self.assertEqual(operation["result"]["garden"]["emptyCount"], 10)
+        self.assertEqual(operation["result"]["garden"]["emptyCount"], 5)
         self.assertEqual(
             [(row["opcode"], row["payload"].hex()) for row in self.commands],
             [(0x6320, "")],

@@ -49,6 +49,7 @@ from .features.alarm import (
     plan_error_alarm,
 )
 from .features.formation import (
+    TroopShortageError,
     assignment_receipt_matches_plan,
     build_assign_troops_payload,
     build_heal_payload,
@@ -195,11 +196,30 @@ from .features.internal_affairs import (
 from .features.ministries import (
     VERIFIED_MINISTRY_CROP,
     build_hubu_batch_plant_payload,
+    build_hubu_harvest_payload,
     build_hubu_status_query_payload,
+    build_libu_delegate_payload,
+    build_libu_task_list_payload,
+    build_ministry_officials_payload,
+    ministry_courtesy_allowed,
     ministry_planting_allowed,
     normalize_ministry_settings,
     parse_hubu_garden_status,
+    parse_hubu_harvest_response,
     parse_hubu_plant_response,
+    parse_libu_delegate_response,
+    parse_libu_task_list,
+    parse_ministry_officials,
+)
+from .features.captives import (
+    PERSUADE_COOLDOWN_MILLIS,
+    build_persuade_payload,
+    build_release_payload,
+    normalize_captive_policy,
+    parse_persuade_response,
+    parse_release_response,
+    plan_captive_actions,
+    recover_captives_from_8004,
 )
 from .features.targets import (
     action_target_hex,
@@ -218,6 +238,9 @@ from .host_ports import HostGameCommandError
 from .local_views import (
     account_log_write_plan,
     general_energy_success_record,
+    ministry_delegate_success_record,
+    ministry_harvest_success_record,
+    ministry_plant_success_record,
     notice_dismiss_plan,
     project_account_logs,
     project_automation_status,
@@ -416,6 +439,10 @@ def _optional_row_index(value: Any) -> Optional[int]:
     return index if index >= 0 else None
 
 
+#: Stamped on the bag projection so readers can tell a limit read from the
+#: 0x8104 trailer apart from the header counter older builds stored there.
+#: Must match ``INVENTORY_PARSER_VERSION`` in the Android host.
+INVENTORY_PARSER_VERSION = "8104-trailer-v1"
 AMBIGUOUS_SEND_STATES = frozenset(("sending", "uncertain"))
 #: Send boundaries whose outcome no amount of reading can settle.  A feature
 #: with one of these outstanding is held for a human.  ``preDispatchMutationState``
@@ -499,11 +526,12 @@ class CoreFacade:
         }
         self._core_hash = compute_core_hash(shared_root)
         store_path = self._resolve_operation_store_path(operation_store_path)
+        self._accounts_path = self._resolve_account_store_path(
+            account_store_path,
+            store_path,
+        )
         self._accounts = DurableAccountStore(
-            self._resolve_account_store_path(
-                account_store_path,
-                store_path,
-            ),
+            self._accounts_path,
             now_millis=self._ports.clock.now_millis,
         )
         self._operations = DurableOperationStore(
@@ -1857,14 +1885,6 @@ class CoreFacade:
             else {}
         )
         inventory = dict(snapshot.get("inventory") or {})
-        inventory_rows = [dict(item) for item in inventory.get("items") or []]
-        for equipment in inventory.get("equipment") or []:
-            item = dict(equipment)
-            item.setdefault("id", item.get("instanceId"))
-            item.setdefault("itemId", item.get("instanceId"))
-            item.setdefault("count", 1)
-            item.setdefault("type", "equipment")
-            inventory_rows.append(item)
         public_state: Dict[str, Any] = {
             "serverUrl": str(area.get("serverUrl") or ""),
             "serverKey": str(area.get("serverKey") or ""),
@@ -1905,9 +1925,9 @@ class CoreFacade:
             "generalsJson": self._json(snapshot.get("generals") or []),
             "armyJson": self._json(snapshot.get("army") or []),
             "armySource": "shared-login/0x8004",
-            "inventoryJson": self._json(inventory_rows),
-            "inventoryCapacity": str(inventory.get("capacity") or 0),
-            "inventorySourceOpcode": str(inventory.get("sourceOpcode") or ""),
+            # One projection of the bag for both the login and the refresh
+            # path; the login copy used to skip the counts the 宝物 page needs.
+            **self._inventory_public_state_updates(inventory),
             "dailyActivityJson": self._json(snapshot.get("dailyActivity") or {}),
             "ownedFiefLocationsJson": self._json(snapshot.get("ownedFiefs") or []),
             "lastValidatedAt": str(snapshot.get("syncedAtMillis") or 0),
@@ -1917,7 +1937,7 @@ class CoreFacade:
             "realActionScopes": (
                 "brush-yellow,mine,daily,inventory,general-maintenance,"
                 "dungeon,lossless,raid,resource-conversion,internal-affairs,"
-                "ministry-plant"
+                "ministry-plant,ministry-harvest,ministry-courtesy"
             ),
             "inventoryLiveRefreshAllowed": "true",
             "militaryIntelLiveGate": "true",
@@ -3321,6 +3341,38 @@ class CoreFacade:
             "garden": status,
         }
 
+    def _ministry_host_id(self, account_ref: str) -> int:
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise RuntimeError("六部操作前账号不存在")
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        public_state = session.get("publicState")
+        public_state = public_state if isinstance(public_state, dict) else {}
+        role_id_value = (
+            public_state.get("roleId")
+            or session.get("accountId")
+            or account.get("id")
+        )
+        return positive_game_id(role_id_value, "角色 ID")
+
+    def _record_ministry_success_safely(
+        self,
+        account_ref: str,
+        record: Optional[Dict[str, Any]],
+    ) -> None:
+        # The game write is already confirmed; bookkeeping must never turn
+        # that into a failure and send the caller down a retry path.
+        try:
+            self._append_success_record(account_ref, record)
+        except Exception as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-automation",
+                "accountRef": str(account_ref),
+                "message": f"六部成功记录写入失败：{error}",
+            })
+
     def _run_hubu_plant_game_workflow(
         self,
         execution: OperationExecutionContext,
@@ -3341,6 +3393,16 @@ class CoreFacade:
         plant_response_opcode = self._contract_opcode(
             contract, "plantResponseOpcode"
         )
+        harvest_request_opcode = self._contract_opcode(
+            contract, "harvestRequestOpcode"
+        )
+        harvest_response_opcode = self._contract_opcode(
+            contract, "harvestResponseOpcode"
+        )
+        plant_pool_cost = int(contract.get("plantPoolCostPerPlot") or 100)
+        settings = normalize_ministry_settings(body)
+        harvest_enabled = bool(settings.get("cropEnabled"))
+        planting_allowed = ministry_planting_allowed(settings)
 
         def query_status(phase: str, *, mutation_sent: bool) -> Dict[str, Any]:
             fact = self._execute_host_game_command(
@@ -3378,14 +3440,56 @@ class CoreFacade:
             return {"fact": fact, "payload": payload, "status": status}
 
         pending_field = "ministryPendingPlantJson"
+        harvest_pending_field = "ministryPendingHarvestJson"
+        harvest_pending = self._automation_pending_record(
+            account_ref, harvest_pending_field
+        )
         existing_pending = self._automation_pending_record(
             account_ref, pending_field
         )
-        if existing_pending:
+        if harvest_pending or existing_pending:
             observed = query_status(
                 "shared-core/ministry/hubu/status-recovery",
                 mutation_sent=True,
             )
+            observed_status = dict(observed["status"])
+            observed_plots = {
+                int(plot["plotIndex"]): plot
+                for plot in observed_status.get("plots") or []
+                if isinstance(plot, dict) and plot.get("plotIndex") is not None
+            }
+            if harvest_pending:
+                plot_index = int(harvest_pending.get("plotIndex") or 0)
+                plot = observed_plots.get(plot_index)
+                if plot is not None and not bool(plot.get("occupied")):
+                    self._update_account_public_state(
+                        account_ref, {harvest_pending_field: "{}"}
+                    )
+                    self._write_user_log(
+                        account_ref,
+                        f"六部：此前坑位{plot_index + 1}的采摘请求"
+                        "已通过菜地状态确认完成",
+                    )
+                else:
+                    harvest_pending.update({
+                        "sendState": "uncertain",
+                        "lastObservedAtMillis": int(
+                            self._ports.clock.now_millis()
+                        ),
+                    })
+                    self._save_automation_pending_record(
+                        account_ref, harvest_pending_field, harvest_pending
+                    )
+                    raise OperationKnownFailureError(
+                        "此前采摘请求已越过发送边界，但菜地状态仍无法确认；"
+                        "禁止自动重发，请稍后再次只读核对",
+                        code="MINISTRY_HARVEST_PENDING_UNRESOLVED",
+                        details={
+                            "pending": harvest_pending,
+                            "garden": observed_status,
+                        },
+                    )
+        if existing_pending:
             observed_status = dict(observed["status"])
             occupied_before = int(
                 existing_pending.get("occupiedBefore") or 0
@@ -3413,6 +3517,7 @@ class CoreFacade:
                             ),
                             "occupiedBefore": occupied_before,
                             "occupiedAfter": occupied_now,
+                            "garden": observed_status,
                         },
                     },
                 }
@@ -3441,17 +3546,209 @@ class CoreFacade:
             mutation_sent=False,
         )
         before_status = before["status"]
-        if int(before_status.get("emptyCount") or 0) <= 0:
+
+        # -- 采摘 phase: every mature occupied plot is collected first, each
+        # with its own send boundary; the 0xe324 receipt carries the cleared
+        # plot and the new salary pool, so no re-query is needed.
+        garden = dict(before_status)
+        garden["plots"] = [dict(plot) for plot in before_status.get("plots") or []]
+        harvests: list[Dict[str, Any]] = []
+        harvest_rejections: list[str] = []
+        host_id: Optional[int] = None
+        mature_plots = [
+            plot
+            for plot in garden["plots"]
+            if bool(plot.get("occupied"))
+            and int(plot.get("remainingSeconds") or 0) == 0
+        ]
+        if harvest_enabled and mature_plots:
+            host_id = self._ministry_host_id(account_ref)
+        for plot in mature_plots:
+            if not harvest_enabled:
+                break
+            plot_index = int(plot["plotIndex"])
+            execution.raise_if_cancelled()
+            pending = self._save_automation_pending_record(
+                account_ref,
+                harvest_pending_field,
+                {
+                    "kind": "harvest",
+                    "sendState": "sending",
+                    "createdAtMillis": int(self._ports.clock.now_millis()),
+                    "plotIndex": plot_index,
+                    "hostId": int(host_id),
+                    "cropId": int(plot.get("cropId") or 0),
+                },
+            )
+            execution.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "ministry-hubu-harvest",
+                "opcode": f"0x{harvest_request_opcode:04x}",
+                "plotIndex": plot_index,
+            })
+            try:
+                fact = self._execute_host_game_command(
+                    account_ref,
+                    harvest_request_opcode,
+                    build_hubu_harvest_payload(plot_index, int(host_id)),
+                    "shared-core/ministry/hubu/harvest",
+                    {**context, "operationId": execution.operation_id},
+                    mutation_sent=True,
+                )
+                payload = self._required_game_packet(
+                    fact,
+                    harvest_response_opcode,
+                    uncertain_message=(
+                        f"坑位{plot_index + 1}采摘请求已发送，但未收到 "
+                        f"0x{harvest_response_opcode:04x} 回执"
+                    ),
+                )
+                receipt = parse_hubu_harvest_response(payload)
+                if receipt.get("status") is None:
+                    raise OperationUncertainError(
+                        "采摘请求已发送，但回执无法确认",
+                        {"receipt": receipt},
+                    )
+                if not bool(receipt.get("success")):
+                    raise OperationKnownFailureError(
+                        str(receipt.get("message") or "服务器拒绝采摘"),
+                        code="MINISTRY_HARVEST_REJECTED",
+                        details={"receipt": receipt},
+                    )
+                receipt_plot = receipt.get("plotIndex")
+                receipt_host = receipt.get("hostId")
+                if (
+                    receipt_plot is None
+                    or receipt_host is None
+                    or int(receipt_plot) != plot_index
+                    or int(receipt_host) != int(host_id)
+                ):
+                    raise OperationUncertainError(
+                        "采摘回执回显与请求不一致",
+                        {"receipt": receipt, "plotIndex": plot_index},
+                    )
+            except OperationKnownFailureError as error:
+                if error.code == "MINISTRY_HARVEST_REJECTED":
+                    # The server gave a definitive answer (for example the
+                    # plot was already collected elsewhere), so the send
+                    # boundary is settled; our garden view was just stale.
+                    self._update_account_public_state(
+                        account_ref, {harvest_pending_field: "{}"}
+                    )
+                    harvest_rejections.append(
+                        f"坑位{plot_index + 1}：{error}"
+                    )
+                    continue
+                pending.update({
+                    "sendState": "uncertain",
+                    "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                })
+                self._save_automation_pending_record(
+                    account_ref, harvest_pending_field, pending
+                )
+                raise OperationUncertainError(
+                    f"采摘请求已越过发送边界：{error}"
+                ) from error
+            except OperationUncertainError:
+                pending.update({
+                    "sendState": "uncertain",
+                    "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                })
+                self._save_automation_pending_record(
+                    account_ref, harvest_pending_field, pending
+                )
+                raise
+            except Exception as error:
+                pending.update({
+                    "sendState": "uncertain",
+                    "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                })
+                self._save_automation_pending_record(
+                    account_ref, harvest_pending_field, pending
+                )
+                raise OperationUncertainError(
+                    f"采摘请求已越过发送边界：{error}"
+                ) from error
+            self._update_account_public_state(
+                account_ref, {harvest_pending_field: "{}"}
+            )
+            harvests.append(receipt)
+            plot["occupied"] = False
+            for key in (
+                "cropId", "totalSeconds", "remainingSeconds",
+                "percent", "plantCount",
+            ):
+                plot.pop(key, None)
+            if receipt.get("newPool") is not None:
+                garden["salaryPool"] = int(receipt["newPool"])
+            self._record_ministry_success_safely(
+                account_ref,
+                ministry_harvest_success_record(
+                    receipt,
+                    now_millis=int(self._ports.clock.now_millis()),
+                ),
+            )
+
+        occupied_now = sum(
+            1 for plot in garden["plots"] if bool(plot.get("occupied"))
+        )
+        garden["occupiedCount"] = occupied_now
+        garden["emptyCount"] = int(garden.get("unlockedCount") or 0) - occupied_now
+
+        def garden_result(
+            phase: str,
+            message: str,
+            **extra: Any,
+        ) -> Dict[str, Any]:
+            raw = {
+                "phase": phase,
+                "garden": garden,
+                "harvests": harvests,
+                **extra,
+            }
+            if harvest_rejections:
+                raw["harvestRejections"] = list(harvest_rejections)
             return {
                 "ok": True,
                 "success": True,
-                "message": "六部菜地已满，暂不发送种菜请求",
-                "result": {
-                    "success": True,
-                    "message": "六部菜地已满，暂不发送种菜请求",
-                    "raw": {"phase": "garden-full", **before_status},
-                },
+                "message": message,
+                "result": {"success": True, "message": message, "raw": raw},
             }
+
+        def harvest_summary() -> str:
+            if not harvests:
+                return ""
+            gain = sum(
+                int(receipt.get("gain") or 0) for receipt in harvests
+            )
+            return f"已采摘{len(harvests)}坑（俸禄+{gain}株）；"
+
+        if not planting_allowed:
+            message = (
+                f"{harvest_summary()}"
+                f"{settings.get('crop')}种植协议尚未确认，本轮不种菜"
+                if harvests or settings.get("cropEnabled")
+                else "六部种菜收菜未开启"
+            )
+            return garden_result(
+                "harvested" if harvests else "planting-disabled",
+                message,
+            )
+
+        if int(garden.get("emptyCount") or 0) <= 0:
+            return garden_result(
+                "harvested" if harvests else "garden-full",
+                f"{harvest_summary()}六部菜地已满，暂不发送种菜请求",
+            )
+
+        salary_pool = int(garden.get("salaryPool") or 0)
+        if salary_pool < plant_pool_cost:
+            message = (
+                f"{harvest_summary()}俸禄池{salary_pool}不足以支付"
+                f"每坑{plant_pool_cost}的种植消耗，本轮只采不种"
+            )
+            self._write_user_log(account_ref, f"六部：{message}")
+            return garden_result("pool-insufficient", message)
 
         execution.raise_if_cancelled()
         pending = self._save_automation_pending_record(
@@ -3460,10 +3757,8 @@ class CoreFacade:
             {
                 "sendState": "sending",
                 "createdAtMillis": int(self._ports.clock.now_millis()),
-                "occupiedBefore": int(
-                    before_status.get("occupiedCount") or 0
-                ),
-                "plotCount": int(before_status.get("plotCount") or 0),
+                "occupiedBefore": occupied_now,
+                "plotCount": int(garden.get("plotCount") or 0),
                 "crop": str(body.get("crop") or VERIFIED_MINISTRY_CROP),
             },
         )
@@ -3516,12 +3811,10 @@ class CoreFacade:
                 mutation_sent=True,
             )
             after_status = after["status"]
-            if int(after_status.get("occupiedCount") or 0) != int(
-                before_status.get("occupiedCount") or 0
-            ) + 1:
+            if int(after_status.get("occupiedCount") or 0) != occupied_now + 1:
                 raise OperationUncertainError(
                     "服务器返回种菜成功，但菜地状态未确认增加",
-                    {"before": before_status, "after": after_status},
+                    {"before": garden, "after": after_status},
                 )
         except OperationKnownFailureError as error:
             if error.code == "MINISTRY_PLANT_REJECTED":
@@ -3560,24 +3853,463 @@ class CoreFacade:
                 f"种菜请求已越过发送边界：{error}"
             ) from error
         self._update_account_public_state(account_ref, {pending_field: "{}"})
+        message = (
+            f"{harvest_summary()}"
+            f"已种植{VERIFIED_MINISTRY_CROP}，菜地"
+            f"{after_status.get('occupiedCount')}/{after_status.get('plotCount')}"
+        )
+        self._record_ministry_success_safely(
+            account_ref,
+            ministry_plant_success_record(
+                receipt,
+                crop=VERIFIED_MINISTRY_CROP,
+                occupied_after=after_status.get("occupiedCount"),
+                plot_count=after_status.get("plotCount"),
+                now_millis=int(self._ports.clock.now_millis()),
+            ),
+        )
         return {
             "ok": True,
             "result": {
                 "success": True,
-                "message": (
-                    f"已种植{VERIFIED_MINISTRY_CROP}，菜地"
-                    f"{after_status.get('occupiedCount')}/{after_status.get('plotCount')}"
-                ),
+                "message": message,
                 "raw": {
                     "phase": "planted",
                     "crop": VERIFIED_MINISTRY_CROP,
                     "cropId": 1,
-                    "occupiedBefore": before_status.get("occupiedCount"),
+                    "occupiedBefore": occupied_now,
                     "occupiedAfter": after_status.get("occupiedCount"),
                     "receipt": receipt,
+                    "garden": after_status,
+                    "harvests": harvests,
+                    **(
+                        {"harvestRejections": list(harvest_rejections)}
+                        if harvest_rejections
+                        else {}
+                    ),
                 },
             },
         }
+
+    def _run_libu_delegate_game_workflow(
+        self,
+        execution: OperationExecutionContext,
+        body: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """礼部任务委派：0x6340 列表 + 0x6301 文官 + 每 tick 至多一条 0x6342。
+
+        文官空闲判定只认 0xe301 在职记录属性尾块里的 u32 任务 id（0=空闲）；
+        解析不出或形状未确认就本轮不委派，绝不猜。0x6341 刷新涉及未确认
+        货币消耗，永远不自动发送。
+        """
+
+        account_ref = str(body["accountRef"])
+        contract = self._behavior_contract["sixMinistries"]
+        list_request_opcode = self._contract_opcode(
+            contract, "courtesyTaskListRequestOpcode"
+        )
+        list_response_opcode = self._contract_opcode(
+            contract, "courtesyTaskListResponseOpcode"
+        )
+        officials_request_opcode = self._contract_opcode(
+            contract, "courtesyOfficialsRequestOpcode"
+        )
+        officials_response_opcode = self._contract_opcode(
+            contract, "courtesyOfficialsResponseOpcode"
+        )
+        delegate_request_opcode = self._contract_opcode(
+            contract, "courtesyDelegateRequestOpcode"
+        )
+        delegate_response_opcode = self._contract_opcode(
+            contract, "courtesyDelegateResponseOpcode"
+        )
+        max_per_tick = max(1, int(contract.get("courtesyMaxDelegationsPerTick") or 1))
+        settings = normalize_ministry_settings(body)
+        courtesy_allowed = ministry_courtesy_allowed(settings)
+
+        def query_tasks(phase: str, *, mutation_sent: bool) -> Dict[str, Any]:
+            fact = self._execute_host_game_command(
+                account_ref,
+                list_request_opcode,
+                build_libu_task_list_payload(),
+                phase,
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                mutation_sent=mutation_sent,
+            )
+            payload = self._game_packet(fact, list_response_opcode)
+            if payload is None:
+                message = f"礼部任务未收到 0x{list_response_opcode:04x} 响应"
+                if mutation_sent:
+                    raise OperationUncertainError(message)
+                raise OperationKnownFailureError(
+                    message,
+                    code="MINISTRY_COURTESY_LIST_MISSING",
+                )
+            try:
+                task_list = parse_libu_task_list(payload)
+            except Exception as error:
+                if mutation_sent:
+                    raise OperationUncertainError(
+                        f"礼部任务列表解析失败：{error}"
+                    ) from error
+                raise OperationKnownFailureError(
+                    f"礼部任务列表解析失败：{error}",
+                    code="MINISTRY_COURTESY_LIST_INVALID",
+                ) from error
+            return task_list
+
+        def query_officials(phase: str) -> Dict[str, Any]:
+            fact = self._execute_host_game_command(
+                account_ref,
+                officials_request_opcode,
+                build_ministry_officials_payload(),
+                phase,
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                mutation_sent=False,
+            )
+            payload = self._game_packet(fact, officials_response_opcode)
+            if payload is None:
+                raise OperationKnownFailureError(
+                    f"吏部文官未收到 0x{officials_response_opcode:04x} 响应",
+                    code="MINISTRY_COURTESY_OFFICIALS_MISSING",
+                )
+            try:
+                return parse_ministry_officials(payload)
+            except Exception as error:
+                raise OperationKnownFailureError(
+                    f"吏部文官状态解析失败，本轮不委派：{error}",
+                    code="MINISTRY_COURTESY_OFFICIALS_INVALID",
+                ) from error
+
+        pending_field = "ministryPendingDelegateJson"
+        existing_pending = self._automation_pending_record(
+            account_ref, pending_field
+        )
+        if existing_pending:
+            observed = query_tasks(
+                "shared-core/ministry/libu/list-recovery",
+                mutation_sent=True,
+            )
+            pending_task_id = int(existing_pending.get("taskId") or 0)
+            observed_task = next(
+                (
+                    task
+                    for task in observed.get("tasks") or []
+                    if int(task.get("taskId") or 0) == pending_task_id
+                ),
+                None,
+            )
+            if observed_task is not None and int(observed_task.get("state")) == 1:
+                self._update_account_public_state(
+                    account_ref, {pending_field: "{}"}
+                )
+                official_name = str(existing_pending.get("officialName") or "")
+                task_name = str(
+                    observed_task.get("name")
+                    or existing_pending.get("taskName")
+                    or pending_task_id
+                )
+                message = (
+                    "此前礼部委派已通过任务列表确认完成："
+                    f"{official_name}→「{task_name}」"
+                )
+                self._write_user_log(account_ref, f"六部：{message}")
+                return {
+                    "ok": True,
+                    "success": True,
+                    "message": message,
+                    "result": {
+                        "success": True,
+                        "message": message,
+                        "raw": {
+                            "phase": "delegate-recovered",
+                            "taskId": pending_task_id,
+                            "officialId": int(
+                                existing_pending.get("officialId") or 0
+                            ),
+                            "task": observed_task,
+                        },
+                    },
+                }
+            existing_pending.update({
+                "sendState": "uncertain",
+                "lastObservedAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, existing_pending
+            )
+            raise OperationKnownFailureError(
+                "此前礼部委派请求已越过发送边界，但任务列表仍无法确认；"
+                "禁止自动重发，请稍后再次只读核对",
+                code="MINISTRY_DELEGATE_PENDING_UNRESOLVED",
+                details={
+                    "pending": existing_pending,
+                    "tasks": observed.get("tasks"),
+                },
+            )
+
+        if not courtesy_allowed:
+            return {
+                "ok": True,
+                "success": True,
+                "message": "礼部任务委派未开启",
+                "result": {
+                    "success": True,
+                    "message": "礼部任务委派未开启",
+                    "raw": {"phase": "courtesy-disabled"},
+                },
+            }
+
+        task_list = query_tasks(
+            "shared-core/ministry/libu/list",
+            mutation_sent=False,
+        )
+        tasks = list(task_list.get("tasks") or [])
+        in_progress = [
+            task for task in tasks if int(task.get("state") or 0) == 1
+        ]
+        delegatable = [
+            task for task in tasks if int(task.get("state") or 0) == 0
+        ]
+        next_task_end_seconds = min(
+            (int(task.get("remainingSeconds") or 0) for task in in_progress),
+            default=None,
+        )
+
+        def courtesy_result(
+            phase: str,
+            message: str,
+            **extra: Any,
+        ) -> Dict[str, Any]:
+            raw = {
+                "phase": phase,
+                "taskCount": len(tasks),
+                "inProgressCount": len(in_progress),
+                "delegatableCount": len(delegatable),
+                **extra,
+            }
+            if next_task_end_seconds is not None:
+                raw["nextTaskEndSeconds"] = next_task_end_seconds
+            return {
+                "ok": True,
+                "success": True,
+                "message": message,
+                "result": {"success": True, "message": message, "raw": raw},
+            }
+
+        if not delegatable:
+            return courtesy_result(
+                "no-delegatable-task",
+                "礼部当前没有可委派的任务",
+            )
+
+        officials = query_officials("shared-core/ministry/libu/officials")
+        idle_officials = [
+            official
+            for official in officials.get("officials") or []
+            if bool(official.get("idle"))
+        ]
+        if not idle_officials:
+            return courtesy_result(
+                "no-idle-official",
+                "礼部有可委派任务，但没有确认空闲的文官，本轮不委派",
+            )
+
+        task = delegatable[0]
+        task_id = int(task["taskId"])
+
+        # 文官能否被委派只以服务器回执为准（0xe301 在职记录不含职位字段，
+        # 抓包已证明记录层面无法预知）：被明确拒绝"不能委派"的文官记入
+        # 名单，选择时跳过——同一结论不值得每轮再花一条正式写操作确认。
+        ineligible_field = "ministryDelegateIneligibleJson"
+        ineligible_record = self._automation_pending_record(
+            account_ref, ineligible_field
+        )
+        ineligible_ids = {
+            int(value)
+            for value in ineligible_record.get("officialIds") or []
+        }
+        candidates = [
+            official
+            for official in idle_officials
+            if int(official.get("officialId") or 0) not in ineligible_ids
+        ]
+        if not candidates:
+            return courtesy_result(
+                "no-eligible-official",
+                "礼部有可委派任务，但空闲文官此前均被服务器拒绝委派，"
+                "本轮不再尝试",
+                ineligibleOfficialIds=sorted(ineligible_ids),
+            )
+
+        receipt: Optional[Dict[str, Any]] = None
+        delegated_official: Optional[Dict[str, Any]] = None
+        last_rejection: Optional[str] = None
+        for official in candidates:
+            official_id = int(official["officialId"])
+            execution.raise_if_cancelled()
+            pending = self._save_automation_pending_record(
+                account_ref,
+                pending_field,
+                {
+                    "kind": "courtesy-delegate",
+                    "sendState": "sending",
+                    "createdAtMillis": int(self._ports.clock.now_millis()),
+                    "taskId": task_id,
+                    "taskName": str(task.get("name") or ""),
+                    "officialId": official_id,
+                    "officialName": str(official.get("name") or ""),
+                    "refreshAtMillis": int(task_list.get("refreshAtMillis") or 0),
+                },
+            )
+            execution.mark_request_sent({
+                "transport": "android-raw-game-command",
+                "feature": "ministry-libu-delegate",
+                "opcode": f"0x{delegate_request_opcode:04x}",
+                "taskId": task_id,
+                "officialId": official_id,
+            })
+            try:
+                fact = self._execute_host_game_command(
+                    account_ref,
+                    delegate_request_opcode,
+                    build_libu_delegate_payload(task_id, official_id),
+                    "shared-core/ministry/libu/delegate",
+                    {**context, "operationId": execution.operation_id},
+                    mutation_sent=True,
+                )
+                payload = self._required_game_packet(
+                    fact,
+                    delegate_response_opcode,
+                    uncertain_message=(
+                        f"礼部委派请求已发送，但未收到 "
+                        f"0x{delegate_response_opcode:04x} 回执"
+                    ),
+                )
+                attempt_receipt = parse_libu_delegate_response(
+                    payload,
+                    task_id=task_id,
+                    official_id=official_id,
+                )
+                if attempt_receipt.get("status") is None:
+                    raise OperationUncertainError(
+                        "礼部委派请求已发送，但回执无法确认",
+                        {"receipt": attempt_receipt},
+                    )
+                if not bool(attempt_receipt.get("success")):
+                    raise OperationKnownFailureError(
+                        str(attempt_receipt.get("message") or "服务器拒绝礼部委派"),
+                        code="MINISTRY_DELEGATE_REJECTED",
+                        details={"receipt": attempt_receipt},
+                    )
+            except OperationKnownFailureError as error:
+                if error.code == "MINISTRY_DELEGATE_REJECTED":
+                    self._update_account_public_state(
+                        account_ref, {pending_field: "{}"}
+                    )
+                    if "不能委派" in str(error):
+                        ineligible_ids.add(official_id)
+                        self._save_automation_pending_record(
+                            account_ref,
+                            ineligible_field,
+                            {"officialIds": sorted(ineligible_ids)},
+                        )
+                        self._write_user_log(
+                            account_ref,
+                            f"六部：文官{official.get('name')}被服务器拒绝委派"
+                            f"（{error}），已记住并不再对其尝试",
+                        )
+                        last_rejection = str(error)
+                        continue
+                    raise
+                pending.update({
+                    "sendState": "uncertain",
+                    "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                })
+                self._save_automation_pending_record(
+                    account_ref, pending_field, pending
+                )
+                raise OperationUncertainError(
+                    f"礼部委派请求已越过发送边界：{error}"
+                ) from error
+            except OperationUncertainError:
+                pending.update({
+                    "sendState": "uncertain",
+                    "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                })
+                self._save_automation_pending_record(
+                    account_ref, pending_field, pending
+                )
+                raise
+            except Exception as error:
+                pending.update({
+                    "sendState": "uncertain",
+                    "uncertainAtMillis": int(self._ports.clock.now_millis()),
+                })
+                self._save_automation_pending_record(
+                    account_ref, pending_field, pending
+                )
+                raise OperationUncertainError(
+                    f"礼部委派请求已越过发送边界：{error}"
+                ) from error
+            receipt = attempt_receipt
+            delegated_official = official
+            break
+
+        if receipt is None or delegated_official is None:
+            return courtesy_result(
+                "delegation-rejected-all",
+                f"礼部委派被服务器拒绝：{last_rejection or '没有可尝试的文官'}",
+                ineligibleOfficialIds=sorted(ineligible_ids),
+            )
+
+        official = delegated_official
+        official_id = int(official["officialId"])
+        self._update_account_public_state(account_ref, {pending_field: "{}"})
+        self._record_ministry_success_safely(
+            account_ref,
+            ministry_delegate_success_record(
+                receipt,
+                official_name=str(official.get("name") or ""),
+                refresh_at_millis=int(task_list.get("refreshAtMillis") or 0),
+                now_millis=int(self._ports.clock.now_millis()),
+            ),
+        )
+        receipt_task = dict(receipt.get("task") or {})
+        remaining = receipt_task.get("remainingSeconds")
+        message = (
+            f"已委派{official.get('name')}执行礼部任务"
+            f"「{receipt_task.get('name') or task.get('name')}」"
+        )
+        result = courtesy_result(
+            "delegated",
+            message,
+            delegated={
+                "taskId": task_id,
+                "officialId": official_id,
+                "officialName": str(official.get("name") or ""),
+                "receipt": receipt,
+            },
+            # 每 tick 至多委派一条；其余可委派任务留给下一轮。
+            remainingDelegatable=max(0, len(delegatable) - max_per_tick),
+        )
+        if remaining is not None:
+            result["result"]["raw"]["nextTaskEndSeconds"] = min(
+                int(remaining),
+                next_task_end_seconds
+                if next_task_end_seconds is not None
+                else int(remaining),
+            )
+        return result
 
     def daily_operation_payload(
         self,
@@ -5493,7 +6225,7 @@ class CoreFacade:
                 general_hexes, stage_code
             )
         except OperationKnownFailureError as error:
-            if error.code == "EXPEDITION_ENERGY_ITEM_UNAVAILABLE":
+            if self._retryable_resource_shortage(error):
                 deferred_at = int(self._ports.clock.now_millis())
                 retry_at, retry_note = self._resource_shortage_retry(
                     deferred_at,
@@ -5534,20 +6266,14 @@ class CoreFacade:
                         "nextWakeAtMillis": retry_at,
                     },
                 }
-            if durable.sent:
-                pending.update({
-                    "preDispatchMutationState": "failed",
-                    "preDispatchMutationError": str(error),
-                    "preDispatchErrorCode": error.code,
-                    "requiresAttention": True,
-                })
-                self._save_automation_pending_record(
-                    account_ref, "dungeonPendingRunJson", pending
-                )
-            else:
-                self._update_account_public_state(
-                    account_ref, {"dungeonPendingRunJson": "{}"}
-                )
+            self._archive_pre_dispatch_known_failure(
+                account_ref,
+                feature="dungeon",
+                pending_field="dungeonPendingRunJson",
+                pending=pending,
+                error=error,
+                sent=durable.sent,
+            )
             raise
         except Exception as error:
             if durable.sent:
@@ -6662,7 +7388,7 @@ class CoreFacade:
                 general_hexes, role_id
             )
         except OperationKnownFailureError as error:
-            if error.code == "EXPEDITION_ENERGY_ITEM_UNAVAILABLE":
+            if self._retryable_resource_shortage(error):
                 deferred_at = int(self._ports.clock.now_millis())
                 retry_at, retry_note = self._resource_shortage_retry(
                     deferred_at,
@@ -6701,20 +7427,14 @@ class CoreFacade:
                         "nextWakeAtMillis": retry_at,
                     },
                 }
-            if durable.sent:
-                pending.update({
-                    "preDispatchMutationState": "failed",
-                    "preDispatchMutationError": str(error),
-                    "preDispatchErrorCode": error.code,
-                    "requiresAttention": True,
-                })
-                self._save_automation_pending_record(
-                    account_ref, "losslessPendingBattleJson", pending
-                )
-            else:
-                self._update_account_public_state(
-                    account_ref, {"losslessPendingBattleJson": "{}"}
-                )
+            self._archive_pre_dispatch_known_failure(
+                account_ref,
+                feature="lossless",
+                pending_field="losslessPendingBattleJson",
+                pending=pending,
+                error=error,
+                sent=durable.sent,
+            )
             raise
         except Exception as error:
             if durable.sent:
@@ -6983,19 +7703,14 @@ class CoreFacade:
                 restore_saved_formation=bool(body.get("fullTroops", True)),
             )
         except OperationKnownFailureError as error:
-            if durable.sent:
-                pending.update({
-                    "preDispatchMutationState": "failed",
-                    "preDispatchError": str(error),
-                    "requiresAttention": True,
-                })
-                self._save_automation_pending_record(
-                    account_ref, "raidPendingReturnJson", pending
-                )
-            else:
-                self._update_account_public_state(
-                    account_ref, {"raidPendingReturnJson": "{}"}
-                )
+            self._archive_pre_dispatch_known_failure(
+                account_ref,
+                feature="raid",
+                pending_field="raidPendingReturnJson",
+                pending=pending,
+                error=error,
+                sent=durable.sent,
+            )
             raise
         except Exception as error:
             if durable.sent:
@@ -7459,6 +8174,31 @@ class CoreFacade:
             },
         }
 
+    def _mine_resource_capacity_state(
+        self,
+        account_ref: str,
+    ) -> tuple[int, int] | None:
+        """Return ``(current, cap)`` when the account can hold no more mines.
+
+        One reading for both the scheduler (which decides whether a scan is
+        worth starting) and the execute workflow (the last check before the
+        dispatch packet), so the two can never disagree about the same fact.
+        A cap of zero means the role state has not reported one; that is
+        "unknown", not "full", and does not stop anything.
+        """
+
+        session = self._daily_account_session_snapshot(account_ref)
+        role_state = session.get("roleState")
+        role_state = role_state if isinstance(role_state, dict) else {}
+        try:
+            current = int(role_state.get("resourcePointCurrent") or 0)
+            capacity = int(role_state.get("resourcePointCap") or 0)
+        except (TypeError, ValueError):
+            return None
+        if capacity > 0 and current >= capacity:
+            return current, capacity
+        return None
+
     def _run_mine_execute_game_workflow(
         self,
         execution: OperationExecutionContext,
@@ -7472,12 +8212,9 @@ class CoreFacade:
                 f"矿点已由玩家{target.get('ownerName') or '未知玩家'}占领，禁止攻击",
                 code="MINE_PLAYER_OCCUPIED",
             )
-        session = self._daily_account_session_snapshot(account_ref)
-        role_state = session.get("roleState")
-        role_state = role_state if isinstance(role_state, dict) else {}
-        current = int(role_state.get("resourcePointCurrent") or 0)
-        capacity = int(role_state.get("resourcePointCap") or 0)
-        if capacity > 0 and current >= capacity:
+        capacity_state = self._mine_resource_capacity_state(account_ref)
+        if capacity_state is not None:
+            current, capacity = capacity_state
             raise OperationKnownFailureError(
                 f"资源点数量已满({current}/{capacity})，无法继续打矿",
                 code="MINE_RESOURCE_CAPACITY_FULL",
@@ -7548,19 +8285,14 @@ class CoreFacade:
                 require_full_loyalty=bool(body.get("fullLoyalty", True)),
             )
         except OperationKnownFailureError as error:
-            if preflight_execution.sent:
-                pending_garrison.update({
-                    "preDispatchMutationState": "failed",
-                    "preDispatchError": str(error),
-                    "requiresAttention": True,
-                })
-                self._save_automation_pending_record(
-                    account_ref, "minePendingGarrisonJson", pending_garrison
-                )
-            else:
-                self._update_account_public_state(
-                    account_ref, {"minePendingGarrisonJson": "{}"}
-                )
+            self._archive_pre_dispatch_known_failure(
+                account_ref,
+                feature="mine",
+                pending_field="minePendingGarrisonJson",
+                pending=pending_garrison,
+                error=error,
+                sent=preflight_execution.sent,
+            )
             raise
         except Exception as error:
             if preflight_execution.sent:
@@ -8071,23 +8803,49 @@ class CoreFacade:
     # general here, and every formation that contains it simply waits out the
     # pause.  Other formations, other generals and every other feature go on.
 
-    def _energy_shortage_pause_millis(self) -> int:
+    def _formation_pause_millis(self, contract_key: str) -> int:
         try:
             value = int(
                 self._behavior_contract["scheduler"].get(
-                    "energyShortageFormationPauseMillis", 1_800_000
+                    contract_key, 1_800_000
                 )
             )
         except (KeyError, TypeError, ValueError):
             value = 1_800_000
         return max(60_000, value)
 
+    def _energy_shortage_pause_millis(self) -> int:
+        return self._formation_pause_millis("energyShortageFormationPauseMillis")
+
+    def _troop_shortage_pause_millis(self) -> int:
+        return self._formation_pause_millis("troopShortageFormationPauseMillis")
+
+    @staticmethod
+    def _formation_pause_cause(entry: Dict[str, Any]) -> str:
+        """Name why a ledger entry paused its general.
+
+        Entries written before pauses had more than one cause carry no field
+        and were all stamina pauses; reading them as ``energy`` keeps a
+        pre-upgrade ledger meaning what it meant.
+        """
+
+        return str(entry.get("cause") or "energy").strip() or "energy"
+
     def _general_energy_cooldowns(
         self,
         account_ref: str,
         now_millis: int,
+        *,
+        cause: str | None = None,
     ) -> Dict[int, Dict[str, Any]]:
-        """Return the unexpired per-general pauses recorded by the energy step."""
+        """Return the unexpired per-general formation pauses.
+
+        The ledger key still says "energy" because that was its first cause;
+        it holds every reason a general's formations were paused as a whole.
+        Readers that ask "can this formation march?" want all of them;
+        readers that act on one cause (skip the stamina top-up, lift the
+        stamina pause) pass ``cause`` and see only theirs.
+        """
 
         # The ledger is the only source of a pause.  An account or session
         # that is not in the store therefore has none; this read must not turn
@@ -8108,28 +8866,44 @@ class CoreFacade:
                 until = int(entry.get("untilMillis") or 0)
             except (TypeError, ValueError):
                 continue
-            if general_id > 0 and until > int(now_millis):
-                active[general_id] = entry
+            if general_id <= 0 or until <= int(now_millis):
+                continue
+            if cause is not None and self._formation_pause_cause(entry) != cause:
+                continue
+            active[general_id] = entry
         return active
 
-    def _record_general_energy_cooldown(
+    def _record_formation_pause(
         self,
         account_ref: str,
         general: Dict[str, Any],
         *,
+        cause: str,
+        resource: str,
+        pause_millis: int,
         action_name: str,
         message: str,
         now_millis: int,
+        extra: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
+        """Pause every formation of ``general`` for a fixed window.
+
+        ``message`` is the sentence the preflight will repeat to the account
+        holder for as long as the pause lasts, so it has to name the general,
+        the shortfall and what ends it - not just that something failed.
+        """
+
         general_id = int(general.get("id") or 0)
-        until = int(now_millis) + self._energy_shortage_pause_millis()
+        until = int(now_millis) + max(60_000, int(pause_millis))
         entry = {
             "untilMillis": until,
             "recordedAtMillis": int(now_millis),
             "generalName": str(general.get("name") or general_id),
-            "energy": general.get("tili", general.get("energy")),
+            "cause": str(cause),
+            "resource": str(resource),
             "source": str(action_name),
             "message": str(message),
+            **(dict(extra) if extra else {}),
         }
         # Reading through the accessor drops expired rows, so the ledger can
         # never grow past the number of generals that were ever short.
@@ -8145,13 +8919,79 @@ class CoreFacade:
         )
         return entry
 
+    def _record_general_energy_cooldown(
+        self,
+        account_ref: str,
+        general: Dict[str, Any],
+        *,
+        action_name: str,
+        message: str,
+        now_millis: int,
+    ) -> Dict[str, Any]:
+        return self._record_formation_pause(
+            account_ref,
+            general,
+            cause="energy",
+            resource="活血丹",
+            pause_millis=self._energy_shortage_pause_millis(),
+            action_name=action_name,
+            message=message,
+            now_millis=now_millis,
+            extra={"energy": general.get("tili", general.get("energy"))},
+        )
+
+    def _record_troop_shortage_pause(
+        self,
+        account_ref: str,
+        general: Dict[str, Any],
+        shortage: Dict[str, Any],
+        *,
+        action_name: str,
+        now_millis: int,
+    ) -> Dict[str, Any]:
+        """Pause a formation whose saved 配兵 exceeds the idle troops on hand.
+
+        Troops do not regenerate the way stamina does; the account holder has
+        to recruit more of that type or lower the saved count.  The pause is
+        still the right shape - re-checking every ten seconds would only
+        re-read the same barracks - but the message has to say which of the
+        two actions ends it, because nothing else will.
+        """
+
+        soldier_type = str(shortage.get("soldierType") or "兵")
+        missing = int(shortage.get("shortage") or 0)
+        target = int(shortage.get("targetCount") or 0)
+        available = int(shortage.get("availableCount") or 0)
+        name = str(general.get("name") or shortage.get("generalName") or "")
+        return self._record_formation_pause(
+            account_ref,
+            general,
+            cause="troops",
+            resource=soldier_type,
+            pause_millis=self._troop_shortage_pause_millis(),
+            action_name=action_name,
+            message=(
+                f"将领{name}缺少{missing}{soldier_type}"
+                f"（保存的配兵为{target}，当前空闲可用{available}），"
+                f"请在游戏内招募{soldier_type}或调低该将领的配兵数量"
+            ),
+            now_millis=now_millis,
+            extra={"troopShortage": dict(shortage)},
+        )
+
     def _general_energy_cooldown_block(
         self,
         account_ref: str,
         general_ids: Any,
         now_millis: int,
     ) -> Dict[str, Any] | None:
-        """Describe the pause covering any of ``general_ids``, or ``None``."""
+        """Describe the pause covering any of ``general_ids``, or ``None``.
+
+        The answer names the cause because the caller turns it into an error
+        the account holder reads: a stamina pause and a troop pause end
+        through different actions, and reporting a troop shortfall as
+        "宝库没有活血丹" would send them to the wrong screen.
+        """
 
         wanted: list[int] = []
         for value in general_ids or []:
@@ -8171,14 +9011,41 @@ class CoreFacade:
         names = "、".join(
             str(entry.get("generalName") or gid) for gid, entry in hits
         )
+        causes = {self._formation_pause_cause(entry) for _gid, entry in hits}
+        deadline = china_clock_text(until)
+        if causes == {"energy"}:
+            message = (
+                f"将领{names}体力不足以出征且宝库没有活血丹，"
+                f"所在编队已暂停至{deadline}"
+            )
+            code = "EXPEDITION_ENERGY_ITEM_UNAVAILABLE"
+            resource = "活血丹"
+        else:
+            reasons = "；".join(
+                str(entry.get("message") or f"将领{gid}暂不能出征")
+                for gid, entry in hits
+            )
+            message = f"{reasons}；所在编队已暂停至{deadline}，之后自动重试"
+            code = (
+                "EXPEDITION_TROOPS_UNAVAILABLE"
+                if "troops" in causes
+                else "EXPEDITION_ENERGY_ITEM_UNAVAILABLE"
+            )
+            resource = "、".join(
+                sorted({
+                    str(entry.get("resource") or "")
+                    for _gid, entry in hits
+                    if str(entry.get("resource") or "")
+                })
+            )
         return {
             "untilMillis": until,
             "generalIds": [gid for gid, _entry in hits],
             "generalNames": names,
-            "message": (
-                f"将领{names}体力不足以出征且宝库没有活血丹，"
-                f"所在编队已暂停至{china_clock_text(until)}"
-            ),
+            "causes": sorted(causes),
+            "code": code,
+            "resource": resource,
+            "message": message,
         }
 
     def _lift_recovered_energy_cooldowns(
@@ -8198,11 +9065,17 @@ class CoreFacade:
         well; otherwise the lift would only take effect at the deadline anyway.
         """
 
+        # Only stamina pauses are judged by stamina.  A troop pause on the same
+        # ledger ends when the barracks change, which this round cannot see,
+        # so lifting it here on a healthy 体力 reading would resume a formation
+        # that still cannot be filled.
         active = self._general_energy_cooldowns(account_ref, now_millis)
         if not active:
             return []
         lifted: list[Dict[str, Any]] = []
         for general_id, entry in list(active.items()):
+            if self._formation_pause_cause(entry) != "energy":
+                continue
             general = generals_by_id.get(general_id)
             if general is None or not bool(general.get("energyReliable")):
                 continue
@@ -8254,6 +9127,141 @@ class CoreFacade:
             f"将领维护检查到{names}已恢复到出征下限以上，提前解除所在编队的体力暂停",
         )
         return lifted
+
+    @staticmethod
+    def _retryable_resource_shortage(error: OperationKnownFailureError) -> bool:
+        """True when a known failure names a resource that will come back.
+
+        Decided from the fact the raising step attached, never from the error
+        code: the energy and troop steps both attach it, and gating on a list
+        of codes is exactly what left an account's 副本 stranded for four days
+        on a code nobody had listed.
+        """
+
+        try:
+            return bool(dict(error.details).get("retryableResourceShortage"))
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    def _archive_pre_dispatch_known_failure(
+        self,
+        account_ref: str,
+        *,
+        feature: str,
+        pending_field: str,
+        pending: Dict[str, Any],
+        error: OperationKnownFailureError,
+        sent: bool,
+    ) -> Dict[str, Any]:
+        """Close an expedition's pending record after a preflight *known* failure.
+
+        A pending record exists to keep a mutation whose outcome is unknown
+        from being replayed, so its lifetime is exactly the interval during
+        which some outcome is unknown.  ``OperationKnownFailureError`` is by
+        construction the end of that interval: every preflight step raises it
+        only before sending, or after a receipt that says what the server did
+        (rejected, or landed differently than planned); no receipt at all is
+        ``OperationUncertainError`` and never reaches here.  So whether or not
+        an earlier heal or top-up *was* sent, nothing is in flight now and the
+        formal expedition is still ``not-started``.
+
+        刷黄 already encoded this and kept the record as audit history only.
+        The other four expedition workflows each answered the same question by
+        hand as "was anything sent during preflight" and kept the record
+        *active* with ``requiresAttention``, which turned an ordinary readiness
+        failure - a general 12 近卫兵 short of its saved formation, on a real
+        account - into "存在未确认操作，已隔离并禁止自动重发，请人工核对".  The
+        account holder had nothing to reconcile, and the only exit was editing
+        the JSON by hand.  One answer for all five lives here.
+        """
+
+        now_millis = int(self._ports.clock.now_millis())
+        archived = {
+            **pending,
+            "preDispatchMutationState": (
+                "failed" if bool(sent) else "failed-before-send"
+            ),
+            "preDispatchError": str(error),
+            "preDispatchMutationError": str(error),
+            "preDispatchErrorCode": str(error.code or ""),
+            "preDispatchFailedAtMillis": now_millis,
+            "requiresAttention": False,
+        }
+        self._update_account_public_state(
+            account_ref,
+            {
+                pending_field: "{}",
+                f"{feature}LastPreDispatchFailureJson": self._json(archived),
+            },
+        )
+        return archived
+
+    def _settle_unsent_expedition_ledger(
+        self,
+        account_ref: str,
+        *,
+        feature: str,
+        result_feature: str,
+        label: str,
+        pending_field: str,
+        pending: Dict[str, Any],
+        dispatch_state: str,
+        now_millis: int,
+    ) -> Dict[str, Any] | None:
+        """Archive a recovery ledger that provably has nothing to recover.
+
+        Returns the tick result when the record's formal expedition was never
+        sent *and* no preflight mutation is outstanding (see
+        :func:`pre_dispatch_outstanding`); ``None`` leaves the caller's
+        fail-closed gate to decide.  Such a record describes a preflight that
+        already reached its conclusion - a shortage, a busy general, a missing
+        rule - and then stayed active because its workflow kept it.  Holding
+        it "for a human" answers a question nobody asked: there is no send
+        whose outcome is unknown, and the configured path will re-derive every
+        precondition from fresh state anyway.  Records written by earlier
+        builds are the reason this exists; new builds no longer create them.
+        """
+
+        if str(dispatch_state) != "not-started" or pre_dispatch_outstanding(
+            pending
+        ):
+            return None
+        reason = str(
+            pending.get("preDispatchError")
+            or pending.get("preDispatchMutationError")
+            or "出征前检查未通过"
+        )
+        archived = {
+            **pending,
+            "requiresAttention": False,
+            "settledAtMillis": int(now_millis),
+            "recoveryResolution": "pre-dispatch-settled-nothing-formal-sent",
+        }
+        self._update_account_public_state(
+            account_ref,
+            {
+                pending_field: "{}",
+                f"{feature}LastPreDispatchFailureJson": self._json(archived),
+            },
+        )
+        self._write_user_log(
+            account_ref,
+            f"{label}此前的隔离已解除：出征前检查的结论已定（{reason}），"
+            "正式出征从未发送，无需人工核对；按配置重新安排",
+        )
+        return {
+            "feature": result_feature,
+            "state": "retry",
+            "success": False,
+            "requiresAttention": False,
+            "errorCode": (
+                str(pending.get("preDispatchErrorCode") or "")
+                or "EXPEDITION_PRE_DISPATCH_FAILED"
+            ),
+            "message": reason,
+            "nextWakeAtMillis": int(now_millis),
+            "_pendingReleased": True,
+        }
 
     @staticmethod
     def _resource_shortage_retry(
@@ -8798,9 +9806,27 @@ class CoreFacade:
         )
         ministry_settings = normalize_ministry_settings(raw_ministry)
         ministry = {
+            # 收菜（cropEnabled）与礼部任务委派（courtesyEnabled）都是已验证
+            # 的写路径；种植仍由 ministry_planting_allowed 单独门禁。
             "enabled": bool(raw_ministry)
-            and ministry_planting_allowed(ministry_settings),
+            and (
+                bool(ministry_settings.get("cropEnabled"))
+                or bool(ministry_settings.get("courtesyEnabled"))
+            ),
             "settings": ministry_settings,
+        }
+        raw_captives = source.get("captives")
+        raw_captives = (
+            dict(raw_captives) if isinstance(raw_captives, dict) else {}
+        )
+        captive_policy = normalize_captive_policy(raw_captives)
+        captives = {
+            "enabled": bool(raw_captives)
+            and (
+                captive_policy["releaseEnabled"]
+                or captive_policy["persuadeEnabled"]
+            ),
+            "settings": captive_policy,
         }
         raw_inventory = dict(raw_common)
         if isinstance(source.get("inventory"), dict):
@@ -8928,6 +9954,7 @@ class CoreFacade:
             "general": general,
             "domestic": domestic,
             "ministry": ministry,
+            "captives": captives,
             "inventory": inventory,
             "alarm": alarm,
             "daily": daily,
@@ -8964,6 +9991,7 @@ class CoreFacade:
                 ("general", general),
                 ("domestic", domestic),
                 ("ministry", ministry),
+                ("captives", captives),
                 ("inventory", inventory),
                 ("alarm", alarm),
                 ("daily", daily),
@@ -9007,6 +10035,9 @@ class CoreFacade:
             ),
             "ministryEnabled": bool(
                 (candidate.get("ministry") or {}).get("enabled")
+            ),
+            "captivesEnabled": bool(
+                (candidate.get("captives") or {}).get("enabled")
             ),
             "inventoryEnabled": bool(
                 (candidate.get("inventory") or {}).get("enabled")
@@ -9066,6 +10097,8 @@ class CoreFacade:
                 keys.append("domestic")
             if bool((config.get("ministry") or {}).get("enabled")):
                 keys.append("ministry")
+            if bool((config.get("captives") or {}).get("enabled")):
+                keys.append("captives")
             if bool((config.get("inventory") or {}).get("enabled")):
                 keys.append("inventory")
             if bool((config.get("alarm") or {}).get("enabled")):
@@ -9963,14 +10996,179 @@ class CoreFacade:
                     "nextWakeAtMillis": retry_at,
                 }
         if send_state != "accepted" and (
+            send_state in {"sending", "uncertain"}
+            and pre_dispatch_state == "accepted"
+        ):
+            # A dispatch whose receipt was lost is judged by what the
+            # generals did, not by the missing receipt.  Once the safe
+            # observation window has passed and every ledger general is
+            # present and idle in a fresh state, nothing is in flight -
+            # a dispatch that took effect would have them marching.  The
+            # settle is cheap even when it is wrong: the next dispatch
+            # picks a fresh target from the map scan, so a false
+            # "no-dispatch" verdict costs at most one ordinary brush
+            # battle, while blocking stops the whole feature until a
+            # human happens by.
+            metadata = pending.get("dispatchRequestMetadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            try:
+                boundary_at = int(
+                    pending.get("sendingAtMillis")
+                    or pending.get("createdAtMillis")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                boundary_at = 0
+            auto_grace_millis = max(
+                1_800_000,
+                int(
+                    schedule.get("dispatchUncertainAutoSettleGraceMillis")
+                    or 0
+                ),
+                int(schedule.get("settlementRecheckGraceMillis") or 0),
+            )
+            age_millis = max(0, now_millis - boundary_at)
+            selected_ids: list[int] = []
+            for raw_id in pending.get("generalIds") or []:
+                try:
+                    general_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                if general_id > 0 and general_id not in selected_ids:
+                    selected_ids.append(general_id)
+            generals_by_id = {
+                int(row.get("id") or 0): dict(row)
+                for row in generals
+                if isinstance(row, dict) and int(row.get("id") or 0) > 0
+            }
+            all_present = bool(selected_ids) and all(
+                general_id in generals_by_id for general_id in selected_ids
+            )
+            all_idle = all_present and all(
+                general_is_idle(generals_by_id[general_id])
+                for general_id in selected_ids
+            )
+            if (
+                boundary_at > 0
+                and all_idle
+                and age_millis >= auto_grace_millis
+            ):
+                archived = {
+                    **pending,
+                    "requiresAttention": False,
+                    "reconciledAtMillis": now_millis,
+                    "reconciliationReason": (
+                        "auto-aged-uncertain-dispatch-and-all-idle"
+                    ),
+                    "reconciliationEvidence": {
+                        "boundaryAgeMillis": age_millis,
+                        "autoSettleGraceMillis": auto_grace_millis,
+                        "idleGeneralIds": list(selected_ids),
+                        "lastRequestPhase": str(metadata.get("phase") or ""),
+                        "lastRequestOpcode": str(
+                            metadata.get("opcode") or ""
+                        ),
+                    },
+                }
+                public = self._account_public_state(account_ref)
+                resident_state = self._public_json_object(
+                    public.get("residentAutomationStateJson")
+                )
+                brush_state = dict(resident_state.get("brush") or {})
+                brush_state.update({
+                    "skipHealOnce": True,
+                    "skipHealReason": "auto-reconciled-uncertain-dispatch",
+                    "nextWakeAtMillis": now_millis
+                    + int(schedule.get("transientRetryMillis") or 10_000),
+                })
+                resident_state["brush"] = brush_state
+                self._update_account_public_state(
+                    account_ref,
+                    {
+                        "brushPendingRecoveryJson": "{}",
+                        "brushLastReconciliationJson": self._json(archived),
+                        "residentAutomationStateJson": self._json(
+                            resident_state
+                        ),
+                    },
+                )
+                message = (
+                    "刷黄旧不确定账本已在安全观察期后按将领回闲状态"
+                    "自动结清；未重发旧治疗、配兵或正式出征，"
+                    "下一轮仅跳过治疗一次"
+                )
+                self._write_user_log(account_ref, f"刷黄：{message}")
+                return {
+                    "feature": "brushYellow",
+                    "state": "reconciled",
+                    "success": True,
+                    "requiresAttention": False,
+                    "message": message,
+                    "nextWakeAtMillis": brush_state["nextWakeAtMillis"],
+                }
+            if boundary_at > 0 and age_millis < auto_grace_millis:
+                waiting = {
+                    **pending,
+                    "requiresAttention": False,
+                    "lastObservedAtMillis": now_millis,
+                    "lastDecision": "wait-auto-settle-grace",
+                    "lastDecisionReason": (
+                        "刷黄出征回执未确认；等待安全观察期结束后"
+                        "按将领状态自动结清，期间不会重复发送"
+                    ),
+                }
+                self._save_automation_pending_record(
+                    account_ref,
+                    "brushPendingRecoveryJson",
+                    waiting,
+                )
+                return {
+                    "feature": "brushYellow",
+                    "state": "waiting",
+                    "success": False,
+                    "requiresAttention": False,
+                    "message": waiting["lastDecisionReason"],
+                    "nextWakeAtMillis": boundary_at + auto_grace_millis,
+                }
+            if boundary_at > 0 and all_present:
+                # Aged past the grace with generals still marching: the
+                # dispatch may well have taken effect, so keep watching at
+                # the usual busy poll cadence and settle when they come
+                # home - do not strand the feature on a human for what is
+                # most likely an ordinary round trip.
+                poll = max(
+                    1_000,
+                    int(schedule.get("busyGeneralPollMillis") or 30_000),
+                )
+                waiting = {
+                    **pending,
+                    "requiresAttention": False,
+                    "lastObservedAtMillis": now_millis,
+                    "lastDecision": "wait-auto-settle-busy",
+                    "lastDecisionReason": (
+                        "刷黄出征回执未确认；将领仍在行军，"
+                        "等待回闲后自动结清，期间不会重复发送"
+                    ),
+                }
+                self._save_automation_pending_record(
+                    account_ref,
+                    "brushPendingRecoveryJson",
+                    waiting,
+                )
+                return {
+                    "feature": "brushYellow",
+                    "state": "waiting",
+                    "success": False,
+                    "requiresAttention": False,
+                    "message": waiting["lastDecisionReason"],
+                    "nextWakeAtMillis": now_millis + poll,
+                }
+        if send_state != "accepted" and (
             send_state in {"not-started", "sending", "uncertain", "failed"}
             # One shared, evidence-based answer; see pre_dispatch_outstanding.
-            # ``failed`` stays blocking *here* only because these three
-            # recovery paths have no archive-and-retry branch yet, unlike 副本.
-            # It is a per-feature policy sitting beside the send-boundary fact,
-            # not part of it.
+            # A settled pre-dispatch failure never reaches this gate: the
+            # branch above already archived it as known-pre-dispatch-failure.
             or pre_dispatch_outstanding(pending)
-            or pre_dispatch_state == "failed"
         ):
             blocked = {
                 **pending,
@@ -10314,9 +11512,18 @@ class CoreFacade:
         now_millis = int(self._ports.clock.now_millis())
         schedule = dict(self._behavior_contract["mine"]["schedule"])
         dispatch_state = str(pending.get("dispatchSendState") or "")
-        pre_dispatch_state = str(
-            pending.get("preDispatchMutationState") or ""
+        settled = self._settle_unsent_expedition_ledger(
+            account_ref,
+            feature="mine",
+            result_feature="mine",
+            label="打矿",
+            pending_field="minePendingGarrisonJson",
+            pending=pending,
+            dispatch_state=dispatch_state,
+            now_millis=now_millis,
         )
+        if settled is not None:
+            return settled
         if dispatch_state != "accepted" and (
             dispatch_state
             in {
@@ -10327,12 +11534,7 @@ class CoreFacade:
                 "failed",
             }
             # One shared, evidence-based answer; see pre_dispatch_outstanding.
-            # ``failed`` stays blocking *here* only because these three
-            # recovery paths have no archive-and-retry branch yet, unlike 副本.
-            # It is a per-feature policy sitting beside the send-boundary fact,
-            # not part of it.
             or pre_dispatch_outstanding(pending)
-            or pre_dispatch_state == "failed"
         ):
             blocked = {
                 **pending,
@@ -10638,18 +11840,22 @@ class CoreFacade:
         now_millis = int(self._ports.clock.now_millis())
         schedule = dict(self._behavior_contract["raid"])
         send_state = str(pending.get("sendState") or "")
-        pre_dispatch_state = str(
-            pending.get("preDispatchMutationState") or ""
+        settled = self._settle_unsent_expedition_ledger(
+            account_ref,
+            feature="raid",
+            result_feature="raid",
+            label="掠夺",
+            pending_field="raidPendingReturnJson",
+            pending=pending,
+            dispatch_state=send_state,
+            now_millis=now_millis,
         )
+        if settled is not None:
+            return settled
         if send_state != "accepted" and (
             send_state in {"not-started", "sending", "uncertain", "failed"}
             # One shared, evidence-based answer; see pre_dispatch_outstanding.
-            # ``failed`` stays blocking *here* only because these three
-            # recovery paths have no archive-and-retry branch yet, unlike 副本.
-            # It is a per-feature policy sitting beside the send-boundary fact,
-            # not part of it.
             or pre_dispatch_outstanding(pending)
-            or pre_dispatch_state == "failed"
         ):
             blocked = {
                 **pending,
@@ -10976,10 +12182,10 @@ class CoreFacade:
             first_block = paused_rules[rule_index]
             raise OperationKnownFailureError(
                 f"刷黄{first_block['message']}",
-                code="EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                code=str(first_block["code"]),
                 details={
                     "retryableResourceShortage": True,
-                    "resource": "活血丹",
+                    "resource": str(first_block["resource"]),
                     "retryAtMillis": earliest,
                     "formationPaused": True,
                     "sourceRowIndex": max(
@@ -11603,6 +12809,37 @@ class CoreFacade:
                 code="SHARED_MINE_RULE_MISSING",
             )
         mine_state = dict(state.get("mine") or {})
+        schedule = dict(self._behavior_contract["mine"]["schedule"])
+        # The resource-point cap is a fact about the account, not about any
+        # target, so it is decided before the map is scanned.  Deciding it
+        # after the scan (where the execute workflow re-checks it as the last
+        # line of defence) meant a full account spent every retry interval
+        # scanning coordinates and reserving shared targets only to be refused
+        # at the send boundary.  The count comes from the 0x8004 role state
+        # that the session probe refreshes every minute, so waiting exactly
+        # that long is neither spinning nor sleeping past a change.
+        capacity_state = self._mine_resource_capacity_state(account_ref)
+        if capacity_state is not None:
+            current, capacity = capacity_state
+            now_millis = int(self._ports.clock.now_millis())
+            mine_state.update({
+                "nextWakeAtMillis": now_millis
+                + int(schedule.get("resourceCapacityFullRetryMillis") or 60_000),
+                "lastState": "capacity-full",
+                "lastMessage": (
+                    f"资源点数量已满({current}/{capacity})，"
+                    "等待矿点数量回落后自动继续"
+                ),
+            })
+            state["mine"] = mine_state
+            self._save_resident_automation_state(account_ref, state)
+            return {
+                "feature": "mine",
+                "state": "capacity-full",
+                "success": True,
+                "message": mine_state["lastMessage"],
+                "nextWakeAtMillis": mine_state["nextWakeAtMillis"],
+            }
         cursor = max(0, int(mine_state.get("cursor") or 0))
         row = rows[cursor % len(rows)]
         level = row.get("level")
@@ -11781,7 +13018,6 @@ class CoreFacade:
             for item in searched.get("targets") or []
             if isinstance(item, dict)
         ]
-        schedule = dict(self._behavior_contract["mine"]["schedule"])
         now_millis = int(self._ports.clock.now_millis())
         if not targets:
             mine_state.update({
@@ -12172,49 +13408,576 @@ class CoreFacade:
     ) -> Dict[str, Any]:
         ministry = dict(configs.get("ministry") or {})
         settings = dict(ministry.get("settings") or {})
-        has_pending = bool(
-            self._automation_pending_record(
-                account_ref, "ministryPendingPlantJson"
+        has_pending = any(
+            bool(self._automation_pending_record(account_ref, field))
+            for field in (
+                "ministryPendingPlantJson",
+                "ministryPendingHarvestJson",
+                "ministryPendingDelegateJson",
             )
         )
-        if not has_pending and (
-            not bool(ministry.get("enabled"))
-            or not ministry_planting_allowed(settings)
-        ):
+        garden_enabled = bool(ministry.get("enabled")) and bool(
+            settings.get("cropEnabled")
+        )
+        courtesy_enabled = bool(ministry.get("enabled")) and bool(
+            settings.get("courtesyEnabled")
+        )
+        if not has_pending and not garden_enabled and not courtesy_enabled:
             raise OperationKnownFailureError(
-                "共享六部配置没有已确认的金银花种植任务",
+                "共享六部配置没有已确认的种菜收菜或礼部任务",
                 code="SHARED_MINISTRY_RULE_MISSING",
             )
         execution.publish_progress(5, {"phase": "resident-ministry"})
-        envelope = self._run_hubu_plant_game_workflow(
-            execution,
-            {
-                "accountRef": account_ref,
-                "confirm": "hubu-batch-plant",
-                **settings,
-            },
-            context,
-        )
-        result = dict(envelope.get("result") or {})
-        raw = dict(result.get("raw") or {})
-        phase = str(raw.get("phase") or "garden-full")
         now_millis = int(self._ports.clock.now_millis())
-        next_wake = now_millis + int(
+        poll_millis = int(
             self._behavior_contract["scheduler"]["ministryPollMillis"]
         )
+        wake_candidates = [now_millis + poll_millis]
+        messages: list[str] = []
+        completed = False
+
+        if garden_enabled or self._automation_pending_record(
+            account_ref, "ministryPendingPlantJson"
+        ) or self._automation_pending_record(
+            account_ref, "ministryPendingHarvestJson"
+        ):
+            envelope = self._run_hubu_plant_game_workflow(
+                execution,
+                {
+                    "accountRef": account_ref,
+                    "confirm": "hubu-batch-plant",
+                    **settings,
+                },
+                context,
+            )
+            garden_result = dict(envelope.get("result") or {})
+            garden_raw = dict(garden_result.get("raw") or {})
+            garden_phase = str(garden_raw.get("phase") or "")
+            completed = garden_phase in {
+                "planted", "plant-recovered", "harvested",
+            }
+            if garden_result.get("message"):
+                messages.append(str(garden_result["message"]))
+            # 菜地有剩余生长秒 → 唤醒时刻 = 最早成熟时刻。
+            garden_state = dict(garden_raw.get("garden") or {})
+            growing = [
+                int(plot.get("remainingSeconds") or 0)
+                for plot in garden_state.get("plots") or []
+                if isinstance(plot, dict)
+                and bool(plot.get("occupied"))
+                and int(plot.get("remainingSeconds") or 0) > 0
+            ]
+            if growing:
+                wake_candidates.append(now_millis + min(growing) * 1000)
+
+        if courtesy_enabled or self._automation_pending_record(
+            account_ref, "ministryPendingDelegateJson"
+        ):
+            courtesy_envelope = self._run_libu_delegate_game_workflow(
+                execution,
+                {"accountRef": account_ref, **settings},
+                context,
+            )
+            courtesy_result = dict(courtesy_envelope.get("result") or {})
+            courtesy_raw = dict(courtesy_result.get("raw") or {})
+            courtesy_phase = str(courtesy_raw.get("phase") or "")
+            if courtesy_phase in {"delegated", "delegate-recovered"}:
+                completed = True
+            if (
+                courtesy_result.get("message")
+                and courtesy_phase != "courtesy-disabled"
+            ):
+                messages.append(str(courtesy_result["message"]))
+            # 礼部任务进行中 → 唤醒时刻 = 最早剩余秒结束。
+            task_end = courtesy_raw.get("nextTaskEndSeconds")
+            if task_end is not None:
+                wake_candidates.append(now_millis + int(task_end) * 1000)
+
         return {
-            **result,
             "feature": "ministry",
-            "state": (
-                "completed"
-                if phase in {"planted", "plant-recovered"}
-                else "waiting"
+            "state": "completed" if completed else "waiting",
+            "success": True,
+            "message": "；".join(messages) or "六部本轮无事可做，等待下一轮",
+            "nextWakeAtMillis": min(wake_candidates),
+        }
+
+    def _captives_poll_millis(self) -> int:
+        # Not in the shared contract yet: the Android parity test pins the
+        # exact scheduler key set, so the cadence falls back to the ministry
+        # one until the contract can grow on both platforms together.
+        scheduler = self._behavior_contract["scheduler"]
+        return int(
+            scheduler.get("captivesPollMillis")
+            or scheduler["ministryPollMillis"]
+        )
+
+    def _fresh_captive_state(
+        self,
+        account_ref: str,
+        context: Dict[str, Any],
+        *,
+        phase: str,
+    ) -> list[Dict[str, Any]]:
+        """Read-only 0x1016/0x8004 refresh; return the captive table it carries.
+
+        The capture shows the camp screen sending no query of its own - the
+        client renders captives it already holds from the role-state sync - so
+        this refresh is the feature's only list source outside the rebuilt
+        tables that 0x8234/0x8236 receipts carry.
+        """
+
+        account = self._accounts.get(account_ref)
+        if account is None:
+            raise RuntimeError("刷新俘虏状态时账号不存在")
+        session = account.get("session")
+        session = session if isinstance(session, dict) else {}
+        public_state = session.get("publicState")
+        public_state = public_state if isinstance(public_state, dict) else {}
+        role_id_value = (
+            public_state.get("roleId")
+            or session.get("accountId")
+            or account.get("id")
+        )
+        role_id = positive_game_id(role_id_value, "角色 ID")
+        fact = self._execute_host_game_command(
+            account_ref,
+            0x1016,
+            struct.pack(">q", role_id),
+            phase,
+            {**context, "readOnly": True},
+            mutation_sent=False,
+        )
+        payload = self._game_packet(fact, 0x8004)
+        if payload is None:
+            raise OperationKnownFailureError(
+                "俘虏状态刷新未收到 0x8004 角色状态",
+                code="CAPTIVES_STATE_RESPONSE_MISSING",
+            )
+        return recover_captives_from_8004(payload.hex())
+
+    def _run_configured_captives_tick(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Refresh the prison and run one policy-planned action per tick."""
+
+        config = dict(configs.get("captives") or {})
+        pending = self._automation_pending_record(
+            account_ref, "captivesPendingActionJson"
+        )
+        if not pending and not bool(config.get("enabled")):
+            raise OperationKnownFailureError(
+                "共享俘虏营没有已启用的劝降或释放策略",
+                code="SHARED_CAPTIVES_RULE_MISSING",
+            )
+        now_millis = int(self._ports.clock.now_millis())
+        execution.publish_progress(5, {"phase": "resident-captives-state"})
+        captives = self._fresh_captive_state(
+            account_ref,
+            {**context, "operationId": execution.operation_id},
+            phase="shared-core/captives/state-refresh",
+        )
+        if pending:
+            return self._recover_captives_pending(
+                account_ref,
+                pending,
+                captives,
+                now_millis=now_millis,
+            )
+        settings = dict(config.get("settings") or {})
+        # The stored config is already normalized by
+        # ``configure_resident_automation_from_habits``; re-running the raw-key
+        # normalizer here would read different key names and disable both.
+        policy = {
+            "releaseEnabled": bool(settings.get("releaseEnabled")),
+            "releaseBelowGrowth": int(settings.get("releaseBelowGrowth") or 70),
+            "persuadeEnabled": bool(settings.get("persuadeEnabled")),
+            "persuadeAtOrAboveGrowth": int(
+                settings.get("persuadeAtOrAboveGrowth") or 70
             ),
-            "success": bool(result.get("success", True)),
-            "message": str(
-                result.get("message") or "六部菜地已满，等待下一轮"
+            "payMode": int(settings.get("payMode") or 0),
+        }
+        if not (
+            policy["releaseEnabled"] or policy["persuadeEnabled"]
+        ):
+            raise OperationKnownFailureError(
+                "共享俘虏营没有已启用的劝降或释放策略",
+                code="SHARED_CAPTIVES_RULE_MISSING",
+            )
+        feature_state = dict(state.get("captives") or {})
+        stored_cooldowns = feature_state.get("captiveCooldowns")
+        if isinstance(stored_cooldowns, dict):
+            for captive in captives:
+                try:
+                    override = int(
+                        stored_cooldowns.get(str(int(captive.get("id") or 0)))
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    override = 0
+                if override > int(
+                    captive.get("persuadeAvailableAtMillis") or 0
+                ):
+                    captive["persuadeAvailableAtMillis"] = override
+        planned = plan_captive_actions(
+            captives, policy, now_millis=now_millis
+        )
+        actionable = [
+            row for row in planned if row["action"] in {"persuade", "release"}
+        ]
+        if not actionable:
+            waits = [
+                int(row.get("availableAtMillis") or 0)
+                for row in planned
+                if row["action"] == "wait"
+                and int(row.get("availableAtMillis") or 0) > now_millis
+            ]
+            next_wake = now_millis + self._captives_poll_millis()
+            if waits:
+                next_wake = min(next_wake, min(waits))
+            waiting = sum(1 for row in planned if row["action"] == "wait")
+            message = (
+                f"俘虏营{len(captives)}名俘虏均不在策略范围，"
+                f"其中{waiting}名劝降冷却中"
+                if waiting
+                else (
+                    f"俘虏营{len(captives)}名俘虏均不在策略范围"
+                    if captives
+                    else "俘虏营当前没有俘虏"
+                )
+            )
+            return {
+                "feature": "captives",
+                "state": "waiting",
+                "success": True,
+                "message": message,
+                "captiveCount": len(captives),
+                "nextWakeAtMillis": next_wake,
+            }
+        return self._execute_captive_action(
+            execution,
+            account_ref,
+            self._enrich_captive_action(actionable[0], captives),
+            remaining=len(actionable) - 1,
+            now_millis=now_millis,
+            context=context,
+        )
+
+    @staticmethod
+    def _enrich_captive_action(
+        action: Dict[str, Any],
+        captives: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Stamp the pre-send attempt count so a crashed send is decidable.
+
+        Recovery compares this against the refreshed table: a higher count (or
+        a newer cooldown base) proves the attempt landed and failed.
+        """
+
+        enriched = dict(action)
+        for captive in captives:
+            if int(captive.get("id") or 0) == int(
+                enriched.get("captiveId") or 0
+            ):
+                enriched["persuadeCount"] = int(
+                    captive.get("persuadeCount") or 0
+                )
+                break
+        return enriched
+
+    def _execute_captive_action(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        action: Dict[str, Any],
+        *,
+        remaining: int,
+        now_millis: int,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Send one 劝降/释放 behind a durable boundary; one per tick.
+
+        The receipt carries the rebuilt captive table, so a parsed status is
+        the whole verification - no post-send read can add evidence.  Anything
+        short of a parsed status (missing packet, unparsable bytes) is
+        ``OperationUncertainError``: the request crossed the wire and its
+        effect is unknown, so the pending record isolates the feature against
+        automatic replay.
+        """
+
+        is_persuade = str(action.get("action")) == "persuade"
+        label = "劝降" if is_persuade else "释放"
+        name = str(action.get("name") or action.get("captiveId") or "")
+        growth = int(action.get("growth") or 0)
+        request_opcode = 0x1234 if is_persuade else 0x1236
+        response_opcode = 0x8234 if is_persuade else 0x8236
+        pending_field = "captivesPendingActionJson"
+
+        def next_wake() -> int:
+            if remaining > 0:
+                return int(self._ports.clock.now_millis()) + 1_000
+            return int(self._ports.clock.now_millis()) + (
+                self._captives_poll_millis()
+            )
+
+        execution.raise_if_cancelled()
+        pending = self._save_automation_pending_record(
+            account_ref,
+            pending_field,
+            {
+                "schemaVersion": 1,
+                "sendState": "sending",
+                "createdAtMillis": now_millis,
+                "action": dict(action),
+            },
+        )
+        execution.mark_request_sent({
+            "transport": "android-raw-game-command",
+            "feature": f"captives-{action.get('action')}",
+            "opcode": f"0x{request_opcode:04x}",
+        })
+        try:
+            if is_persuade:
+                request_payload = build_persuade_payload(
+                    int(action.get("prisonFiefId") or 0),
+                    int(action.get("captiveId") or 0),
+                    int(action.get("payMode") or 0),
+                )
+            else:
+                request_payload = build_release_payload(
+                    int(action.get("prisonFiefId") or 0),
+                    int(action.get("captiveId") or 0),
+                )
+            fact = self._execute_host_game_command(
+                account_ref,
+                request_opcode,
+                request_payload,
+                f"shared-core/captives/{action.get('action')}",
+                {**context, "operationId": execution.operation_id},
+                mutation_sent=True,
+            )
+            raw = self._required_game_packet(
+                fact,
+                response_opcode,
+                uncertain_message=(
+                    f"{label}请求已发送，但未收到 "
+                    f"0x{response_opcode:04x} 回执"
+                ),
+            )
+            receipt = (
+                parse_persuade_response(raw)
+                if is_persuade
+                else parse_release_response(raw)
+            )
+            if receipt.get("status") is None:
+                raise OperationUncertainError(
+                    f"{label}请求已发送，但回执无法确认",
+                    {"receipt": receipt},
+                )
+            if not bool(receipt.get("success")) and not (
+                is_persuade and bool(receipt.get("cooldown"))
+            ):
+                raise OperationKnownFailureError(
+                    str(receipt.get("message") or f"服务器拒绝{label}俘虏"),
+                    code="CAPTIVES_ACTION_REJECTED",
+                    details={"receipt": receipt},
+                )
+        except OperationKnownFailureError:
+            # A known failure here is definitive: the transport converts every
+            # genuinely ambiguous outcome (missing packet, HTTP 0/5xx after
+            # the send) into OperationUncertainError itself, so what remains -
+            # a host refusal before the wire, or the server's own no - applied
+            # nothing, and the boundary closes without human adjudication.
+            self._update_account_public_state(
+                account_ref, {pending_field: "{}"}
+            )
+            raise
+        except OperationUncertainError:
+            pending.update({
+                "sendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, pending
+            )
+            raise
+        except Exception as error:
+            pending.update({
+                "sendState": "uncertain",
+                "uncertainAtMillis": int(self._ports.clock.now_millis()),
+            })
+            self._save_automation_pending_record(
+                account_ref, pending_field, pending
+            )
+            raise OperationUncertainError(
+                f"{label}请求已越过发送边界：{error}"
+            ) from error
+        self._update_account_public_state(account_ref, {pending_field: "{}"})
+        if is_persuade and bool(receipt.get("cooldown")):
+            # status 249 is a confirmed business result, not an exception:
+            # the attempt landed, loyalty dropped, and this captive is locked
+            # for one hour.  Record the lock and move on to the next captive.
+            available_at = int(self._ports.clock.now_millis()) + (
+                PERSUADE_COOLDOWN_MILLIS
+            )
+            rebuilt = receipt.get("captives")
+            if isinstance(rebuilt, list):
+                for row in rebuilt:
+                    if int(row.get("id") or 0) == int(
+                        action.get("captiveId") or 0
+                    ):
+                        available_at = max(
+                            available_at,
+                            int(row.get("persuadeAvailableAtMillis") or 0),
+                        )
+                        break
+            return {
+                "feature": "captives",
+                "state": "waiting",
+                "success": True,
+                "message": (
+                    f"劝降失败，{name}（成长{growth}）冷却1小时，"
+                    "跳过继续处理其他俘虏"
+                ),
+                "captiveCooldowns": {
+                    str(int(action.get("captiveId") or 0)): available_at,
+                },
+                "captiveCount": (
+                    len(rebuilt) if isinstance(rebuilt, list) else None
+                ),
+                "nextWakeAtMillis": next_wake(),
+            }
+        return {
+            "feature": "captives",
+            "state": "completed",
+            "success": True,
+            "message": (
+                f"劝降成功 {name}（成长{growth}）"
+                if is_persuade
+                else f"已释放 {name}（成长{growth}）"
             ),
-            "nextWakeAtMillis": next_wake,
+            "captiveAction": {
+                "action": str(action.get("action")),
+                "captiveId": int(action.get("captiveId") or 0),
+                "name": name,
+                "growth": growth,
+                "level": int(action.get("level") or 0),
+                "kind": str(action.get("kind") or ""),
+            },
+            "captiveCount": (
+                len(receipt["captives"])
+                if isinstance(receipt.get("captives"), list)
+                else None
+            ),
+            "nextWakeAtMillis": next_wake(),
+        }
+
+    def _recover_captives_pending(
+        self,
+        account_ref: str,
+        pending: Dict[str, Any],
+        captives: list[Dict[str, Any]],
+        *,
+        now_millis: int,
+    ) -> Dict[str, Any]:
+        """Settle a crashed 劝降/释放 by what the fresh table can prove.
+
+        A record only survives when the receipt never closed the boundary, so
+        the question is observational: a captive that is gone was persuaded or
+        released; a persuade whose attempt count or cooldown base moved landed
+        and failed.  A captive still present and unchanged proves nothing -
+        the attempt may or may not have landed - and only a human may close
+        that; automatic replay stays forbidden.
+        """
+
+        action = dict(pending.get("action") or {})
+        captive_id = int(action.get("captiveId") or 0)
+        is_persuade = str(action.get("action")) == "persuade"
+        label = "劝降" if is_persuade else "释放"
+        name = str(action.get("name") or captive_id)
+        growth = int(action.get("growth") or 0)
+        by_id = {
+            int(row.get("id") or 0): dict(row)
+            for row in captives
+            if int(row.get("id") or 0) > 0
+        }
+        current = by_id.get(captive_id)
+        pending_field = "captivesPendingActionJson"
+        if current is None:
+            self._update_account_public_state(
+                account_ref, {pending_field: "{}"}
+            )
+            return {
+                "feature": "captives",
+                "state": "completed",
+                "success": True,
+                "message": (
+                    f"已通过俘虏表确认此前{label}完成："
+                    f"{name}（成长{growth}）"
+                ),
+                "captiveAction": {
+                    "action": str(action.get("action")),
+                    "captiveId": captive_id,
+                    "name": name,
+                    "growth": growth,
+                    "level": int(action.get("level") or 0),
+                    "kind": str(action.get("kind") or ""),
+                },
+                "nextWakeAtMillis": now_millis + self._captives_poll_millis(),
+            }
+        if is_persuade:
+            attempt_count = int(action.get("persuadeCount") or 0)
+            cooldown_base = int(
+                current.get("persuadeCooldownBaseMillis") or 0
+            )
+            created_at = int(pending.get("createdAtMillis") or 0)
+            if (
+                int(current.get("persuadeCount") or 0) > attempt_count
+                or (created_at > 0 and cooldown_base >= created_at)
+            ):
+                self._update_account_public_state(
+                    account_ref, {pending_field: "{}"}
+                )
+                return {
+                    "feature": "captives",
+                    "state": "waiting",
+                    "success": True,
+                    "message": (
+                        f"已通过俘虏表确认此前劝降失败：{name}（成长{growth}）"
+                        "冷却1小时，跳过继续处理其他俘虏"
+                    ),
+                    "captiveCooldowns": {
+                        str(captive_id): int(
+                            current.get("persuadeAvailableAtMillis") or 0
+                        ),
+                    },
+                    "nextWakeAtMillis": (
+                        now_millis + self._captives_poll_millis()
+                    ),
+                }
+        pending.update({
+            "sendState": "uncertain",
+            "requiresAttention": True,
+            "lastObservedAtMillis": now_millis,
+        })
+        self._save_automation_pending_record(
+            account_ref, pending_field, pending
+        )
+        return {
+            "feature": "captives",
+            "state": "blocked",
+            "success": False,
+            "requiresAttention": True,
+            "message": (
+                f"此前{label}请求已越过发送边界，但最新俘虏表中"
+                f"{name}（成长{growth}）仍在且状态未变；"
+                "禁止自动重发，请人工核对"
+            ),
+            "nextWakeAtMillis": None,
         }
 
     def _pending_nested_send_unsettled(
@@ -12621,7 +14384,9 @@ class CoreFacade:
         energy_paused: list[Dict[str, Any]] = []
         if bool(settings.get("autoEnergy")):
             cooldowns = self._general_energy_cooldowns(
-                account_ref, int(self._ports.clock.now_millis())
+                account_ref,
+                int(self._ports.clock.now_millis()),
+                cause="energy",
             )
             for general_id in ordered_ids:
                 general = by_id[general_id]
@@ -14678,6 +16443,7 @@ class CoreFacade:
             "domestic": "domestic",
             "inventory": "inventory",
             "alarm": "alarm",
+            "captives": "captives",
         }
         feature = feature_alias.get(str(result.get("feature") or ""))
         if feature is None:
@@ -14741,6 +16507,29 @@ class CoreFacade:
             result.get("requiresAttention")
         ):
             feature_state.pop("lastErrorCode", None)
+        if feature == "captives":
+            # A failed 劝降 (status 249) is a confirmed business result whose
+            # one-hour lock is carried by the rebuilt captive table, but the
+            # table only reaches the next tick through a fresh 0x8004 - keep
+            # the deadline durably so a restart cannot persuade early.
+            cooldowns = result.get("captiveCooldowns")
+            if isinstance(cooldowns, dict) and cooldowns:
+                merged: Dict[str, int] = {}
+                stored = feature_state.get("captiveCooldowns")
+                if isinstance(stored, dict):
+                    for key, value in stored.items():
+                        try:
+                            merged[str(key)] = int(value)
+                        except (TypeError, ValueError):
+                            continue
+                for key, value in cooldowns.items():
+                    try:
+                        deadline = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if deadline > int(merged.get(str(key)) or 0):
+                        merged[str(key)] = deadline
+                feature_state["captiveCooldowns"] = merged
         if (
             feature == "dungeon"
             and context_value.get("feature") == "dungeon"
@@ -14965,6 +16754,7 @@ class CoreFacade:
                 if value in {
                     "brush", "mine", "raid", "lossless", "dungeon",
                     "general", "ministry", "domestic", "inventory", "alarm",
+                    "captives",
                 }
             }
             active_keys &= allowed_active_keys
@@ -15030,6 +16820,10 @@ class CoreFacade:
                 return self._run_configured_ministry_tick(
                     execution, account_ref, configs, state, context
                 )
+            if feature == "captives":
+                return self._run_configured_captives_tick(
+                    execution, account_ref, configs, state, context
+                )
             if feature == "domestic":
                 return self._run_configured_domestic_tick(
                     execution, account_ref, configs, state, context
@@ -15063,6 +16857,7 @@ class CoreFacade:
                 "dungeon": "dungeonPendingRunJson",
                 "general": "generalMaintenancePendingJson",
                 "ministry": "ministryPendingPlantJson",
+                "captives": "captivesPendingActionJson",
                 "domestic": "domesticPendingActionJson",
                 "inventory": "inventoryPendingActionJson",
                 "alarm": "alarmPendingEventsJson",
@@ -15070,6 +16865,18 @@ class CoreFacade:
             pending = self._automation_pending_record(
                 account_ref, pending_field
             ) if pending_field else {}
+            if str(feature) == "ministry":
+                # 收菜和礼部委派的待决账本各自落在独立字段；任一存在都说明
+                # 有越过发送边界的请求尚未确认，不能只看待种的账本。
+                pending = (
+                    pending
+                    or self._automation_pending_record(
+                        account_ref, "ministryPendingHarvestJson"
+                    )
+                    or self._automation_pending_record(
+                        account_ref, "ministryPendingDelegateJson"
+                    )
+                )
             feature_state = dict(state.get(str(feature)) or {})
             pending_requires_attention = bool(pending)
             if pending and str(feature) in NESTED_SEND_BOUNDARY_FEATURES:
@@ -15092,6 +16899,7 @@ class CoreFacade:
                 "SHARED_DOMESTIC_TECHNOLOGY_EMPTY",
                 "DOMESTIC_STEP_REQUIRES_REVIEW",
                 "SHARED_MINISTRY_RULE_MISSING",
+                "SHARED_CAPTIVES_RULE_MISSING",
                 "SHARED_INVENTORY_RULE_MISSING",
                 "INVENTORY_PLAN_INVALID",
                 "INVENTORY_ACTION_INVALID",
@@ -15149,6 +16957,8 @@ class CoreFacade:
                 delay = int(
                     self._behavior_contract["scheduler"]["alarmPollMillis"]
                 )
+            elif feature == "captives":
+                delay = self._captives_poll_millis()
             else:
                 delay = int(
                     self._behavior_contract["scheduler"][
@@ -15195,8 +17005,24 @@ class CoreFacade:
                 )
             else:
                 user_message = error_message
+            # A formation paused for a resource (stamina, troops) is a
+            # decision the feature holds until a named deadline, and one the
+            # account holder can act on - recruit, top up, lower a saved
+            # count.  It is not a fault of the assistant, so it is neither
+            # ``blocked`` nor a silent ``retry``; it gets a state of its own
+            # so the narrator announces the reason once and "已恢复运行" when
+            # the formation marches again.
+            if blocked:
+                state_name = "blocked"
+            elif (
+                bool(error_details.get("formationPaused"))
+                and retry_hint > retry_base_millis
+            ):
+                state_name = "formation-paused"
+            else:
+                state_name = "retry"
             feature_state.update({
-                "lastState": "blocked" if blocked else "retry",
+                "lastState": state_name,
                 "lastErrorCode": error.code,
                 "lastMessage": user_message,
                 "nextWakeAtMillis": (
@@ -15207,7 +17033,7 @@ class CoreFacade:
             self._save_resident_automation_state(account_ref, state)
             result = {
                 "feature": feature,
-                "state": "blocked" if blocked else "retry",
+                "state": state_name,
                 "success": False,
                 "requiresAttention": blocked,
                 "errorCode": error.code,
@@ -15243,6 +17069,7 @@ class CoreFacade:
             else {
                 "mine", "lossless", "brush", "raid", "dungeon", "general",
                 "ministry", "domestic", "inventory", "alarm", "daily",
+                "captives",
             }
         )
         resident_context: Dict[str, Any] = {}
@@ -15273,6 +17100,7 @@ class CoreFacade:
             "dungeon": "dungeonPendingRunJson",
             "general": "generalMaintenancePendingJson",
             "ministry": "ministryPendingPlantJson",
+            "captives": "captivesPendingActionJson",
             "domestic": "domesticPendingActionJson",
             "inventory": "inventoryPendingActionJson",
         }
@@ -15318,6 +17146,19 @@ class CoreFacade:
             # the general workflow then returns ``blocked`` and the same record
             # is selected again, starving unrelated resident work.  The nested
             # helper is the source of truth for that feature's durable steps.
+            # 刷黄 now adjudicates a lost dispatch receipt by observation:
+            # once the contract grace has passed, ledger generals that are
+            # all idle mean nothing is in flight, and generals still marching
+            # just need watching until they come home.  Both verdicts only
+            # read state - the workflow never replays an ambiguous formal
+            # send - so the pending must be allowed back in.  Without this
+            # the gate strands it forever, exactly the four-day 副本 shape.
+            if (
+                feature == "brush"
+                and str(value.get("preDispatchMutationState") or "")
+                == "accepted"
+            ):
+                return True
             return not any(
                 str(value.get(key) or "") in AMBIGUOUS_SEND_STATES
                 for key in FORMAL_SEND_STATE_KEYS
@@ -15418,6 +17259,24 @@ class CoreFacade:
                         hinted = 0
                     retry_at = max(retry_at, hinted)
                 field = pending_fields.get(feature)
+                if feature == "ministry":
+                    # 六部的三本待决账本各自独立；失败回写必须落到真正持有
+                    # 记录的那本，否则会把采摘/委派账本复制进种菜字段，让
+                    # 种菜恢复逻辑误读其中的字段。
+                    field = next(
+                        (
+                            candidate
+                            for candidate in (
+                                "ministryPendingHarvestJson",
+                                "ministryPendingPlantJson",
+                                "ministryPendingDelegateJson",
+                            )
+                            if self._automation_pending_record(
+                                account_ref, candidate
+                            )
+                        ),
+                        field,
+                    )
                 # ``pending`` is the snapshot taken *before* the workflow ran.
                 # Writing it back discards every send-boundary marker the
                 # workflow durably recorded on its way to failing - which is
@@ -15618,10 +17477,21 @@ class CoreFacade:
                                     ),
                                 )
                             else:
+                                # 种菜、采摘、礼部委派各有独立待决账本；
+                                # 任一存在都要让六部恢复工作流先跑（工作流
+                                # 内部按字段各自核对，不依赖这里选中哪本）。
                                 ministry_pending = (
                                     self._automation_pending_record(
                                         account_ref,
                                         "ministryPendingPlantJson",
+                                    )
+                                    or self._automation_pending_record(
+                                        account_ref,
+                                        "ministryPendingHarvestJson",
+                                    )
+                                    or self._automation_pending_record(
+                                        account_ref,
+                                        "ministryPendingDelegateJson",
                                     )
                                 )
                                 if pending_ready(ministry_pending, "ministry"):
@@ -15659,6 +17529,12 @@ class CoreFacade:
                                         self._automation_pending_record(
                                             account_ref,
                                             "inventoryPendingActionJson",
+                                        )
+                                    )
+                                    captives_pending = (
+                                        self._automation_pending_record(
+                                            account_ref,
+                                            "captivesPendingActionJson",
                                         )
                                     )
                                     if pending_ready(domestic_pending, "domestic"):
@@ -15701,11 +17577,39 @@ class CoreFacade:
                                                 context,
                                             ),
                                         )
+                                    elif pending_ready(
+                                        captives_pending,
+                                        "captives",
+                                    ):
+                                        selected_pending_feature = "captives"
+                                        from_pending = True
+                                        configs = self._public_json_object(
+                                            self._account_public_state(
+                                                account_ref
+                                            ).get("residentAutomationConfigJson")
+                                        )
+                                        state = self._public_json_object(
+                                            self._account_public_state(
+                                                account_ref
+                                            ).get("residentAutomationStateJson")
+                                        )
+                                        result = run_pending(
+                                            "captives",
+                                            captives_pending,
+                                            lambda: self._run_configured_captives_tick(
+                                                execution,
+                                                account_ref,
+                                                configs,
+                                                state,
+                                                context,
+                                            ),
+                                        )
                                     elif (
                                         allowed.intersection({
                                             "brush", "mine", "raid", "lossless",
                                             "dungeon", "general", "ministry",
                                             "domestic", "inventory", "alarm", "daily",
+                                            "captives",
                                         })
                                         and context.get(
                                             "configuredExecutionAllowed", True
@@ -15751,6 +17655,7 @@ class CoreFacade:
                                                 "brush", "mine", "raid", "lossless",
                                                 "dungeon", "general", "ministry",
                                                 "domestic", "inventory", "alarm",
+                                                "captives",
                                             }
                                             resident_allowed = bool(
                                                 resident_keys.intersection(
@@ -15978,6 +17883,7 @@ class CoreFacade:
                     if value in {
                         "brush", "mine", "raid", "lossless", "dungeon",
                         "general", "ministry", "domestic", "inventory", "alarm",
+                        "captives",
                     }
                 }
             # Report the same effective candidate set that execution received.
@@ -18051,20 +19957,22 @@ class CoreFacade:
                 f"{action_name}编队最多选择{maximum}名将领",
                 code="EXPEDITION_GENERALS_OVER_LIMIT",
             )
-        # A formation whose general was found unable to march and unable to be
-        # topped up is paused as a whole.  Decide that from the ledger, before
-        # the state read: every caller already treats this code as a timed
-        # resource wait, and ``retryAtMillis`` tells it exactly how long.
+        # A formation whose general was found unable to march - out of
+        # stamina with nothing to top it up, or short of the troops its saved
+        # 配兵 asks for - is paused as a whole.  Decide that from the ledger,
+        # before the state read: every caller already treats the shortage
+        # fact as a timed resource wait, and ``retryAtMillis`` tells it
+        # exactly how long.
         paused = self._general_energy_cooldown_block(
             account_ref, ids, int(self._ports.clock.now_millis())
         )
         if paused is not None:
             raise OperationKnownFailureError(
                 f"{action_name}{paused['message']}",
-                code="EXPEDITION_ENERGY_ITEM_UNAVAILABLE",
+                code=str(paused["code"]),
                 details={
                     "retryableResourceShortage": True,
-                    "resource": "活血丹",
+                    "resource": str(paused["resource"]),
                     "generalIds": list(paused["generalIds"]),
                     "retryAtMillis": int(paused["untilMillis"]),
                     "formationPaused": True,
@@ -18165,9 +20073,47 @@ class CoreFacade:
                     "soldierType": str(rule.get("soldierType") or rule.get("soldierTypeName") or "轻骑兵"),
                     "soldierCount": int(rule.get("soldierCount") or rule.get("count") or 0),
                 }
-                self._run_troop_assign_game_workflow(
-                    execution, assign_body, context
-                )
+                try:
+                    self._run_troop_assign_game_workflow(
+                        execution, assign_body, context
+                    )
+                except OperationKnownFailureError as error:
+                    shortage = dict(error.details).get("troopShortage")
+                    if not isinstance(shortage, dict):
+                        raise
+                    # Refused before anything was sent: the barracks hold fewer
+                    # idle troops than the saved formation asks for.  That is
+                    # the account's state, not a fault, and it will stay true
+                    # until the holder recruits or lowers the count - so the
+                    # formation pauses, like it does for stamina, and the
+                    # message says exactly what would end the pause.  Left as
+                    # a bare precheck failure this stranded a real account's
+                    # 打矿 behind "存在未确认操作…请人工核对" for hours over
+                    # twelve 近卫兵.
+                    now_millis = int(self._ports.clock.now_millis())
+                    pause = self._record_troop_shortage_pause(
+                        account_ref,
+                        general,
+                        shortage,
+                        action_name=action_name,
+                        now_millis=now_millis,
+                    )
+                    raise OperationKnownFailureError(
+                        f"{action_name}出征前配兵未完成：{pause['message']}；"
+                        f"所在编队已暂停至{china_clock_text(int(pause['untilMillis']))}"
+                        "，之后自动重试",
+                        code="EXPEDITION_TROOPS_UNAVAILABLE",
+                        details={
+                            "retryableResourceShortage": True,
+                            "resource": str(shortage.get("soldierType") or ""),
+                            "generalId": int(general["id"]),
+                            "generalIds": [int(general["id"])],
+                            "generalName": str(pause.get("generalName") or ""),
+                            "retryAtMillis": int(pause["untilMillis"]),
+                            "formationPaused": True,
+                            "troopShortage": dict(shortage),
+                        },
+                    ) from error
         _state_hex, refreshed, _army = self._fresh_formation_state(
             account_ref,
             context,
@@ -18474,6 +20420,15 @@ class CoreFacade:
                 body,
                 self._behavior_contract["formation"],
             )
+        except TroopShortageError as error:
+            # Same code as any other precheck refusal (a batch apply skips the
+            # row on it), plus the structured shortfall so an expedition
+            # preflight can pause the formation and say what would end it.
+            raise OperationKnownFailureError(
+                str(error),
+                code="TROOP_ASSIGN_PRECHECK_FAILED",
+                details={"troopShortage": error.details()},
+            ) from error
         except ValueError as error:
             raise OperationKnownFailureError(
                 str(error),
@@ -20233,6 +22188,22 @@ class CoreFacade:
         local = project_area_catalog(body)
         if local["areas"]:
             return {**local, "source": "local-cache"}
+        platform_key = str(local["platformKey"])
+        # A host that keeps its own copy (the desktop reads one off disk) passes
+        # it in above.  Android had nowhere to keep one, so it always sent an
+        # empty catalog and every call fell through to the cloud, reading the
+        # whole platform directory for a list of servers that changes about
+        # monthly - and throwing the answer away again.  The core keeps the copy
+        # now, so neither host has to, and the cloud is only asked when nothing
+        # has ever been seen.
+        cached = self._read_area_catalog_cache(platform_key)
+        if cached:
+            projected = project_area_catalog({
+                "platformKey": platform_key,
+                "areas": cached,
+            })
+            if projected["areas"]:
+                return {**projected, "source": "local-cache"}
         port = self._ports.cloud_shared_data
         if port is None or not bool(port.configured()):
             return {
@@ -20240,7 +22211,6 @@ class CoreFacade:
                 "source": "unavailable",
                 "error": "共享云端区服目录未配置",
             }
-        platform_key = str(local["platformKey"])
         try:
             response = port.exchange({
                 "method": "POST",
@@ -20262,6 +22232,8 @@ class CoreFacade:
                 "areas": payload.get("areas") or [],
                 "updatedAt": payload.get("updatedAt"),
             })
+            # Remember it, or the next call pays for the same table read again.
+            self._write_area_catalog_cache(platform_key, projected["areas"])
             return {**projected, "source": "cloud-shared-data"}
         except Exception as error:
             self._ports.logs.write({
@@ -20847,6 +22819,76 @@ class CoreFacade:
             },
         )
 
+    def _absorb_volunteered_inventory(
+        self,
+        account_ref: str,
+        fact: Dict[str, Any],
+    ) -> None:
+        """Take the bag sync the server appends whenever the bag changed.
+
+        The server answers a chest open, an item use or a discard with a full
+        0x8104 alongside the reply, because those are exactly the moments the
+        bag changed.  That was being dropped, which left two stale facts.
+
+        The 宝物 page showed whatever the last explicit refresh saw - on a real
+        account, a bag from an hour earlier.  Worse, 背包整理 concludes "背包当前
+        没有需要处理的物品" and then sleeps an hour; that conclusion is about the
+        bag it *saw*, and 副本 opens a chest every few minutes.  A Lv.1 普通 短剑
+        that dropped one minute after the sweep sat in a 41/50 bag for the rest
+        of the hour even though the policy selects exactly that piece.  Here the
+        evidence is already in hand, so the conclusion expires the moment it
+        stops describing the bag.
+
+        Bookkeeping on a successful reply must never turn that reply into a
+        failure, so every step is best-effort.
+        """
+
+        payload = self._game_packet(fact, 0x8104)
+        if payload is None:
+            return
+        try:
+            inventory = parse_8104_inventory(
+                bytes(payload), "shared-core/volunteered/0x8104"
+            )
+            if inventory.get("parseError"):
+                return
+            updates = self._inventory_public_state_updates(inventory)
+            public_state = self._account_public_state(account_ref)
+            previous_used = str(
+                public_state.get("inventorySlotsUsed") or ""
+            ).strip()
+            current_used = str(updates.get("inventorySlotsUsed") or "").strip()
+            # Only a *fuller* bag can contain something new to clean; a bag
+            # that shrank is the sweep's own work coming back.
+            grew = bool(
+                current_used
+                and previous_used
+                and int(current_used) > int(previous_used)
+            )
+            state = self._public_json_object(
+                public_state.get("residentAutomationStateJson")
+            )
+            feature_state = dict(state.get("inventory") or {})
+            waiting = str(feature_state.get("lastState") or "") == "waiting"
+            if grew and waiting and feature_state.get("nextWakeAtMillis"):
+                feature_state["nextWakeAtMillis"] = int(
+                    self._ports.clock.now_millis()
+                )
+                feature_state["lastMessage"] = (
+                    f"{feature_state.get('lastMessage') or ''}"
+                    "（背包又有新物品，提前重新检查）"
+                )
+                state["inventory"] = feature_state
+                updates["residentAutomationStateJson"] = self._json(state)
+            self._update_account_public_state(account_ref, updates)
+        except Exception as error:  # noqa: BLE001 - bookkeeping only
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "shared-core-inventory",
+                "accountRef": str(account_ref),
+                "message": f"随包背包同步写入失败：{error}",
+            })
+
     @staticmethod
     def _public_json_value(value: Any, fallback: Any) -> Any:
         if isinstance(value, (dict, list)):
@@ -20997,9 +23039,27 @@ class CoreFacade:
             item.setdefault("count", 1)
             item.setdefault("type", "equipment")
             equipment.append(item)
+        # The limit and the occupancy are facts the parser either read or did
+        # not; an unknown one is stored as blank, never as 0, so the page can
+        # say "未知" instead of "49/0".
+        capacity = inventory.get("capacity")
+        slots_used = inventory.get("slotsUsed")
+        if slots_used is None and inventory.get("layout") != "legacy-scan-fallback":
+            slots_used = len(items) + len(equipment)
         return {
             "inventoryJson": self._json(items + equipment),
-            "inventoryCapacity": str(int(inventory.get("capacity") or 0)),
+            "inventoryCapacity": (
+                str(int(capacity)) if capacity not in (None, "", 0) else ""
+            ),
+            "inventorySlotsUsed": (
+                str(int(slots_used)) if slots_used is not None else ""
+            ),
+            # Records written before the trailer was read hold an unrelated
+            # header value under ``inventoryCapacity`` (1863 on a real
+            # account).  Readers only trust the limit when this marker says
+            # which parser wrote it; an old record shows "上限未知" until its
+            # next refresh instead of "47/1863".
+            "inventoryParserVersion": INVENTORY_PARSER_VERSION,
             "inventoryItemCount": str(len(items)),
             "inventoryEquipmentCount": str(len(equipment)),
             "inventorySourceOpcode": str(
@@ -21026,14 +23086,43 @@ class CoreFacade:
         ]
         equipment_ids = {id(item) for item in equipment}
         items = [item for item in rows if id(item) not in equipment_ids]
-        try:
-            capacity = int(public_state.get("inventoryCapacity") or 0)
-        except (TypeError, ValueError):
-            capacity = 0
+
+        def stored_int(key: str) -> int | None:
+            raw = str(public_state.get(key) or "").strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+
+        # Blank means the parser could not read it; 0 was the old parser's
+        # "unknown" and is not a bag size the game has.  A record from before
+        # the trailer was read carries no version marker and its "capacity"
+        # is a header counter, so it is unknown too.
+        trailer_read = (
+            str(public_state.get("inventoryParserVersion") or "")
+            == INVENTORY_PARSER_VERSION
+        )
+        capacity = (
+            stored_int("inventoryCapacity") or None
+        ) if trailer_read else None
+        slots_used = stored_int("inventorySlotsUsed")
+        if slots_used is None:
+            slots_used = len(items) + len(equipment)
         return {
             "items": items,
             "equipment": equipment,
             "capacity": capacity,
+            # Why the limit is missing, so the page can say "还没读过" instead
+            # of "读不出来": a record this build has never rewritten is simply
+            # waiting for the account's next bag refresh, which any bag change
+            # or a start of the account produces.
+            "capacityPending": bool(rows) and not trailer_read,
+            "slotsUsed": slots_used,
+            "slotsFree": (
+                max(0, capacity - slots_used) if capacity is not None else None
+            ),
             "itemCount": len(items),
             "equipmentCount": len(equipment),
             "sourceOpcode": str(
@@ -21359,6 +23448,7 @@ class CoreFacade:
             normalized_fact,
             str(phase),
         )
+        self._absorb_volunteered_inventory(account_ref, normalized_fact)
         return normalized_fact
 
     def _execute_host_game_command_batch(
@@ -21456,6 +23546,7 @@ class CoreFacade:
             normalized_fact,
             str(phase),
         )
+        self._absorb_volunteered_inventory(account_ref, normalized_fact)
         return normalized_fact
 
     def _execute_shared_raw_http_game_command(
@@ -21946,6 +24037,67 @@ class CoreFacade:
             )
         return dict(payload)
 
+    def _area_catalog_cache_path(self) -> Optional[Path]:
+        """Where the last seen platform directory is kept, or None if nowhere."""
+
+        store = self._accounts_path
+        if store is not None:
+            return Path(store).parent / "area-catalog-v1.json"
+        data_port = self._ports.data_directory
+        if data_port is None:
+            return None
+        return data_port.data_directory() / "shared_core" / "area-catalog-v1.json"
+
+    def _read_area_catalog_cache(self, platform_key: str) -> list[Dict[str, Any]]:
+        path = self._area_catalog_cache_path()
+        if path is None or not path.is_file():
+            return []
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        rows = stored.get(str(platform_key)) if isinstance(stored, dict) else None
+        return [dict(row) for row in rows or [] if isinstance(row, dict)]
+
+    def _write_area_catalog_cache(
+        self,
+        platform_key: str,
+        areas: list[Dict[str, Any]],
+    ) -> None:
+        """Remember a platform directory so it is never fetched twice.
+
+        The phone is where this list comes from - every login answers with the
+        game's complete area list, which is why login uploads it - and yet
+        /api/areas went back out to the cloud for it on every single call,
+        because the Android host had nowhere to keep it and passed an empty
+        catalog in.  Each of those calls was a full read of the shared
+        directory table.  Keeping it next to the account store makes the cache
+        one implementation for both hosts rather than a thing each host has to
+        remember to build.
+        """
+
+        path = self._area_catalog_cache_path()
+        if path is None or not areas:
+            return
+        try:
+            stored: Dict[str, Any] = {}
+            if path.is_file():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    stored = loaded
+            stored[str(platform_key)] = areas
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(stored, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except (OSError, ValueError) as error:
+            self._ports.logs.write({
+                "level": "warn",
+                "source": "cloud-shared-data",
+                "message": f"区服目录本地缓存写入失败：{error}",
+            })
+
     def _schedule_cloud_directory_sync(
         self,
         platform_key: str,
@@ -21957,6 +24109,11 @@ class CoreFacade:
             normalized_platform = normalize_platform_key(platform_key)
         except ValueError:
             return
+        # The login that produced this list is exactly when the local copy
+        # should be refreshed, whether or not the cloud is reachable.
+        self._write_area_catalog_cache(
+            normalized_platform, self._public_directory_areas(areas)
+        )
         port = self._ports.cloud_shared_data
         if port is None or not bool(port.configured()) or not areas:
             return

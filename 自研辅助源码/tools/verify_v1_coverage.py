@@ -436,7 +436,7 @@ def main() -> int:
         and '"supportedEnabled": supported' in shared_settings
         and "MinistryProtocolCrop.VERIFIED_NAME" in task_factory
         and "mobileDisabled" not in front_app
-        and "金银花种植按已确认协议执行" in front_app,
+        and "稻谷种植采摘与礼部任务委派按已确认协议执行" in front_app,
         "verified ministry planting/read-only scan scheduled locally; withdrawal still requires an exact receipt",
     )
     add(

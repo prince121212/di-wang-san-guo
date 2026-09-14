@@ -86,21 +86,23 @@ class RealGameProtocolClientTest {
     @Test
     fun parse8104InventoryReadsItemStacksAndResolvesScriptItemNames() {
         val payload = (
-            "0000000000000000000000000000" + // 14-byte reserved head
-                "0032" + // capacity 50
+            "0000000000000044" + // asset counter long #1
+                "0000000000000747" + // asset counter long #2 (low half = 1863, the old "capacity")
                 "0002" + // two item stacks
                 "000900050000000000000000" + // item 9 传音符 x5
                 "001600010000000000000000" + // item 22 鲁公手册 x1
-                "01f4000a05" // unparsed tail kept as evidence
+                "0000" + // no equipment
+                "003201f4000a05" // trailer: limit 50, then 500 / 10 / 5 as captured live
             ).hexToBytesForTest()
 
         val state = client.parse8104Inventory(payload, "unit-0x8104")
 
         assertEquals(50, state.capacity)
+        assertEquals(2, state.slotsUsed)
         assertEquals(2, state.itemCount)
         assertEquals("unit-0x8104", state.sourceOpcode)
         assertEquals(42, state.parsedItemByteCount)
-        assertEquals("01f4000a05", state.tailHex)
+        assertEquals("0000003201f4000a05", state.tailHex)
         assertEquals(9, state.items[0].itemId)
         assertEquals("传音符", state.items[0].name)
         assertEquals(5, state.items[0].count)
@@ -112,8 +114,8 @@ class RealGameProtocolClientTest {
     @Test
     fun parse8104InventoryReadsEquipmentInstanceAndSafetyMetadata() {
         val payload = (
-            "0000000000000000000000000000" + // 14-byte reserved head
-                "0032" + // capacity 50
+            "0000000000000044" + // asset counter long #1
+                "0000000000000747" + // asset counter long #2
                 "0000" + // no ordinary item stacks
                 "0001" + // one equipment instance
                 "00000000000c95f8" + // instance id
@@ -121,12 +123,16 @@ class RealGameProtocolClientTest {
                 "02" + // two attributes
                 "0100" + // 良好、未强化
                 "00000000000000000000" + // effect/risk/protocol/pity fields
-                "0000" // empty extra description
+                "0000" + // empty extra description
+                "003201f4000a05" // trailer: limit 50
             ).hexToBytesForTest()
 
         val state = client.parse8104Inventory(payload, "unit-equipment")
 
         assertEquals(null, state.equipmentParseError)
+        assertEquals(50, state.capacity)
+        // One piece of equipment occupies one slot even with no stacks.
+        assertEquals(1, state.slotsUsed)
         assertEquals(1, state.equipment.size)
         val equipment = state.equipment.single()
         assertEquals(0xC95F8L, equipment.instanceId)

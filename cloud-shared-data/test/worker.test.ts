@@ -706,6 +706,65 @@ describe("scan and target concurrency", () => {
     expect(invalid.json.error).toContain("目标状态无效");
   });
 
+  it("retires a target the moment its region is rescanned without it", async () => {
+    // The scan is the evidence that a target is gone, and it has to take effect
+    // now: queryTargets filters on last_seen_at, so a bandit somebody killed a
+    // minute ago would otherwise stay on offer for the rest of its 30 minutes.
+    await enableSharedMode();
+    await observation(ACTOR_A, "bandit", [
+      { targetId: "killed", x: 84, y: 22, type: "山贼", level: 7, data: {} },
+      { targetId: "survivor", x: 85, y: 22, type: "山贼", level: 8, data: {} },
+    ]);
+    await observation(ACTOR_A, "bandit", [
+      { targetId: "survivor", x: 85, y: 22, type: "山贼", level: 8, data: {} },
+    ]);
+
+    const offered = await post("/v1/maps/targets/query", {
+      ...identity(ACTOR_B), mapKind: "bandit",
+    });
+    expect((offered.json.targets as Array<{ targetId: string }>).map((t) => t.targetId))
+      .toEqual(["survivor"]);
+    const rows = await env.DB.prepare(
+      "SELECT target_id FROM map_targets ORDER BY target_id",
+    ).all<{ target_id: string }>();
+    expect(rows.results.map((r) => r.target_id)).toEqual(["survivor"]);
+    const links = await env.DB.prepare(
+      "SELECT target_id FROM map_target_regions ORDER BY target_id",
+    ).all<{ target_id: string }>();
+    expect(links.results.map((r) => r.target_id)).toEqual(["survivor"]);
+  });
+
+  it("keeps a target that is still held or still seen from another region", async () => {
+    await enableSharedMode();
+    // Two regions both report the same target; only one of them is rescanned.
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      regions: [
+        { x: 84, y: 22, targets: [{ targetId: "shared", x: 84, y: 22, type: "山贼", level: 7, data: {} }] },
+        { x: 90, y: 30, targets: [{ targetId: "shared", x: 84, y: 22, type: "山贼", level: 7, data: {} }] },
+      ],
+    });
+    await observation(ACTOR_A, "bandit", []);
+    const stillThere = await env.DB.prepare(
+      "SELECT COUNT(*) count FROM map_targets WHERE target_id='shared'",
+    ).first<{ count: number }>();
+    expect(Number(stillThere?.count)).toBe(1);
+
+    // And a reservation outranks the scan: the holder is mid-flight.
+    await observation(ACTOR_A, "bandit", [
+      { targetId: "held", x: 84, y: 22, type: "山贼", level: 7, data: {} },
+    ]);
+    await post("/v1/maps/targets/reserve", {
+      ...identity(ACTOR_A), mapKind: "bandit", targetId: "held",
+    });
+    await observation(ACTOR_A, "bandit", []);
+    const reserved = await env.DB.prepare(
+      "SELECT status FROM map_targets WHERE target_id='held'",
+    ).first<{ status: string }>();
+    expect(reserved?.status).toBe("reserved");
+  });
+
   it("cron cleans expired state and observations reopen an expired uncertain target", async () => {
     await enableSharedMode();
     await observation(ACTOR_A, "bandit", [{
@@ -824,5 +883,63 @@ describe("D1 write scaling", () => {
     await run(1);
     await run(500);
     expect(statementCounts).toEqual([6, 6]);
+  });
+
+  it("does not rewrite a target row when a re-observation changes nothing", async () => {
+    // The phone scans around the clock and reports everything it sees, so the
+    // same unchanged target arrives every few minutes.  last_seen_at only
+    // needs 5-minute granularity - every consumer works on TTLs of 30 minutes
+    // or 3 hours - so a fresh sighting of an unchanged target must leave the
+    // row untouched instead of billing a write for it.
+    await enableSharedMode();
+    const target = { targetId: "quiet", x: 84, y: 22, type: "山贼", level: 7, data: {} };
+    await observation(ACTOR_A, "bandit", [target]);
+
+    const recent = Date.now() - 60_000;
+    await env.DB.prepare(
+      "UPDATE map_targets SET last_seen_at=? WHERE target_id='quiet'",
+    ).bind(recent).run();
+    await env.DB.prepare(
+      "UPDATE map_target_regions SET last_seen_at=? WHERE target_id='quiet'",
+    ).bind(recent).run();
+
+    await observation(ACTOR_A, "bandit", [target]);
+    const row = await env.DB.prepare(
+      "SELECT last_seen_at FROM map_targets WHERE target_id='quiet'",
+    ).first<{ last_seen_at: number }>();
+    expect(Number(row?.last_seen_at)).toBe(recent);
+    const link = await env.DB.prepare(
+      "SELECT last_seen_at FROM map_target_regions WHERE target_id='quiet'",
+    ).first<{ last_seen_at: number }>();
+    expect(Number(link?.last_seen_at)).toBe(recent);
+  });
+
+  it("refreshes a stale sighting and applies real changes immediately", async () => {
+    await enableSharedMode();
+    const target = { targetId: "aging", x: 84, y: 22, type: "山贼", level: 7, data: {} };
+    await observation(ACTOR_A, "bandit", [target]);
+
+    // A sighting older than the refresh granularity is rewritten on re-observation.
+    const stale = Date.now() - 400_000;
+    await env.DB.prepare(
+      "UPDATE map_targets SET last_seen_at=? WHERE target_id='aging'",
+    ).bind(stale).run();
+    await observation(ACTOR_A, "bandit", [target]);
+    const refreshed = await env.DB.prepare(
+      "SELECT last_seen_at FROM map_targets WHERE target_id='aging'",
+    ).first<{ last_seen_at: number }>();
+    expect(Number(refreshed?.last_seen_at)).toBeGreaterThan(stale);
+
+    // And a real change can never wait for the refresh window.
+    const recent = Date.now() - 60_000;
+    await env.DB.prepare(
+      "UPDATE map_targets SET last_seen_at=? WHERE target_id='aging'",
+    ).bind(recent).run();
+    await observation(ACTOR_A, "bandit", [{ ...target, level: 9 }]);
+    const changed = await env.DB.prepare(
+      "SELECT level,last_seen_at FROM map_targets WHERE target_id='aging'",
+    ).first<{ level: number; last_seen_at: number }>();
+    expect(Number(changed?.level)).toBe(9);
+    expect(Number(changed?.last_seen_at)).toBeGreaterThan(recent);
   });
 });

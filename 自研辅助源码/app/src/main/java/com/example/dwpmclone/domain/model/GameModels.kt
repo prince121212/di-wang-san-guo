@@ -203,7 +203,7 @@ data class SixMinistriesConfig(
 }
 
 object MinistryProtocolCrop {
-    const val VERIFIED_NAME = "金银花"
+    const val VERIFIED_NAME = "稻谷"
     const val VERIFIED_ID = 1
 }
 

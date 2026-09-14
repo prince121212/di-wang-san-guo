@@ -764,7 +764,7 @@ class DesktopInventoryCutoverSourceTests(unittest.TestCase):
         self.assertIn('task_type == "auto-inventory"', active)
         self.assertIn('keys.add("inventory")', active)
         self.assertIn('"inventoryPendingActionJson"', pending)
-        self.assertIn('"domestic", "inventory", "alarm", "daily"', tick)
+        self.assertIn('"ministry", "captives", "domestic", "inventory"', tick)
 
     def test_old_desktop_auto_open_function_has_no_production_caller(self) -> None:
         self.assertEqual(self.source.count("auto_open_inventory_items("), 1)

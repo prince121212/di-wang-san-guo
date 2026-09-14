@@ -21,6 +21,7 @@ object LocalSettingsConfigMapper {
     const val RAID = "auto_loot"
     const val MINE = "auto_mining"
     const val MINISTRIES = "six_ministries"
+    const val CAPTIVES = "captives"
     const val LOSSLESS = "military_lossless"
     const val DUNGEON = "dungeon"
 
@@ -36,6 +37,7 @@ object LocalSettingsConfigMapper {
         loadValues(RAID)?.let { habits.put("raid", it.copy()) }
         loadValues(MINE)?.let { habits.put("mine", it.copy()) }
         loadValues(MINISTRIES)?.let { habits.put("ministry", it.copy()) }
+        loadValues(CAPTIVES)?.let { habits.put("captives", it.copy()) }
 
         val militaryFuture = JSONObject()
         loadValues(LOSSLESS)?.let { militaryFuture.put("lossless", it.copy()) }

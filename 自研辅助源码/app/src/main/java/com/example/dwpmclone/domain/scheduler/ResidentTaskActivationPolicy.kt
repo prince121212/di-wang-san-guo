@@ -12,17 +12,25 @@ object ResidentTaskActivationPolicy {
     const val STARTED_FIELD: String = "savedTasksStarted"
     const val ACTIVE_KEYS_FIELD: String = "activeResidentTaskKeys"
 
+    /**
+     * Resident keys the shared core schedules but the behavior contract does not
+     * rank (its residentPriority set stays pinned at ten).  Toggling any other
+     * feature must not silently drop them from the persisted key set.
+     */
+    val SHARED_CORE_ONLY_KEYS: Set<String> = setOf("captives")
+
     fun activeKeys(
         channelExtra: Map<String, String>,
         allResidentKeys: Set<String>
     ): Set<String> {
+        val knownKeys = allResidentKeys + SHARED_CORE_ONLY_KEYS
         val explicit = channelExtra[ACTIVE_KEYS_FIELD]
         if (explicit != null) {
             return explicit.split(',')
                 .asSequence()
                 .map(String::trim)
                 .filter(String::isNotEmpty)
-                .filter { it in allResidentKeys }
+                .filter { it in knownKeys }
                 .toSet()
         }
         return if (channelExtra[STARTED_FIELD].equals("true", ignoreCase = true)) {
@@ -38,7 +46,7 @@ object ResidentTaskActivationPolicy {
         key: String,
         active: Boolean
     ): Set<String> {
-        require(key in allResidentKeys) { "unknown resident task key: $key" }
+        require(key in allResidentKeys + SHARED_CORE_ONLY_KEYS) { "unknown resident task key: $key" }
         return activeKeys(channelExtra, allResidentKeys).toMutableSet().apply {
             if (active) add(key) else remove(key)
         }

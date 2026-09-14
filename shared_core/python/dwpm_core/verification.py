@@ -1006,7 +1006,15 @@ def verify_protocol_fixtures() -> Dict[str, Any]:
     check(
         "inventory.8104",
         {
+            # The bag limit is the trailer's first short; the fixture header
+            # carries 1863 in the bytes the old parser read, so a regression
+            # to that offset fails here instead of shipping "1863/50".
             "capacity": inventory.get("capacity"),
+            "slotsUsed": inventory.get("slotsUsed"),
+            "slotsFree": inventory.get("slotsFree"),
+            "headerLong1": inventory.get("headerLong1"),
+            "headerLong2": inventory.get("headerLong2"),
+            "footerValues": (inventory.get("footer") or {}).get("values"),
             "itemCount": inventory.get("itemCount"),
             "itemIds": [
                 row.get("itemId")

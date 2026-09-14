@@ -107,7 +107,7 @@ class SharedPythonCoreHostContractTest {
         assertTrue(adapter.contains("allowedFeatures"))
         assertTrue(
             adapter.contains(
-                "listOf(\"mine\", \"lossless\", \"brush\", \"raid\", \"dungeon\", \"general\", \"ministry\", \"domestic\", \"inventory\", \"alarm\", \"daily\")"
+                "listOf(\"mine\", \"lossless\", \"brush\", \"raid\", \"dungeon\", \"general\", \"ministry\", \"captives\", \"domestic\", \"inventory\", \"alarm\", \"daily\")"
             )
         )
         assertTrue(facade.contains("_run_configured_brush_tick"))

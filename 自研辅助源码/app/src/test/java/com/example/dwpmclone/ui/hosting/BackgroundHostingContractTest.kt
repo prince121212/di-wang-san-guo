@@ -95,7 +95,9 @@ class BackgroundHostingContractTest {
         assertTrue(scheduling.contains("scheduleWakeupAlarm(alarmAt)"))
         assertTrue(service.contains("ACTION_EXECUTION_WATCHDOG"))
         assertTrue(service.contains("armExecutionWatchdog()"))
-        assertTrue(service.contains("acquireWakeLock()"))
+        // Every tick starts by guaranteeing itself a full window; a renew never
+        // shortens a longer lease already covering the CPU.
+        assertTrue(service.contains("renewWakeLock(TICK_WAKELOCK_TIMEOUT_MILLIS)"))
         assertTrue(service.contains("releaseWakeLock()"))
         assertTrue(service.contains("TICK_WAKELOCK_TIMEOUT_MILLIS"))
         assertTrue(service.contains("PendingOperationWakeLease"))
@@ -103,6 +105,15 @@ class BackgroundHostingContractTest {
         assertTrue(service.contains("finishSchedulerWakeWindow"))
         assertFalse(scheduling.contains("acquireWakeLock()"))
         assertFalse(scheduling.contains("releaseWakeLock()"))
+        // The CPU lease may outlive a tick only by a policy-bounded gap, and a
+        // renew must re-arm the held lock rather than release-then-acquire:
+        // deep Doze suspends the device in the gap between those two calls.
+        assertTrue(service.contains("SchedulerTickPolicy.shouldHoldWakeLockAcross"))
+        assertTrue(service.contains("SchedulerTickPolicy.wakeHoldTimeoutMillis"))
+        val wakeWindow = service.substringAfter("private fun finishSchedulerWakeWindow")
+            .substringBefore("private fun reportPreviousInterruption")
+        assertFalse(wakeWindow.contains("releaseWakeLock(reason = \"renew"))
+        assertTrue(wakeWindow.contains("renewWakeLock("))
         assertTrue(service.contains("setExactAndAllowWhileIdle"))
         assertTrue(service.contains("setAndAllowWhileIdle"))
         assertTrue(service.contains("consumeAndRunScheduledTick"))

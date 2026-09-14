@@ -24,13 +24,23 @@ class MinistryProtocolShapesTest {
     fun captured6328PayloadAndE328SuccessReceiptMatchEvidence() {
         assertArrayEquals(
             byteArrayOf(1, 0, 0, 0, 1),
-            MinistryProtocolShapes.buildPlantPayload("金银花")
+            MinistryProtocolShapes.buildPlantPayload("稻谷")
         )
         val receipt = MinistryProtocolShapes.parsePlantResponse(PLANT_SUCCESS.hexBytes())
 
         assertTrue(receipt.success)
         assertEquals(0, receipt.status)
         assertEquals("操作成功。", receipt.message)
+    }
+
+    @Test
+    fun namedFiefGardenVariantParsesLikeSharedCore() {
+        // 设备账号 176（户部 2 级、封地"乌吉"）：u8 名长 + 名字 + u8 总坑数。
+        val named = MinistryProtocolShapes.parseGardenStatus(NAMED_GARDEN_176.hexBytes())
+
+        assertEquals(10, named.plotCount)
+        assertEquals(0, named.occupiedCount)
+        assertEquals(10, named.emptyCount)
     }
 
     @Test
@@ -99,6 +109,12 @@ class MinistryProtocolShapesTest {
                 "00000000000000000000000000320500000000000006000000000000070000000000000800000000000009" +
                 "0000000000000200000007000100010d000100000002000000030000000400000005000000060000000700" +
                 "000008000000090000000a0000000b0000000c0000000d0000"
+
+        private const val NAMED_GARDEN_176 =
+            "000000020000000000000050000007fb003202000500280006e4b98ce590890a00000000000000010000000000" +
+                "000200000000000003000000000000040000000000000500000000000006000000000000070000000000000800" +
+                "0000000000090000000000000200000000000100000d0001000000020000000300000004000000050000000600" +
+                "00000700000008000000090000000a0000000b0000000c0000000d0000"
 
         private const val PLANT_SUCCESS =
             "00000fe6938de4bd9ce68890e58a9fe38082000003840100000100008ca000008ca0006400645a00000000" +

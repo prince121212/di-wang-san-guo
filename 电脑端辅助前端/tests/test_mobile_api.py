@@ -140,7 +140,7 @@ class MobileApiContractTests(unittest.TestCase):
             "courtesyEnabled": False,
             "salaryRefresh": True,
         })
-        self.assertEqual("金银花", normalized["crop"])
+        self.assertEqual("稻谷", normalized["crop"])
         self.assertFalse(normalized["highPriority"])
         self.assertIn("/api/liubu/save", SERVER.MOBILE_LEGACY_POST_PATHS)
 
@@ -411,7 +411,7 @@ class MobileApiContractTests(unittest.TestCase):
                     "sessionId": opaque,
                     "settings": {
                         "cropEnabled": True,
-                        "crop": "金银花",
+                        "crop": "稻谷",
                         "highPriority": False,
                         "stealEnabled": False,
                         "courtesyEnabled": False,
@@ -478,7 +478,7 @@ class MobileApiContractTests(unittest.TestCase):
             self.assertEqual(5, common["config"]["chainInventory"]["keepCount"])
 
             self.assertTrue(ministry["ok"])
-            self.assertEqual("金银花", ministry["settings"]["crop"])
+            self.assertEqual("稻谷", ministry["settings"]["crop"])
             self.assertEqual("ministry-task", ministry["task"]["taskId"])
 
             self.assertTrue(mine["ok"])

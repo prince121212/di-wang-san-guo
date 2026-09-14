@@ -25,11 +25,13 @@ data class MinistryStealTarget(
  * Shapes proven by the 2026-07-11 passive capture:
  * 0x6320 -> 0xe320 garden state and 0x6328 -> 0xe328 planting.
  *
- * Only crop id 1 (the captured/default 金银花 path) is exposed. Other crops,
+ * Only crop id 1 (the captured/default 稻谷 path) is exposed. Other crops,
  * harvesting, stealing and courtesy tasks remain closed until separately captured.
  */
 object MinistryProtocolShapes {
-    private const val VERIFIED_EMPTY_STATE_SIZE = 158
+    private const val FIXED_HEADER_BYTES = 24
+    private const val TAIL_BYTES = 62
+    private const val EMPTY_ENTRY_BYTES = 7
     private const val VERIFIED_PLOT_COUNT = 10
     private const val OCCUPIED_RECORD_EXTRA_BYTES = 25
 
@@ -53,12 +55,19 @@ object MinistryProtocolShapes {
     }
 
     fun parseGardenStatus(payload: ByteArray): MinistryGardenStatus {
-        require(payload.size >= VERIFIED_EMPTY_STATE_SIZE) { "0xe320 response too short" }
-        val plotCount = payload[25].toInt() and 0xff
+        require(payload.size >= FIXED_HEADER_BYTES + 2 + TAIL_BYTES) { "0xe320 response too short" }
+        // 固定 24B 头之后是 u8 长度 UTF-8 封地名，再是 u8 总坑数——与共享核心
+        // 一致；把坑数当 [24:26] u16 读会在带名字的账号上读出假数量。
+        val nameLength = payload[FIXED_HEADER_BYTES].toInt() and 0xff
+        val plotCountIndex = FIXED_HEADER_BYTES + 1 + nameLength
+        require(plotCountIndex < payload.size) { "0xe320 garden name length out of bounds" }
+        val plotCount = payload[plotCountIndex].toInt() and 0xff
         require(plotCount == VERIFIED_PLOT_COUNT) {
             "0xe320 plot count changed: $plotCount"
         }
-        val extra = payload.size - VERIFIED_EMPTY_STATE_SIZE
+        val headerBytes = plotCountIndex + 1
+        val emptyGardenSize = headerBytes + plotCount * EMPTY_ENTRY_BYTES + TAIL_BYTES
+        val extra = payload.size - emptyGardenSize
         require(extra >= 0 && extra % OCCUPIED_RECORD_EXTRA_BYTES == 0) {
             "0xe320 unsupported record shape: size=${payload.size}"
         }

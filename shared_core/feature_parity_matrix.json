@@ -38,7 +38,7 @@
     { "id": "generalMaintenance", "label": "治疗、加体、加忠；未开放俘虏控件与电脑端一致禁用", "status": "aligned_pending_device" },
     { "id": "inventory", "label": "丢弃、保留、装备、开箱", "status": "aligned_pending_device" },
     { "id": "chainInventory", "label": "连体物品整理", "status": "deferred" },
-    { "id": "sixMinistries", "label": "六部已确认的金银花种植；未确认动作不发送", "status": "aligned_pending_device" },
+    { "id": "sixMinistries", "label": "六部已确认的稻谷种植采摘与礼部任务委派；未确认动作不发送", "status": "aligned_pending_device" },
     { "id": "dailySignIn", "label": "自动签到", "status": "aligned_pending_device" },
     { "id": "dailyArena", "label": "领竞技币（每日22:00周期）", "status": "aligned_pending_device" },
     { "id": "dailyDonate", "label": "自动捐献", "status": "aligned_pending_device" },
