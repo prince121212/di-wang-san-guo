@@ -8403,17 +8403,41 @@ class CoreFacade:
             int(preview.get("x") or 0) != int(target.get("x") or 0)
             or int(preview.get("y") or 0) != int(target.get("y") or 0)
         ):
-            pending_garrison.update({
-                "dispatchSendState": "rejected-before-dispatch",
-                "dispatchError": "预出征坐标与目标不一致",
-                "requiresAttention": True,
-            })
-            self._save_automation_pending_record(
-                account_ref, "minePendingGarrisonJson", pending_garrison
+            # The server answered the preview with a target other than the
+            # one we asked about (0xFFFF,0xFFFF when it is simply gone): the
+            # mine was taken or despawned between the scan and the preview.
+            # Every outcome here is known - the troop assignment was accepted,
+            # the preview answered, and the formal dispatch is never sent -
+            # so there is nothing for a human to reconcile.  Close the record
+            # and let the scheduler pick another target; keeping it active
+            # with requiresAttention turned one stale map row into a
+            # permanent "存在未确认操作" stop on a real account.
+            now_millis = int(self._ports.clock.now_millis())
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "minePendingGarrisonJson": "{}",
+                    "mineLastPreDispatchFailureJson": self._json({
+                        **pending_garrison,
+                        "dispatchSendState": "rejected-before-dispatch",
+                        "dispatchError": "预出征坐标与目标不一致",
+                        "dispatchErrorCode": "MINE_PREVIEW_TARGET_MISMATCH",
+                        "dispatchRejectedAtMillis": now_millis,
+                        "requiresAttention": False,
+                        "preview": {
+                            "x": preview.get("x"),
+                            "y": preview.get("y"),
+                            "marchSeconds": preview.get("marchSeconds"),
+                            "winRate": preview.get("winRate"),
+                            "rawHex": str(preview.get("rawHex") or "")[:200],
+                        },
+                    }),
+                },
             )
             raise OperationKnownFailureError(
-                f"打矿预览坐标({preview.get('x')},{preview.get('y')})"
-                f"与目标({target.get('x')},{target.get('y')})不一致",
+                f"打矿目标{pending_garrison.get('targetName') or ''}"
+                f"({target.get('x')},{target.get('y')})已失效"
+                "（服务器确认目标不存在或已改变），自动重新寻找目标",
                 code="MINE_PREVIEW_TARGET_MISMATCH",
             )
         max_march = int(body.get("maxMarchMinutes") or 45)
@@ -11534,6 +11558,52 @@ class CoreFacade:
         )
         if settled is not None:
             return settled
+        if (
+            dispatch_state == "rejected-before-dispatch"
+            and int(pending.get("battleId") or 0) <= 0
+            and (
+                str(pending.get("dispatchErrorCode") or "")
+                == "MINE_PREVIEW_TARGET_MISMATCH"
+                # Records written before the error code existed carry only
+                # the message text.
+                or str(pending.get("dispatchError") or "")
+                == "预出征坐标与目标不一致"
+            )
+        ):
+            # The server answered the preview: the target was already gone.
+            # The formal dispatch was never sent and the accepted preflight
+            # mutation (troop assignment) is a known outcome, so no outcome
+            # is unknown and there is nothing for a human to reconcile -
+            # the record only survived because earlier builds kept it active
+            # with requiresAttention.  Close it and rejoin the configured
+            # path, which scans for a fresh target.
+            self._update_account_public_state(
+                account_ref,
+                {
+                    "minePendingGarrisonJson": "{}",
+                    "mineLastPreDispatchFailureJson": self._json({
+                        **pending,
+                        "requiresAttention": False,
+                        "settledAtMillis": now_millis,
+                        "recoveryResolution": "target-gone-before-dispatch",
+                    }),
+                },
+            )
+            self._write_user_log(
+                account_ref,
+                "打矿此前的隔离已解除：服务器确认目标矿点已不存在或已改变，"
+                "正式出征从未发送，无需人工核对；按配置重新寻找目标",
+            )
+            return {
+                "feature": "mine",
+                "state": "retry",
+                "success": False,
+                "requiresAttention": False,
+                "errorCode": "MINE_PREVIEW_TARGET_MISMATCH",
+                "message": "打矿目标已失效，重新寻找目标",
+                "nextWakeAtMillis": now_millis,
+                "_pendingReleased": True,
+            }
         if dispatch_state != "accepted" and (
             dispatch_state
             in {

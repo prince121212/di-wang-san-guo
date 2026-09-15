@@ -1559,6 +1559,146 @@ class SharedAutomationRecoveryWorkflowTests(unittest.TestCase):
             facade.close()
             directory.cleanup()
 
+    def test_a_preview_target_gone_closes_the_ledger_and_rescans(self) -> None:
+        """The server answering the preview with foreign coordinates is a
+        known conclusion - the mine was taken or despawned - not an
+        unconfirmed operation.  The formal dispatch is never sent, so the
+        record closes and the scheduler looks for another target instead of
+        isolating the feature for a human."""
+        facade, clock, directory = self._facade()
+        try:
+            general = self._general(1, 0)
+            facade._run_expedition_preflight = types.MethodType(  # noqa: SLF001
+                lambda self, *_a, **_k: (
+                    [{**general, "idHex": "0000000000000001"}],
+                    {"sent": True},
+                ),
+                facade,
+            )
+            facade._persist_automation_general_snapshot = (  # noqa: SLF001
+                lambda *args, **kwargs: None
+            )
+            gone_preview = struct.pack(">iqqBHH", 0, 0, 0, 0, 0xFFFF, 0xFFFF)
+
+            def command_fact(
+                self, _execution, _account, opcode, _payload, _phase, _context,
+                *, mutation_sent,
+            ):
+                return {
+                    "requestOpcode": opcode,
+                    "httpCode": 200,
+                    "httpOk": True,
+                    "packets": [{
+                        "opcode": 0x8520,
+                        "payload": gone_preview,
+                    }],
+                }
+
+            facade._daily_command_fact = types.MethodType(command_fact, facade)  # noqa: SLF001
+            with self.assertRaises(OperationKnownFailureError) as raised:
+                facade._run_mine_execute_game_workflow(  # noqa: SLF001
+                    FakeExecution(),
+                    {
+                        "accountRef": "202",
+                        "generalIds": [1],
+                        "target": {
+                            "id": 187324,
+                            "mineType": "二级牧场",
+                            "x": 71,
+                            "y": 30,
+                        },
+                    },
+                    {},
+                )
+            self.assertEqual(
+                "MINE_PREVIEW_TARGET_MISMATCH", raised.exception.code
+            )
+            self.assertIn("已失效", str(raised.exception))
+            self.assertIn("重新寻找目标", str(raised.exception))
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            self.assertEqual("{}", public["minePendingGarrisonJson"])
+            archived = json.loads(public["mineLastPreDispatchFailureJson"])
+            self.assertFalse(archived["requiresAttention"])
+            self.assertEqual(
+                "rejected-before-dispatch", archived["dispatchSendState"]
+            )
+            self.assertEqual(
+                "MINE_PREVIEW_TARGET_MISMATCH", archived["dispatchErrorCode"]
+            )
+            # The raw preview is the only evidence of what the server actually
+            # said; the incident that motivated this change had to be diagnosed
+            # without it because older builds never persisted it.
+            self.assertEqual(gone_preview.hex(), archived["preview"]["rawHex"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_a_legacy_target_gone_ledger_settles_without_a_human(self) -> None:
+        """Records written by older builds kept the mismatch active with
+        requiresAttention and isolated 打矿 for hours.  Every outcome on such
+        a record is known - the troop assignment was accepted, the preview
+        answered, the formal dispatch was never sent - so recovery closes it
+        and hands the feature back to the configured path."""
+        facade, clock, directory = self._facade()
+        try:
+            pending = {
+                # The exact shape account 1608601 carried on 2026-09-15.
+                "battleId": 0,
+                "mineId": 187324,
+                "generalIds": [1],
+                "x": 71,
+                "y": 30,
+                "targetName": "二级牧场",
+                "target": {"id": 187324, "mineType": "二级牧场", "x": 71, "y": 30},
+                "createdAtMillis": clock.value - 14_400_000,
+                "preDispatchMutationState": "accepted",
+                "preDispatchRequestMetadata": {
+                    "feature": "troop-assign",
+                    "opcode": "0x1226",
+                },
+                "dispatchSendState": "rejected-before-dispatch",
+                "dispatchError": "预出征坐标与目标不一致",
+                "requiresAttention": True,
+            }
+            facade._update_account_public_state(  # noqa: SLF001
+                "202",
+                {"minePendingGarrisonJson": json.dumps(pending, ensure_ascii=False)},
+            )
+            idle_general = self._general(1, 0)
+            facade._fresh_formation_state = types.MethodType(  # noqa: SLF001
+                lambda self, *_a, **_k: ("00", [idle_general], []),
+                facade,
+            )
+            facade._persist_automation_general_snapshot = (  # noqa: SLF001
+                lambda *args, **kwargs: None
+            )
+            facade._refresh_military_snapshot_game = types.MethodType(  # noqa: SLF001
+                lambda self, *_a, **_k: {"actions": []},
+                facade,
+            )
+
+            result = facade._run_mine_garrison_game_workflow(  # noqa: SLF001
+                FakeExecution(), "202", pending, {}
+            )
+
+            self.assertEqual("retry", result["state"])
+            self.assertFalse(result["requiresAttention"])
+            self.assertEqual(
+                "MINE_PREVIEW_TARGET_MISMATCH", result["errorCode"]
+            )
+            stored = json.loads(facade.account_record_json("202"))["account"]
+            public = stored["session"]["publicState"]
+            self.assertEqual("{}", public["minePendingGarrisonJson"])
+            archived = json.loads(public["mineLastPreDispatchFailureJson"])
+            self.assertFalse(archived["requiresAttention"])
+            self.assertEqual(
+                "target-gone-before-dispatch", archived["recoveryResolution"]
+            )
+        finally:
+            facade.close()
+            directory.cleanup()
+
     def test_mine_recall_missing_receipt_is_uncertain_and_not_replayed(self) -> None:
         facade, clock, directory = self._facade()
         try:
