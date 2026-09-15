@@ -523,6 +523,26 @@ class CloudMapReplicaStore:
             self._save()
             return {"upserts": upserted, "gone": gone}
 
+    def requeue_upload(self, target_id: str) -> bool:
+        """云端不认识这个目标时，把副本行重新排队上报。
+
+        副本是客户端的真相，云端是共享镜像；镜像丢了行（旧孤儿清扫硬删、
+        或上行从未到达），正确的修复是重新发布真相，而不是删掉自己的
+        认知——目标若其实已死，下一次真实扫描会以 gone 上报，游戏服务器
+        也会在出征时最终裁决。返回 False 表示副本里也没有这条记录。
+        """
+
+        with self._lock:
+            row = self._targets.get(str(target_id).strip().lower())
+            if row is None:
+                return False
+            observation = self._normalize_observation(row)
+            if observation is None:
+                return False
+            self._pending_upserts[observation["targetId"]] = observation
+            self._save()
+            return True
+
     def flush_uploads(self) -> bool:
         """把待发事件组成 v2 observations 请求发送；成功才清队列。
 

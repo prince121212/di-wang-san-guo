@@ -1208,6 +1208,68 @@ describe("event-driven sync v2", () => {
     expect(revived?.status).toBe("available");
   });
 
+  it("cron never collects a v2 upsert for lacking region links", async () => {
+    // v2 writes no map_target_regions rows by design - links only feed the
+    // legacy regions model.  A global orphan sweep predating v2 read "no
+    // link" as "abandoned" and hard-deleted every v2 row within one cycle;
+    // with no tombstone the changes feed could not propagate it, so replicas
+    // kept offering phantoms whose reservations could never succeed.
+    await enableSharedMode();
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      upserts: [
+        { targetId: "v2-orphan-looking", x: 3, y: 3, type: "山贼", level: 5, data: {} },
+      ],
+    });
+    expect(Number((await env.DB.prepare(
+      "SELECT COUNT(*) count FROM map_target_regions WHERE target_id='v2-orphan-looking'",
+    ).first<{ count: number }>())?.count)).toBe(0);
+
+    await worker.scheduled(createScheduledController({
+      cron: "*/30 * * * *",
+      scheduledTime: new Date(Date.now()),
+    }), env as unknown as WorkerEnv);
+
+    const surviving = await env.DB.prepare(
+      "SELECT status FROM map_targets WHERE target_id='v2-orphan-looking'",
+    ).first<{ status: string }>();
+    expect(surviving?.status).toBe("available");
+  });
+
+  it("reserve says unknown-target apart from a peer lease", async () => {
+    // Both refusals look identical to a client that only reads `reserved`,
+    // but they demand opposite reactions: a lease says retry later, an
+    // unknown row says the client's replica holds the only copy of that
+    // truth and must re-publish it.
+    await enableSharedMode();
+    const unknown = await post("/v1/maps/targets/reserve", {
+      ...identity(ACTOR_A), mapKind: "bandit", targetId: "never-uploaded",
+    });
+    expect(unknown.json).toMatchObject({
+      reserved: false,
+      reason: "unknown-target",
+    });
+
+    await post("/v1/maps/observations", {
+      ...identity(ACTOR_A),
+      mapKind: "bandit",
+      upserts: [
+        { targetId: "peer-held", x: 4, y: 4, type: "山贼", level: 5, data: {} },
+      ],
+    });
+    await post("/v1/maps/targets/reserve", {
+      ...identity(ACTOR_A), mapKind: "bandit", targetId: "peer-held",
+    });
+    const refused = await post("/v1/maps/targets/reserve", {
+      ...identity(ACTOR_B), mapKind: "bandit", targetId: "peer-held",
+    });
+    expect(refused.json).toMatchObject({
+      reserved: false,
+      reason: "unavailable",
+    });
+  });
+
   it("never tombstones a reserved or dispatching target through gone", async () => {
     await enableSharedMode();
     await post("/v1/maps/observations", {

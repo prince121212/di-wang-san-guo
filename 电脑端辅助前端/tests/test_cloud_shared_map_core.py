@@ -30,6 +30,21 @@ class FixedClock:
         return self.value
 
 
+class RecordingLogPort:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def write(self, event) -> None:
+        self.events.append(dict(event))
+
+    def user_messages(self) -> list[str]:
+        return [
+            str(event.get("message"))
+            for event in self.events
+            if str(event.get("audience") or "") == "user"
+        ]
+
+
 class FakeExecution:
     operation_id = "cloud-map-test"
 
@@ -53,6 +68,11 @@ class FakeCloudPort:
         self.targets: list[dict[str, object]] = []
         self.fail = False
         self.reserved = True
+        self.reserve_reason = ""
+        # v2 endpoints: when present, the replica fills from these instead of
+        # falling back to the v1 full query.
+        self.v2 = False
+        self.sync_targets: list[dict[str, object]] = []
 
     def configured(self) -> bool:
         return True
@@ -91,6 +111,22 @@ class FakeCloudPort:
                     "serverKey": "qzone_351",
                 }],
             }}
+        if path == "/v1/maps/targets/sync":
+            if not self.v2:
+                raise AssertionError("unexpected cloud path: /v1/maps/targets/sync")
+            return {"status": 200, "body": {
+                "ok": True,
+                "targets": copy.deepcopy(self.sync_targets),
+                "nextCursor": None,
+            }}
+        if path == "/v1/maps/targets/changes":
+            if not self.v2:
+                raise AssertionError("unexpected cloud path: /v1/maps/targets/changes")
+            return {"status": 200, "body": {
+                "ok": True,
+                "targets": [],
+                "cursor": dict(value["body"].get("since") or {}),
+            }}
         if path == "/v1/maps/targets/query":
             return {"status": 200, "body": {
                 "ok": True,
@@ -113,6 +149,10 @@ class FakeCloudPort:
                 "ok": True,
                 "reserved": self.reserved,
                 "reservationToken": "reservation-1" if self.reserved else "",
+                **(
+                    {"reason": self.reserve_reason}
+                    if not self.reserved and self.reserve_reason else {}
+                ),
             }}
         if path == "/v1/maps/targets/status":
             return {"status": 200, "body": {"ok": True, "updated": True}}
@@ -120,13 +160,17 @@ class FakeCloudPort:
 
 
 class CloudSharedMapCoreTests(unittest.TestCase):
-    def _facade(self, cloud: FakeCloudPort):
+    def _facade(self, cloud: FakeCloudPort, logs=None):
         directory = tempfile.TemporaryDirectory()
         clock = FixedClock()
         facade = CoreFacade(
             shared_root=ROOT / "shared_core",
             operation_store_path=str(Path(directory.name) / "operations.json"),
-            ports=PlatformPorts(clock=clock, cloud_shared_data=cloud),
+            ports=PlatformPorts(
+                clock=clock,
+                cloud_shared_data=cloud,
+                **({"logs": logs} if logs is not None else {}),
+            ),
         )
         facade.account_record_upsert({
             "accountRef": "303",
@@ -540,6 +584,303 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             policy = facade.cloud_map_coordination_policy("303")
             self.assertEqual(policy["mode"], "LOCAL_ONLY")
             self.assertTrue(policy["legacyLocalMapPrefetchAllowed"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_a_filter_that_matches_nothing_all_round_advises_relaxing_it(self) -> None:
+        """Fifteen empty batches say the filter, not the map, is the problem.
+
+        "暂时没有目标" and "筛选条件在这个区里几乎选不出目标" both surface as a
+        no-targets tick; only accumulated evidence tells them apart.  The core
+        counts actually-scanned coordinates against the filter fingerprint and,
+        at 75 (fifteen batches of five, just under one full 80-coordinate
+        round), says so once.  A matched target ends the episode: the count
+        clears and the panel hears the usual "已恢复运行".
+        """
+        logs = RecordingLogPort()
+        cloud = FakeCloudPort("LOCAL_ONLY")
+        facade, _clock, directory, _config, _state = self._facade(cloud, logs=logs)
+        facade.configure_resident_automation_from_habits("303", {
+            "formations": [{
+                "enabled": True,
+                "generalIds": ["7"],
+                "soldierType": "轻骑兵",
+                "soldierCount": 100,
+            }],
+            "config": {
+                "autoStart": True,
+                "startHour": 0,
+                "dailyLimit": 3,
+                "healWounded": False,
+                "brush": {
+                    "startX": 10,
+                    "startY": 10,
+                    "scanLimit": 80,
+                    "targetKind": "山贼",
+                    "rows": [{
+                        "enabled": True,
+                        "generalIds": ["7"],
+                        "level": 1,
+                    }],
+                },
+            },
+            "mine": {"enabled": False, "rows": []},
+        })
+
+        def empty_batch(_self, _execution, body, _context):
+            offset = int(body["scanOffset"])
+            limit = int(body["scanLimit"])
+            batch = int(body["scanBatchSize"])
+            next_offset = offset + batch
+            wrapped = next_offset >= limit
+            return {
+                "targets": [],
+                "scanOffset": offset,
+                "scanLimit": limit,
+                "scanBatchSize": batch,
+                "scannedCount": batch,
+                "nextScanOffset": 0 if wrapped else next_offset,
+                "scanWrapped": wrapped,
+                "scannedCoordinates": [],
+                "scanResults": [],
+            }
+
+        facade._run_brush_search_game_workflow = types.MethodType(  # noqa: SLF001
+            empty_batch, facade
+        )
+
+        def stored_state() -> dict:
+            public = json.loads(
+                facade.account_record_json("303")
+            )["account"]["session"]["publicState"]
+            return json.loads(public["residentAutomationStateJson"])
+
+        try:
+            config = json.loads(json.loads(
+                facade.account_record_json("303")
+            )["account"]["session"]["publicState"]["residentAutomationConfigJson"])
+            state = stored_state()
+            for tick in range(1, 18):
+                result = facade._run_configured_brush_tick(  # noqa: SLF001
+                    FakeExecution(), "303", config, state, {}
+                )
+                state = stored_state()
+                if tick < 15:
+                    self.assertEqual(
+                        result["state"], "no-targets", f"tick {tick}",
+                    )
+                else:
+                    self.assertEqual(
+                        result["state"], "filter-strict", f"tick {tick}",
+                    )
+                    self.assertIn("【建议】", result["message"])
+                    self.assertIn("筛选条件可能过严", result["message"])
+
+            advice_lines = [
+                message for message in logs.user_messages()
+                if "【建议】" in message
+            ]
+            self.assertEqual(
+                1, len(advice_lines), "the conclusion is announced once",
+            )
+            brush = state["brush"]
+            self.assertEqual(brush["noMatchScannedCoords"], 17 * 5)
+            self.assertTrue(brush["filterAdviceActive"])
+
+            def matched(_self, _execution, body, _context):
+                found = {
+                    "id": 0x1234,
+                    "x": 10,
+                    "y": 10,
+                    "kind": "山贼",
+                    "level": 1,
+                }
+                return {
+                    **empty_batch(_self, _execution, body, _context),
+                    "targets": [found],
+                }
+
+            def accepted(_self, _execution, body, _context):
+                return {"result": {
+                    "success": True,
+                    "successBattleId": 9001,
+                    "target": dict(body["target"]),
+                }}
+
+            facade._run_brush_search_game_workflow = types.MethodType(  # noqa: SLF001
+                matched, facade
+            )
+            facade._run_brush_execute_game_workflow = types.MethodType(  # noqa: SLF001
+                accepted, facade
+            )
+            result = facade._run_configured_brush_tick(  # noqa: SLF001
+                FakeExecution(), "303", config, state, {}
+            )
+
+            self.assertEqual(result["state"], "dispatched")
+            brush = stored_state()["brush"]
+            self.assertEqual(brush["noMatchScannedCoords"], 0)
+            self.assertFalse(brush["filterAdviceActive"])
+            self.assertIn("刷黄已恢复运行", logs.user_messages())
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_a_changed_filter_restarts_the_advice_count(self) -> None:
+        """The operator acting on the advice must not be advised again at once.
+
+        The fingerprint covers the filter's meaning (centre, levels, drops,
+        composition), so an edit zeroes the accumulated evidence and the next
+        seventy-five coordinates decide afresh.
+        """
+        logs = RecordingLogPort()
+        cloud = FakeCloudPort("LOCAL_ONLY")
+        facade, _clock, directory, _config, _state = self._facade(cloud, logs=logs)
+
+        habits = {
+            "formations": [{
+                "enabled": True,
+                "generalIds": ["7"],
+                "soldierType": "轻骑兵",
+                "soldierCount": 100,
+            }],
+            "config": {
+                "autoStart": True,
+                "startHour": 0,
+                "dailyLimit": 3,
+                "healWounded": False,
+                "brush": {
+                    "startX": 10,
+                    "startY": 10,
+                    "scanLimit": 80,
+                    "targetKind": "山贼",
+                    "rows": [{
+                        "enabled": True,
+                        "generalIds": ["7"],
+                        "level": 1,
+                    }],
+                },
+            },
+            "mine": {"enabled": False, "rows": []},
+        }
+        facade.configure_resident_automation_from_habits("303", habits)
+
+        def empty_batch(_self, _execution, body, _context):
+            offset = int(body["scanOffset"])
+            limit = int(body["scanLimit"])
+            batch = int(body["scanBatchSize"])
+            next_offset = offset + batch
+            wrapped = next_offset >= limit
+            return {
+                "targets": [],
+                "scanOffset": offset,
+                "scanLimit": limit,
+                "scanBatchSize": batch,
+                "scannedCount": batch,
+                "nextScanOffset": 0 if wrapped else next_offset,
+                "scanWrapped": wrapped,
+                "scannedCoordinates": [],
+                "scanResults": [],
+            }
+
+        facade._run_brush_search_game_workflow = types.MethodType(  # noqa: SLF001
+            empty_batch, facade
+        )
+
+        def stored() -> tuple[dict, dict]:
+            public = json.loads(
+                facade.account_record_json("303")
+            )["account"]["session"]["publicState"]
+            return (
+                json.loads(public["residentAutomationConfigJson"]),
+                json.loads(public["residentAutomationStateJson"]),
+            )
+
+        try:
+            config, state = stored()
+            for _ in range(16):
+                result = facade._run_configured_brush_tick(  # noqa: SLF001
+                    FakeExecution(), "303", config, state, {}
+                )
+                _config, state = stored()
+            self.assertEqual(result["state"], "filter-strict")
+
+            # The operator widens the levels; the fingerprint changes.
+            widened = copy.deepcopy(habits)
+            widened["config"]["brush"]["rows"][0]["levels"] = [1, 2]
+            del widened["config"]["brush"]["rows"][0]["level"]
+            facade.configure_resident_automation_from_habits("303", widened)
+            config, state = stored()
+            result = facade._run_configured_brush_tick(  # noqa: SLF001
+                FakeExecution(), "303", config, state, {}
+            )
+
+            self.assertEqual(result["state"], "no-targets")
+            brush = stored()[1]["brush"]
+            self.assertEqual(brush["noMatchScannedCoords"], 5)
+            self.assertFalse(brush["filterAdviceActive"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_an_unknown_cloud_target_is_republished_from_the_replica(self) -> None:
+        """A reserve refusal naming an unknown target re-publishes the truth.
+
+        The legacy orphan sweep hard-deleted v2 uploads and left no tombstone
+        for the changes feed, so replicas kept offering phantoms whose
+        reservations could never succeed - and the account never rescanned,
+        because candidates existed.  When the cloud answers unknown-target,
+        the client re-queues the replica row as an upsert immediately, so the
+        next round can actually reserve it.
+        """
+        cloud = FakeCloudPort("CLOUD_SHARED")
+        cloud.v2 = True
+        cloud.reserved = False
+        cloud.reserve_reason = "unknown-target"
+        cloud.sync_targets = [{
+            "targetId": "0000000000001234",
+            "x": 10,
+            "y": 10,
+            "type": "山贼",
+            "level": 1,
+            "lastSeenAtMillis": 80_000_000,
+            "changedAtMillis": 80_000_000,
+            "status": "available",
+            "data": {
+                "name": "1级山贼",
+                "kind": "山贼",
+                "composition": {
+                    "foot": 0, "bow": 2, "cavalry": 0, "chariot": 0,
+                    "source": "8540-units",
+                },
+            },
+        }]
+        facade, _clock, directory, config, state = self._facade(cloud)
+
+        def forbidden_scan(*_args, **_kwargs):
+            raise AssertionError("a cached candidate must skip the game-map scan")
+
+        facade._run_brush_search_game_workflow = forbidden_scan  # noqa: SLF001
+        try:
+            result = facade._run_configured_brush_tick(  # noqa: SLF001
+                FakeExecution(), "303", config, state, {}
+            )
+
+            self.assertEqual(result["state"], "no-targets")
+            self.assertIn("云端记录同步中", result["message"])
+            observations = [
+                call for call in cloud.calls
+                if call["path"] == "/v1/maps/observations"
+            ]
+            self.assertEqual(
+                1, len(observations), "the phantom is re-published at once",
+            )
+            upserts = observations[0]["body"].get("upserts") or []
+            self.assertEqual(
+                [str(row.get("targetId")) for row in upserts],
+                ["0000000000001234"],
+            )
         finally:
             facade.close()
             directory.cleanup()

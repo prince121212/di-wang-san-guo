@@ -29,6 +29,18 @@ STALL_REPORT_MILLIS = 15 * 60 * 1000
 #: States in which a feature asked to stop rather than to be rescheduled.
 BLOCKED_STATES = frozenset({"blocked", "defeat-paused"})
 
+#: How many coordinates 刷黄 must scan without a single filter match before
+#: the operator is told the filter itself is the problem.
+#:
+#: "暂时没有目标" and "筛选条件在这个区里几乎选不出目标" are two different
+#: facts that both surface as a no-targets tick; only accumulated evidence
+#: tells them apart.  The scan space defaults to 80 coordinates scanned in
+#: batches of 5, so 75 is fifteen batches - just under one full round - which
+#: is the point where "nobody happened to match yet" stops being plausible.
+#: The count resets when the filter fingerprint changes (the operator already
+#: adjusted) and when any target matches (the filter demonstrably produces).
+BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS = 75
+
 #: Resident states worth announcing, and how each reads to the operator.
 #:
 #: The panel has one job: answer "它在做什么，卡住了吗".  A success record answers
@@ -58,6 +70,12 @@ NARRATED_STATES = {
     # preflight happened to follow a sent heal; the honest line names the
     # general, the shortfall and what would end the pause.
     "formation-paused": "{label}已暂停：{reason}",
+    # Crossing BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS without a match is a
+    # conclusion drawn from accumulated evidence, not one scan's sample, so it
+    # is announced at once and is not in SAMPLED_STATES.  The reason carries
+    # the 【建议】 marker both hosts use to raise a dismissible notice.
+    # Leaving the state (a target matched) says "已恢复运行" like any other.
+    "filter-strict": "{label}{reason}",
 }
 
 #: Narrated states that are a *sample* rather than a *decision*.

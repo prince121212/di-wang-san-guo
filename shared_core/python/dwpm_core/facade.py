@@ -25,6 +25,7 @@ from .account.state_machine import reduce_account_event
 from .contracts import load_behavior_contract, load_route_ownership
 from .automation import (
     BLOCKED_STATES as RESIDENT_BLOCKED_STATES,
+    BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS,
     DAILY_FEATURE_LABELS,
     FEATURE_LABELS,
     NARRATED_STATES,
@@ -12688,17 +12689,54 @@ class CoreFacade:
                     )
             else:
                 last_message = "本轮没有匹配的山贼/黄巾目标"
+            # "暂时没有目标" and "筛选条件在这个区里几乎选不出目标" both
+            # surface as a no-targets tick; only accumulated evidence tells
+            # them apart.  Count actually-scanned coordinates against the
+            # filter fingerprint: a changed fingerprint means the operator
+            # already adjusted (restart the count), and a matched target -
+            # the path below this branch - proves the filter produces, so it
+            # clears the count there.  scanned_count is 0 for a batch whose
+            # coordinates were all leased by peers, which correctly makes no
+            # progress toward the threshold.
+            if scan_progress_available:
+                if (
+                    str(brush_state.get("filterAdviceFingerprint") or "")
+                    != scan_fingerprint
+                ):
+                    brush_state["filterAdviceFingerprint"] = scan_fingerprint
+                    brush_state["noMatchScannedCoords"] = 0
+                    brush_state["filterAdviceActive"] = False
+                brush_state["noMatchScannedCoords"] = (
+                    int(brush_state.get("noMatchScannedCoords") or 0)
+                    + scanned_count
+                )
+                if brush_state["noMatchScannedCoords"] >= (
+                    BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS
+                ):
+                    brush_state["filterAdviceActive"] = True
+            last_state = "no-targets"
+            if brush_state.get("filterAdviceActive"):
+                last_state = "filter-strict"
+                # The message must stay stable for the whole episode: the
+                # Android notice keys on its hash so the operator can dismiss
+                # it, and a live count would mint a new key every batch.
+                last_message = (
+                    f"【建议】筛选条件可能过严：刷黄编队{formation_number}已连续"
+                    f"扫描{BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS}个坐标以上"
+                    "（近一整圈）未找到符合条件的山贼，可在常规-常用页面放宽"
+                    "兵种组成、等级或掉落筛选以提高刷黄效率"
+                )
             brush_state.update({
                 "cursor": (cursor + 1) % len(rules),
                 "nextWakeAtMillis": now_millis + retry_delay,
-                "lastState": "no-targets",
+                "lastState": last_state,
                 "lastMessage": last_message,
             })
             state["brush"] = brush_state
             self._save_resident_automation_state(account_ref, state)
             return {
                 "feature": "brush",
-                "state": "no-targets",
+                "state": last_state,
                 "success": True,
                 "message": brush_state["lastMessage"],
                 "sourceRowIndex": source_row_index,
@@ -12707,6 +12745,15 @@ class CoreFacade:
                 "nextWakeAtMillis": brush_state["nextWakeAtMillis"],
                 **scan_metadata,
             }
+        # A matched target - even one that turns out to be unreservable in the
+        # shared pool below - proves the filter produces results, so the
+        # too-strict bookkeeping ends here.  The dispatch and the reservation
+        # failure paths both persist brush_state before returning.
+        if brush_state.get("filterAdviceActive") or int(
+            brush_state.get("noMatchScannedCoords") or 0
+        ):
+            brush_state["noMatchScannedCoords"] = 0
+            brush_state["filterAdviceActive"] = False
         execution_host_settings: Dict[str, Any] = {
             "formations": list(configs.get("formations") or []),
             "config": common,
@@ -12735,10 +12782,12 @@ class CoreFacade:
                     # Name the candidate count: this message read as a normal
                     # peer collision while the real cause was that none of the
                     # candidates could ever be reserved, which is what let 35
-                    # minutes of zero dispatches look routine.
+                    # minutes of zero dispatches look routine.  A refusal is a
+                    # peer holding the lease *or* the cloud having lost the row
+                    # (re-uploaded on sight, healed next round) - name both.
                     "lastMessage": (
-                        f"共享地图{len(targets)}个匹配目标均未能领取"
-                        "（同区服其他账号已占用），稍后重试"
+                        f"共享地图{len(targets)}个匹配目标本轮均未能领取"
+                        "（被同区服账号占用或云端记录同步中），稍后重试"
                     ),
                 })
                 state["brush"] = brush_state
@@ -13175,7 +13224,7 @@ class CoreFacade:
                     "nextWakeAtMillis": now_millis
                     + int(schedule["targetUnavailableRetryMillis"]),
                     "lastState": "no-targets",
-                    "lastMessage": "匹配矿点已由同区服其他账号领取，稍后重试",
+                    "lastMessage": "匹配矿点本轮均未能领取（被同区服账号占用或云端记录同步中），稍后重试",
                 })
                 state["mine"] = mine_state
                 self._save_resident_automation_state(account_ref, state)
@@ -25123,6 +25172,27 @@ class CoreFacade:
             {"mapKind": str(map_kind), "targetId": target_id},
         )
         if payload.get("reserved") is not True:
+            if str(payload.get("reason") or "") == "unknown-target":
+                # The cloud has no row for a target the replica believes in -
+                # the legacy orphan sweep used to hard-delete v2 uploads, and
+                # a hard delete leaves no tombstone for the changes feed.
+                # The replica is then the only copy of that truth, so
+                # re-publish it; without this the phantom fails every
+                # reservation until its local TTL, and the account never
+                # rescans because candidates exist.
+                replica = self._cloud_map_replica(account_ref, map_kind)
+                if replica is not None and replica.requeue_upload(target_id):
+                    replica.flush_uploads()
+                    self._ports.logs.write({
+                        "level": "info",
+                        "source": "cloud-shared-data",
+                        "accountRef": str(account_ref),
+                        "mapKind": str(map_kind),
+                        "message": (
+                            f"云端缺少目标 {target_id} 的记录，"
+                            "已从本地副本重新上报"
+                        ),
+                    })
             return None
         token = str(payload.get("reservationToken") or "").strip()
         return token or None

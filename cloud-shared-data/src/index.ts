@@ -591,12 +591,27 @@ async function reserveTarget(request: Request, env: Env, now: number): Promise<R
     serverScope, mapKind, targetId, now, now, now - targetTtl,
   ).run();
   const reserved = Number(result.meta.changes ?? 0) === 1;
+  // A refusal is two different facts wearing one answer.  "A peer holds the
+  // lease" tells the client to retry later; "this target is unknown here"
+  // tells it the cloud lost (or never had) the row - the client's replica is
+  // then the only copy of that truth and must re-publish it, or the target
+  // stays unreservable until its local TTL.  The lookup costs one primary-key
+  // read and only runs on failure, which a healthy fleet rarely sees.
+  let reason = "";
+  if (!reserved) {
+    const existing = await env.DB.prepare(
+      `SELECT 1 AS found FROM map_targets
+       WHERE server_key=? AND map_kind=? AND target_id=?`,
+    ).bind(serverScope, mapKind, targetId).first<{ found: number }>();
+    reason = existing ? "unavailable" : "unknown-target";
+  }
   return json({
     ok: true,
     ...mode,
     reserved,
     reservationToken: reserved ? token : "",
     leaseUntilMillis: reserved ? now + policy(env).targetLeaseMillis : 0,
+    ...(reason ? { reason } : {}),
   });
 }
 

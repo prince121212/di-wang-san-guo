@@ -34095,6 +34095,21 @@ def sync_shared_resident_feature_notice(
             "waiting-generals", "waiting-return",
         }:
             database_resolve_important_notice(account_key, main_notice_key)
+        # 筛选过严不是故障而是给操作者的建议：核心只在建议生效的 tick 返回
+        # filter-strict，任何其他刷黄状态（命中目标、用户改了筛选、计数未
+        # 越阈值）都意味着建议已失效，提示随之自动消失。
+        advice_notice_key = "task:brushYellow:filter-advice"
+        if state == "filter-strict" and "【建议】" in message:
+            database_upsert_important_notice(
+                account_key,
+                advice_notice_key,
+                severity="info",
+                title="刷黄建议",
+                message=message,
+                source="automation",
+            )
+        else:
+            database_resolve_important_notice(account_key, advice_notice_key)
         error_code = str(result.get("errorCode") or "")
         server_message = str(result.get("serverMessage") or message)
         try:

@@ -67,16 +67,15 @@ export async function cleanup(
        WHERE (map_kind='bandit' AND scanned_at<?)
           OR (map_kind='mine' AND scanned_at<?)`,
     ).bind(now - BANDIT_TARGET_TTL_MILLIS, now - MINE_TARGET_TTL_MILLIS),
-    db.prepare(
-      `DELETE FROM map_targets
-       WHERE status NOT IN ('reserved','dispatching')
-         AND NOT EXISTS (
-           SELECT 1 FROM map_target_regions relation
-           WHERE relation.server_key=map_targets.server_key
-             AND relation.map_kind=map_targets.map_kind
-             AND relation.target_id=map_targets.target_id
-         )`,
-    ),
+    // A global "no region link" orphan sweep used to run here.  It predates
+    // v2, whose upserts never write map_target_regions (links only exist to
+    // feed the legacy regions model), so the sweep read "v2 row" as "orphan"
+    // and deleted every v2-uploaded target within one cron cycle - a hard
+    // delete with no tombstone, so replicas never learned and kept offering
+    // the phantoms for reservation.  v1 orphans are still collected by the
+    // per-observation cleanup in observeRegions, and anything abandoned by
+    // every observer is collected by the TTL sweep above, which replicas
+    // apply independently by the same rule.
   ]);
 }
 

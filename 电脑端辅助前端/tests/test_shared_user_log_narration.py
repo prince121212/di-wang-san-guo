@@ -241,6 +241,34 @@ class SharedUserLogNarrationTests(unittest.TestCase):
             self.logs.user_messages(),
         )
 
+    def test_a_filter_that_never_matches_is_announced_on_the_edge(self) -> None:
+        # Crossing the accumulated-scan threshold is a conclusion, not one
+        # scan's sample, so unlike no-targets it is announced at once rather
+        # than after the sampled-state hold - and leaving it says the usual
+        # "已恢复运行", which is also the notice-clearing marker both hosts
+        # already know.
+        for _ in range(3):
+            self.facade._save_resident_automation_state(  # noqa: SLF001
+                "176",
+                {"brush": {
+                    "lastState": "filter-strict",
+                    "lastMessage": "【建议】筛选条件可能过严：已连续扫描75个坐标以上",
+                }},
+            )
+            self.clock.advance(10_000)
+        self.facade._save_resident_automation_state(  # noqa: SLF001
+            "176",
+            {"brush": {"lastState": "dispatched", "lastMessage": "出征"}},
+        )
+
+        self.assertEqual(
+            [
+                "刷黄【建议】筛选条件可能过严：已连续扫描75个坐标以上",
+                "刷黄已恢复运行",
+            ],
+            self.logs.user_messages(),
+        )
+
     def test_states_that_mean_work_is_under_way_are_not_narrated(self) -> None:
         # The success record that follows is the news; announcing "running" first
         # would only say the same thing twice.

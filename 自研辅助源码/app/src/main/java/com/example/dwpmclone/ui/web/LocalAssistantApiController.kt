@@ -1782,6 +1782,36 @@ class LocalAssistantApiController(
                 )
             }
         }
+        // Advice is not a failure: the task keeps running (SLEEPING between
+        // scan batches), but a whole scan round without a single match means
+        // the operator's own filter is what produces nothing.  Derive it from
+        // the persisted status, not from the log - tick lines push a USER row
+        // out of the log window within minutes, while the status row holds
+        // the message until the episode ends.  The key hashes the message,
+        // which the core keeps stable for an episode, so dismissing it sticks
+        // and a matched target (message changes) clears it by itself.
+        statuses.filterNot {
+            LocalTaskPresentation.isRetiredRuntimeType(it.type)
+        }.filter {
+            it.message.contains("【建议】")
+        }.forEach { status ->
+            val spec = LocalTaskPresentation.spec(status.type)
+            val key = "advice:${spec.key}:${status.message.hashCode()}"
+            if (!dismissedNotices.contains(accountId, key)) {
+                val message = UserFacingTextLocalizer.localize(status.message)
+                put(
+                    JSONObject()
+                        .put("key", key)
+                        .put("title", "${spec.name}建议")
+                        .put("summary", message.take(160))
+                        .put("message", message.take(800))
+                        .put("severity", "info")
+                        .put("advice", "按建议调整筛选条件后提示会自动消失；忽略后同一建议不再弹出。")
+                        .put("createdAt", status.updatedAtMillis)
+                        .put("updatedAt", status.updatedAtMillis)
+                )
+            }
+        }
         accountConnectionNotice(accountId)?.let(::put)
         logDerivedNotices(accountId, statuses).forEach(::put)
     }
