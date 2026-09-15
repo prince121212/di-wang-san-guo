@@ -352,3 +352,9 @@ V0.0.3 发布后的后续优化在此累计。
   确定性分片；心跳 20s→120s 且服务端条件写。旧端点全部保留，旧 APK
   不受影响。规格：docs/core_migration/cloud_event_sync_v2_spec.md。
   Worker 38 项、共享核心 1175 项全绿。
+- v2 真机验证修白名单（V0.0.89）：V0.0.88 真机首验发现「云端地图 v2
+  全量同步失败，本轮回退 v1：接口路径无效」——安卓宿主
+  AndroidSharedCorePortBridge 的 CLOUD_SHARED_DATA_PATHS 白名单没有
+  /v1/maps/targets/sync 与 /v1/maps/targets/changes，桥接层在发送前
+  就拒绝了新端点；回退路径按设计兜住（目标选择不受影响），补两条
+  白名单即可。桌面端不限定具体路径（仅要求 /v1/ 前缀），不受影响。

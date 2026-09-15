@@ -668,6 +668,8 @@ class AndroidSharedCorePortBridge(context: Context) {
             "/v1/servers/directory/sync",
             "/v1/servers/directory/query",
             "/v1/maps/targets/query",
+            "/v1/maps/targets/sync",
+            "/v1/maps/targets/changes",
             "/v1/maps/scans/claim",
             "/v1/maps/scans/release",
             "/v1/maps/observations",
