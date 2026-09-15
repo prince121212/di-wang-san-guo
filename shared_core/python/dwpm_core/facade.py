@@ -12796,7 +12796,10 @@ class CoreFacade:
         except OperationKnownFailureError as error:
             if reservation_token:
                 next_status = (
-                    "rejected"
+                    "missing"
+                    if error.code == "BRUSH_DISPATCH_REJECTED"
+                    and _brush_target_is_gone(str(error))
+                    else "rejected"
                     if error.code == "BRUSH_DISPATCH_REJECTED"
                     else "missing"
                     if "TARGET" in error.code and "MISSING" in error.code
@@ -25565,7 +25568,17 @@ class CoreFacade:
             result = raw_workflow(execution, body, context)
         except OperationKnownFailureError as error:
             if error.code in {"BRUSH_DISPATCH_REJECTED", "MINE_DISPATCH_REJECTED"}:
-                status = "rejected"
+                # A rejection that says the *target* is gone tombstones it;
+                # "rejected" (retry soon) is only for problems with the
+                # account's own formation.  Both live accounts once spent a
+                # morning re-reserving one dead bandit every two minutes
+                # because the corpse kept coming back as the only candidate.
+                status = (
+                    "missing"
+                    if error.code == "BRUSH_DISPATCH_REJECTED"
+                    and _brush_target_is_gone(str(error))
+                    else "rejected"
+                )
             elif error.code in {
                 "MINE_PLAYER_OCCUPIED",
                 "MINE_TARGET_INVALID",

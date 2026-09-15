@@ -671,6 +671,50 @@ class StaleBrushTargetTests(unittest.TestCase):
         self._run_with_rejection("每个将领至少需配1000兵力")
         self.assertEqual(self.snapshots.invalidated, [])
 
+    def _run_cloud_rejection(self, message: str) -> list[str]:
+        statuses: list[str] = []
+        self.facade._cloud_presence_mode = types.MethodType(  # noqa: SLF001
+            lambda _self, _account_ref, **_kw: {"mode": "CLOUD_SHARED"},
+            self.facade,
+        )
+        self.facade._cloud_replica_targets = types.MethodType(  # noqa: SLF001
+            lambda _self, _account_ref, _kind, **_kw: [{
+                "id": 9901, "x": 12, "y": 11, "level": 8,
+                "kind": "山贼", "type": "山贼",
+            }],
+            self.facade,
+        )
+        self.facade._cloud_reserve_map_target = types.MethodType(  # noqa: SLF001
+            lambda _self, *_a, **_k: "token-1", self.facade
+        )
+
+        def record_status(_self, _account, _kind, _target, _token, status, _note, **_kw):
+            statuses.append(str(status))
+            return True
+
+        self.facade._cloud_update_map_target_status = types.MethodType(  # noqa: SLF001
+            record_status, self.facade
+        )
+        self._run_with_rejection(message)
+        return statuses
+
+    def test_a_gone_target_is_tombstoned_in_the_shared_pool(self) -> None:
+        """"目标不存在" is a fact about the *target*, not the formation.
+
+        Reporting it as "rejected" revived the corpse as a candidate every
+        rejectRetryMillis; two live accounts took turns reserving and failing
+        it for a whole morning because it was the only row matching the
+        filter.  "missing" tombstones it for every account at once.
+        """
+        statuses = self._run_cloud_rejection("目标不存在，不能到达。")
+        self.assertIn("missing", statuses)
+        self.assertNotIn("rejected", statuses)
+
+    def test_a_formation_rejection_stays_rejected_in_the_shared_pool(self) -> None:
+        statuses = self._run_cloud_rejection("每个将领至少需配1000兵力")
+        self.assertIn("rejected", statuses)
+        self.assertNotIn("missing", statuses)
+
 
 if __name__ == "__main__":
     unittest.main()

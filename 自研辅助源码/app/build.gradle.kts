@@ -124,8 +124,8 @@ android {
         applicationId = "com.example.dwpmclone"
         minSdk = 24
         targetSdk = 36
-        versionCode = 92
-        versionName = "V0.0.92"
+        versionCode = 93
+        versionName = "V0.0.93"
         buildConfigField(
             "String",
             "CLOUD_SHARED_DATA_URL",
