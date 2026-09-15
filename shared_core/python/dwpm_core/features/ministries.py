@@ -25,10 +25,14 @@ VERIFIED_GARDEN_PLOT_COUNT = 10
 OCCUPIED_GARDEN_RECORD_EXTRA_BYTES = 25
 
 # 0xe320 layout (flows 049 = five occupied plots, 062 = all empty; device
-# account 176 = named variant): a fixed 24B header, then a u8-length UTF-8
-# fief name (empty for account 202, "乌吉" for 176), then a u8 plot count,
-# then one 32B record per occupied plot which *replaces* that plot's 7B
-# empty entry, then the remaining 7B empty entries, then a 62B tail.
+# account 176 = named variant; account 202 = plot 1 empty between occupied
+# plots 0 and 2): a fixed 24B header, then a u8-length UTF-8 fief name
+# (empty for account 202, "乌吉" for 176), then a u8 plot count, then one
+# entry per plot IN PLOT ORDER — a 32B record where the plot is occupied,
+# a 7B zero-body entry where it is empty — then a 62B tail.  Flow 049's
+# occupied plots happen to be 0-4 contiguous, which looks identical under
+# an "occupied first, empties last" reading; account 202's gap at plot 1
+# is what proved the entries are in place.
 # Total = 26 + nameLen + 32×occupied + 7×(plots−occupied) + 62.
 HUBU_GARDEN_FIXED_HEADER_BYTES = 24
 HUBU_GARDEN_TAIL_BYTES = 62
@@ -194,24 +198,30 @@ def _parse_hubu_garden_status(payload: bytes) -> dict[str, Any]:
     plots: list[dict[str, Any]] = []
     position = header_bytes
     previous_index = -1
-    for _ in range(occupied_count):
-        record = payload[position:position + HUBU_OCCUPIED_PLOT_BYTES]
-        plot_index = record[0]
+    remaining_occupied = occupied_count
+    for _ in range(plot_count):
+        plot_index = payload[position]
         if plot_index <= previous_index or plot_index >= plot_count:
-            raise RuntimeError(f"0xe320 占用坑序号异常：{plot_index}")
+            raise RuntimeError(f"0xe320 坑序号异常：{plot_index}")
         previous_index = plot_index
-        plots.append(_parse_occupied_plot_record(record))
-        position += HUBU_OCCUPIED_PLOT_BYTES
-    for _ in range(plot_count - occupied_count):
-        entry = payload[position:position + HUBU_EMPTY_PLOT_BYTES]
-        plot_index = entry[0]
-        if plot_index <= previous_index or plot_index >= plot_count:
-            raise RuntimeError(f"0xe320 空闲坑序号异常：{plot_index}")
-        if entry[1:] != b"\x00" * (HUBU_EMPTY_PLOT_BYTES - 1):
+        empty_body = payload[position + 1:position + HUBU_EMPTY_PLOT_BYTES]
+        if empty_body == b"\x00" * (HUBU_EMPTY_PLOT_BYTES - 1):
+            plots.append({"plotIndex": plot_index, "occupied": False})
+            position += HUBU_EMPTY_PLOT_BYTES
+            continue
+        # 占用记录的 cropId/totalSeconds 不会全为零（生长中的作物必有
+        # 总时长），所以"索引后 6B 全零"只可能是空闲条目；占用额度耗尽
+        # 或尾块对不齐时下面的计数与长度检查会失败关闭。
+        if remaining_occupied <= 0:
             raise RuntimeError("0xe320 空闲坑条目含有未确认数据")
-        previous_index = plot_index
-        plots.append({"plotIndex": plot_index, "occupied": False})
-        position += HUBU_EMPTY_PLOT_BYTES
+        record = payload[position:position + HUBU_OCCUPIED_PLOT_BYTES]
+        plots.append(_parse_occupied_plot_record(record))
+        remaining_occupied -= 1
+        position += HUBU_OCCUPIED_PLOT_BYTES
+    if remaining_occupied:
+        raise RuntimeError(
+            f"0xe320 占用坑数量与记录结构不符：剩余{remaining_occupied}"
+        )
     if position + HUBU_GARDEN_TAIL_BYTES != len(payload):
         raise RuntimeError(
             f"0xe320 尾块长度异常：{len(payload) - position}B"

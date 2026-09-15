@@ -1059,6 +1059,67 @@ class SharedResidentAutomationTests(unittest.TestCase):
             facade.close()
             directory.cleanup()
 
+    def test_uncertain_pending_probe_backs_off_instead_of_spinning(self) -> None:
+        """A stuck recovery probe must yield the lane between retries.
+
+        账号 202 的真机事故：种菜待决账本的恢复探针持续命中 0xe320 布局
+        变种，OperationUncertainError 每个 tick 都中断调度，账本又没有任何
+        退避标记，于是六部每 ~11 秒独占一次车道，其余功能数小时颗粒无收。
+        探针是只读的——退避 60 秒再试不影响安全，其他功能照常运行。
+        """
+        facade, clock, directory = self._facade()
+        try:
+            facade._update_account_public_state(  # noqa: SLF001
+                "303",
+                {
+                    "ministryPendingPlantJson": json.dumps({
+                        "createdAtMillis": clock.value - 5_000,
+                        "sendState": "uncertain",
+                        "crop": "稻谷",
+                        "occupiedBefore": 3,
+                    })
+                },
+            )
+            calls: list[str] = []
+
+            def uncertain_probe(_self, *_args, **_kwargs):
+                calls.append("ministry")
+                raise OperationUncertainError("户部菜地状态解析失败：fixture")
+
+            facade._run_configured_ministry_tick = types.MethodType(  # noqa: SLF001
+                uncertain_probe, facade
+            )
+            with self.assertRaises(OperationUncertainError):
+                facade._run_automation_recovery_tick(  # noqa: SLF001
+                    FakeExecution(), "303", {"allowedFeatures": ["ministry"]}
+                )
+            self.assertEqual(calls, ["ministry"])
+
+            ledger = json.loads(
+                json.loads(facade.account_record_json("303"))["account"]
+                ["session"]["publicState"]["ministryPendingPlantJson"]
+            )
+            self.assertEqual(
+                ledger["nextPollAtMillis"], clock.value + 60_000
+            )
+            # 退避期内再次 tick：待决探针不得再被选中，车道让给别的功能。
+            result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                FakeExecution(), "303", {"allowedFeatures": ["ministry"]}
+            )
+            self.assertEqual(calls, ["ministry"])
+            self.assertNotEqual(result.get("feature"), "ministry")
+
+            # 退避到期后探针恢复重试。
+            clock.value += 60_001
+            with self.assertRaises(OperationUncertainError):
+                facade._run_automation_recovery_tick(  # noqa: SLF001
+                    FakeExecution(), "303", {"allowedFeatures": ["ministry"]}
+                )
+            self.assertEqual(calls, ["ministry", "ministry"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
     def test_daily_structured_results_are_politics_success_records(self) -> None:
         facade, clock, directory = self._facade()
         try:

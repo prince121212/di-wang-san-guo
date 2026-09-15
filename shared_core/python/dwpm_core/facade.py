@@ -454,6 +454,11 @@ def _optional_row_index(value: Any) -> Optional[int]:
 #: Must match ``INVENTORY_PARSER_VERSION`` in the Android host.
 INVENTORY_PARSER_VERSION = "8104-trailer-v1"
 AMBIGUOUS_SEND_STATES = frozenset(("sending", "uncertain"))
+#: How long a pending ledger yields the account lane after its own
+#: read-only recovery probe fails (parse/transport).  The mutation stays
+#: unresolved and the probe keeps retrying on this cadence; sibling
+#: features run in between.
+PENDING_UNCERTAIN_PROBE_BACKOFF_MILLIS = 60_000
 #: Send boundaries whose outcome no amount of reading can settle.  A feature
 #: with one of these outstanding is held for a human.  ``preDispatchMutationState``
 #: is deliberately not here: a heal, top-up or troop assignment re-derives its
@@ -17404,6 +17409,28 @@ class CoreFacade:
                 return False
             return True
 
+        def pending_ledger_field(feature: str) -> str:
+            field = pending_fields.get(feature)
+            if feature == "ministry":
+                # 六部的三本待决账本各自独立；失败回写必须落到真正持有
+                # 记录的那本，否则会把采摘/委派账本复制进种菜字段，让
+                # 种菜恢复逻辑误读其中的字段。
+                field = next(
+                    (
+                        candidate
+                        for candidate in (
+                            "ministryPendingHarvestJson",
+                            "ministryPendingPlantJson",
+                            "ministryPendingDelegateJson",
+                        )
+                        if self._automation_pending_record(
+                            account_ref, candidate
+                        )
+                    ),
+                    field,
+                )
+            return field
+
         def run_pending(
             feature: str,
             pending: Dict[str, Any],
@@ -17415,6 +17442,36 @@ class CoreFacade:
             pending_before[feature] = deepcopy(pending)
             try:
                 return action()
+            except OperationUncertainError:
+                # The recovery probe itself could not observe state (a parse
+                # or transport failure).  The ledger's mutation is still
+                # unresolved, but probing is read-only, so there is no reason
+                # to spin the account lane on it every few seconds: back the
+                # ledger off and let sibling features run until the next
+                # probe is due.  Without this, one stuck ledger (a 户部菜地
+                # layout variant on account 202) aborted every tick before
+                # the configured features were even considered, and the
+                # account produced no records for hours.
+                now_millis = int(self._ports.clock.now_millis())
+                field = pending_ledger_field(feature)
+                current = (
+                    self._automation_pending_record(account_ref, field)
+                    if field
+                    else {}
+                )
+                if current:
+                    self._save_automation_pending_record(
+                        account_ref,
+                        field,
+                        {
+                            **current,
+                            "nextPollAtMillis": (
+                                now_millis
+                                + PENDING_UNCERTAIN_PROBE_BACKOFF_MILLIS
+                            ),
+                        },
+                    )
+                raise
             except OperationKnownFailureError as error:
                 now_millis = int(self._ports.clock.now_millis())
                 retryable = error.code in {
@@ -17440,25 +17497,7 @@ class CoreFacade:
                     except (TypeError, ValueError):
                         hinted = 0
                     retry_at = max(retry_at, hinted)
-                field = pending_fields.get(feature)
-                if feature == "ministry":
-                    # 六部的三本待决账本各自独立；失败回写必须落到真正持有
-                    # 记录的那本，否则会把采摘/委派账本复制进种菜字段，让
-                    # 种菜恢复逻辑误读其中的字段。
-                    field = next(
-                        (
-                            candidate
-                            for candidate in (
-                                "ministryPendingHarvestJson",
-                                "ministryPendingPlantJson",
-                                "ministryPendingDelegateJson",
-                            )
-                            if self._automation_pending_record(
-                                account_ref, candidate
-                            )
-                        ),
-                        field,
-                    )
+                field = pending_ledger_field(feature)
                 # ``pending`` is the snapshot taken *before* the workflow ran.
                 # Writing it back discards every send-boundary marker the
                 # workflow durably recorded on its way to failing - which is

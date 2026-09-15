@@ -182,6 +182,49 @@ class MinistryParserCaptureTests(unittest.TestCase):
         self.assertEqual(empty["emptyCount"], 5)
         self.assertEqual(empty["salaryPool"], 1313)
 
+    def test_garden_status_parses_occupied_plots_with_a_gap(self) -> None:
+        # 设备账号 202 的真实 0xe320：坑 1 空闲、坑 0/2/3/4 占用。
+        # "占用记录集中在前"的旧读法在坑 1 的 7B 空条目上错位，随后读出的
+        # 坑序号 0 触发"占用坑序号异常"，六部因此停摆数小时；真实布局是
+        # 每个坑位按序号原地排列（占用 32B / 空闲 7B）。
+        payload = bytes.fromhex(
+            "00000001000000000000002800000a210032020005002800"
+            "00" "0a"
+            "00" "0001" + format(36000, "08x") + format(21693, "08x")
+            + "0064006443" + "00" * 14 + "0032"
+            + "01" + "00" * 6
+            + "02" "0001" + format(36000, "08x") + format(0, "08x")
+            + "004a00641e" + "00" * 14 + "0032"
+            + "03" "0001" + format(36000, "08x") + format(9269, "08x")
+            + "006400642e" + "00" * 14 + "0032"
+            + "04" "0001" + format(36000, "08x") + format(17776, "08x")
+            + "006400643c" + "00" * 14 + "0032"
+            + ("05" + "00" * 6)
+            + ("06" + "00" * 6)
+            + ("07" + "00" * 6)
+            + ("08" + "00" * 6)
+            + ("09" + "00" * 6)
+            + "0200000008000100000d0001000000020000000300000004"
+            + "00000005000000060000000700000008000000090000000a"
+            + "0000000b0000000c0000000d0000"
+        )
+        garden = parse_hubu_garden_status(payload)
+        self.assertEqual(garden["occupiedCount"], 4)
+        self.assertEqual(garden["emptyCount"], 1)
+        self.assertEqual(
+            [
+                (plot["plotIndex"], plot["occupied"])
+                for plot in garden["plots"]
+            ],
+            [
+                (0, True), (1, False), (2, True), (3, True), (4, True),
+                (5, False), (6, False), (7, False), (8, False), (9, False),
+            ],
+        )
+        mature = garden["plots"][2]
+        self.assertEqual(mature["remainingSeconds"], 0)
+        self.assertEqual(mature["cropId"], 1)
+
     def test_harvest_requests_and_receipts_match_real_captures(self) -> None:
         pool = 500  # flow 049 菜地报文里的采摘前俸禄池
         for key in ("052", "054", "056", "058", "059"):
