@@ -257,6 +257,7 @@ from .local_views import (
     resident_success_record,
     resident_success_records_from_operation_facts,
     resident_success_records_from_public_state,
+    success_record_visible_window,
     system_log_clear_plan,
 )
 from .models import CoreResponse
@@ -16732,7 +16733,14 @@ class CoreFacade:
                 int(value.get("id") or 0),
             )
         )
-        records = records[-50:]
+        # Newest-first window with a per-category floor, stored oldest-first:
+        # a plain records[-50:] lets 副本 (a record every few minutes) evict
+        # every other feature within hours, which hid 六部 harvests from the
+        # record page entirely.
+        records = list(reversed(success_record_visible_window(
+            list(reversed(records)),
+            50,
+        )))
         self._update_account_public_state(
             account_ref,
             {"successRecordsJson": self._json(records)},

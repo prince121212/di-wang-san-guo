@@ -100,6 +100,71 @@ class SharedUserLogNarrationTests(unittest.TestCase):
 
         self.assertEqual(["刷黄：编队1 出征成功"], self.logs.user_messages())
 
+    def test_a_chatty_feature_cannot_evict_other_categories_from_the_store(
+        self,
+    ) -> None:
+        # 副本 writes a record every few minutes; a plain newest-50 store
+        # trimmed the morning's 六部 harvests out of the page by noon.
+        self.facade._append_success_record(  # noqa: SLF001
+            "176",
+            {
+                "category": "六部",
+                "message": "采摘坑位1成功，俸禄+240株",
+                "dedupeKey": "ministry:harvest:0:1",
+            },
+        )
+        for index in range(60):
+            self.clock.advance(60_000)
+            self.facade._append_success_record(  # noqa: SLF001
+                "176",
+                {
+                    "category": "副本",
+                    "message": f"副本完成（battleId={9000 + index}）",
+                    "dedupeKey": f"dungeon:battle:{9000 + index}",
+                },
+            )
+
+        import json as _json
+
+        public = self.facade._account_public_state("176")  # noqa: SLF001
+        stored = _json.loads(public.get("successRecordsJson") or "[]")
+        categories = [str(row.get("category") or "") for row in stored]
+        self.assertEqual(1, categories.count("六部"))
+        self.assertEqual(50, categories.count("副本"))
+
+    def test_the_projection_keeps_a_category_flooded_out_of_the_newest_window(
+        self,
+    ) -> None:
+        from dwpm_core.local_views import project_success_records
+
+        records = [
+            {
+                "id": index + 1,
+                "time": 1_800_000 + index * 1000,
+                "timeText": "12:00:00",
+                "category": "副本",
+                "message": f"副本完成（battleId={9000 + index}）",
+            }
+            for index in range(50)
+        ]
+        records.append({
+            "id": 90001,
+            "time": 1_000_000,
+            "timeText": "07:14:59",
+            "category": "六部",
+            "message": "采摘坑位5成功，俸禄+246株",
+        })
+
+        result = project_success_records({
+            "accountRef": "176",
+            "limit": 50,
+            "records": records,
+        })
+
+        categories = [str(row.get("category") or "") for row in result["entries"]]
+        self.assertEqual(50, categories.count("副本"))
+        self.assertIn("六部", categories)
+
     def test_a_blocked_feature_is_announced_once_and_its_recovery_once(self) -> None:
         for _ in range(3):
             self.facade._save_resident_automation_state(  # noqa: SLF001
