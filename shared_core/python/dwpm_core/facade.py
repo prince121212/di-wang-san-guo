@@ -15319,10 +15319,17 @@ class CoreFacade:
             )
             state_name = "completed"
             success = True
-            message = str(
-                (action_result.get("result") or {}).get("message")
-                or action_result.get("message")
-                or f"{action.get('description')}已确认"
+            # 描述自带名称与等级变化；服务器回执只是"科技研究成功"这类
+            # 通用确认，不能盖过描述，否则记录里看不出操作的是哪个目标。
+            description = str(action.get("description") or "").strip()
+            message = (
+                f"{description}已确认"
+                if description
+                else str(
+                    (action_result.get("result") or {}).get("message")
+                    or action_result.get("message")
+                    or "内政操作已确认"
+                )
             )
         next_wake = int(self._ports.clock.now_millis()) + delay
         self._close_domestic_pending(

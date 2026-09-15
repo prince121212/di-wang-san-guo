@@ -16,6 +16,7 @@ from dwpm_core.local_views import (  # noqa: E402
     resident_success_records_from_operation_facts,
 )
 from dwpm_core.features.internal_affairs import (  # noqa: E402
+    TECHNOLOGY_NAMES,
     plan_next_internal_affairs_action,
     technology_resource_cost,
 )
@@ -361,6 +362,45 @@ class SharedInternalAffairsAutomationTests(unittest.TestCase):
             "303", result
         )
         self.assertIsNone(duplicate)
+
+    def test_completed_technology_record_names_the_technology(self) -> None:
+        self._configure(self._habits(upgrade_technology=True))
+        snapshot = self._snapshot()
+        snapshot["technologies"] = [
+            {"technologyId": 5, "level": 2, "researching": False}
+        ]
+        snapshot["fiefs"] = [
+            fief(
+                hall_level=5,
+                rows=[
+                    building(1, 1, 5, busy=True, timer_ms=60_000),
+                    building(2, 3, 5),
+                ],
+                capacity=1,
+            )
+        ]
+        self._install_snapshot(snapshot)
+
+        def action(_self, execution, _body, _context):
+            execution.mark_request_sent({"feature": "fixture-domestic"})
+            return {
+                "ok": True,
+                "result": {"success": True, "message": "科技研究成功"},
+            }
+
+        self.facade._run_domestic_action_game_workflow = types.MethodType(  # noqa: SLF001
+            action, self.facade
+        )
+        result = self.facade._run_automation_recovery_tick(  # noqa: SLF001
+            FakeExecution(), "303", {"allowedFeatures": ["domestic"]}
+        )
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["action"]["action"], "technology")
+        expected = f"升级{TECHNOLOGY_NAMES[5]}2→3已确认"
+        self.assertEqual(result["message"], expected)
+        self.assertEqual(result["successRecord"]["message"], expected)
+        self.assertEqual(result["successRecord"]["category"], "科技")
 
     def test_domestic_query_snapshot_updates_role_queue_projection(self) -> None:
         technologies = [{
