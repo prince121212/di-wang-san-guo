@@ -3418,6 +3418,9 @@ function renderRole() {
     // 活血丹 is deliberately absent: spending a stock item is bookkeeping, so
     // it belongs on 政事 next to the other resource records. "加体" stays only
     // so records written before the two were unified keep their old tab.
+    // Must match SUCCESS_RECORD_MILITARY_CATEGORIES in
+    // shared_core/python/dwpm_core/local_views.py - the store keeps a
+    // newest-50 window per tab using that set.
     const militaryCategories = new Set([
       "刷黄", "副本", "掠夺", "无损", "打矿", "抢城", "押镖", "寻宝",
       "出征", "治疗", "加体"

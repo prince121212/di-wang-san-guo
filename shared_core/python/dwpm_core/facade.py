@@ -16733,10 +16733,10 @@ class CoreFacade:
                 int(value.get("id") or 0),
             )
         )
-        # Newest-first window with a per-category floor, stored oldest-first:
-        # a plain records[-50:] lets 副本 (a record every few minutes) evict
-        # every other feature within hours, which hid 六部 harvests from the
-        # record page entirely.
+        # Newest-50 window per record-page tab (military / politics), stored
+        # oldest-first: a plain records[-50:] let 副本 (a record every few
+        # minutes) evict every other category within hours, which hid 六部
+        # harvests from the 政事 tab entirely.
         records = list(reversed(success_record_visible_window(
             list(reversed(records)),
             50,

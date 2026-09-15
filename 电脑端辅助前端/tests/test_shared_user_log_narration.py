@@ -100,19 +100,23 @@ class SharedUserLogNarrationTests(unittest.TestCase):
 
         self.assertEqual(["刷黄：编队1 出征成功"], self.logs.user_messages())
 
-    def test_a_chatty_feature_cannot_evict_other_categories_from_the_store(
+    def test_a_chatty_feature_cannot_evict_the_other_tab_from_the_store(
         self,
     ) -> None:
         # 副本 writes a record every few minutes; a plain newest-50 store
-        # trimmed the morning's 六部 harvests out of the page by noon.
-        self.facade._append_success_record(  # noqa: SLF001
-            "176",
-            {
-                "category": "六部",
-                "message": "采摘坑位1成功，俸禄+240株",
-                "dedupeKey": "ministry:harvest:0:1",
-            },
-        )
+        # trimmed the morning's 六部 harvests out of the page by noon.  Each
+        # record-page tab now keeps its own newest-50 window.  Ten 六部
+        # records (more than any per-category floor) must all survive.
+        for index in range(10):
+            self.clock.advance(60_000)
+            self.facade._append_success_record(  # noqa: SLF001
+                "176",
+                {
+                    "category": "六部",
+                    "message": f"采摘坑位1成功，第{index}次",
+                    "dedupeKey": f"ministry:harvest:0:{index}",
+                },
+            )
         for index in range(60):
             self.clock.advance(60_000)
             self.facade._append_success_record(  # noqa: SLF001
@@ -129,8 +133,27 @@ class SharedUserLogNarrationTests(unittest.TestCase):
         public = self.facade._account_public_state("176")  # noqa: SLF001
         stored = _json.loads(public.get("successRecordsJson") or "[]")
         categories = [str(row.get("category") or "") for row in stored]
-        self.assertEqual(1, categories.count("六部"))
+        self.assertEqual(10, categories.count("六部"))
         self.assertEqual(50, categories.count("副本"))
+
+    def test_the_politics_tab_window_trims_at_its_own_limit(self) -> None:
+        for index in range(60):
+            self.clock.advance(60_000)
+            self.facade._append_success_record(  # noqa: SLF001
+                "176",
+                {
+                    "category": "六部",
+                    "message": f"采摘坑位1成功，第{index}次",
+                    "dedupeKey": f"ministry:harvest:0:{index}",
+                },
+            )
+
+        import json as _json
+
+        public = self.facade._account_public_state("176")  # noqa: SLF001
+        stored = _json.loads(public.get("successRecordsJson") or "[]")
+        self.assertEqual(50, len(stored))
+        self.assertIn("第59次", stored[-1]["message"])
 
     def test_the_projection_keeps_a_category_flooded_out_of_the_newest_window(
         self,

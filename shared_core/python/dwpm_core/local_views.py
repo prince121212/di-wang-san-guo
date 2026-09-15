@@ -18,39 +18,45 @@ SYSTEM_LOG_DEFAULT_LIMIT = 500
 ACCOUNT_LOG_DEFAULT_LIMIT = 100
 SUCCESS_RECORD_MAX_LINES = 50
 ACCOUNT_LOG_MESSAGE_MAX_LENGTH = 2_000
-#: Records of a category that has fallen out of the shared newest-N window
-#: are still kept (and returned) up to this many entries.  Without a floor
-#: the chattiest feature - 副本 completes every few minutes - evicts every
-#: other category within a couple of hours, and the user never sees 六部,
-#: 俘虏 or 打矿 on the record page even though they all ran.
-SUCCESS_RECORD_CATEGORY_FLOOR = 5
+#: The record page has two tabs, and the store keeps each tab its own
+#: newest-N window.  A single shared window let the chattiest feature -
+#: 副本 completes every few minutes - evict every other category within a
+#: couple of hours, so the 政事 tab looked empty even though 六部 and 俘虏
+#: had been running.  This set must match militaryCategories in
+#: 电脑端辅助前端/app.js (the tab filter there is a view over the same rows).
+#: 活血丹 is deliberately absent: spending a stock item is bookkeeping, so
+#: it belongs on 政事 next to the other resource records.  "加体" stays only
+#: so records written before the two were unified keep their old tab.
+SUCCESS_RECORD_MILITARY_CATEGORIES = frozenset((
+    "刷黄", "副本", "掠夺", "无损", "打矿", "抢城", "押镖", "寻宝",
+    "出征", "治疗", "加体",
+))
 
 
 def success_record_visible_window(
     rows: Iterable[Dict[str, Any]],
     limit: int,
 ) -> list[Dict[str, Any]]:
-    """Newest-first rows -> newest ``limit`` plus a per-category floor.
+    """Newest-first rows -> newest ``limit`` per record-page tab.
 
-    A record past the cutoff survives while its category still has fewer
-    than SUCCESS_RECORD_CATEGORY_FLOOR entries in the window, so no feature
-    can flood another one out of the page.
+    Military and politics records each keep their own window, so neither
+    tab can flood the other out of the store or the page.
     """
 
     ordered = [row for row in rows if isinstance(row, dict)]
     if limit <= 0:
         return []
-    window = ordered[:limit]
-    counts: Dict[str, int] = {}
-    for row in window:
-        category = str(row.get("category") or "")
-        counts[category] = counts.get(category, 0) + 1
-    for row in ordered[limit:]:
-        category = str(row.get("category") or "")
-        count = counts.get(category, 0)
-        if count >= SUCCESS_RECORD_CATEGORY_FLOOR:
+    counts = {"military": 0, "politics": 0}
+    window = []
+    for row in ordered:
+        group = (
+            "military"
+            if str(row.get("category") or "") in SUCCESS_RECORD_MILITARY_CATEGORIES
+            else "politics"
+        )
+        if counts[group] >= limit:
             continue
-        counts[category] = count + 1
+        counts[group] += 1
         window.append(row)
     return window
 
