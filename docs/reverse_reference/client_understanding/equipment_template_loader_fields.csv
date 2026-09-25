@@ -1,0 +1,41 @@
+﻿loader_method,dex_offset,source,read_type,target_field,notes
+scriptPages/data/g.c3,0x06c6,scriptEquip.sc / record_id=4,readShort,template_count,装备模板行数。
+scriptPages/data/g.c3,0x06d6-0x0712,scriptEquip.sc / record_id=4,new-array,Lo/a.In/Jn/Kn/Ln/Mn/Nn/On/Pn,按 template_count 初始化并行数组。
+scriptPages/data/g.c3,0x071c,scriptEquip.sc / record_id=4,readShort,Lo/a.In[i],装备模板 id，data.d.e 实例模板 id 通过 g3 在此查找。
+scriptPages/data/g.c3,0x072c,scriptEquip.sc / record_id=4,readUTF,Lo/a.Mn[i],装备名称。
+scriptPages/data/g.c3,0x073c,scriptEquip.sc / record_id=4,readShort,Lo/a.Nn[i],装备属性/部位类型；0=武器/攻击、1=头盔/生命、2=铠甲/防御、3=坐骑/统兵。
+scriptPages/data/g.c3,0x074c,scriptEquip.sc / record_id=4,readByte,Lo/a.Jn[i],布尔标记；当前 true 集中在三国名品/神兽装备，语义候选为名品/稀有标记。
+scriptPages/data/g.c3,0x0766,scriptEquip.sc / record_id=4,readUTF,Lo/a.On[i],装备静态描述文本。
+scriptPages/data/g.c3,0x0776,scriptEquip.sc / record_id=4,readByte,Lo/a.Kn[i],装备等级；gameHD/b.C 以“等级”标签显示。
+scriptPages/data/g.c3,0x0786,scriptEquip.sc / record_id=4,readShort,Lo/a.Ln[i],基础属性数值，Lo/a.z1(template_id) 返回该值。
+scriptPages/data/g.c3,0x0796,scriptEquip.sc / record_id=4,readShort,Lo/a.Pn[i],装备图标/资源 id，data.d.w/l 返回该值。
+scriptPages/data/g.c3,0x07a6,scriptEquip.sc / record_id=4,readByte,reserved_tail_byte,尾部保留 byte；当前 161 行均为 0。
+scriptPages/data/g.c3,0x07b2,scriptEquipType.sc / record_id=5,readShort,type_count,装备类型/属性类型行数。
+scriptPages/data/g.c3,0x07c2-0x07e6,scriptEquipType.sc / record_id=5,new-array,Lo/a.Wn/Xn/Yn/Zn/ao,按 type_count 初始化类型、强化倍率、强化材料表。
+scriptPages/data/g.c3,0x07f0,scriptEquipType.sc / record_id=5,readShort,Lo/a.Wn[i],属性/装备类型 id；Lo/a.l3(type_id) 用它查 index。
+scriptPages/data/g.c3,0x0800,scriptEquipType.sc / record_id=5,readUTF,Lo/a.Xn[i],装备类型名：武器/头盔/铠甲/坐骑。
+scriptPages/data/g.c3,0x0810,scriptEquipType.sc / record_id=5,readShort,Lo/a.Yn[i],属性文案 group id；Lo/a.w2 先由 type_id 找 Yn，再查 Qn/Rn/Sn。
+scriptPages/data/g.c3,0x0820,scriptEquipType.sc / record_id=5,readByte,Zn_len,强化倍率数组长度。
+scriptPages/data/g.c3,0x083a,scriptEquipType.sc / record_id=5,readShort[],Lo/a.Zn[i][quality],按品质索引的强化属性倍率；data.d.E/j/i 使用。
+scriptPages/data/g.c3,0x0854,scriptEquipType.sc / record_id=5,readByte,ao_quality_count,强化材料质量档数量。
+scriptPages/data/g.c3,0x088c,scriptEquipType.sc / record_id=5,readByte,quality_index + 1,1-based 品质索引，写入 ao 时减 1。
+scriptPages/data/g.c3,0x0894,scriptEquipType.sc / record_id=5,readShort,Lo/a.ao[i][quality][0],强化材料 item_id。
+scriptPages/data/g.c3,0x08b0,scriptEquipType.sc / record_id=5,readShort,Lo/a.ao[i][quality][1],强化材料基数；data.d.k 乘以 (强化值+1)/100 后至少 1。
+scriptPages/data/g.c3,0x08d6,scriptEquipEffect.sc / record_id=6,readShort,effect_group_count,属性文案组行数。
+scriptPages/data/g.c3,0x08e6-0x08fa,scriptEquipEffect.sc / record_id=6,new-array,Lo/a.Qn/Rn/Sn,按组保存文案 id、文案列表和 flag 列表。
+scriptPages/data/g.c3,0x0904,scriptEquipEffect.sc / record_id=6,readShort,Lo/a.Qn[i],属性文案 group id。
+scriptPages/data/g.c3,0x0914,scriptEquipEffect.sc / record_id=6,readByte,text_item_count,该组文本项数量。
+scriptPages/data/g.c3,0x093a,scriptEquipEffect.sc / record_id=6,readByte,Lo/a.Sn[i][j],文本项 flag；Lo/a.w2 只使用 flag==1 的文本。
+scriptPages/data/g.c3,0x095e/0x0982/0x09a6,scriptEquipEffect.sc / record_id=6,readUTF,Lo/a.Rn[i][j],flag 为 0/1/2 时读取文本；实际表内均为 flag=1。
+scriptPages/data/d.H,0x0000,scriptEquipIconEffect.sc / record_id=25,readShort,effect_icon_count,特殊装备效果图标映射行数。
+scriptPages/data/d.H,0x0026,scriptEquipIconEffect.sc / record_id=25,readShort,Lo/a.Tn[i],图标映射行 id/序号候选；data.d.x 当前不读取。
+scriptPages/data/d.H,0x0036,scriptEquipIconEffect.sc / record_id=25,readShort,Lo/a.Un[i],装备模板 id；data.d.x 用实例 template_id 匹配它。
+scriptPages/data/d.H,0x0046,scriptEquipIconEffect.sc / record_id=25,readShort,Lo/a.Vn[i],特效资源 id；装备页拼接 equipEffectN。
+scriptPages/data/g.s4,0x0010,response opcode 0xe27f / request 0x627f,readShort,bo_type_count,联网装备强化/炼魂候选配置组数；不是 APK 静态脚本。
+scriptPages/data/g.s4,0x002c,response opcode 0xe27f / request 0x627f,readByte,quality_count,每个 type 的质量档数量。
+scriptPages/data/g.s4,0x005e,response opcode 0xe27f / request 0x627f,readByte,quality_index + 1,1-based 品质索引，写入 bo 时减 1。
+scriptPages/data/g.s4,0x0074,response opcode 0xe27f / request 0x627f,readShort,Lo/a.bo[type][quality][0],data.d.B 返回的 id/value 二元组 #0。
+scriptPages/data/g.s4,0x008c,response opcode 0xe27f / request 0x627f,readShort,Lo/a.bo[type][quality][1],data.d.B 返回的 id/value 二元组 #1。
+scriptPages/data/g.s4,0x00a4-0x00c8,response opcode 0xe27f / request 0x627f,readInt/readShort,data.g.v8/w8/x8/B8,装备/强化全局配置候选；需动态样本命名。
+scriptPages/data/g.s4,0x00d4-0x00f8,response opcode 0xe27f / request 0x627f,readShort/readByte,data.g.C8/D8/y8/z8,装备/强化全局配置候选；需动态样本命名。
+scriptPages/data/g.s4,0x0104-0x012c,response opcode 0xe27f / request 0x627f,"readByte + repeat(readByte, readShort)",data.g.A8[][0/1],"额外短表；每行 `[byte, short]`。"

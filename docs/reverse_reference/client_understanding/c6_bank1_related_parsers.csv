@@ -1,0 +1,10 @@
+﻿parser_or_field,kind,role,notes
+Lo/a;->c6(String),direct parser,按宿主 host_id 更新 data.d bank1 装备记录，并更新 Lo/a.jp[host_index] 绑定 id 列表,本报告主体。
+"Lo/a;->c3(I,J)I",locator,用 type/index 参数查宿主 index；c6 固定传入 type=0,host_id 的真实对象类型仍需结合 caller 复核。
+Lo/a;->jp [[J,host mapping,每个宿主 index 绑定的一组 bank1 装备实例 id,c6 开始时先删除旧 jp 对应的 bank1 记录，再读入新列表。
+LscriptPages/data/d;->a(J)V,mutation helper,按 data.d.k 记录的宿主 long 清理 bank1 记录,c6 在读新装备记录前调用，用 host_id 清理旧关系。
+LscriptPages/data/d;->b(J)V,mutation helper,按装备实例 id 从 bank1 删除记录,c6 用旧 Lo/a.jp 列表逐个删除旧装备。
+LscriptPages/data/d;->k [J,host backlink,bank1 每个 slot 对应的宿主 host_id,c6 upsert 装备时写入 `data.d.k[slot]=host_id`。
+LscriptPages/data/d;->C()[J,accessor,返回 bank1 非负装备 id 列表,用于展示已装备/挂载装备集合。
+"LscriptPages/data/d;->f(I,I)[J",filter accessor,按装备大类和 bank mask 合并过滤 bank0/bank1,mask 低两位分别控制 bank0/bank1。
+LscriptPages/data/d;->y(J)V,locator,按装备实例 id 查 bank0/bank1 并设置 n/o,bank1 更新后所有 data.d accessor 继续复用该定位函数。

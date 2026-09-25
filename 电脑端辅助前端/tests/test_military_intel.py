@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVER_PATH = ROOT / "电脑端辅助前端" / "server.py"
-CTF_OUT = ROOT / "ctf_out"
+GAME_PACKETS = ROOT / "电脑端辅助前端" / "tests" / "fixtures" / "game_packets"
 
 SPEC = importlib.util.spec_from_file_location("dwpm_server_military_test", SERVER_PATH)
 SERVER = importlib.util.module_from_spec(SPEC)
@@ -32,7 +32,7 @@ SPEC.loader.exec_module(SERVER)
 
 
 def payload_8600(capture: str, flow_index: int) -> bytes:
-    response_file = CTF_OUT / capture / "live_analyzed" / f"{flow_index:03d}" / "resp.bin"
+    response_file = GAME_PACKETS / capture / "live_analyzed" / f"{flow_index:03d}" / "resp.bin"
     packets = SERVER.parse_response(response_file.read_bytes())
     return next(
         packet["payload"]
@@ -339,7 +339,7 @@ class MilitaryIntel20260726Tests(unittest.TestCase):
     def test_confirmed_empty_intel_yields_zero_actions(self) -> None:
         """口述“已经没有将领在出征或者战斗了”的 0x8600 必须解析出 0 条。"""
         packets = SERVER.parse_response(
-            (CTF_OUT / CAP_JQ / "live_analyzed" / "050" / "resp.bin").read_bytes()
+            (GAME_PACKETS / CAP_JQ / "live_analyzed" / "050" / "resp.bin").read_bytes()
         )
         payload = next(
             packet["payload"] for packet in packets

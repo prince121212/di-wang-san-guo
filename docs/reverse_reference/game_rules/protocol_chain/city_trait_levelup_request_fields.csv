@@ -1,0 +1,5 @@
+﻿protocol,opcode_hex,method,order,field,io,evidence,meaning,confidence
+reqCityTraitLevelUp,0x1324,LscriptPages/game/k0;->c0()I,1,target_selector,writeByte,k0.c0 000cb6-000cd8,目标城池标识方式：若城池名字符串非空写 1 并后跟 UTF；否则写 0 并后跟 long ID。,高
+reqCityTraitLevelUp,0x1324,LscriptPages/game/k0;->c0()I,2a,city_name,writeUTF if selector=1,k0.c0 000cc0-000cca,以名称/字符串标识目标城池时写入；来源为 k0.Y 或 k.i。,中高
+reqCityTraitLevelUp,0x1324,LscriptPages/game/k0;->c0()I,2b,city_id,writeLong if selector=0,k0.c0 000cd2-000cd8,以 ID 标识目标城池时写入；来源为 k0.T 或 k.h。,中高
+reqCityTraitLevelUp,0x1324,LscriptPages/game/k0;->c0()I,send,opcode,g.y,k0.c0 000cde-000ce2,发送请求名 reqCityTraitLevelUp，opcode 十进制 4900 / 十六进制 0x1324。,高

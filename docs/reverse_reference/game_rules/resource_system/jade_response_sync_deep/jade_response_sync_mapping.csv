@@ -1,0 +1,8 @@
+模块,请求名,请求opcode,响应opcode,handler,code_off,同步特征,服务端重建建议,置信度
+科技升级,techResearch,0x123F/4671,0x823F/-32193,LscriptPages/game/q;->Y1(String),0x32ac24,只见 status/message + data.g.m0 科技状态；无明确背包同步,成功至少返回科技状态；玉石扣减刷新链需动态确认,高
+科技取消,techResearch cancel,0x1244/4676,0x8244/-32188,LscriptPages/game/q;->X1(String),0x32ab80,成功分支 Lo/a.V5 + data.i.d 铜钱 + data.i.e 粮食 + data.g.m0,按 status 分支返回不同同步块；成功必须匹配 V5 顺序,高
+装备炼魂,REQ_GENERAL_EQUIP_LIANHUN,0x6280/25216,0xE280/-7552,LscriptPages/data/g;->r4(String),0x288180,更新炼魂文本后固定 Lo/a.V5；末尾可选 Lo/a.a6,返回炼魂结果字段与复合同步块,高
+六部/部门升级,ReqInternalLevelUp,0x6302/25346,0xE302/-7422,La0/a;->s(String),0xd0978,成功同步部门状态/冷却；特定部门分支 Lo/a.V5,按部门类型返回附加块；payment_mode 仍需验证,中高
+帅府帅位解锁,REQ_SHUAIFU_ADD_SHUAI_MAX,0x6406/25606,0xE406/-7162,Lv/a;->e(String),0x465e4c,同步 data.g.F 黄金并调用 data.g.f 道具列表,扣减玉石后返回完整道具列表,高
+通用复合同步块,Lo/a.V5,,,Lo/a;->V5(String),0x23ee1c,起始 readLong 黄金/readLong 白银/readShort count 后进入复杂结构,不能简化为背包；需保持协议顺序,高
+道具列表同步,data.g.f,,,LscriptPages/data/g;->f(String),0x271b0c,readInt count; 每项 readLong unique_id + readShort item_id + readBoolean flag,item_id=399 玉石应走此资产模型,高

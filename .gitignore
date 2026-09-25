@@ -49,6 +49,8 @@ reverse_case_小黄点辅助/
 **/*.mitm
 **/*.bin
 **/*.hex
+!电脑端辅助前端/tests/fixtures/game_packets/*/
+!电脑端辅助前端/tests/fixtures/game_packets/**/*.bin
 
 # Androguard / analysis DB
 androguard.db
@@ -67,8 +69,6 @@ androguard.log
 电脑端辅助前端/reports/
 电脑端辅助前端/logs/
 自研辅助源码/reports/
-server_rebuild/data/
-server_rebuild/logs/
 
 # Desktop UI scratch previews (optional local artifacts)
 电脑端辅助前端/preview*.png

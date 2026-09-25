@@ -1,0 +1,665 @@
+{
+  "generated_at": "2026-07-05T08:09:40",
+  "source": "scriptBuilding.sc",
+  "record_count": 8,
+  "tail_schema": {
+    "common_header": "header_flag/u8; label_a/u16le; label_b/u16le; prereq_count/u16be; prereq_count * 15-byte prereq rows",
+    "cost_group": "tag/u8; count/u16be; count * (level/u8 + 4*u32be)",
+    "production_effect_group": "tag=1/u8; count/u16be; count * (level/u8 + 3*u32be)",
+    "barracks_unlock_group": "00 01; count/u16be; count * (level/u8 + unlock_stage/u8)"
+  },
+  "files": [
+    "building_tail_headers.csv",
+    "building_level_prereq_rules.csv",
+    "building_level_cost_rules.csv",
+    "building_level_effect_rules.csv",
+    "building_level_unlock_rules.csv",
+    "building_level_rules_combined.csv"
+  ],
+  "buildings": [
+    {
+      "id": 0,
+      "名称": "大厅",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "大厅是封地的行政中心,也是生产铜钱的唯一建筑.升级大厅可以增加税收(增加铜钱产量),也是其他建筑升级的前提条件.",
+      "图片ID列表": "59,697,698,699,700",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 333,
+      "tail_label_b_le": 472,
+      "prereq_row_count": 15,
+      "offset": "0x2"
+    },
+    {
+      "id": 1,
+      "名称": "房屋",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "增加人口的上限,让你可以招募更多的军队.",
+      "图片ID列表": "61,701,702,703,704",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 407,
+      "tail_label_b_le": 292,
+      "prereq_row_count": 15,
+      "offset": "0x36a"
+    },
+    {
+      "id": 2,
+      "名称": "农场",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "农场可以生产粮食.",
+      "图片ID列表": "64,709,710,711,712",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 412,
+      "tail_label_b_le": 470,
+      "prereq_row_count": 15,
+      "offset": "0x66e"
+    },
+    {
+      "id": 3,
+      "名称": "书院",
+      "最大等级": 15,
+      "前置建筑ID": -1,
+      "描述": "书院中可以研究各种科技.研究好的科技可以在各个封地中共享.",
+      "图片ID列表": "66,58,686,687,688",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 334,
+      "tail_label_b_le": 471,
+      "prereq_row_count": 15,
+      "offset": "0x953"
+    },
+    {
+      "id": 4,
+      "名称": "步兵营",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "用于招募步兵.提升等级可以招募更强的兵种.",
+      "图片ID列表": "57,693,694,695,696",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 410,
+      "tail_label_b_le": 473,
+      "prereq_row_count": 10,
+      "offset": "0xbad"
+    },
+    {
+      "id": 5,
+      "名称": "弓兵营",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "用于招募弓箭部队.提升等级可以招募更强的兵种.",
+      "图片ID列表": "62,705,706,707,708",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 411,
+      "tail_label_b_le": 474,
+      "prereq_row_count": 10,
+      "offset": "0xd68"
+    },
+    {
+      "id": 6,
+      "名称": "战车营",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "用于招募各种大型的器械战车.提升等级可以招募更强的兵种.",
+      "图片ID列表": "69,689,690,691,692",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 414,
+      "tail_label_b_le": 476,
+      "prereq_row_count": 10,
+      "offset": "0xf29"
+    },
+    {
+      "id": 8,
+      "名称": "骑兵营",
+      "最大等级": 10,
+      "前置建筑ID": -1,
+      "描述": "用于招募骑兵.提升等级可以招募更强的兵种.",
+      "图片ID列表": "65,713,714,715,716",
+      "tail_header_flag": 1,
+      "tail_label_a_le": 413,
+      "tail_label_b_le": 475,
+      "prereq_row_count": 10,
+      "offset": "0x110c"
+    }
+  ],
+  "sample_cost_rows": [
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 1,
+      "cost_copper_or_A": 0,
+      "cost_food_or_B": 0,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 0,
+      "raw": "0100000000000000000000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 2,
+      "cost_copper_or_A": 180,
+      "cost_food_or_B": 450,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 75,
+      "raw": "02000000b4000001c2000000000000004b"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 3,
+      "cost_copper_or_A": 540,
+      "cost_food_or_B": 1350,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 375,
+      "raw": "030000021c000005460000000000000177"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 4,
+      "cost_copper_or_A": 1080,
+      "cost_food_or_B": 2700,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 1875,
+      "raw": "040000043800000a8c0000000000000753"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 5,
+      "cost_copper_or_A": 2160,
+      "cost_food_or_B": 5400,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 5625,
+      "raw": "05000008700000151800000000000015f9"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 6,
+      "cost_copper_or_A": 4320,
+      "cost_food_or_B": 10800,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 16875,
+      "raw": "06000010e000002a3000000000000041eb"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 7,
+      "cost_copper_or_A": 6480,
+      "cost_food_or_B": 16200,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 33750,
+      "raw": "070000195000003f4800000000000083d6"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 8,
+      "cost_copper_or_A": 9720,
+      "cost_food_or_B": 24300,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 67500,
+      "raw": "08000025f800005eec00000000000107ac"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 9,
+      "cost_copper_or_A": 12636,
+      "cost_food_or_B": 31590,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 101250,
+      "raw": "090000315c00007b660000000000018b82"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 10,
+      "cost_copper_or_A": 16425,
+      "cost_food_or_B": 41067,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 151875,
+      "raw": "0a000040290000a06b0000000000025143"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 11,
+      "cost_copper_or_A": 33728,
+      "cost_food_or_B": 77004,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 206446,
+      "raw": "0b000083c000012ccc000000000003266e"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 12,
+      "cost_copper_or_A": 56192,
+      "cost_food_or_B": 123660,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 277294,
+      "raw": "0c0000db800001e30c0000000000043b2e"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 13,
+      "cost_copper_or_A": 84753,
+      "cost_food_or_B": 182979,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 367371,
+      "raw": "0d00014b110002cac30000000000059b0b"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 14,
+      "cost_copper_or_A": 120425,
+      "cost_food_or_B": 257067,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 479875,
+      "raw": "0e0001d6690003ec2b0000000000075283"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 15,
+      "cost_copper_or_A": 164300,
+      "cost_food_or_B": 348192,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 618250,
+      "raw": "0f000281cc000550200000000000096f0a"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 1,
+      "cost_copper_or_A": 26,
+      "cost_food_or_B": 65,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 6,
+      "raw": "010000001a000000410000000000000006"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 2,
+      "cost_copper_or_A": 78,
+      "cost_food_or_B": 195,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 32,
+      "raw": "020000004e000000c30000000000000020"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 3,
+      "cost_copper_or_A": 234,
+      "cost_food_or_B": 585,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 162,
+      "raw": "03000000ea0000024900000000000000a2"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 4,
+      "cost_copper_or_A": 468,
+      "cost_food_or_B": 1170,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 812,
+      "raw": "04000001d400000492000000000000032c"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 5,
+      "cost_copper_or_A": 936,
+      "cost_food_or_B": 2340,
+      "cost_extra_or_C": 0,
+      "build_time_seconds": 2436,
+      "raw": "05000003a8000009240000000000000984"
+    }
+  ],
+  "sample_effect_rows": [
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 1,
+      "effect_a": 15,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "010000000f0000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 2,
+      "effect_a": 25,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "02000000190000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 3,
+      "effect_a": 50,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "03000000320000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 4,
+      "effect_a": 90,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "040000005a0000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 5,
+      "effect_a": 145,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "05000000910000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 6,
+      "effect_a": 215,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "06000000d70000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 7,
+      "effect_a": 300,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "070000012c0000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 8,
+      "effect_a": 400,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "08000001900000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 9,
+      "effect_a": 515,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "09000002030000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 10,
+      "effect_a": 645,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "0a000002850000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 11,
+      "effect_a": 790,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "0b000003160000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 12,
+      "effect_a": 950,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "0c000003b60000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 13,
+      "effect_a": 1125,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "0d000004650000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 14,
+      "effect_a": 1315,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "0e000005230000000000000000"
+    },
+    {
+      "building_id": 0,
+      "名称": "大厅",
+      "level": 15,
+      "effect_a": 1520,
+      "effect_b": 0,
+      "effect_c": 0,
+      "raw": "0f000005f00000000000000000"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 1,
+      "effect_a": 0,
+      "effect_b": 0,
+      "effect_c": 20,
+      "raw": "01000000000000000000000014"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 2,
+      "effect_a": 0,
+      "effect_b": 0,
+      "effect_c": 35,
+      "raw": "02000000000000000000000023"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 3,
+      "effect_a": 0,
+      "effect_b": 0,
+      "effect_c": 60,
+      "raw": "0300000000000000000000003c"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 4,
+      "effect_a": 0,
+      "effect_b": 0,
+      "effect_c": 95,
+      "raw": "0400000000000000000000005f"
+    },
+    {
+      "building_id": 1,
+      "名称": "房屋",
+      "level": 5,
+      "effect_a": 0,
+      "effect_b": 0,
+      "effect_c": 140,
+      "raw": "0500000000000000000000008c"
+    }
+  ],
+  "sample_unlock_rows": [
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 1,
+      "unlock_tier_or_soldier_stage": 1,
+      "raw": "0101"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 2,
+      "unlock_tier_or_soldier_stage": 1,
+      "raw": "0201"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 3,
+      "unlock_tier_or_soldier_stage": 1,
+      "raw": "0301"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 4,
+      "unlock_tier_or_soldier_stage": 2,
+      "raw": "0402"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 5,
+      "unlock_tier_or_soldier_stage": 2,
+      "raw": "0502"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 6,
+      "unlock_tier_or_soldier_stage": 2,
+      "raw": "0602"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 7,
+      "unlock_tier_or_soldier_stage": 3,
+      "raw": "0703"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 8,
+      "unlock_tier_or_soldier_stage": 3,
+      "raw": "0803"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 9,
+      "unlock_tier_or_soldier_stage": 3,
+      "raw": "0903"
+    },
+    {
+      "building_id": 4,
+      "名称": "步兵营",
+      "level": 10,
+      "unlock_tier_or_soldier_stage": 4,
+      "raw": "0a04"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 1,
+      "unlock_tier_or_soldier_stage": 1,
+      "raw": "0101"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 2,
+      "unlock_tier_or_soldier_stage": 1,
+      "raw": "0201"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 3,
+      "unlock_tier_or_soldier_stage": 1,
+      "raw": "0301"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 4,
+      "unlock_tier_or_soldier_stage": 2,
+      "raw": "0402"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 5,
+      "unlock_tier_or_soldier_stage": 2,
+      "raw": "0502"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 6,
+      "unlock_tier_or_soldier_stage": 2,
+      "raw": "0602"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 7,
+      "unlock_tier_or_soldier_stage": 3,
+      "raw": "0703"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 8,
+      "unlock_tier_or_soldier_stage": 3,
+      "raw": "0803"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 9,
+      "unlock_tier_or_soldier_stage": 3,
+      "raw": "0903"
+    },
+    {
+      "building_id": 5,
+      "名称": "弓兵营",
+      "level": 10,
+      "unlock_tier_or_soldier_stage": 4,
+      "raw": "0a04"
+    }
+  ],
+  "parse_notes": [
+    {
+      "building_id": 6,
+      "name": "战车营",
+      "note": "unlock group extra nonzero",
+      "extra": "000700000000ffff000000ffffffff00000000"
+    }
+  ],
+  "key_conclusions": [
+    "scriptBuilding.sc 尾部包含三类规则：前置/等级门槛、升级成本与时间、产出/兵种解锁。",
+    "升级成本行可稳定解析为 level + 铜钱/粮食/额外字段/时间四个 u32be。",
+    "大厅/房屋/农场存在生产/容量效果行；兵营类存在 level->unlock_stage 映射；书院当前未见 production effect group。",
+    "前置条件 15-byte 行已结构化保留，但字段精确业务名仍需结合代码函数继续确认。"
+  ]
+}

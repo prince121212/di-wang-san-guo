@@ -1,0 +1,5 @@
+﻿protocol,opcode_hex,method,order,field,io,evidence,meaning,confidence
+reqGainAward,0x1134,"LscriptPages/game/m0;->t(long,String)",1,award_id,writeLong,m0.t 000000-000010,要领取的奖励/活动奖励 ID；同时保存到 m0.C0 用于响应后 UI/活动分支判断。,高
+reqGainAward,0x1134,"LscriptPages/game/m0;->t(long,String)",2,name_selector,writeByte,m0.t 000014-000022,请求是否附带字符串参数：awardName/String 非空写 1，否则写 0。,高
+reqGainAward,0x1134,"LscriptPages/game/m0;->t(long,String)",3,award_name_or_context,writeUTF if non-null,m0.t 000028-00002c,仅当字符串参数非空时写入；多个调用点可传奖励名/上下文名。,中高
+reqGainAward,0x1134,"LscriptPages/game/m0;->t(long,String)",send,opcode,g.y,m0.t 000032-000036,发送请求名 reqGainAward，opcode 十进制 4404 / 十六进制 0x1134。,高

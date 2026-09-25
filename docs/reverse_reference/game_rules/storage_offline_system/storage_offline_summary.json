@@ -1,0 +1,50 @@
+{
+  "date": "2026-07-05",
+  "topic": "仓储/离线产出/资源点系统第一版",
+  "scope": [
+    "个人仓储上限",
+    "离线产出显示/结算",
+    "资源点 reqResourceList 协议",
+    "资源点列表/详情字段骨架"
+  ],
+  "key_conclusions": [
+    "APK 客户端未找到个人铜钱/粮食仓储上限的明确字段和公式闭环；“仓库”命中更像装备仓库。",
+    "“离线”关键词仅命中腾讯 push ReturnCode；客户端可确认的是 i.A() 显示层按小时递增，不是权威离线结算。",
+    "“标题储量/产量”主要出现在资源点列表/详情 UI 链路，当前更应解释为资源点储量/产量，而非玩家个人仓储。",
+    "reqResourceList 请求名已确认，opcode=0x1542/5442，请求体为 x/writeShort、y/writeShort。",
+    "p.f 与 p.c1 响应为资源点/目标列表同构大记录；q5/T5 为资源点 ID，s5/V5 为名称，t5/u5 与 W5/X5 为坐标，y5/A5 等为储量/产量候选。",
+    "p.P0 是单资源点详情/驻军明细读取器，读取名称、坐标、描述、两个 int 数值及驻守/守军数组。"
+  ],
+  "important_methods": {
+    "scriptPages/game/p.h1": "reqResourceList 请求入口，opcode 5442",
+    "scriptPages/game/p.f": "资源点列表响应候选；q5/r5/s5...M5 字段骨架",
+    "scriptPages/game/p.c1": "另一资源点/目标列表同构响应；T5/U5/V5...o6 字段骨架",
+    "scriptPages/game/p.P0": "单资源点详情/驻守明细响应读取器",
+    "scriptPages/game/p.M0": "资源点驻守/调兵后将领和闲兵同步候选",
+    "scriptPages/data/i.A": "客户端资源显示层按小时递增",
+    "scriptPages/data/g.z0": "征兵可招数量=min(铜钱约束, 粮食约束, 剩余人口约束)，并非仓储上限",
+    "scriptPages/game/k.m": "出现“资源累积/是否征收”的城池征收 UI 候选"
+  },
+  "generated_files": [
+    "analysis/game_rules/storage_offline_system/storage_offline_resource_point_report.md",
+    "analysis/game_rules/storage_offline_system/storage_offline_field_mapping.csv",
+    "analysis/game_rules/storage_offline_system/resource_point_protocol_fields.csv",
+    "analysis/game_rules/storage_offline_system/storage_offline_summary.json",
+    "analysis/game_rules/storage_offline_system/storage_offline_string_field_hits.md",
+    "analysis/game_rules/storage_offline_system/storage_more_terms_hits.json",
+    "analysis/game_rules/storage_offline_system/method_disasm_storage/",
+    "analysis/game_rules/storage_offline_system/method_disasm_resource_point/"
+  ],
+  "server_rebuild_recommendations": [
+    "初版服务端可先不实现个人仓储上限，或把仓储上限做成配置策略；客户端没有必须同步的明确上限字段。",
+    "登录/关键操作后由服务端权威同步 d/e/F/G/i 等资产；客户端本地递增仅影响展示。",
+    "资源点系统至少建模 id、type、name、x、y、owner/status、level/current/max、production、storage、bonus、garrison、timers、related id list。",
+    "资源点列表接口按坐标/区域返回，不建议一次性返回全图；字段顺序需兼容 p.f/p.c1。"
+  ],
+  "unknowns": [
+    "个人仓储上限若存在，仍可能完全在服务端权威计算；需动态样本观察资源接近/超过上限时同步字段。",
+    "资源点 y5/z5/A5/B5/O5/P5/D5/C5 的最终业务名需结合真实响应样本和 UI 截图命名。",
+    "资源点占领收益、掠夺损失、刷新周期、驻守影响仍未完成动态验证。",
+    "data.g.H 已在后续资源系统深追中确认为账号积分；人口/资源点/封地/将领上限公式仍属于后续资源系统深追。"
+  ]
+}

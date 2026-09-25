@@ -169,7 +169,7 @@
       }
     },
     "inventory8104LiveCapture": {
-      "sourceFile": "ctf_out/passive_pcap_hotspot_20260710_215812/live_analyzed/030/resp.bin",
+      "sourceFile": "电脑端辅助前端/tests/fixtures/game_packets/passive_pcap_hotspot_20260710_215812/live_analyzed/030/resp.bin",
       "responseOpcode": "0x8104",
       "expected": {
         "itemStackCount": 26,

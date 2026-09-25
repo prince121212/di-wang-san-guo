@@ -1,0 +1,48 @@
+﻿结构,字段序号,客户端字段,读取类型,当前语义候选,置信度,证据/备注
+reqResourceList 请求,1,x,writeShort,地图/区域查询 X,高,"p.h1(I,I)：openDos(""reqResourceList""), writeShort(x)"
+reqResourceList 请求,2,y,writeShort,地图/区域查询 Y,高,"p.h1(I,I)：writeShort(y), data.f.u(..., 5442)"
+p.f 响应头,1,status_or_mode,readByte,状态/模式；=1 时读 Lo/a.Z5 快照,中高,p.f 首字节分支；==1 调 Lo/a.Z5(stream)
+p.f 响应头,2,p5[0],readShort,列表中心/区域 X 候选,中,非 1 分支先读两个 short 到 p5
+p.f 响应头,3,p5[1],readShort,列表中心/区域 Y 候选,中,非 1 分支先读两个 short 到 p5
+p.f 响应头,4,count,readByte,资源点记录数,高,随后为 q5/r5/... 分配数组并循环
+p.f 记录,1,q5,readLong,资源点 ID,高,列表主键，末尾与 M5 id 列表比对/选择
+p.f 记录,2,r5,readByte,资源点类型/图标类型候选,中,UI 中与 data.b.C/D 等图标/分类链路关联
+p.f 记录,3,s5,readUTF,资源点名称,高,p.t 列表显示名称
+p.f 记录,4,t5,readShort,坐标 X,高,p.t 显示坐标字段之一
+p.f 记录,5,u5,readShort,坐标 Y,高,p.t 显示坐标字段之一
+p.f 记录,6,v5,readByte,状态/归属/品质候选,低,UI 引用不足，保留候选
+p.f 记录,7,w5,readByte,加成/占领状态候选,中,p.t 详情处显示为附加数值候选
+p.f 记录,8,x5,readByte,加成/保护状态候选,中,p.t 详情处显示为附加数值候选
+p.f 记录,9,y5,readInt,储量/产量数值候选 A,中,p.t 详情“储量/产量”区域引用
+p.f 记录,10,z5,readInt,储量/产量数值候选 B,中,p.t/p.s 引用
+p.f 记录,11,A5,readInt,储量/产量数值候选 C,中,p.t 详情“储量/产量”区域引用
+p.f 记录,12,B5,readInt,储量/产量数值候选 D,低中,列表扩展 int 字段
+p.f 记录,13,O5,readInt,扩展 int 1,低,读流确认，语义待动态样本命名
+p.f 记录,14,P5,readInt,扩展 int 2,低,读流确认，语义待动态样本命名
+p.f 记录,15,D5,readInt,当前等级/当前耐久候选,中,p.t 显示为 D5 或 1 / C5 的比例
+p.f 记录,16,C5,readInt,等级上限/容量上限候选,中,p.t 与 D5 成对显示
+p.f 记录,17,discard_int,readInt,废弃/兼容字段,低,读后未存
+p.f 记录,18,F5,readShort,坐标/兵力/范围候选 X,低中,p.t 中与 E5 成对显示
+p.f 记录,19,E5,readShort,坐标/兵力/范围候选 Y,低中,p.t 中与 F5 成对显示
+p.f 记录,20,G5,readUTF,描述/所属名候选,中,UI 直接拼接显示
+p.f 记录,21,H5,readByte,等级/将领等级候选,中,p.t 附近有 res_将领等级 文案
+p.f 记录,22,I5,readUTF,文本字段 2,低中,UI 引用待命名
+p.f 记录,23,J5,readUTF,文本字段 3/说明,中,p.t 列表显示文本
+p.f 记录,24,discard_short,readShort,废弃/兼容字段,低,读后未存
+p.f 记录,25,discard_long,readLong,废弃/兼容字段,低,读后未存
+p.f 记录,26,Q5,readByte,战斗/驻守状态候选,低中,与 R5/S5 组合出现
+p.f 记录,27,R5[2],readByte x2,两项短状态/坐标候选,低中,每记录固定 2 项
+p.f 记录,28,S5[3],readLong x3,驻军/相关将领 ID 候选,中,每记录固定 3 项 long，资源点驻守/将领相关概率高
+p.f 记录,29,K5,readLong,时间/保护/结束时间候选,低中,末尾 long 字段
+p.f 记录,30,L5,readLong,时间/保护/结束时间候选,低中,末尾 long 字段
+p.f 尾部,31,M5_count,readLong,已占/已选资源点 ID 数量候选,中,随后按数量读取 M5 long[]
+p.f 尾部,32,M5[],readLong[],资源点 ID 列表,中,与 q5 主键比对
+p.c1 记录,1..30,T5/U5/V5/W5/X5/Y5/Z5/a6/b6...o6,与 p.f 同构,另一资源/目标列表视图的同构字段,中,字段前缀不同但读流结构与 p.f 基本一致，疑似攻打/占领视图。
+p.P0 详情,1,result,readByte,结果码；0 成功,高,非 0 分支走错误/UI状态复位
+p.P0 详情,2,K6,readUTF,资源点名称,高,成功后读取
+p.P0 详情,3,L6/M6,readShort/readShort,坐标 X/Y,高,成功后读取两个 short
+p.P0 详情,4,N6,readUTF,资源点说明,中高,成功后读取说明文本
+p.P0 详情,5,x6/y6,readInt/readInt,产量/储量或当前/上限数值,中,与详情页资源点数值相关
+p.P0 详情,6,O6/P6/Q6/R6/S6/T6/U6/V6,count + long/string/byte arrays,驻守将领/守军明细候选,中,每项读 long、name、byte、string、byte、byte、byte；T6>=100 时减 100 并置 U6=1。
+p.M0 驻守同步,1,result/message,readByte/readUTF,驻守/调兵结果,中高,成功后更新将领与闲兵库存
+p.M0 驻守同步,2,general_id/troop_type/troop_count 等,readLong/readByte/readInt...,将领带兵/封地闲兵同步,中高,调用 Lo/a.T8/S8 更新 Lv/Kv 闲兵映射。

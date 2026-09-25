@@ -1,0 +1,269 @@
+{
+  "generated_at": "2026-07-05T07:18:38",
+  "protocol": "fiefMove",
+  "request_opcode_hex": "0x1212",
+  "request_opcode_dec": 4626,
+  "response_opcode_hex": "0x8212",
+  "request_method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+  "response_handler": "Lo/a;->A6 dispatch 0x8212 -> LscriptPages/game/q;->W(String)",
+  "ui_callers": [
+    "q.H1()I 000560：直接按 o3[l3] 迁封，selector=0,target_id=-1",
+    "q.H1()I 000b20：selector=1,target_name=W3[I2]",
+    "q.H1()I 000b4a：selector=1,target_name=P3"
+  ],
+  "request_fields": [
+    {
+      "protocol": "fiefMove",
+      "opcode_hex": "0x1212",
+      "method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+      "order": "1",
+      "field": "source_fief_id",
+      "io": "writeLong",
+      "evidence": "q.T 00000a",
+      "meaning": "待迁移的封地 ID；调用点均使用 q.o",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "opcode_hex": "0x1212",
+      "method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+      "order": "2",
+      "field": "target_city_or_slot",
+      "io": "writeShort",
+      "evidence": "q.T 000010-000012 / H1 o3[l3]",
+      "meaning": "目标城池/目标槽位 short；调用点来自 o3[l3]",
+      "confidence": "中高"
+    },
+    {
+      "protocol": "fiefMove",
+      "opcode_hex": "0x1212",
+      "method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+      "order": "3",
+      "field": "target_selector",
+      "io": "writeByte",
+      "evidence": "q.T 000018-000020",
+      "meaning": "选择目标标识方式；0=后续写 long，非0=后续写 UTF；同时保存到 q.e4 影响返回 UI",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "opcode_hex": "0x1212",
+      "method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+      "order": "4a",
+      "field": "target_id",
+      "io": "writeLong",
+      "evidence": "q.T 000024-000028",
+      "meaning": "target_selector==0 时写入；第一调用点传 -1",
+      "confidence": "中"
+    },
+    {
+      "protocol": "fiefMove",
+      "opcode_hex": "0x1212",
+      "method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+      "order": "4b",
+      "field": "target_name",
+      "io": "writeUTF",
+      "evidence": "q.T 00002e-000030 / H1 W3[I2]/P3",
+      "meaning": "target_selector!=0 时写入；调用点传目标城池/候选名称字符串",
+      "confidence": "中高"
+    },
+    {
+      "protocol": "fiefMove",
+      "opcode_hex": "0x1212",
+      "method": "LscriptPages/game/q;->T(long,int,int,long,String)",
+      "order": "send",
+      "field": "opcode",
+      "io": "game.g->y",
+      "evidence": "q.T 000036-00003a",
+      "meaning": "发送 fiefMove，opcode 十进制 4626",
+      "confidence": "高"
+    }
+  ],
+  "response_fields": [
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "header",
+      "order": "1",
+      "field": "status",
+      "io": "readByte",
+      "evidence": "q.W 000000-000006",
+      "meaning": "0=迁封成功；负数为具体失败原因",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "success_update",
+      "order": "2",
+      "field": "moved_fief_id",
+      "io": "readLong",
+      "evidence": "q.W 00000c-000014",
+      "meaning": "成功时返回被迁移的封地 ID，保存到 q.o",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "success_update",
+      "order": "3",
+      "field": "new_city_or_position",
+      "io": "readLong",
+      "evidence": "q.W 000018-000020 / 000024-00003e",
+      "meaning": "成功时返回新城池/位置；低 16 位写入 Lo/a.sv[p3(fief)]",
+      "confidence": "中高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "success_update",
+      "order": "4",
+      "field": "extra_block_flag",
+      "io": "readByte",
+      "evidence": "q.W 000042-00004e",
+      "meaning": "非 0 时调用 Lo/a.V5 读取一段额外同步数据",
+      "confidence": "中"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "success_update",
+      "order": "5",
+      "field": "refresh_flag",
+      "io": "readBoolean",
+      "evidence": "q.W 000054-000060",
+      "meaning": "true 时调用 data.b.L 继续读取/刷新数据",
+      "confidence": "中"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-1",
+      "field": "ERR_NO_SPECIFIED",
+      "io": "status=-1",
+      "evidence": "q.W 000070-000084",
+      "meaning": "提示：没有指定",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-2",
+      "field": "ERR_INVALID_MOVE",
+      "io": "status=-2",
+      "evidence": "q.W 00008e-0000a4",
+      "meaning": "提示：迁封无效",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-3",
+      "field": "ERR_NO_EMPTY_FIEF",
+      "io": "status=-3",
+      "evidence": "q.W 0000ae-0000c4",
+      "meaning": "提示：没有空封",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-4",
+      "field": "ERR_NO_MOVABLE_CITY",
+      "io": "status=-4",
+      "evidence": "q.W 0000ce-0000e4",
+      "meaning": "提示：无可迁城",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-5",
+      "field": "ERR_ORIGIN_CITY",
+      "io": "status=-5",
+      "evidence": "q.W 0000ec-000102",
+      "meaning": "提示：原封地城池",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-6",
+      "field": "ERR_OTHER",
+      "io": "status=-6",
+      "evidence": "q.W 00010a-000120",
+      "meaning": "提示：其他错误",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-7",
+      "field": "ERR_BASE_FIEF_MOVE",
+      "io": "status=-7",
+      "evidence": "q.W 000128-00013e",
+      "meaning": "提示：基地迁封",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-8",
+      "field": "ERR_NO_CITY",
+      "io": "status=-8",
+      "evidence": "q.W 000146-00015c",
+      "meaning": "提示：没有城池",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "status_mapping",
+      "order": "-9",
+      "field": "ERR_NOT_YOURS",
+      "io": "status=-9",
+      "evidence": "q.W 000164-00017c",
+      "meaning": "提示：不属于您",
+      "confidence": "高"
+    },
+    {
+      "protocol": "fiefMove",
+      "response_opcode_hex": "0x8212",
+      "handler": "LscriptPages/game/q;->W(String)",
+      "group": "success_action",
+      "order": "0",
+      "field": "success_followup",
+      "io": "status=0",
+      "evidence": "q.W 000184-00019a",
+      "meaning": "成功后请求角色详情 reqRoleInfo(-1,data.i.b)，并调用 q.g1(0,fiefId) 刷新 UI/列表",
+      "confidence": "中高"
+    }
+  ],
+  "key_conclusions": [
+    "fiefMove 请求包含源封地ID、目标城池/槽位、目标标识方式以及目标ID/名称二选一。",
+    "成功响应会回传迁移后的封地ID和新位置，并同步 Lo/a.sv 的封地所在城池/位置缓存。",
+    "服务端负责校验是否可迁封、空封限制、基地不能迁封、目标城池归属等规则；错误码 -1..-9 已恢复。"
+  ]
+}

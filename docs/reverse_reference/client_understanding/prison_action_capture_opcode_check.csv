@@ -1,0 +1,2 @@
+﻿flow_idx,timestamp,request_len,response_len,naive_hits,note
+31,2026-07-05 02:16:21.161,63,49870,resp_hex@743:0x1236; resp_hex@10103:0x1238; resp_hex@17923:0x1233; resp_hex@18021:0x1236; resp_hex@20422:0x1238; resp_hex@20733:0x1238,"naive byte scan only; hits may be embedded field values, not parsed envelopes"

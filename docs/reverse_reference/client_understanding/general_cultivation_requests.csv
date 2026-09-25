@@ -1,0 +1,3 @@
+﻿request_opcode,request_name,callsite,ui_variant,precheck,payload,count_limit,waiting_text,confidence
+0x1275,reqGeneralCultivate / reqGeneralGrowUp,LscriptPages/gameHD/h;->B()I @ 0x0d8e-0x0dc8,h 列表/HD 管理器分支,"Lo/a.G3(0, current_idx) == 0；若非 0，提示 di_将领成长值已满，不发送。","writeLong(general_id = Lo/a.b4(0,current_idx)); writeShort(cultivate_count = h.T)","h.T 由按钮/输入调整，客户端夹到 [1, min(99, max(1, Lo/a.p1(286)))]。",di_请求将领培养中,high
+0x1275,reqGeneralCultivate / reqGeneralGrowUp,LscriptPages/gameHD/g;->p()V @ 0x09b6-0x09e4,g 详情/另一套 HD 管理器分支,"Lo/a.G3(0, current_idx) == 0；若非 0，提示 di_将领成长值已满，不发送。","writeLong(general_id = Lo/a.b4(0,current_idx)); writeShort(cultivate_count = g.u1)","g.u1 由按钮/输入调整，客户端夹到 [1, min(99, max(1, Lo/a.p1(286)))]。",di_请求将领培养中,high

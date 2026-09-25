@@ -1,0 +1,26 @@
+{
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "responses": [
+    "0x8250",
+    "0x8252",
+    "0x8254"
+  ],
+  "requests": [
+    "0x1250",
+    "0x1252",
+    "0x1254"
+  ],
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/EQUIPMENT_OPERATION_RESPONSES.md",
+    "请求入口表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_operation_requests.csv",
+    "响应 schema 表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_operation_response_schema.csv",
+    "方法读流/调用摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_operation_method_summary.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_operation_responses_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_operation_response_summary.json"
+  },
+  "row_counts": {
+    "request_rows": 3,
+    "response_schema_rows": 14,
+    "method_summary_rows": 8
+  }
+}

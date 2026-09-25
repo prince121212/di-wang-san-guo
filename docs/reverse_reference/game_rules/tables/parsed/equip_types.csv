@@ -1,0 +1,5 @@
+﻿id,名称,子类型/槽位,属性ID列表,品质/效果项,offset
+0,武器,0,"3,5,7,10","[{""tier"": 1, ""attr_or_effect_id"": 3, ""value"": 100}, {""tier"": 2, ""attr_or_effect_id"": 34, ""value"": 100}, {""tier"": 3, ""attr_or_effect_id"": 35, ""value"": 100}, {""tier"": 4, ""attr_or_effect_id"": 119, ""value"": 100}]",0x2
+1,头盔,8,"3,5,7,10","[{""tier"": 1, ""attr_or_effect_id"": 3, ""value"": 50}, {""tier"": 2, ""attr_or_effect_id"": 34, ""value"": 50}, {""tier"": 3, ""attr_or_effect_id"": 35, ""value"": 50}, {""tier"": 4, ""attr_or_effect_id"": 119, ""value"": 50}]",0x2c
+2,铠甲,9,"1,2,3,5","[{""tier"": 1, ""attr_or_effect_id"": 3, ""value"": 50}, {""tier"": 2, ""attr_or_effect_id"": 34, ""value"": 50}, {""tier"": 3, ""attr_or_effect_id"": 35, ""value"": 50}, {""tier"": 4, ""attr_or_effect_id"": 119, ""value"": 50}]",0x56
+3,坐骑,10,"3,8,12,20","[{""tier"": 1, ""attr_or_effect_id"": 120, ""value"": 100}, {""tier"": 2, ""attr_or_effect_id"": 121, ""value"": 100}, {""tier"": 3, ""attr_or_effect_id"": 122, ""value"": 100}, {""tier"": 4, ""attr_or_effect_id"": 123, ""value"": 100}]",0x80

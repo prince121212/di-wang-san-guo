@@ -5,7 +5,7 @@ package com.example.dwpmclone.domain.protocol
  *
  * Template ids are contiguous (0..160), so parallel arrays are substantially smaller than
  * 161 map entries and avoid shipping a CSV parser in the hot path.  The source evidence lives at
- * reverse_cases/.../equipment_template_static_values.csv.
+ * docs/reverse_reference/client_understanding/equipment_template_static_values.csv.
  */
 object EquipmentTemplateDictionary {
     data class Template(

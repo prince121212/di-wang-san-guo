@@ -1,0 +1,13 @@
+﻿领域,客户端字段/方法,证据位置,当前判定,置信度,说明/重建建议
+个人铜钱,scriptPages/data/i.d,resource_system 已确认；storage 扫描仅发现读取/显示,铜钱余额,高,服务端权威保存；客户端 i.A 会做显示层递增。
+个人粮食,scriptPages/data/i.e,resource_system 已确认；storage 扫描仅发现读取/显示,粮食余额,高,服务端权威保存；客户端 i.A 会做显示层递增。
+个人仓储上限,未发现稳定字段,storage_offline_string_field_hits.md；仓库命中为 game/z.j 的装备仓库文案,客户端未恢复到个人仓储上限闭环,中,不能断言服务端没有上限；只能说 APK 客户端无明确公式/字段闭环。初版服务端可先不做上限，或做配置项。
+离线产出,未发现显式离线公式,“离线”仅命中腾讯 push ReturnCode；i.A 为在线/本地显示递增,客户端未恢复到离线结算公式,中,离线收益如存在应由服务端在登录/同步时权威结算。
+显示产出递增,scriptPages/data/i.A(),resource_system/method_disasm_resource/scriptPages_data_i__A...,按本地时间差增加显示铜钱/粮食,高,公式：d += floor((now-G)*m/3600000)，e += floor((now-H)*n/3600000)，未见上限 clamp。
+总产钱/小时,scriptPages/data/i.m,resource_system_report.md,总铜钱产量/小时,高,客户端显示用；最终值由服务端同步。
+总产粮/小时,scriptPages/data/i.n,resource_system_report.md,总粮食产量/小时,高,客户端显示用；最终值由服务端同步。
+人口当前/上限候选,scriptPages/data/i.q / i.r,data.g.z0 以 i.r-i.q 限制可征兵数量；Lo/a.c8 读写,人口当前/上限候选,中高,"z0(I,I) 中用剩余人口约束可招募数量，比“仓储上限”更符合人口语义。"
+资源点当前/上限候选,scriptPages/data/i.u / i.v,resource_system 字段候选；资源点模块需继续交叉验证,资源点占有数/上限候选,中,与 reqResourceList 资源点系统相关，未完全命名。
+资源点储量/产量,p.y5/z5/A5/B5/O5/P5/D5/C5 等,p.f/p.c1 读流 + p.t/p.s UI 引用 + “标题储量/产量”文本,资源点列表显示字段候选,中,“储量”命中主要属于资源点详情/列表，不是玩家个人仓库。
+城池征收/资源累积,scriptPages/game/k.m,method_disasm_storage/scriptPages_game_k__m__0x2bdbb4.smali.txt,城池/封地征收显示候选,中,出现 “di_资源累积”“di_是否征收”，但不等同于离线产出公式。
+征兵可招数量,"scriptPages/data/g.z0(I,I)",method_disasm_storage/scriptPages_data_g__z0__0x264cb4.smali.txt,取铜钱/粮食/剩余人口三者最小值,高,使用 Q1/R1/S1 得到单兵成本/人口占用，再 min 后非负截断。

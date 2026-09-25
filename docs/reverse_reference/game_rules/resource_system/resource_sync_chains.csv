@@ -1,0 +1,11 @@
+﻿chain,method,offset,direction,read/write sequence,effect,confidence
+登录/完整角色同步,scriptPages/data/i.x,0x28bf60,response,"role_id, name, level/rank, d, e, f, vip, i, j, k, ..., m, n, o, p, q, r, s, t, u, v, w, D, F, data.g.h3, y, z",初始化全局资源、声望、人口、产量、资源点/封地等状态,high
+增量资源同步,scriptPages/data/i.b,0x28bcfc,response,"d,e,m,n,g.F,g.G,g.H,x then tagged updates 0..15/91",常规资源/声望/阈值/上限增量刷新,high
+资源简块同步,scriptPages/data/i.z,0x28c230,response,"d,e,m,n,q,r,g.F,g.G",只同步铜钱/粮食/产量/人口与金银，常见于部分刷新,medium-high
+客户端本地产出显示,scriptPages/data/i.A,0x28c2a4,local tick,d += floor((now-G)*m/3600000); e += floor((now-H)*n/3600000),客户端显示层平滑增加铜钱/粮食；不是权威结算,high
+奖励领取成功,scriptPages/game/m0.u,0x3d23ac,response,"result; m0.n(reward list); if success: level/rank byte, i, d, e, g.H, Lo/a.V5, msg",奖励到账后同步声望/铜钱/粮食/账号积分和封地状态,high
+部门/六部相关同步,La0/a.c2,0xe5e04,response,"result,msg,id; if success: level byte, i, d, e, g.H, Lo/a.V5, extra",同样同步 i/d/e/H；H 已修正为账号积分，玉石另为 item_id=399 道具,medium-high
+封地基础同步,Lo/a.Y5,0x23fc94,response,"pv,qv,rv,sv,tv,uv,vv,wv,xv,yv,zv,Av,Kv/Lv,Mv/Nv",单个封地基础信息、产量、驻防、队列、兵力池,high
+封地批量/全量容器,Lo/a.Z5,0x23fe20,response,count then fief ids and nested Y5/k1/...,初始化或刷新封地列表与各封地状态,high
+封地临时状态同步,Lo/a.k1,0x239d6c,response,"Bv/Cv/Dv, Ev/Fv/Gv, Hv/Iv/Jv",增产/队列临时 buff 状态,high
+负数资源ID解析,scriptPages/data/g.w0,0x270428,local resolver,"-1=>i.d, -2=>i.e, -3=>g.G, -4=>g.F, -5=>i.i, -6=>i.o, -14=>g.H",道具/奖励成本引用负数资源ID时解析当前数量；-14 已确认为账号积分,high for -1..-6/-14; medium for -7..-13 names only

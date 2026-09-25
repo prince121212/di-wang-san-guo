@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVER_PATH = ROOT / "电脑端辅助前端" / "server.py"
-CAPTURE_FLOWS = ROOT / "ctf_out" / "passive_pcap_hotspot_20260710_215812" / "live_analyzed"
+GAME_PACKETS = ROOT / "电脑端辅助前端" / "tests" / "fixtures" / "game_packets"
+CAPTURE_FLOWS = GAME_PACKETS / "passive_pcap_hotspot_20260710_215812" / "live_analyzed"
 
 SPEC = importlib.util.spec_from_file_location("dwpm_server_brush_test", SERVER_PATH)
 SERVER = importlib.util.module_from_spec(SPEC)

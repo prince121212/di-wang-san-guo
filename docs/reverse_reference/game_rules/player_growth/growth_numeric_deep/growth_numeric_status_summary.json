@@ -1,0 +1,61 @@
+{
+  "date": "2026-07-05",
+  "topic": "玩家成长数值深追启动：声望阈值、封地/将领/资源点上限生成边界",
+  "confirmed": [
+    {
+      "item": "data.i.c",
+      "meaning": "君主等级",
+      "evidence": "q0.H 绘制等级数字；q0.V 若 c<99 显示升级所需声望，否则显示满级",
+      "confidence": "高"
+    },
+    {
+      "item": "data.i.i",
+      "meaning": "当前声望",
+      "evidence": "资源系统报告已确认；q0.H/q0.V 用 i-j 计算声望进度",
+      "confidence": "高"
+    },
+    {
+      "item": "data.i.j",
+      "meaning": "当前等级声望下限/上一级阈值",
+      "evidence": "q0.H/q0.V 用 i-j 作为当前等级内已获得声望",
+      "confidence": "中高"
+    },
+    {
+      "item": "data.i.k",
+      "meaning": "下一级声望阈值",
+      "evidence": "q0.H/q0.V 用 k-j 作为当前等级所需声望总量；tooltip 显示 k-i 剩余声望",
+      "confidence": "中高"
+    },
+    {
+      "item": "data.i.s",
+      "meaning": "封地上限",
+      "evidence": "k.s1 开辟封地时只判断 Lo/a.s2().length < data.i.s，满时提示 re_开辟数量",
+      "confidence": "高"
+    }
+  ],
+  "recovered_formulas": {
+    "prestige_progress_bar": "progress_width = bar_width * max(data.i.i - data.i.j, 0) / (data.i.k - data.i.j if data.i.k - data.i.j != 0 else data.i.k)",
+    "prestige_remaining_tooltip": "remaining = max(data.i.k - data.i.i, 0) under normal threshold state; rendered by re_声望升级 as “还需${声望数}声望升级”",
+    "open_fief_gate": "if current_fief_count < data.i.s then request/open fief flow else show re_开辟数量 using data.i.s"
+  },
+  "negative_findings": [
+    "未在客户端静态扫描中发现完整“君主等级 -> 声望阈值”本地表；阈值由 data.i.j/k 从服务端同步。",
+    "未在客户端静态扫描中发现“君主等级 -> 封地上限 data.i.s”的本地生成公式；客户端只消费服务端下发的 s。",
+    "未在客户端静态扫描中发现“将领上限 data.i.t / 资源点上限 data.i.v”的本地生成公式；当前主要为显示/门槛消费字段。",
+    "官职排序、名额、7日轮换规则目前仍以文本规则为主，未恢复服务端排序公式。"
+  ],
+  "generated_files": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_status_report.md",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_field_status.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_status_summary.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_candidate_methods.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_candidate_methods.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_candidate_disasm_summary.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/player_growth/growth_numeric_deep/method_disasm"
+  ],
+  "next_steps": [
+    "继续追 data.i.b tag=2/12 的动态样本，收集不同等级账号的 c/i/j/k/s/t/u/v。",
+    "从新手任务、礼包、道具效果中追 data.i.s/t/v 的扩展入口。",
+    "对官职模块请求/响应做字段命名，恢复职位 ID、排名字段、贡献/战功排序。"
+  ]
+}

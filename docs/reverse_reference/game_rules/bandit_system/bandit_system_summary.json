@@ -1,0 +1,351 @@
+{
+  "date": "2026-07-05",
+  "topic": "bandit_system_first_pass",
+  "source_files": {
+    "all_unique_bandits": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/vuln_shop/bandit_map_0x1540/full_scan_7_archers_only_20260705_0415/all_unique_bandits.csv",
+    "level7_corrected": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/vuln_shop/bandit_map_0x1540/full_scan_7_archer_category_corrected_20260705_0415/level7_all_units_raw.csv",
+    "level7_pure_archer_major": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/vuln_shop/bandit_map_0x1540/full_scan_7_archer_category_corrected_20260705_0415/level7_pure_archer_major.csv",
+    "sample_0x1540_records": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/vuln_shop/bandit_map_0x1540/bandit_0x1540_records.csv",
+    "sample_0x1540_summary": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/vuln_shop/bandit_map_0x1540/bandit_0x1540_summary.csv"
+  },
+  "scan_scope": {
+    "unique_bandits": 5224,
+    "levels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "x_min": 0,
+    "x_max": 184,
+    "y_min": 0,
+    "y_max": 55,
+    "query_points_from_corrected_summary": 744,
+    "all_level_stats_source_unique_rows": 5224,
+    "corrected_scan_metadata_unique_bandits": 5424,
+    "corrected_level7_rows": 596
+  },
+  "request_protocol": {
+    "name": "reqThiefList",
+    "opcode": "0x1540 / 5440",
+    "method": "LscriptPages/game/p;->k1(I,I)V",
+    "request_fields": [
+      "x/writeShort",
+      "y/writeShort"
+    ],
+    "sample_response_behavior": "单次请求按坐标/区域返回一批山贼；样本 1103 query(91,26) 返回 11 伙，覆盖 x=91..93,y=26..31。全图需多点枚举并按 target_id 去重。"
+  },
+  "level_stats": [
+    {
+      "level": 1,
+      "count": 501,
+      "resource1_min": 40,
+      "resource1_max": 60,
+      "resource1_avg": 49.84,
+      "resource2_min": 100,
+      "resource2_max": 150,
+      "resource2_avg": 124.0,
+      "unit_count_min": 1,
+      "unit_count_max": 1,
+      "unit_count_values": "1",
+      "top_desc": "一些资源,:466 | 一些资源,有装备,:35",
+      "unit_categories_seen": "步兵",
+      "top_loot_ids": "1034:58;1031:12;1030:9;16777217:7;1033:7;1032:6;1029:6;16777473:2;16777985:2;16777729:1;16787457:1"
+    },
+    {
+      "level": 2,
+      "count": 493,
+      "resource1_min": 80,
+      "resource1_max": 100,
+      "resource1_avg": 90.46,
+      "resource2_min": 200,
+      "resource2_max": 300,
+      "resource2_avg": 249.82,
+      "unit_count_min": 1,
+      "unit_count_max": 1,
+      "unit_count_values": "1",
+      "top_desc": "许多资源,:462 | 许多资源,有装备,:31",
+      "unit_categories_seen": "步兵",
+      "top_loot_ids": "1039:100;16777217:10;1030:3;1037:3;1034:2;16784897:2;16777729:2;1036:2;16777985:2;16787457:1;1038:1;1031:1"
+    },
+    {
+      "level": 3,
+      "count": 510,
+      "resource1_min": 140,
+      "resource1_max": 160,
+      "resource1_avg": 150.48,
+      "resource2_min": 300,
+      "resource2_max": 400,
+      "resource2_avg": 353.05,
+      "unit_count_min": 1,
+      "unit_count_max": 1,
+      "unit_count_values": "1",
+      "top_desc": "很多资源,:255 | 许多资源,:222 | 很多资源,有装备,:20 | 许多资源,有装备,:13",
+      "unit_categories_seen": "步兵",
+      "top_loot_ids": "1044:80;1043:5;1035:5;16777729:5;1037:4;1036:3;1039:3;1042:2;1041:2;16787457:2;16777985:2;16778497:2"
+    },
+    {
+      "level": 4,
+      "count": 576,
+      "resource1_min": 150,
+      "resource1_max": 180,
+      "resource1_avg": 165.21,
+      "resource2_min": 400,
+      "resource2_max": 500,
+      "resource2_avg": 449.54,
+      "unit_count_min": 2,
+      "unit_count_max": 2,
+      "unit_count_values": "2",
+      "top_desc": "很多资源,:469 | 很多资源,有宝箱,:41 | 很多资源,有装备,:40 | 很多资源,一些宝物,:21 | 很多资源,有宝箱,一些宝物,:2 | 很多资源,有装备,一些宝物,:2",
+      "unit_categories_seen": "步兵",
+      "top_loot_ids": "1049:63;13569:22;4097:10;16790017:6;16787457:3;1044:3;1046:3;1041:3;16778497:3;1047:3;1042:2;16778241:2"
+    },
+    {
+      "level": 5,
+      "count": 544,
+      "resource1_min": 250,
+      "resource1_max": 300,
+      "resource1_avg": 276.41,
+      "resource2_min": 600,
+      "resource2_max": 800,
+      "resource2_avg": 700.73,
+      "unit_count_min": 2,
+      "unit_count_max": 2,
+      "unit_count_values": "2",
+      "top_desc": "很多资源,:303 | 大量资源,:91 | 很多资源,有装备,:47 | 很多资源,有宝箱,:35 | 很多资源,一些宝物,:21 | 大量资源,一些宝物,:12",
+      "unit_categories_seen": "弓弩;步兵;骑兵",
+      "top_loot_ids": "1054:83;13569:26;4097:19;16778753:5;16785153:5;16787713:5;1053:3;16778497:3;1049:2;1044:1;1048:1;1046:1"
+    },
+    {
+      "level": 6,
+      "count": 526,
+      "resource1_min": 300,
+      "resource1_max": 400,
+      "resource1_avg": 352.61,
+      "resource2_min": 800,
+      "resource2_max": 1000,
+      "resource2_avg": 899.76,
+      "unit_count_min": 3,
+      "unit_count_max": 3,
+      "unit_count_values": "3",
+      "top_desc": "大量资源,:197 | 大量资源,有宝箱,:128 | 大量资源,一些宝物,:92 | 大量资源,有宝箱,一些宝物,:54 | 大量资源,有装备,:27 | 大量资源,有宝箱,有装备,:14",
+      "unit_categories_seen": "弓弩;步兵;骑兵",
+      "top_loot_ids": "1059:209;4097:44;14849:31;13569:26;13570:10;3073:6;16787713:5;1051:4;1050:4;1056:4;16790017:3;1053:3"
+    },
+    {
+      "level": 7,
+      "count": 558,
+      "resource1_min": 500,
+      "resource1_max": 700,
+      "resource1_avg": 598.68,
+      "resource2_min": 1400,
+      "resource2_max": 1700,
+      "resource2_avg": 1551.13,
+      "unit_count_min": 2,
+      "unit_count_max": 3,
+      "unit_count_values": "2;3",
+      "top_desc": "大批资源,有宝箱,:260 | 大批资源,:194 | 大批资源,有宝箱,有装备,:33 | 大批资源,有装备,:27 | 大批资源,有宝箱,一些宝物,:21 | 大批资源,一些宝物,:15",
+      "unit_categories_seen": "弓弩;步兵;骑兵",
+      "top_loot_ids": "1064:240;14849:61;13569:31;13570:22;3073:12;1063:6;1056:6;1060:5;1055:4;16779265:4;1059:4;1062:4"
+    },
+    {
+      "level": 8,
+      "count": 501,
+      "resource1_min": 900,
+      "resource1_max": 1100,
+      "resource1_avg": 1000.13,
+      "resource2_min": 2250,
+      "resource2_max": 2750,
+      "resource2_avg": 2507.37,
+      "unit_count_min": 2,
+      "unit_count_max": 4,
+      "unit_count_values": "2;3;4",
+      "top_desc": "大批资源,:188 | 大批资源,有宝箱,:169 | 大批资源,有装备,:46 | 大批资源,有宝箱,有装备,:40 | 大批资源,一些宝物,:26 | 大批资源,有宝箱,一些宝物,:22",
+      "unit_categories_seen": "战车;骑兵",
+      "top_loot_ids": "1069:237;1793:50;1068:10;1059:9;3073:8;1065:7;1067:7;1064:7;1060:7;1062:5;1063:5;16787969:4"
+    },
+    {
+      "level": 9,
+      "count": 516,
+      "resource1_min": 1400,
+      "resource1_max": 1800,
+      "resource1_avg": 1595.02,
+      "resource2_min": 3602,
+      "resource2_max": 4400,
+      "resource2_avg": 3993.4,
+      "unit_count_min": 2,
+      "unit_count_max": 4,
+      "unit_count_values": "2;4",
+      "top_desc": "大批资源,有宝箱,:201 | 大批资源,:109 | 大批资源,有宝箱,一些宝物,:83 | 大批资源,一些宝物,:53 | 大批资源,有宝箱,有装备,:33 | 大批资源,有宝箱,有装备,一些宝物,:19",
+      "unit_categories_seen": "战车;骑兵",
+      "top_loot_ids": "1074:200;1793:84;29441:21;3073:13;15105:8;1072:8;1064:7;1070:5;1068:5;1069:5;1067:5;1065:5"
+    },
+    {
+      "level": 10,
+      "count": 499,
+      "resource1_min": 1801,
+      "resource1_max": 2200,
+      "resource1_avg": 2005.78,
+      "resource2_min": 4500,
+      "resource2_max": 5486,
+      "resource2_avg": 5007.62,
+      "unit_count_min": 3,
+      "unit_count_max": 5,
+      "unit_count_values": "3;5",
+      "top_desc": "大批资源,有宝箱,一些宝物,:200 | 大批资源,有宝箱,:125 | 大批资源,有宝箱,有装备,一些宝物,:63 | 大批资源,有宝箱,有装备,:44 | 大批资源,一些宝物,:29 | 大批资源,有装备,一些宝物,:13",
+      "unit_categories_seen": "弓弩;战车;骑兵",
+      "top_loot_ids": "1084:239;1793:166;29441:52;3074:24;3073:19;1083:19;1078:18;1081:18;1074:17;1080:16;1077:12;1075:11"
+    }
+  ],
+  "loot_rows_count": 91,
+  "level7_summary": {
+    "level7_count": 596,
+    "pure_archer_major_count": 4,
+    "pure_archer_major_coords": [
+      {
+        "target_id": "2469146",
+        "x": 18,
+        "y": 49,
+        "resources": [
+          699,
+          1605
+        ],
+        "units": "马卫芮:弓弩(raw=1,sub=1)x1112 | 浦蕴枫:弓弩(raw=1,sub=1)x1152 | 融恩瑞:弓弩(raw=1,sub=1)x1119"
+      },
+      {
+        "target_id": "2472680",
+        "x": 34,
+        "y": 4,
+        "resources": [
+          693,
+          1674
+        ],
+        "units": "容瑞:弓弩(raw=1,sub=1)x1146 | 谈冬:弓弩(raw=1,sub=1)x1283 | 柯寒瑾:弓弩(raw=1,sub=1)x1100"
+      },
+      {
+        "target_id": "2468200",
+        "x": 103,
+        "y": 7,
+        "resources": [
+          546,
+          1481
+        ],
+        "units": "仰红小:弓弩(raw=1,sub=1)x1237 | 濮熙:弓弩(raw=1,sub=1)x1102 | 满悌:弓弩(raw=1,sub=1)x1110"
+      },
+      {
+        "target_id": "2467599",
+        "x": 181,
+        "y": 8,
+        "resources": [
+          640,
+          1699
+        ],
+        "units": "花民:弓弩(raw=1,sub=1)x1117 | 王铃:弓弩(raw=1,sub=1)x1215 | 公羊修:弓弩(raw=1,sub=1)x1156"
+      }
+    ],
+    "major_single_counts": {
+      "弓弩": 336,
+      "战车": 578,
+      "步兵": 459,
+      "骑兵": 415
+    },
+    "major_combo_top": [
+      [
+        "骑兵;战车;战车",
+        20
+      ],
+      [
+        "战车;战车;弓弩",
+        19
+      ],
+      [
+        "战车;骑兵;骑兵",
+        19
+      ],
+      [
+        "战车;步兵;骑兵",
+        19
+      ],
+      [
+        "步兵;战车;步兵",
+        18
+      ],
+      [
+        "战车;步兵;战车",
+        17
+      ],
+      [
+        "战车;战车;骑兵",
+        16
+      ],
+      [
+        "战车;步兵;步兵",
+        15
+      ],
+      [
+        "步兵;步兵;战车",
+        15
+      ],
+      [
+        "步兵;战车;战车",
+        15
+      ],
+      [
+        "弓弩;战车;战车",
+        14
+      ],
+      [
+        "战车;弓弩;步兵",
+        13
+      ],
+      [
+        "骑兵;骑兵;战车",
+        13
+      ],
+      [
+        "战车;弓弩;战车",
+        13
+      ],
+      [
+        "战车;骑兵;弓弩",
+        12
+      ],
+      [
+        "战车;战车;战车",
+        12
+      ],
+      [
+        "战车;战车;步兵",
+        12
+      ],
+      [
+        "战车;骑兵;战车",
+        12
+      ],
+      [
+        "战车;骑兵;步兵",
+        11
+      ],
+      [
+        "骑兵;战车;步兵",
+        11
+      ]
+    ]
+  },
+  "generated_files": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/bandit_system/bandit_level_stats.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/bandit_system/bandit_unit_category_combo_stats.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/bandit_system/bandit_loot_id_mapping.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/bandit_system/bandit_all_unique_enriched.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/bandit_system/bandit_system_summary.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/bandit_system/bandit_loot_id_mapping_enriched.csv"
+  ],
+  "data_scope_note": "全等级统计基于 full_scan_7_archers_only_20260705_0415/all_unique_bandits.csv（5224 行）；后一次 corrected summary 显示 unique_bandits=5424，但该目录只保留了修正后的 7 级明细 level7_all_units_raw.csv（596 行）和纯弓弩筛选结果，因此 7级分析使用修正数据，全等级统计使用旧全量表。",
+  "loot_id_encoding_note": "loot_ids 多数大于 item_full_mapping 最大 item_id=757，直接匹配失败；已输出 direct/low10/low12/minus1024/minus2048/minus3072/minus4096 等候选映射，仍需通过客户端解码函数或动态奖励验证。"
+}

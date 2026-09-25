@@ -1,0 +1,672 @@
+{
+  "generated_at": "2026-07-05T06:22:49",
+  "scene_dir": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/all_scripts/assets/script",
+  "scene_files_parsed": 188,
+  "parse_failures": [],
+  "total_command_records": 4102,
+  "dialogue_text_commands": 835,
+  "named_actor_commands": 408,
+  "header_count_mismatch_count": 52,
+  "header_count_mismatch_examples": [
+    {
+      "scene_file": "1-1-1.sc",
+      "declared_count": 43,
+      "physical_command_records": 48
+    },
+    {
+      "scene_file": "1-10-1.sc",
+      "declared_count": 20,
+      "physical_command_records": 21
+    },
+    {
+      "scene_file": "1-11-1.sc",
+      "declared_count": 46,
+      "physical_command_records": 48
+    },
+    {
+      "scene_file": "1-7-1.sc",
+      "declared_count": 49,
+      "physical_command_records": 53
+    },
+    {
+      "scene_file": "2-1-1.sc",
+      "declared_count": 35,
+      "physical_command_records": 40
+    },
+    {
+      "scene_file": "2-1-3.sc",
+      "declared_count": 42,
+      "physical_command_records": 49
+    },
+    {
+      "scene_file": "2-12-1.sc",
+      "declared_count": 20,
+      "physical_command_records": 22
+    },
+    {
+      "scene_file": "2-4-3.sc",
+      "declared_count": 42,
+      "physical_command_records": 45
+    },
+    {
+      "scene_file": "2-5-3.sc",
+      "declared_count": 23,
+      "physical_command_records": 26
+    },
+    {
+      "scene_file": "2-8-1.sc",
+      "declared_count": 41,
+      "physical_command_records": 43
+    },
+    {
+      "scene_file": "2-8-12.sc",
+      "declared_count": 41,
+      "physical_command_records": 43
+    },
+    {
+      "scene_file": "2-9-1.sc",
+      "declared_count": 48,
+      "physical_command_records": 51
+    },
+    {
+      "scene_file": "3-1-1.sc",
+      "declared_count": 26,
+      "physical_command_records": 28
+    },
+    {
+      "scene_file": "3-12-1.sc",
+      "declared_count": 31,
+      "physical_command_records": 34
+    },
+    {
+      "scene_file": "3-13-1.sc",
+      "declared_count": 43,
+      "physical_command_records": 46
+    },
+    {
+      "scene_file": "3-2-1.sc",
+      "declared_count": 41,
+      "physical_command_records": 42
+    },
+    {
+      "scene_file": "3-3-1.sc",
+      "declared_count": 26,
+      "physical_command_records": 30
+    },
+    {
+      "scene_file": "3-4-1.sc",
+      "declared_count": 19,
+      "physical_command_records": 21
+    },
+    {
+      "scene_file": "3-5-1.sc",
+      "declared_count": 26,
+      "physical_command_records": 28
+    },
+    {
+      "scene_file": "3-6-1.sc",
+      "declared_count": 23,
+      "physical_command_records": 26
+    }
+  ],
+  "opcode_summary": [
+    {
+      "opcode_hex": "0x01",
+      "count": 327,
+      "observed_lengths": "9字节×193, 23字节×134",
+      "role_guess": "场景/镜头初始化或切换",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 1,
+          "offset_hex": "0x11",
+          "opcode_hex": "0x01",
+          "opcode_dec": 1,
+          "length": 23,
+          "role_guess": "场景/镜头初始化或切换",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "01 00 00 00 00 64 64 00 00 00 00 00 64 00 64 00 00 00 00 00 64 00 64",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 00 00 00 64 64 00 00 00 00 00 64 00 64 00 00 00 00 00 64 00 64\", \"variant_len\": 23}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 2,
+          "offset_hex": "0x28",
+          "opcode_hex": "0x01",
+          "opcode_dec": 1,
+          "length": 9,
+          "role_guess": "场景/镜头初始化或切换",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "01 00 01 14 1e 03 42 01 9e",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 01 14 1e 03 42 01 9e\", \"variant_len\": 9}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 27,
+          "offset_hex": "0x21c",
+          "opcode_hex": "0x01",
+          "opcode_dec": 1,
+          "length": 23,
+          "role_guess": "场景/镜头初始化或切换",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "01 00 00 00 00 00 64 00 00 00 00 00 64 00 64 00 00 00 00 00 64 00 64",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 00 00 00 00 64 00 00 00 00 00 64 00 64 00 00 00 00 00 64 00 64\", \"variant_len\": 23}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x05",
+      "count": 110,
+      "observed_lengths": "11字节×110",
+      "role_guess": "定点效果/入场触发候选",
+      "examples": [
+        {
+          "scene_file": "1-10-1.sc",
+          "cmd_index": 14,
+          "offset_hex": "0x173",
+          "opcode_hex": "0x05",
+          "opcode_dec": 5,
+          "length": 11,
+          "role_guess": "定点效果/入场触发候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 236,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 100,
+          "x": 1750,
+          "y": 550,
+          "raw_hex_prefix": "05 00 ec 00 00 00 64 06 d6 02 26",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 236, \"duration\": 100, \"x\": 1750, \"y\": 550}"
+        },
+        {
+          "scene_file": "1-11-1.sc",
+          "cmd_index": 27,
+          "offset_hex": "0x21d",
+          "opcode_hex": "0x05",
+          "opcode_dec": 5,
+          "length": 11,
+          "role_guess": "定点效果/入场触发候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 130,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 90,
+          "x": 1580,
+          "y": 550,
+          "raw_hex_prefix": "05 00 82 00 00 00 5a 06 2c 02 26",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 130, \"duration\": 90, \"x\": 1580, \"y\": 550}"
+        },
+        {
+          "scene_file": "1-11-1.sc",
+          "cmd_index": 31,
+          "offset_hex": "0x25e",
+          "opcode_hex": "0x05",
+          "opcode_dec": 5,
+          "length": 11,
+          "role_guess": "定点效果/入场触发候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 218,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 110,
+          "x": 2762,
+          "y": 550,
+          "raw_hex_prefix": "05 00 da 00 00 00 6e 0a ca 02 26",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 218, \"duration\": 110, \"x\": 2762, \"y\": 550}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x06",
+      "count": 835,
+      "observed_lengths": "30字节×1, 33字节×11, 36字节×6, 39字节×4, 41字节×1, 42字节×28, 44字节×15, 45字节×16, 47字节×9, 48字节×18, 50字节×5, 51字节×20, 53字节×14, 54字节×21, 56字节×11, 57字节×24, 59字节×18, 60字节×12, 61字节×1, 62字节×17, 63字节×29, 65字节×20, 66字节×19, 67字节×1, 68字节×15, 69字节×21, 71字节×16, 72字节×14, 74字节×21, 75字节×18, 77字节×14, 78字节×14, 80字节×25, 81字节×10, 82字节×2, 83字节×14, 84字节×12, 85字节×1, 86字节×10, 87字节×20, 88字节×2, 89字节×10, 90字节×10, 92字节×17, 93字节×15, 94字节×1, 95字节×12, 96字节×11, 98字节×16, 99字节×10, 101字节×10, 102字节×7, 104字节×6, 105字节×7, 107字节×8, 108字节×4, 110字节×6, 111字节×5, 113字节×6, 114字节×6, 116字节×4, 117字节×9, 118字节×1, 119字节×3, 120字节×4, 121字节×1, 122字节×3, 123字节×9, 125字节×5, 126字节×4, 128字节×2, 129字节×1, 131字节×4, 132字节×4, 134字节×2, 135字节×3, 137字节×5, 138字节×8, 140字节×2, 141字节×1, 142字节×1, 143字节×1, 144字节×2, 146字节×3, 147字节×1, 149字节×1, 150字节×3, 152字节×1, 153字节×4, 155字节×5, 156字节×1, 158字节×1, 159字节×1, 162字节×1, 165字节×1, 168字节×2, 171字节×1, 173字节×2, 176字节×2, 177字节×3, 179字节×1, 183字节×1, 186字节×1, 194字节×1, 207字节×1, 311字节×1",
+      "role_guess": "对白/旁白文本显示",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 25,
+          "offset_hex": "0x1bd",
+          "opcode_hex": "0x06",
+          "opcode_dec": 6,
+          "length": 90,
+          "role_guess": "对白/旁白文本显示",
+          "text": "东汉末年，山贼祸乱于世，战火四起，震惊朝野",
+          "name": "",
+          "actor_or_cmd_id": 6,
+          "resource_or_portrait_id": 65535,
+          "duration_or_count": 140,
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "06 00 06 00 00 00 8c ff ff 08 01 00 ff ff ff 00 3f e4 b8 9c e6 b1 89 e6 9c ab e5 b9 b4 ef bc 8c e5 b1 b1 e8 b4 bc e7 a5 b8 e4 b9 b1 e4 ba 8e e4 b8 96 ef bc 8c e6 88 98 e7 81 ab e5 9b 9b e8 b5",
+          "decoded_fields_json": "{\"duration\": 140, \"flags_raw_hex\": \"08 01 00 ff ff ff\", \"portrait_or_actor_ref\": 65535, \"speaker_or_cmd_id\": 6, \"tail_ui_raw_hex\": \"00 08 00 46 00 52 00 14 00 ff\", \"text\": \"东汉末年，山贼祸乱于世，战火四起，震惊朝野\", \"utf_len\": 63}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 30,
+          "offset_hex": "0x24f",
+          "opcode_hex": "0x06",
+          "opcode_dec": 6,
+          "length": 60,
+          "role_guess": "对白/旁白文本显示",
+          "text": "一日，朝中遣使来访——",
+          "name": "",
+          "actor_or_cmd_id": 220,
+          "resource_or_portrait_id": 65535,
+          "duration_or_count": 80,
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "06 00 dc 00 00 00 50 ff ff 08 01 00 ff ff ff 00 21 e4 b8 80 e6 97 a5 ef bc 8c e6 9c 9d e4 b8 ad e9 81 a3 e4 bd bf e6 9d a5 e8 ae bf e2 80 94 e2 80 94 00 02 00 4c 00 5f 00 0f 00 ff",
+          "decoded_fields_json": "{\"duration\": 80, \"flags_raw_hex\": \"08 01 00 ff ff ff\", \"portrait_or_actor_ref\": 65535, \"speaker_or_cmd_id\": 220, \"tail_ui_raw_hex\": \"00 02 00 4c 00 5f 00 0f 00 ff\", \"text\": \"一日，朝中遣使来访——\", \"utf_len\": 33}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 31,
+          "offset_hex": "0x28b",
+          "opcode_hex": "0x06",
+          "opcode_dec": 6,
+          "length": 53,
+          "role_guess": "对白/旁白文本显示",
+          "text": "御  使：圣旨到——",
+          "name": "",
+          "actor_or_cmd_id": 322,
+          "resource_or_portrait_id": 727,
+          "duration_or_count": 80,
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "06 01 42 00 00 00 50 02 d7 08 00 00 ff ff 00 00 1a e5 be a1 20 20 e4 bd bf ef bc 9a e5 9c a3 e6 97 a8 e5 88 b0 e2 80 94 e2 80 94 00 23 00 23 00 1e 00 17 00 00",
+          "decoded_fields_json": "{\"duration\": 80, \"flags_raw_hex\": \"08 00 00 ff ff 00\", \"portrait_or_actor_ref\": 727, \"speaker_or_cmd_id\": 322, \"tail_ui_raw_hex\": \"00 23 00 23 00 1e 00 17 00 00\", \"text\": \"御  使：圣旨到——\", \"utf_len\": 26}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x08",
+      "count": 187,
+      "observed_lengths": "4字节×187",
+      "role_guess": "脚本结束/返回",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 47,
+          "offset_hex": "0x530",
+          "opcode_hex": "0x08",
+          "opcode_dec": 8,
+          "length": 4,
+          "role_guess": "脚本结束/返回",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "08 03 8f 00",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"03 8f 00\"}"
+        },
+        {
+          "scene_file": "1-1-2.sc",
+          "cmd_index": 9,
+          "offset_hex": "0xea",
+          "opcode_hex": "0x08",
+          "opcode_dec": 8,
+          "length": 4,
+          "role_guess": "脚本结束/返回",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "08 00 ac 00",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 ac 00\"}"
+        },
+        {
+          "scene_file": "1-1-3.sc",
+          "cmd_index": 13,
+          "offset_hex": "0x156",
+          "opcode_hex": "0x08",
+          "opcode_dec": 8,
+          "length": 4,
+          "role_guess": "脚本结束/返回",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "08 01 12 01",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"01 12 01\"}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x09",
+      "count": 1055,
+      "observed_lengths": "18字节×647, 24字节×369, 27字节×37, 30字节×2",
+      "role_guess": "演员/单位创建或摆放",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 38,
+          "offset_hex": "0x38f",
+          "opcode_hex": "0x09",
+          "opcode_dec": 9,
+          "length": 18,
+          "role_guess": "演员/单位创建或摆放",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 1,
+          "resource_or_portrait_id": 5502,
+          "duration_or_count": "",
+          "x": 523,
+          "y": 650,
+          "raw_hex_prefix": "09 02 57 00 01 15 7e 00 00 03 00 00 ff 02 0b 22 02 8a",
+          "decoded_fields_json": "{\"actor_id_or_seq\": 1, \"byte1\": 2, \"byte2\": 87, \"coord_mid\": 34, \"name\": \"\", \"resource_id\": 5502, \"tail_action_or_state\": 0, \"tail_facing_or_flag\": 255, \"tail_layer\": 3, \"utf_len\": 0, \"x\": 523, \"y\": 650}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 39,
+          "offset_hex": "0x3a1",
+          "opcode_hex": "0x09",
+          "opcode_dec": 9,
+          "length": 18,
+          "role_guess": "演员/单位创建或摆放",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 8,
+          "resource_or_portrait_id": 5145,
+          "duration_or_count": "",
+          "x": 523,
+          "y": 700,
+          "raw_hex_prefix": "09 02 57 00 08 14 19 00 00 03 00 05 ff 02 0b 54 02 bc",
+          "decoded_fields_json": "{\"actor_id_or_seq\": 8, \"byte1\": 2, \"byte2\": 87, \"coord_mid\": 84, \"name\": \"\", \"resource_id\": 5145, \"tail_action_or_state\": 5, \"tail_facing_or_flag\": 255, \"tail_layer\": 3, \"utf_len\": 0, \"x\": 523, \"y\": 700}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 40,
+          "offset_hex": "0x3b3",
+          "opcode_hex": "0x09",
+          "opcode_dec": 9,
+          "length": 18,
+          "role_guess": "演员/单位创建或摆放",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 9,
+          "resource_or_portrait_id": 5145,
+          "duration_or_count": "",
+          "x": 523,
+          "y": 600,
+          "raw_hex_prefix": "09 02 57 00 09 14 19 00 00 03 00 05 ff 02 0b 54 02 58",
+          "decoded_fields_json": "{\"actor_id_or_seq\": 9, \"byte1\": 2, \"byte2\": 87, \"coord_mid\": 84, \"name\": \"\", \"resource_id\": 5145, \"tail_action_or_state\": 5, \"tail_facing_or_flag\": 255, \"tail_layer\": 3, \"utf_len\": 0, \"x\": 523, \"y\": 600}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x0a",
+      "count": 1373,
+      "observed_lengths": "18字节×1373",
+      "role_guess": "演员移动/动作/战斗区位移",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 43,
+          "offset_hex": "0x43a",
+          "opcode_hex": "0x0a",
+          "opcode_dec": 10,
+          "length": 18,
+          "role_guess": "演员移动/动作/战斗区位移",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 675,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 80,
+          "x": 10,
+          "y": 650,
+          "raw_hex_prefix": "0a 02 a3 00 00 00 50 00 06 02 00 07 ff 00 0a 8c 02 8a",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 675, \"coord_mid\": 140, \"duration\": 80, \"field10_u16\": 7, \"field12_byte\": 255, \"field7_u16\": 6, \"field9_byte\": 2, \"x\": 10, \"y\": 650}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 44,
+          "offset_hex": "0x44c",
+          "opcode_hex": "0x0a",
+          "opcode_dec": 10,
+          "length": 18,
+          "role_guess": "演员移动/动作/战斗区位移",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 756,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 10,
+          "x": 10,
+          "y": 650,
+          "raw_hex_prefix": "0a 02 f4 00 00 00 0a 00 06 03 00 05 ff 00 0a 8c 02 8a",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 756, \"coord_mid\": 140, \"duration\": 10, \"field10_u16\": 5, \"field12_byte\": 255, \"field7_u16\": 6, \"field9_byte\": 3, \"x\": 10, \"y\": 650}"
+        },
+        {
+          "scene_file": "1-1-2.sc",
+          "cmd_index": 4,
+          "offset_hex": "0x63",
+          "opcode_hex": "0x0a",
+          "opcode_dec": 10,
+          "length": 18,
+          "role_guess": "演员移动/动作/战斗区位移",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 23,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 40,
+          "x": 10,
+          "y": 650,
+          "raw_hex_prefix": "0a 00 17 00 00 00 28 00 04 02 00 05 ff 00 0a 5a 02 8a",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 23, \"coord_mid\": 90, \"duration\": 40, \"field10_u16\": 5, \"field12_byte\": 255, \"field7_u16\": 4, \"field9_byte\": 2, \"x\": 10, \"y\": 650}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x0b",
+      "count": 36,
+      "observed_lengths": "7字节×36",
+      "role_guess": "演员状态/显隐切换候选",
+      "examples": [
+        {
+          "scene_file": "1-6-1.sc",
+          "cmd_index": 12,
+          "offset_hex": "0x159",
+          "opcode_hex": "0x0b",
+          "opcode_dec": 11,
+          "length": 7,
+          "role_guess": "演员状态/显隐切换候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 231,
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0b 00 e7 00 06 ff 01",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 231, \"field3_u16\": 6, \"flag5\": 255, \"flag6\": 1}"
+        },
+        {
+          "scene_file": "1-6-3.sc",
+          "cmd_index": 10,
+          "offset_hex": "0x195",
+          "opcode_hex": "0x0b",
+          "opcode_dec": 11,
+          "length": 7,
+          "role_guess": "演员状态/显隐切换候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 285,
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0b 01 1d 00 05 ff 01",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 285, \"field3_u16\": 5, \"flag5\": 255, \"flag6\": 1}"
+        },
+        {
+          "scene_file": "1-6-3.sc",
+          "cmd_index": 11,
+          "offset_hex": "0x19c",
+          "opcode_hex": "0x0b",
+          "opcode_dec": 11,
+          "length": 7,
+          "role_guess": "演员状态/显隐切换候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 300,
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0b 01 2c 00 09 ff 01",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 300, \"field3_u16\": 9, \"flag5\": 255, \"flag6\": 1}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x0c",
+      "count": 44,
+      "observed_lengths": "18字节×44",
+      "role_guess": "批量路径/镜头演出候选",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 3,
+          "offset_hex": "0x31",
+          "opcode_hex": "0x0c",
+          "opcode_dec": 12,
+          "length": 18,
+          "role_guess": "批量路径/镜头演出候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 2,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 600,
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0c 00 02 00 00 02 58 00 35 11 10 00 01 02 ca 01 28 00",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 2, \"duration\": 600, \"field11_byte\": 0, \"field12_u16\": 258, \"field14_u16\": 51713, \"field16_u16\": 10240, \"field7_u16\": 53, \"field9_u16\": 4368}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 4,
+          "offset_hex": "0x43",
+          "opcode_hex": "0x0c",
+          "opcode_dec": 12,
+          "length": 18,
+          "role_guess": "批量路径/镜头演出候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 2,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 600,
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0c 00 02 00 00 02 58 00 02 10 b8 00 01 02 25 00 f0 00",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 2, \"duration\": 600, \"field11_byte\": 0, \"field12_u16\": 258, \"field14_u16\": 9472, \"field16_u16\": 61440, \"field7_u16\": 2, \"field9_u16\": 4280}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 5,
+          "offset_hex": "0x55",
+          "opcode_hex": "0x0c",
+          "opcode_dec": 12,
+          "length": 18,
+          "role_guess": "批量路径/镜头演出候选",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": 2,
+          "resource_or_portrait_id": "",
+          "duration_or_count": 600,
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0c 00 02 00 00 02 58 00 03 10 bc 00 01 01 9b 00 cc 00",
+          "decoded_fields_json": "{\"actor_or_cmd_id\": 2, \"duration\": 600, \"field11_byte\": 0, \"field12_u16\": 257, \"field14_u16\": 39680, \"field16_u16\": 52224, \"field7_u16\": 3, \"field9_u16\": 4284}"
+        }
+      ]
+    },
+    {
+      "opcode_hex": "0x0d",
+      "count": 135,
+      "observed_lengths": "5字节×134, 28字节×1",
+      "role_guess": "延迟/镜头段落分隔；1例长镜头参数",
+      "examples": [
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 0,
+          "offset_hex": "0xc",
+          "opcode_hex": "0x0d",
+          "opcode_dec": 13,
+          "length": 5,
+          "role_guess": "延迟/镜头段落分隔；1例长镜头参数",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0d 00 00 00 0a",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 00 00 0a\", \"variant_len\": 5}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 26,
+          "offset_hex": "0x217",
+          "opcode_hex": "0x0d",
+          "opcode_dec": 13,
+          "length": 5,
+          "role_guess": "延迟/镜头段落分隔；1例长镜头参数",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0d 00 a8 00 14",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 a8 00 14\", \"variant_len\": 5}"
+        },
+        {
+          "scene_file": "1-1-1.sc",
+          "cmd_index": 28,
+          "offset_hex": "0x233",
+          "opcode_hex": "0x0d",
+          "opcode_dec": 13,
+          "length": 5,
+          "role_guess": "延迟/镜头段落分隔；1例长镜头参数",
+          "text": "",
+          "name": "",
+          "actor_or_cmd_id": "",
+          "resource_or_portrait_id": "",
+          "duration_or_count": "",
+          "x": "",
+          "y": "",
+          "raw_hex_prefix": "0d 00 bd 00 14",
+          "decoded_fields_json": "{\"raw_after_opcode\": \"00 bd 00 14\", \"variant_len\": 5}"
+        }
+      ]
+    }
+  ]
+}

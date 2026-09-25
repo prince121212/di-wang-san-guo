@@ -1,0 +1,7 @@
+﻿protocol,opcode_hex,method,order,field,io,evidence,meaning,confidence
+reqFightingCity,0x1012,LscriptPages/game/s0;->Z()V,1,visible_city_count,writeByte,"s0.Z 000da8-000db4; 000da6 const/4 v3,0",实际发送的城市/目标数量 byte。APK 1.66 静态字节码在写入前将计数寄存器清零，因此实际请求通常为 count=0；前面的视野内城市计数逻辑疑似遗留/被禁用。,中高
+reqFightingCity,0x1012,LscriptPages/game/s0;->Z()V,2.1,city_id[i],writeLong,s0.Z 000dba-000dda; conditional if count>0,仅当 count>0 时循环写入：缓存城市/战斗目标 ID，来源 s0.r[i]。当前静态路径因 count 被清 0，疑似不可达或备用 delta 格式。,中
+reqFightingCity,0x1012,LscriptPages/game/s0;->Z()V,2.2,city_name_or_label[i],writeUTF,s0.Z 000de0-000de8; source s0.z[i],仅当 count>0 时写入：目标文本字段，来源 s0.z[i]。,中
+reqFightingCity,0x1012,LscriptPages/game/s0;->Z()V,2.3,city_metric_D1[i],writeInt,s0.Z 000dee-000dfa; source s0.D[i][1],仅当 count>0 时写入：目标缓存 D 数组第 2 个 int；响应中 D 为 int[3]，语义待 UI 命名。,中
+reqFightingCity,0x1012,LscriptPages/game/s0;->Z()V,2.4,city_metric_E1[i],writeShort,s0.Z 000e00-000e0c; source s0.E[i][1],仅当 count>0 时写入：目标缓存 E 数组第 2 个 short；响应中 E 为 short[2]，语义待 UI 命名。,中
+reqFightingCity,0x1012,LscriptPages/game/s0;->Z()V,send,opcode,g.y,s0.Z 000e18-000e1c,发送请求名 reqFightingCity，opcode 十进制 4114 / 十六进制 0x1012。,高

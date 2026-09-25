@@ -1,0 +1,15 @@
+{
+  "topic": "玉石消耗响应与背包同步第一版",
+  "core_findings": [
+    "玉石是 item_id=399 道具，data.g.H/resource_id=-14 是账号积分",
+    "帅府帅位解锁响应明确同步黄金和 data.g.f 道具列表",
+    "装备炼魂与科技取消成功会调用 Lo/a.V5 复合同步块",
+    "科技升级响应本身只见 data.g.m0 科技状态同步",
+    "六部升级只有部分部门分支调用 Lo/a.V5，payment_mode 仍需动态确认"
+  ],
+  "artifacts": [
+    "jade_response_sync_report.md",
+    "jade_response_sync_mapping.csv",
+    "method_disasm/"
+  ]
+}

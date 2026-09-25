@@ -1,0 +1,49 @@
+{
+  "date": "2026-07-05",
+  "topic": "账号积分与玉石入口深追第一版",
+  "account_points": {
+    "field": "data.g.H",
+    "resource_id": -14,
+    "final_name": "账号积分",
+    "confirmed_sync": [
+      "data.i.b",
+      "m0.u",
+      "a0.c2"
+    ],
+    "candidate_source_or_award": [
+      "Lo/a.w5 consumptionExpend_awardList wraps rewards as resource_id=-14"
+    ],
+    "direct_spend_status": "未发现独立的账号积分专用消耗请求；更多是通用负数资源/奖励体系消费或展示。"
+  },
+  "jade": {
+    "item_id": 399,
+    "final_name": "玉石",
+    "model": "inventory item, not data.g.H",
+    "confirmed_sources": [
+      "package items 442/445/739/740/741/742 include 玉石 rewards"
+    ],
+    "candidate_spend_entries": [
+      "techResearch 0x123F",
+      "ReqInternalLevelUp 0x6302",
+      "REQ_GENERAL_EQUIP_LIANHUN 0x6280",
+      "REQ_SHUAIFU_ADD_SHUAI_MAX 0x6406",
+      "文官刷新/恢复健康候选",
+      "战法残页玉石兑换候选"
+    ]
+  },
+  "generated_files": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_deep_report.md",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_entry_mapping.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_summary.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_candidate_methods.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_candidate_methods.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_disasm_summary.json",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/account_points_jade_deep/method_disasm"
+  ],
+  "remaining_unknowns": [
+    "六部/部门升级 payment_mode 1/2 与玉石/黄金的精确映射需动态样本确认。",
+    "科技升级 W1 请求中后几个 byte 的业务名需结合响应和 UI 状态继续命名。",
+    "文官刷新/恢复健康、战法残页兑换的最终发送入口仍待状态机深追。",
+    "玉石扣减后的背包同步字段需要结合实际响应样本确认。"
+  ]
+}

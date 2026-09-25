@@ -1,0 +1,19 @@
+﻿method_or_methods,code_off,kind,role,confidence
+Lo/a;->g3(I)I,0x222c00,template lookup,在 `Lo/a.In` 中线性查 template_id，返回 index，找不到返回 -1。,high
+Lo/a;->S4(I)I,0x223984,template -> stat type,`idx=g3(template_id)` 后返回 `Lo/a.Nn[idx]`。,high
+Lo/a;->z1(I)I,0x2221f0,template -> base stat,`idx=g3(template_id)` 后返回 `Lo/a.Ln[idx]`。,high
+Lo/a;->l3(I)I,0x222ce8,stat type lookup,在 `Lo/a.Wn` 中线性查 type_id，返回 index，找不到返回 -1。,high
+Lo/a;->y2(I)[S,0x22e72c,stat type -> strengthen coeffs,`idx=l3(type_id)` 后返回 `Lo/a.Zn[idx]`。,high
+Lo/a;->w2(II)String,,format stat text,`type_id -> l3 -> Yn -> Qn/Rn/Sn`，把文案模板中的 `#` 替换成 value。,high
+LscriptPages/data/d;->D(J)String / o(I)String,,name accessor,实例 id 或模板 id -> `Lo/a.Mn[g3(template_id)]`。,high
+LscriptPages/data/d;->w(J)I / l(I)I,0x262244,icon accessor,实例 id 或模板 id -> `Lo/a.Pn[g3(template_id)]`。,high
+LscriptPages/data/d;->z(J)I / n(I)I,0x2622ec,level accessor,实例 id 或模板 id -> `Lo/a.Kn[g3(template_id)]`。,high
+LscriptPages/data/d;->F(J)I,0x2623c8,stat type accessor,实例 id -> `Lo/a.Nn[g3(template_id)]`。,high
+LscriptPages/data/d;->E(J)I,0x26233c,strengthen contribution,`strengthen_value=f[][1]` * `Lo/a.Zn[type][quality]`，quality 越界钳到最后一档。,high
+LscriptPages/data/d;->j(J)I,0x262034,total stat value,`Lo/a.Ln[g3(template_id)] + strengthen_value * Zn[type][quality]`。,high
+LscriptPages/data/d;->i(J)String,,formatted total stat text,"把 `j(J)` 结果送入 `Lo/a.w2(type_id,total)`。",high
+LscriptPages/data/d;->k(J)[S,0x2629c4,strengthen material,"返回 `[ao[type][quality][0], max(1, ao[type][quality][1]*(strengthen_value+1)/100)]`。",high
+LscriptPages/data/d;->B(J)[S,0x262a88,online material/effect tuple,返回 `bo[type][quality]` 的二元组；type 来自 S4/l3，quality 越界钳到最后一档。,medium
+LscriptPages/data/d;->x(J)I,0x262290,special effect resource,用实例 template_id 在 `Lo/a.Un` 中查找，返回 `Lo/a.Vn`；找不到返回 -1。,high
+"LscriptPages/data/g;->b2(J,J)V",,online config request gate,"若 `Lo/a.bo == null`，发送 `Lo/a.d0(0x627f,[0])` 并显示“联网数据载入中”。",high
+LscriptPages/data/g;->s4(String)V,,online config response parser,`0xe27f -> s4`；写入 `Lo/a.bo` 与 data.g.v8/w8/x8/B8/C8/D8/y8/z8/A8。,high

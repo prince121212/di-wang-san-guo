@@ -1,0 +1,6 @@
+﻿field,accessor,type,proposed_name,evidence,confidence
+Lo/a.io,Lo/a.Q2(II),short,growth_value,"培养成功/批量培养成功提示追加 Q2(0, idx)；将领详情也以“成长值”标签显示 Q2。",high
+Lo/a.To,(direct read in gameHD/h.f and gameHD/g.k),short,cultivation_guarantee_count_current,在“保底次数:”标签下作为第一个数值读取；培养失败分支仍 a6 同步，符合失败增加保底次数。,medium-high
+Lo/a.Uo,Lo/a.G3(II),short,cultivation_growth_full_or_cap_flag,"在“保底次数:”标签下与 To 配对显示；发送 0x1275 前若 G3(0,idx)!=0，客户端直接提示“将领成长值已满”并不发请求。",medium
+Lo/a.So,Lo/a.V2(II),byte,general_name_color_or_growth_tier,V2 仅用于索引 gameHD/h.Q、gameHD/g.T1 等颜色数组并给将领名称着色；与成长页相邻同步，但未见客户端用它参与公式。,medium-high
+Lo/a.bv/cv,Lo/a.p1(J),item stack,item_count_by_item_id,培养页用 p1(286) 显示“将神魂”库存；p1 遍历 bv id 并累加 cv 数量。,high

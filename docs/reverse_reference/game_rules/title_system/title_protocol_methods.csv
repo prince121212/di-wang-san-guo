@@ -1,0 +1,13 @@
+﻿direction,opcode_dec,opcode_hex,method,logical_name,io_sequence,evidence,meaning
+request,4480,0x1180,"LscriptPages/game/i0;->o(B,J,String)",reqAchievementList,writeByte(type); writeByte(hasName); writeLong(roleOrTargetId); writeUTF(nameOrEmpty),method_disasm_all_i0/i0__o__0x3b66f8.smali.txt,请求成就列表；String 参数为空时写 hasName=0，否则写 hasName=1+名称
+request,4484,0x1184,"LscriptPages/game/i0;->n(B,J,S)",reqAchievementCont,writeByte(type); writeLong(achievementId); writeShort(indexOrPage),method_disasm_all_i0/i0__n__0x3b66b0.smali.txt,请求/领取成就内容或奖励候选
+request,4486,0x1186,"LscriptPages/game/i0;->r(J,String)",reqNicknameList,writeByte(hasName); writeLong(roleOrTargetId); writeUTF(nameOrEmpty),method_disasm_all_i0/i0__r__0x3b67c8.smali.txt,请求称号列表/他人称号列表
+request,4488,0x1188,LscriptPages/game/i0;->p(J),activationNickname,"helper Lk/a;->r(..., titleId, ..., 4488)",method_disasm_all_i0/i0__p__0x3b6758.smali.txt,激活称号
+request,4490,0x118a,LscriptPages/game/i0;->q([J),reqActivationUseGold,writeByte(count); repeat writeLong(titleId),method_disasm_all_i0/i0__q__0x3b6780.smali.txt,用黄金立即激活或全部冷却称号
+response,,,LscriptPages/game/i0;->s(String),parseSimpleTitleOrAchievementList,"readByte(count); repeat readLong(id), readByte(type/status), readUTF(name)",method_disasm_all_i0/i0__s__0x3b6820.smali.txt,简单列表解析
+response,,,LscriptPages/game/i0;->t(String),parseHideStateResult,readByte(status); readUTF(message); readBoolean(hiddenOrShown),method_disasm_all_i0/i0__t__0x3b689c.smali.txt,成就/称号隐藏展示状态结果
+response,,,LscriptPages/game/i0;->u(String),parseAchievementOrTitleDetail,"readByte(mode); readLong(id); readByte(group); then detail fields: byte,long,long,UTF,UTF,long,UTF,UTF...",method_disasm_all_i0/i0__u__0x3b68e0.smali.txt,成就/称号详情更新，包含名称、描述、进度、奖励/效果文本等候选字段
+response,,,LscriptPages/game/i0;->v(String),parseOwnedTitleList,多数组结构；读取称号ID、状态、名称、效果、冷却等字段,method_disasm_all_i0/i0__v__0x3b6cac.smali.txt,称号列表/拥有称号列表解析
+response,,,LscriptPages/game/i0;->w(String),parseActivationCooldownResult,"readByte(status); readUTF(message); status=-2 时 readByte(count); repeat readLong(id), readUTF(name), readLong(cooldown), readLong(goldCost)",method_disasm_all_i0/i0__w__0x3b7110.smali.txt,激活/冷却结果；可弹出“立即激活/返回/冷却全部”
+response,,,LscriptPages/game/i0;->y(String),parseTitleNameList,"readByte(count); repeat readLong(id), readByte(type/status), readUTF(name), readShort(flag)",method_disasm_all_i0/i0__y__0x3b7584.smali.txt,称号名列表/新达成列表候选
+response,,,LscriptPages/game/i0;->z(String),parseAchievementListDetail,"readBoolean(isMine); readShort(page/type); readLong(selectedId); readUTF(title); readShort(count); repeat long,byte,UTF,UTF,UTF,UTF,boolean,long,byte",method_disasm_all_i0/i0__z__0x3b7660.smali.txt,成就列表/详情配置，含多个描述字段、完成状态与进度

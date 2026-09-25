@@ -1,0 +1,12 @@
+﻿command_type,role,baseio_reads_in_range
+1,进入行军区/创建战场部队,00005a:readLong | 000062:readByte | 00006a:readUTF | 000080:readShort | 000088:readShort | 00009e:readByte | 0000a6:readInt | 0000ae:readBoolean | 0000b4:readInt | 0000bc:readShort | 0000d6:readShort
+2,加入布阵区/预备区候选,00041a:readLong | 000422:readByte | 00042a:readByte | 000430:readByte
+3,加入到战斗区,000576:readLong | 00057e:readByte | 000586:readByte | 00058e:readByte
+4,暂停行军区内行军,0006dc:readByte
+5,离开战斗,0007ac:readLong | 0007b4:readByte
+6,普通攻击指令,0008e8:readByte | 0008fe:readLong | 00090a:readShort | 00091c:readByte | 000936:readLong | 000942:readShort | 00094e:readInt | 000976:readInt
+7,战斗结束,000c0e:readByte
+8,使行军区内的部队继续行走,000c2c:readByte
+9,移动到战斗区指定位置,000ca4:readLong | 000cac:readByte | 000cb4:readByte | 000cbc:readByte
+10,战场文本/提示,000f06:readShort
+11,战法/技能攻击指令,000fc6:readByte | 000fe0:readLong | 000fe8:readShort | 000ff0:readShort | 00100a:readByte | 00102c:readLong | 001034:readShort | 00103c:readShort | 001044:readInt | 00104c:readInt

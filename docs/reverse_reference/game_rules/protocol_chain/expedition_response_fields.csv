@@ -1,0 +1,17 @@
+flow,method,offset,order,field,io,type,condition,meaning,evidence,server_rebuild_note
+expedition response,LscriptPages/game/p;->Q(String),0x307cc8,1,result_code,readByte,byte,always,0 表示成功；-38/-40/-35/-32 有专门 UI 分支,p.Q 000000-000006,失败时后接 message 并走错误提示
+expedition response,LscriptPages/game/p;->Q(String),0x307cc8,2,message,readUTF,String,always,错误/提示文本,p.Q 000008-00000e,失败码 -32 直接显示 message
+expedition response,LscriptPages/game/p;->Q(String),0x307cc8,3,fight_or_expedition_id,readLong,long,result_code == 0,新建出征/战斗 ID，缓存到 p.n0,p.Q 00001a-000022,客户端后续可能用它进入战斗/回放
+expedition response,LscriptPages/game/p;->Q(String),0x307cc8,4,expedition_state_snapshot,scriptPages/data/a.B(stream),compound,result_code == 0,完整地图/出征/封地状态同步块,p.Q 000026; data/a.B 0x25fab8,必须按 a.B 顺序返回，否则客户端读流错位
+state snapshot header,LscriptPages/data/a;->B(String),0x25fab8,1,coord_pair_count,readShort,short,snapshot start,二维 short[coord_pair_count][2] 记录数量,a.B 000008-00005e,疑似地图/坐标索引缓存
+state snapshot header,LscriptPages/data/a;->B(String),0x25fab8,2,coord_pair[],readByte + readShort,"byte,short",repeat coord_pair_count,每项两个 short 位；第一个由 byte 转 short，第二个 readShort,a.B 000040-00005e,暂保留原结构
+state snapshot sections,LscriptPages/data/a;->B(String),0x25fab8,3,section_count,readByte,byte,after coord block,后续 tag 分段数量,a.B 000068-00009c,tag=1/2/3 三类块
+state snapshot tag=1,LscriptPages/data/a;->B(String),0x25fab8,4,friendly_or_owned_expedition_count,readShort,short,section tag == 1,我方/己方出征队列数量候选；填充 g/h/i/j/k/l/m/n/o/p/q,a.B 000128-0002c4,含出征 ID、武将列表、目标坐标、状态、结束时间、目标 ID 等
+state snapshot tag=1,LscriptPages/data/a;->B(String),0x25fab8,5,owned_expedition_record,"readLong; readByte; repeat(readLong,readByte); readLong; readByte; readUTF; readShort; readShort; readByte(bit split); readInt; readLong",compound,repeat owned count,出征记录：id、成员数/成员ID+类型、目标id/类型/名、坐标、行动/状态位、剩余秒、关联 long,a.B 0001ba-0002c4,readInt 会加当前时间形成到达/结束时间 o[]
+state snapshot tag=2,LscriptPages/data/a;->B(String),0x25fab8,6,map_target_list,readShort then records,compound,section tag == 2,"地图目标/点位列表候选；填充 d[1]/e[1]/f[0] 并调用 C(0,stream)",a.B 00031c-00041c,包含名称、网格宽高/索引、target_id、坐标/区域短整型数组
+state snapshot tag=3,LscriptPages/data/a;->B(String),0x25fab8,7,enemy_or_other_expedition_count,readShort then records,compound,section tag == 3,敌方/其他出征队列候选；填充 D/E/F/G/H/I/J/K,a.B 000422-0005e0,结构与 tag=1 类似，但少 bit-split 字段，结束时间 K=currentTime-readLong
+state snapshot tail,LscriptPages/data/a;->B(String),0x25fab8,8,owned_extra_status,"a(stream): readShort; repeat(readLong,readByte)",compound,after sections,按出征 id 更新 r[] 状态位,a.a 0x25f9fc,用于补充队列状态
+state snapshot tail,LscriptPages/data/a;->B(String),0x25fab8,9,other_extra_status,"b(stream): readShort; repeat(readLong,readByte)",compound,after owned_extra_status,按另一类出征 id 更新 L[] 状态位,a.b 0x25fa5c,用于补充队列状态
+state snapshot tail,LscriptPages/data/a;->B(String),0x25fab8,10,fief_or_player_state_block,Lo/a.f6(0); Lo/a.f6(1); Lo/a.S5(stream),compound,snapshot tail,封地/资源/全局状态继续同步,a.B 000600-00060c,服务端重建必须接续已有封地同步格式
+fight report detail,LscriptPages/game/h0;->a0(String),0x3b05ac,1,report_parse_fields,readByte/readLong/readUTF/...,compound,reqCheckMsg response,战报详情；含双方信息、战利品、胜负文案、删除/返回按钮,h0.a0 contains di_战利品/我军胜利!/battle,用于展示，动态样本证明不发放奖励
+fight info response,LscriptPages/game/s;->Y/Z(String),0x3380fc/0x338bd8,1,battle_init_and_instruction_stream,mixed reads,compound,REQ_FIGHTINFO response,战场初始化 + 指令流；Z 中存在进入行军区/战斗区/攻击/结束等指令分支,s.Z strings 战场：攻击指令溢出 / 战场：战斗结束,客户端主要回放服务端下发指令，不在客户端完整计算战斗结果

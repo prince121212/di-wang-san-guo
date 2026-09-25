@@ -1,0 +1,394 @@
+{
+  "generated_at": "2026-07-05T06:53:56",
+  "paths": [
+    {
+      "component": "data.g->F3()",
+      "role": "读取 KING_BATTLE_SIMULATOR3.0 RMS",
+      "evidence": "F3 000064-000094 openRms/getRecord/openDis; 00009a-00023a 解析整数数组",
+      "formula_signal": "无伤害公式；只读 boolean/int/int[] 并填 m7..x7 缓存"
+    },
+    {
+      "component": "data.g->L4()",
+      "role": "战斗模拟器交互/保存/开始入口",
+      "evidence": "L4 00003e/0000ac/00088e/000ab0/000b8a 输入默认/单项上场兵数；000cb6-000e8c 保存 RMS",
+      "formula_signal": "主要是 UI 输入、阵容保存、开始战斗按钮处理"
+    },
+    {
+      "component": "data.g->G()",
+      "role": "模拟器配置界面绘制",
+      "evidence": "G 00039a/0007ae 战法；00095a/000a44 称号；000aa0 保存阵容；000b50 选择阵容；000c7c 开始战斗；000eea 默认上场兵数",
+      "formula_signal": "配置/展示界面"
+    },
+    {
+      "component": "gameHD/f->r()",
+      "role": "HD 模拟器布局/士兵类型配置",
+      "evidence": "f->r 00026c 士兵类型配置；0002de 默认上场兵数；设置 P6/N6 等点击区域",
+      "formula_signal": "布局/选择控件，不含战斗公式"
+    },
+    {
+      "component": "gameHD/f->k()/b()",
+      "role": "HD 标题/绘制 “战斗模拟器”",
+      "evidence": "f->k 000e80 计算标题区域；f->b 00121e 绘制 “战斗模拟器”",
+      "formula_signal": "UI 绘制"
+    }
+  ],
+  "rms_format": [
+    {
+      "order": 0,
+      "field": "slot_count",
+      "writer": "L4 000d26 writeInt(array_length(o7))",
+      "reader": "F3 00009a readInt()",
+      "meaning": "阵容槽数量；F3 初始化为 20 槽",
+      "calc_evidence": "非公式，仅 RMS 记录数"
+    },
+    {
+      "order": 1,
+      "field": "slot_present",
+      "writer": "L4 000d9c writeBoolean(v3!=null)",
+      "reader": "F3 0000a8 readBoolean()",
+      "meaning": "当前槽是否有保存的阵容",
+      "calc_evidence": "非公式，仅是否存在"
+    },
+    {
+      "order": 2,
+      "field": "m7 <= c6",
+      "writer": "L4 000da6 writeInt(c6)",
+      "reader": "F3 0000b4 readInt -> m7[slot]",
+      "meaning": "第一组配置标量，疑似进攻方/当前选择类型",
+      "calc_evidence": "保存/载入 UI 配置，不见伤害运算"
+    },
+    {
+      "order": 3,
+      "field": "n7/o7/p7/q7 <= d6/e6/f6/g6",
+      "writer": "L4 000dac-000de8 length + four int arrays",
+      "reader": "F3 0000bc-00010e length + four int arrays",
+      "meaning": "第一组四列数组，疑似一方士兵类型/兵种/数量/附加配置",
+      "calc_evidence": "逐项写入整数配置，无乘除公式"
+    },
+    {
+      "order": 4,
+      "field": "r7 <= h6",
+      "writer": "L4 000dea-000e08 int array",
+      "reader": "F3 000110-000132 int array",
+      "meaning": "第一组附加数组，可能为战法/称号/阵容附加项",
+      "calc_evidence": "配置保存"
+    },
+    {
+      "order": 5,
+      "field": "s7 <= i6",
+      "writer": "L4 000e0a writeInt(i6)",
+      "reader": "F3 000134 readInt -> s7[slot]",
+      "meaning": "第二组配置标量，疑似防守方/另一方选择类型",
+      "calc_evidence": "配置保存"
+    },
+    {
+      "order": 6,
+      "field": "t7/u7/v7/w7 <= j6/k6/l6/m6",
+      "writer": "L4 000e10-000e4c length + four int arrays",
+      "reader": "F3 00013c-00018e length + four int arrays",
+      "meaning": "第二组四列数组，疑似另一方士兵类型/兵种/数量/附加配置",
+      "calc_evidence": "逐项写入整数配置，无伤害运算"
+    },
+    {
+      "order": 7,
+      "field": "x7 <= n6",
+      "writer": "L4 000e4e-000e6c int array",
+      "reader": "F3 000190-0001b6 int array",
+      "meaning": "第二组附加数组",
+      "calc_evidence": "配置保存"
+    },
+    {
+      "order": 8,
+      "field": "RMS record #1",
+      "writer": "L4 000e76-000e8c dos2DataArray + setRecord(1)",
+      "reader": "F3 000074-000094 openRms/getRecord(1)/openDis",
+      "meaning": "KING_BATTLE_SIMULATOR3.0 只有本地 RMS 第 1 条记录读写证据",
+      "calc_evidence": "本地持久化，不是网络/战斗结算"
+    }
+  ],
+  "stats": {
+    "F3_load": {
+      "file": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/battle_dex/method_disasm/scriptPages_data_g__F3__0x285dd0.smali.txt",
+      "strings": [
+        "KING_BATTLE_SIMULATOR3.0"
+      ],
+      "baseio_reads": [
+        "readInt",
+        "readBoolean",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt",
+        "readInt"
+      ],
+      "baseio_ops": [
+        "isRmsExist",
+        "openRms",
+        "isRecordExist",
+        "getRecord",
+        "openDis",
+        "closeDis",
+        "closeRms"
+      ],
+      "arith_count": 5,
+      "arith_sample": [
+        "00010a: add-int/lit8           v11, v11, 1",
+        "00012e: add-int/lit8           v12, v12, 1",
+        "00018a: add-int/lit8           v0, v0, 1",
+        "0001b2: add-int/lit8           v2, v2, 1",
+        "00022a: add-int/lit8           v4, v4, 1"
+      ],
+      "invoke_count": 25
+    },
+    "L4_ui_save_start": {
+      "file": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/battle_dex/method_disasm/scriptPages_data_g__L4__0x267264.smali.txt",
+      "strings": [
+        "",
+        "INPUT_DEFAULT_SOLDIER_NUM_SET",
+        "INPUT_SOLDIER_NUM_SET",
+        "INPUT_DEFAULT_SOLDIER_NUM_SET",
+        "默认上场兵数",
+        "INPUT_SOLDIER_NUM_SET",
+        "设置上场兵数",
+        "INPUT_SOLDIER_NUM_SET",
+        "设置上场兵数",
+        "KING_BATTLE_SIMULATOR3.0",
+        "保存成功",
+        "di_联网超时"
+      ],
+      "baseio_reads": [],
+      "baseio_ops": [
+        "openDos",
+        "writeInt",
+        "writeBoolean",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "writeInt",
+        "dos2DataArray",
+        "closeDos",
+        "openRms",
+        "setRecord",
+        "closeRms"
+      ],
+      "arith_count": 69,
+      "arith_sample": [
+        "00007e: sub-int/2addr          v0, v3",
+        "0000e4: sub-int/2addr          v9, v3",
+        "00028a: add-int/2addr          v9, v14",
+        "00028c: div-int/lit8           v14, v3, 2",
+        "000290: sub-int/2addr          v9, v14",
+        "000296: div-int/lit8           v15, v0, 2",
+        "00029a: sub-int/2addr          v2, v15",
+        "0002b4: add-int/2addr          v2, v4",
+        "0002b6: sub-int/2addr          v2, v14",
+        "0002bc: sub-int/2addr          v1, v15",
+        "000322: add-int/2addr          v4, v9",
+        "000324: div-int/lit8           v9, v3, 2",
+        "000328: sub-int/2addr          v4, v9",
+        "00032e: div-int/lit8           v11, v0, 2",
+        "000332: sub-int/2addr          v2, v11",
+        "00034c: add-int/2addr          v2, v4",
+        "00034e: sub-int/2addr          v2, v9",
+        "000354: sub-int/2addr          v1, v11",
+        "0003f0: add-int/lit8           v0, v0, 1",
+        "000416: sub-int/2addr          v3, v7"
+      ],
+      "invoke_count": 108
+    },
+    "G_draw": {
+      "file": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/battle_dex/method_disasm/scriptPages_data_g__G__0x2745d0.smali.txt",
+      "strings": [
+        "车",
+        "骑",
+        "弓",
+        "步",
+        "",
+        "士兵",
+        "战法",
+        "士兵",
+        "战法",
+        "称号",
+        "称号",
+        "保存阵容",
+        "阵容<",
+        ">",
+        "选择阵容",
+        "清空阵容",
+        "返回",
+        "开始战斗",
+        "默认上场兵数：",
+        "士兵类型配置",
+        "士兵数量配置",
+        "载入战法列表中...",
+        "：",
+        "（",
+        "）",
+        "（",
+        "）",
+        "【进攻方】",
+        "【防守方】"
+      ],
+      "baseio_reads": [],
+      "baseio_ops": [],
+      "arith_count": 160,
+      "arith_sample": [
+        "00005a: add-int/lit8           v10, v1, -4",
+        "0000f4: add-int/lit8           v7, v3, 5",
+        "0000fc: add-int/lit8           v11, v2, 4",
+        "00010c: add-int/lit8           v0, v11, 48",
+        "000110: sub-int                v1, v0, v9",
+        "0001e6: add-int/lit8           v3, v7, 5",
+        "0001ea: add-int/lit8           v4, v15, 4",
+        "00024c: add-int/lit8           v4, v15, 4",
+        "000264: add-int/lit8           v5, v10, 0",
+        "000306: add-int/lit8           v5, v5, 1",
+        "000346: add-int/lit8           v5, v1, -2",
+        "00034a: add-int/lit8           v0, v0, 4",
+        "000390: add-int/lit8           v3, v15, 4",
+        "000444: add-int                v4, v15, v30",
+        "000448: sub-int/2addr          v4, v9",
+        "00044a: sub-int/2addr          v4, v0",
+        "000454: add-int/lit8           v7, v3, 1",
+        "0004fa: add-int/lit8           v2, v6, 5",
+        "000502: add-int/lit8           v6, v5, 4",
+        "000512: add-int/lit8           v0, v6, 48"
+      ],
+      "invoke_count": 232
+    },
+    "HD_f_r_layout": {
+      "file": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/battle_dex/method_disasm/scriptPages_gameHD_f__r__0x422f70.smali.txt",
+      "strings": [
+        "字字字字",
+        "士兵类型配置",
+        "默认上场兵数：",
+        "（",
+        "）",
+        "【进攻方】"
+      ],
+      "baseio_reads": [],
+      "baseio_ops": [],
+      "arith_count": 117,
+      "arith_sample": [
+        "00005c: sub-int/2addr          v2, v6",
+        "00005e: div-int/2addr          v2, v5",
+        "000060: sub-int/2addr          v4, v8",
+        "000062: div-int/2addr          v4, v5",
+        "00008a: add-int/2addr          v8, v4",
+        "00008c: sub-int/2addr          v8, v10",
+        "0000ca: add-int/lit8           v17, v11, 10",
+        "0000d2: add-int/lit8           v17, v8, 10",
+        "0000d6: mul-int/lit8           v18, v12, 50",
+        "0000da: add-int                v18, v18, v17",
+        "0000f0: add-int/lit8           v12, v12, 1",
+        "00013c: add-int/lit8           v10, v10, 1",
+        "000140: add-int/lit8           v13, v13, 1",
+        "000146: add-int/lit8           v7, v7, 1",
+        "000150: add-int/lit8           v3, v11, 120",
+        "000154: add-int/lit8           v3, v3, 20",
+        "000158: add-int/lit8           v5, v8, 10",
+        "00015c: sub-int                v7, v3, v11",
+        "000160: sub-int                v7, v6, v7",
+        "000164: add-int/lit8           v7, v7, -10"
+      ],
+      "invoke_count": 27
+    },
+    "HD_f_k_layout": {
+      "file": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/battle_dex/method_disasm/scriptPages_gameHD_f__k__0x426140.smali.txt",
+      "strings": [
+        "coco",
+        "wxmini",
+        "战斗模拟器"
+      ],
+      "baseio_reads": [],
+      "baseio_ops": [],
+      "arith_count": 143,
+      "arith_sample": [
+        "00002e: sub-int/2addr          v1, v4",
+        "000030: sub-int/2addr          v1, v0",
+        "000032: sub-int/2addr          v1, v0",
+        "00003c: sub-int/2addr          v1, v4",
+        "000046: sub-int/2addr          v1, v4",
+        "000068: sub-int/2addr          v4, v5",
+        "00006a: add-int/lit8           v4, v4, -20",
+        "00006e: add-int/2addr          v1, v4",
+        "000088: add-int/2addr          v6, v1",
+        "0000ca: sub-int/2addr          v5, v9",
+        "0000cc: mul-int/lit8           v0, v0, 3",
+        "0000d0: sub-int/2addr          v5, v0",
+        "0000e4: add-int/2addr          v9, v5",
+        "000132: add-int/2addr          v9, v5",
+        "000180: add-int/2addr          v1, v0",
+        "0001b0: add-int/lit8           v1, v1, -65",
+        "0001bc: add-int/2addr          v0, v5",
+        "0001d6: add-int/lit8           v11, v1, 0",
+        "0001e6: add-int/lit8           v11, v0, 0",
+        "00021a: xor-int/2addr          v7, v6"
+      ],
+      "invoke_count": 167
+    },
+    "HD_f_b_draw": {
+      "file": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/battle_dex/method_disasm/scriptPages_gameHD_f__b__0x424200.smali.txt",
+      "strings": [
+        "",
+        "防沉迷温馨提示",
+        "02000",
+        "..",
+        "分钟",
+        "1",
+        "re_分钟后开战",
+        "战斗模拟器"
+      ],
+      "baseio_reads": [],
+      "baseio_ops": [],
+      "arith_count": 211,
+      "arith_sample": [
+        "000010: add-int/lit8           v2, v0, 1",
+        "000040: add-int/lit8           v2, v2, 1",
+        "00004a: add-int/lit8           v3, v0, 5",
+        "000058: add-int/lit8           v3, v0, -1",
+        "000070: add-int/lit8           v3, v1, 5",
+        "0000ae: add-int/2addr          v3, v10",
+        "0000b0: add-int/lit8           v5, v5, 3",
+        "0000bc: add-int/2addr          v3, v10",
+        "0000be: add-int/lit8           v5, v5, 3",
+        "0000d2: add-int/lit8           v3, v1, 75",
+        "0000d6: add-int/lit8           v4, v0, 25",
+        "0000f6: sub-long/2addr         v13, v11",
+        "00010c: sub-long               v11, v18, v11",
+        "000120: mul-long               v20, v20, v13",
+        "000124: div-long               v5, v20, v11",
+        "00013a: mul-long               v11, v11, v13",
+        "00013e: div-long               v11, v11, v18",
+        "000170: add-int/lit8           v3, v3, 40",
+        "000184: add-int/2addr          v3, v6",
+        "00018c: add-int/lit8           v1, v1, 58"
+      ],
+      "invoke_count": 168
+    }
+  },
+  "conclusion": "local RMS simulator formation/config UI; no closed base damage formula found in inspected methods"
+}

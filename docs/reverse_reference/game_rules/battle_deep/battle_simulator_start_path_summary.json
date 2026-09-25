@@ -1,0 +1,97 @@
+{
+  "generated_at": "2026-07-05T06:59:41",
+  "conclusion": "KING_BATTLE_SIMULATOR3.0 的“开始战斗”并非本地伤害公式入口，而是将当前两方阵容序列化为 ReqChallengeTaskAward 请求，通过 opcode 0x640D/25613 发给服务端；响应返回状态、消息和 fightID，客户端再用 fightID 进入战斗回放。",
+  "request_opcode_dec": 25613,
+  "request_opcode_hex": "0x640D",
+  "request_name": "ReqChallengeTaskAward",
+  "response_handler": "LscriptPages/data/g;->B4(String)V",
+  "request_builder": "LscriptPages/data/g;->Q2()V",
+  "ui_controller": "LscriptPages/data/g;->L4()I",
+  "fields": [
+    {
+      "stage": "UI配置/开始入口",
+      "method": "LscriptPages/data/g;->L4()I",
+      "offset": "000830-00083a",
+      "operation": "点击开始战斗/进入请求状态",
+      "fields": "a6=3; 调用 Q2()",
+      "meaning": "用户在战斗模拟器配置完两方阵容后，触发模拟器战斗请求"
+    },
+    {
+      "stage": "请求构造",
+      "method": "LscriptPages/data/g;->Q2()V",
+      "offset": "000000-000058",
+      "operation": "显示“进入战斗中...”，记录请求时间，清空响应时间",
+      "fields": "b7=curTime; c7=0",
+      "meaning": "进入等待服务器响应状态"
+    },
+    {
+      "stage": "请求构造",
+      "method": "LscriptPages/data/g;->Q2()V",
+      "offset": "000058-00012e",
+      "operation": "BaseIO.openDos(\"ReqChallengeTaskAward\") 后依次写入阵容字段",
+      "fields": "h6,c6,d6,e6,f6,g6,n6,i6,j6,k6,l6,m6",
+      "meaning": "把双方士兵/数量/战法或称号配置序列化到请求体"
+    },
+    {
+      "stage": "发送请求",
+      "method": "LscriptPages/data/g;->Q2()V",
+      "offset": "000130-000134",
+      "operation": "game.g->y(\"ReqChallengeTaskAward\", \"ReqChallengeTaskAward\", 25613)",
+      "fields": "opcode_dec=25613; opcode_hex=0x640D",
+      "meaning": "向服务端提交模拟器/挑战战斗请求；客户端不在本地结算"
+    },
+    {
+      "stage": "响应解析",
+      "method": "LscriptPages/data/g;->B4(String)V",
+      "offset": "000000-000020",
+      "operation": "收到响应时记录 c7=curTime，读取 d7=readByte，e7=readUTF",
+      "fields": "c7,d7,e7",
+      "meaning": "响应头为状态/消息"
+    },
+    {
+      "stage": "响应解析",
+      "method": "LscriptPages/data/g;->B4(String)V",
+      "offset": "000024-000048",
+      "operation": "若 d7!=0，再 readLong 到 f7；fightID=-1 时覆盖错误文案",
+      "fields": "f7=fightID",
+      "meaning": "成功/可进入战斗时返回 fightID；客户端拿 fightID 载入战斗/战报"
+    },
+    {
+      "stage": "等待/跳转",
+      "method": "LscriptPages/data/g;->L4()I",
+      "offset": "000ee6-000f1a",
+      "operation": "若当前时间-b7>20000 且无响应，显示 di_联网超时",
+      "fields": "b7,c7",
+      "meaning": "20 秒超时保护"
+    },
+    {
+      "stage": "等待/跳转",
+      "method": "LscriptPages/data/g;->L4()I",
+      "offset": "000f1c-000f70",
+      "operation": "若 c7>0 且 d7!=0 且 f7>0，调用 game.c->r(fightID,1)，随后展示 e7",
+      "fields": "c7,d7,f7,e7",
+      "meaning": "服务端返回 fightID 后进入服务端生成的战斗回放"
+    },
+    {
+      "stage": "本地阵容选择",
+      "method": "LscriptPages/data/g;->j5()I",
+      "offset": "0000d4-00017a",
+      "operation": "从 m7..x7 阵容槽恢复到 c6..n6 当前配置",
+      "fields": "m7..x7 -> c6..n6; b6=slot",
+      "meaning": "只负责载入保存阵容，不结算战斗"
+    },
+    {
+      "stage": "菜单布局",
+      "method": "LscriptPages/data/g;->p5()V",
+      "offset": "000000-00014e",
+      "operation": "生成可点区域 J6/处理 gameHD.k 下拉项",
+      "fields": "s6,J6",
+      "meaning": "表现层菜单布局，不含战斗公式"
+    }
+  ],
+  "formula_impact": [
+    "客户端只打包阵容参数，不计算基础伤害",
+    "真实胜负/损兵/战报指令流应由服务端按 fightID 生成",
+    "服务端重建时，此接口可作为本地模拟/战斗计算 API 的输入格式参考"
+  ]
+}

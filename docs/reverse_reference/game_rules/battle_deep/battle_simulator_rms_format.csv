@@ -1,0 +1,10 @@
+﻿order,field,writer,reader,meaning,calc_evidence
+0,slot_count,L4 000d26 writeInt(array_length(o7)),F3 00009a readInt(),阵容槽数量；F3 初始化为 20 槽,非公式，仅 RMS 记录数
+1,slot_present,L4 000d9c writeBoolean(v3!=null),F3 0000a8 readBoolean(),当前槽是否有保存的阵容,非公式，仅是否存在
+2,m7 <= c6,L4 000da6 writeInt(c6),F3 0000b4 readInt -> m7[slot],第一组配置标量，疑似进攻方/当前选择类型,保存/载入 UI 配置，不见伤害运算
+3,n7/o7/p7/q7 <= d6/e6/f6/g6,L4 000dac-000de8 length + four int arrays,F3 0000bc-00010e length + four int arrays,第一组四列数组，疑似一方士兵类型/兵种/数量/附加配置,逐项写入整数配置，无乘除公式
+4,r7 <= h6,L4 000dea-000e08 int array,F3 000110-000132 int array,第一组附加数组，可能为战法/称号/阵容附加项,配置保存
+5,s7 <= i6,L4 000e0a writeInt(i6),F3 000134 readInt -> s7[slot],第二组配置标量，疑似防守方/另一方选择类型,配置保存
+6,t7/u7/v7/w7 <= j6/k6/l6/m6,L4 000e10-000e4c length + four int arrays,F3 00013c-00018e length + four int arrays,第二组四列数组，疑似另一方士兵类型/兵种/数量/附加配置,逐项写入整数配置，无伤害运算
+7,x7 <= n6,L4 000e4e-000e6c int array,F3 000190-0001b6 int array,第二组附加数组,配置保存
+8,RMS record #1,L4 000e76-000e8c dos2DataArray + setRecord(1),F3 000074-000094 openRms/getRecord(1)/openDis,KING_BATTLE_SIMULATOR3.0 只有本地 RMS 第 1 条记录读写证据,本地持久化，不是网络/战斗结算

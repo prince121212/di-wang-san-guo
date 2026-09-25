@@ -1,0 +1,86 @@
+{
+  "title": "出征/战斗结算协议第一版",
+  "date": "2026-07-05",
+  "scope": [
+    "正式出征请求/响应",
+    "出征状态快照 a.B",
+    "山贼列表请求",
+    "战报详情 reqCheckMsg",
+    "战斗回放 REQ_FIGHTINFO"
+  ],
+  "confirmed_opcodes": [
+    {
+      "name": "expeditionPreTipInfo",
+      "opcode": "0x1520",
+      "dec": 5408,
+      "method": "LscriptPages/game/p;->O(I,[J,J)V"
+    },
+    {
+      "name": "expedition",
+      "opcode": "0x1522",
+      "dec": 5410,
+      "method": "LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V"
+    },
+    {
+      "name": "reqThiefList",
+      "opcode": "0x1540",
+      "dec": 5440,
+      "method": "LscriptPages/game/p;->k1(I,I)V"
+    },
+    {
+      "name": "reqCheckMsg",
+      "opcode": "0x1114",
+      "dec": 4372,
+      "method": "LscriptPages/game/h0;->Z(J)V"
+    },
+    {
+      "name": "REQ_FIGHTINFO",
+      "opcode": "0x1702/0x1707",
+      "dec": "5890/5895",
+      "method": "LscriptPages/game/s;->c0(J,I)V"
+    }
+  ],
+  "expedition_success_response": [
+    "result_code/readByte",
+    "message/readUTF",
+    "fight_or_expedition_id/readLong",
+    "scriptPages/data/a.B(stream) compound snapshot"
+  ],
+  "expedition_type_labels": [
+    "0 派遣",
+    "1 掠夺",
+    "2 驻守",
+    "3 阻击",
+    "4 攻占",
+    "5 消灭",
+    "6 返回",
+    "7 侦查",
+    "8 闯关",
+    "9 抢城",
+    "10 城主竞选",
+    "11 出征副本",
+    "12 竞技场",
+    "13 押镖",
+    "14 寻宝",
+    "15 攻占",
+    "16 攻占"
+  ],
+  "state_labels": [
+    "0 行军中",
+    "1 战斗中",
+    "2 返回途中",
+    "3 等待中",
+    "4 已返回"
+  ],
+  "server_rebuild_implications": [
+    "正式出征成功响应不能只返回 ID，必须继续返回 a.B 状态快照。",
+    "战斗结果/奖励以服务端结算和状态同步为准；reqCheckMsg 主要展示详情。",
+    "REQ_FIGHTINFO 返回的是战场初始化和指令流，客户端更像回放器。",
+    "山贼列表 reqThiefList 仅按坐标/区域请求一批地图数据；全图需要多次枚举。"
+  ],
+  "unknowns": [
+    "attack_strategy/attack_mode/unknown_flag 的精确 UI 语义",
+    "a.B tag=1/2/3 的业务名仍需动态样本进一步确认",
+    "战斗胜负、伤兵、奖励生成公式仍未完整恢复"
+  ]
+}

@@ -1,0 +1,11 @@
+﻿stage,method,offset,operation,fields,meaning
+UI配置/开始入口,LscriptPages/data/g;->L4()I,000830-00083a,点击开始战斗/进入请求状态,a6=3; 调用 Q2(),用户在战斗模拟器配置完两方阵容后，触发模拟器战斗请求
+请求构造,LscriptPages/data/g;->Q2()V,000000-000058,显示“进入战斗中...”，记录请求时间，清空响应时间,b7=curTime; c7=0,进入等待服务器响应状态
+请求构造,LscriptPages/data/g;->Q2()V,000058-00012e,"BaseIO.openDos(""ReqChallengeTaskAward"") 后依次写入阵容字段","h6,c6,d6,e6,f6,g6,n6,i6,j6,k6,l6,m6",把双方士兵/数量/战法或称号配置序列化到请求体
+发送请求,LscriptPages/data/g;->Q2()V,000130-000134,"game.g->y(""ReqChallengeTaskAward"", ""ReqChallengeTaskAward"", 25613)",opcode_dec=25613; opcode_hex=0x640D,向服务端提交模拟器/挑战战斗请求；客户端不在本地结算
+响应解析,LscriptPages/data/g;->B4(String)V,000000-000020,收到响应时记录 c7=curTime，读取 d7=readByte，e7=readUTF,"c7,d7,e7",响应头为状态/消息
+响应解析,LscriptPages/data/g;->B4(String)V,000024-000048,若 d7!=0，再 readLong 到 f7；fightID=-1 时覆盖错误文案,f7=fightID,成功/可进入战斗时返回 fightID；客户端拿 fightID 载入战斗/战报
+等待/跳转,LscriptPages/data/g;->L4()I,000ee6-000f1a,若当前时间-b7>20000 且无响应，显示 di_联网超时,"b7,c7",20 秒超时保护
+等待/跳转,LscriptPages/data/g;->L4()I,000f1c-000f70,"若 c7>0 且 d7!=0 且 f7>0，调用 game.c->r(fightID,1)，随后展示 e7","c7,d7,f7,e7",服务端返回 fightID 后进入服务端生成的战斗回放
+本地阵容选择,LscriptPages/data/g;->j5()I,0000d4-00017a,从 m7..x7 阵容槽恢复到 c6..n6 当前配置,m7..x7 -> c6..n6; b6=slot,只负责载入保存阵容，不结算战斗
+菜单布局,LscriptPages/data/g;->p5()V,000000-00014e,生成可点区域 J6/处理 gameHD.k 下拉项,"s6,J6",表现层菜单布局，不含战斗公式

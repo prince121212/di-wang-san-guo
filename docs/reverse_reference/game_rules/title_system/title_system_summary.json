@@ -1,0 +1,143 @@
+{
+  "generated_at": "2026-07-05T06:42:20",
+  "sentence_hits": 44,
+  "faq_hits": 1,
+  "help_hits": 80,
+  "title_box_rows": 47,
+  "title_box_with_tail_code": 46,
+  "protocol_rows": 12,
+  "capture_hits": 1621,
+  "capture_opcode_hits": 0,
+  "capture_string_only_hits": 1621,
+  "sentence_category_counts": {
+    "规则说明": 6,
+    "战功/贡献关联": 3,
+    "隐私展示": 7,
+    "标题/界面文本": 18,
+    "成就点数": 1,
+    "奖励/领取": 2,
+    "激活/冷却": 11
+  },
+  "top_title_box_codes": [
+    {
+      "item_id": "544",
+      "item_name": "滑头称号宝箱",
+      "title_name": "滑头",
+      "title_code_from_tail": "0"
+    },
+    {
+      "item_id": "545",
+      "item_name": "寨主称号宝箱",
+      "title_name": "寨主",
+      "title_code_from_tail": "1"
+    },
+    {
+      "item_id": "546",
+      "item_name": "福星称号宝箱",
+      "title_name": "福星",
+      "title_code_from_tail": "2"
+    },
+    {
+      "item_id": "547",
+      "item_name": "学士称号宝箱",
+      "title_name": "学士",
+      "title_code_from_tail": "3"
+    },
+    {
+      "item_id": "548",
+      "item_name": "先锋称号宝箱",
+      "title_name": "先锋",
+      "title_code_from_tail": "5"
+    },
+    {
+      "item_id": "549",
+      "item_name": "护军称号宝箱",
+      "title_name": "护军",
+      "title_code_from_tail": "6"
+    },
+    {
+      "item_id": "550",
+      "item_name": "破军称号宝箱",
+      "title_name": "破军",
+      "title_code_from_tail": "7"
+    },
+    {
+      "item_id": "551",
+      "item_name": "猛将称号宝箱",
+      "title_name": "猛将",
+      "title_code_from_tail": "8"
+    },
+    {
+      "item_id": "552",
+      "item_name": "贪狼称号宝箱",
+      "title_name": "贪狼",
+      "title_code_from_tail": "9"
+    },
+    {
+      "item_id": "553",
+      "item_name": "财主称号宝箱",
+      "title_name": "财主",
+      "title_code_from_tail": "10"
+    },
+    {
+      "item_id": "554",
+      "item_name": "地主称号宝箱",
+      "title_name": "地主",
+      "title_code_from_tail": "11"
+    },
+    {
+      "item_id": "555",
+      "item_name": "名士称号宝箱",
+      "title_name": "名士",
+      "title_code_from_tail": "12"
+    },
+    {
+      "item_id": "556",
+      "item_name": "劳模称号宝箱",
+      "title_name": "劳模",
+      "title_code_from_tail": "13"
+    },
+    {
+      "item_id": "557",
+      "item_name": "善人称号宝箱",
+      "title_name": "善人",
+      "title_code_from_tail": "14"
+    },
+    {
+      "item_id": "558",
+      "item_name": "明君称号宝箱",
+      "title_name": "明君",
+      "title_code_from_tail": "15"
+    },
+    {
+      "item_id": "559",
+      "item_name": "贤君称号宝箱",
+      "title_name": "贤君",
+      "title_code_from_tail": "16"
+    },
+    {
+      "item_id": "560",
+      "item_name": "达人称号宝箱",
+      "title_name": "达人",
+      "title_code_from_tail": "17"
+    },
+    {
+      "item_id": "561",
+      "item_name": "无双称号宝箱",
+      "title_name": "无双",
+      "title_code_from_tail": "18"
+    },
+    {
+      "item_id": "562",
+      "item_name": "宗师称号宝箱",
+      "title_name": "宗师",
+      "title_code_from_tail": "19"
+    },
+    {
+      "item_id": "563",
+      "item_name": "神工称号宝箱",
+      "title_name": "神工",
+      "title_code_from_tail": "20"
+    }
+  ]
+}

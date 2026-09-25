@@ -10,7 +10,7 @@ SPEC = importlib.util.spec_from_file_location("desktop_server_domestic", ROOT / 
 SERVER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = SERVER
 SPEC.loader.exec_module(SERVER)
-CAPTURE = ROOT.parent / "ctf_out/passive_pcap_hotspot_20260711_150241/live_analyzed"
+CAPTURE = ROOT / "tests/fixtures/game_packets/passive_pcap_hotspot_20260711_150241/live_analyzed"
 
 
 class DomesticProtocolTests(unittest.TestCase):

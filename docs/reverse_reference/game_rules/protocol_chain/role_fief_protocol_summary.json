@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-07-05T07:09:42",
+  "protocols": {
+    "reqRoleInfo": {
+      "request_opcode": "0x1120",
+      "response_opcode": "0x8120",
+      "request_method": "LscriptPages/game/w;->d0(J,String)",
+      "response_handler": "Lo/a->A6 dispatch -> LscriptPages/game/w;->e0(String)",
+      "request_fields": 3,
+      "response_fields": 25
+    },
+    "reqRoleFiefList": {
+      "request_opcode": "0x1310",
+      "observed_response_handler_opcode": "0x8510",
+      "request_method": "LscriptPages/game/p;->g0(I,I) branch type=4",
+      "response_handler": "Lo/a->A6 dispatch -> LscriptPages/game/p;->a1(String)->T(String)",
+      "request_fields": 4,
+      "response_groups": [
+        "group_A",
+        "group_B",
+        "group_C"
+      ]
+    }
+  },
+  "notes": [
+    "reqRoleInfo 请求可按角色ID或名称查询，是社交/城市/国家等多处 UI 的通用角色详情入口。",
+    "reqRoleFiefList 是 g0 选择器 type=4 的分支；同一 g0 还可触发敌国列表、敌国城市列表等相邻列表请求。",
+    "reqRoleFiefList 响应字段规模较大，当前字段语义以数组命名和读取顺序为准，具体每个数值含义需要结合抓包样本或 UI 渲染函数继续命名。"
+  ]
+}

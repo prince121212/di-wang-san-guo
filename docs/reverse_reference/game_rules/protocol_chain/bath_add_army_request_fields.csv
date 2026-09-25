@@ -1,0 +1,4 @@
+﻿protocol,opcode_hex,method,order,field,io,evidence,meaning,confidence
+reqBathAddArmy,0x1229,LscriptPages/game/p;->L0(long[]),1,role_count,writeByte(array_length),p.L0 00000a-00000e,本次批量补兵的目标将领/角色数量；来源为 long[] 长度,高
+reqBathAddArmy,0x1229,LscriptPages/game/p;->L0(long[]),2..N,role_ids[i],writeLong,p.L0 000014-000026,逐个写入选中的将领/角色 ID；来源为 p.a() 或 z0/v0 选中数组,高
+reqBathAddArmy,0x1229,LscriptPages/game/p;->L0(long[]),send,opcode,game.g->y,p.L0 00002c-000030,发送 reqBathAddArmy，opcode 十进制 4649,高

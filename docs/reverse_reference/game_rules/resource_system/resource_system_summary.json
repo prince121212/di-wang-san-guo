@@ -1,0 +1,38 @@
+{
+  "date": "2026-07-05",
+  "topic": "资源系统第一版",
+  "key_conclusions": [
+    "铜钱=data.i.d，粮食=data.i.e，黄金=data.g.F，白银=data.g.G，声望当前=data.i.i 已高置信确认。",
+    "总产钱/总产粮分别为 data.i.m/data.i.n；客户端 i.A 只做显示侧按小时递增，不是服务端权威结算。",
+    "单封地产钱/产粮最终显示值来自 Lo/a.Y5 下发的 tv/uv；建筑静态效果与最终产量之间的叠加在服务端完成后同步。",
+    "奖励领取/部分活动成功后会直接同步 i.i/i.d/i.e/g.H 和 Lo/a.V5，资源资产仍以服务端返回为准。",
+    "data.g.H 已由 g.f8/g.v0/g.w0 静态闭环修正为账号积分；玉石另为 item_id=399 道具。"
+  ],
+  "generated_files": [
+    "analysis/game_rules/resource_system/resource_system_report.md",
+    "analysis/game_rules/resource_system/resource_field_mapping.csv",
+    "analysis/game_rules/resource_system/resource_sync_chains.csv",
+    "analysis/game_rules/resource_system/resource_system_summary.json",
+    "analysis/game_rules/resource_system/method_disasm_resource/",
+    "analysis/game_rules/resource_system/method_disasm_resource_extra/"
+  ],
+  "important_methods": {
+    "scriptPages/data/i.x": "完整角色资源同步",
+    "scriptPages/data/i.b": "增量资源同步",
+    "scriptPages/data/i.z": "资源简块同步",
+    "scriptPages/data/i.A": "客户端本地按小时显示递增",
+    "scriptPages/game/m0.u": "奖励领取成功同步",
+    "Lo/a.Y5": "封地基础字段同步",
+    "Lo/a.k1": "增产/建筑队列临时状态同步",
+    "scriptPages/data/g.w0": "负数资源ID解析"
+  },
+  "unknowns": [
+    "仓储上限字段/公式未闭环",
+    "掠夺损失和离线产出权威结算公式未闭环",
+    "data.g.H 已确认为账号积分；账号积分获取/消耗入口待追",
+    "人口/资源点/封地/将领上限仍需跨模块进一步命名"
+  ],
+  "corrections": [
+    "2026-07-05: data.g.H 从“玉石/扩展货币候选”修正为“账号积分”；证据见 gH_currency_deep/gH_identity_report.md。"
+  ]
+}

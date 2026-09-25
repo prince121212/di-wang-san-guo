@@ -43,8 +43,8 @@ class InternalAffairsCostParityTest {
     }
 
     private fun ruleFile(name: String): File = listOf(
-        File("../reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/tables/parsed/$name"),
-        File("../../reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/tables/parsed/$name"),
-        File("reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/tables/parsed/$name")
+        File("../电脑端辅助前端/assets/$name"),
+        File("../../电脑端辅助前端/assets/$name"),
+        File("电脑端辅助前端/assets/$name")
     ).firstOrNull(File::exists) ?: error("missing desktop game rule table: $name")
 }

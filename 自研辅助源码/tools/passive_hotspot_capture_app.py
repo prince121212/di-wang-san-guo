@@ -26,7 +26,7 @@ import urllib.parse
 ROOT = pathlib.Path("/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国")
 PROJECT = ROOT / "自研辅助源码"
 OUT_ROOT = ROOT / "ctf_out"
-CURRENT = ROOT / "reverse_cases/apk-sanguo-diwanglianmeng-166/captures/mitm/current_capture_dir.txt"
+CURRENT = OUT_ROOT / "current_capture_dir.txt"
 PARSE = PROJECT / "tools/parse_passive_pcap_httpclient.py"
 
 DEFAULT_IFACE = os.environ.get("CAPTURE_IFACE", "bridge100")

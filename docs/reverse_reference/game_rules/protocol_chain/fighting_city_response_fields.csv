@@ -1,0 +1,32 @@
+﻿protocol,response_opcode_hex,handler,group,order,field,io,target_cache,evidence,meaning,confidence
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),marker_group,1,marker_count,readShort,s0.H reset,s0.S 000000-00002a,返回需要标记/选中的坐标数量；进入前按现有 s0.r 长度重建 H 布尔数组。,中高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),marker_group,2.1,marker_x[i],readShort,s0.H[index]=true,s0.S 000036-00007a,标记坐标 x；客户端在当前城市缓存 s0.s 中查找同坐标记录并置 H=true。,中高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),marker_group,2.2,marker_y[i],readShort,s0.H[index]=true,s0.S 00003e-00007a,标记坐标 y；与 marker_x 共同匹配 s0.s[index][0/1]。,中高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_group,3,city_update_count,readShort,loop count,s0.S 00008c-000096,后续城市/战斗目标更新记录数。,高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.1,city_id,readLong,s0.r[index],s0.S 0000a0-0000a6 / 00021e-00022a / 00022e,目标 ID；0x8012 只按已有 s0.r 匹配并更新，不新增未知 ID。,高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.2,coord_x,readShort,s0.s[index][0],s0.S 0000a8-0000b0 / 000232,地图 x 坐标。,高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.3,coord_y,readShort,s0.s[index][1],s0.S 0000b4-0000bc / 000232,地图 y 坐标。,高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.4,packed_icon_or_type_bytes,readByte + optional readByte[],s0.t[index],s0.S 0000c0-000100 / 00023a,压缩 byte 序列：首字节高 2 位决定数量，低 6 位为首个值，后续 byte 也取低 6 位；疑似城市/目标外观、类型或层级标记。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.5,name,readUTF,s0.u[index],s0.S 000102-000108 / 000242,目标名称。,中高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.6,status_byte_v,readByte,s0.v[index],s0.S 00010a-000110 / 00024a,状态/类型 byte，语义待 UI 反查。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.7,status_byte_w,readByte,s0.w[index],s0.S 000112-000118 / 000252,状态/类型 byte，语义待 UI 反查。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.8,status_byte_x,readByte,s0.x[index],s0.S 00011a-000120 / 00025a,状态/类型 byte，语义待 UI 反查。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.9,status_byte_y,readByte,s0.y[index],s0.S 000122-000128 / 000262,状态/类型 byte，语义待 UI 反查。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.10,text_z,readUTF,s0.z[index],s0.S 00012a-000130 / 00026a,文本字段；若非空，后续额外读取 A byte。请求备用 delta 格式会回传该字段。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.11,optional_byte_A,readByte if text_z non-empty,s0.A[index],s0.S 000136-00014c / 000272,text_z 非空时存在的附加状态 byte；text_z 为空则客户端置 0。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.12,text_B,readUTF,s0.B[index],s0.S 00014e-000154 / 00027a,文本字段，语义待 UI 命名。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.13,text_C,readUTF,s0.C[index],s0.S 000156-00015c / 000282,文本字段，语义待 UI 命名。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.14,D0,readInt,s0.D[index][0],s0.S 00015e-00016a / 00028a,D 数组第 1 个 int；若 data.b 中存在该城市，则同步到 data.b.n。,中高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.15,D1,readInt,s0.D[index][1],s0.S 00016e-000176 / 00028a,D 数组第 2 个 int；请求备用 delta 格式会回传该字段。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.16,D2,readInt,s0.D[index][2],s0.S 00017a-000184 / 00028a,D 数组第 3 个 int。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.17,E0,readShort,s0.E[index][0],s0.S 00018c-000198 / 000292,E 数组第 1 个 short；若 data.b 中存在该城市，则同步到 data.b.q。,中高
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.18,E1,readShort,s0.E[index][1],s0.S 00019c-0001a8 / 000292,E 数组第 2 个 short；请求备用 delta 格式会回传该字段。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.19,F0,readInt,s0.F[index][0],s0.S 0001b0-0001bc / 00029a,F 数组第 1 个 int。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.20,F1,readInt,s0.F[index][1],s0.S 0001c0-0001c8 / 00029a,F 数组第 2 个 int。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.21,G0,readInt,s0.G[index][0],s0.S 0001cc-0001d8 / 0002a2,G 数组第 1 个 int。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.22,G1,readInt,s0.G[index][1],s0.S 0001dc-0001e4 / 0002a2,G 数组第 2 个 int。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.23,K0_or_discarded0,readInt,s0.K in flushCitys; S path read/discard,s0.S 0001e8; s0.w 000236-00024e / 00059e-0005a2,与初始 flushCitys 结构中的 K[0] 对齐；0x8012 增量路径读取但未明显写回 K，可能为兼容/废弃字段。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.24,K1_or_discarded1,readInt,s0.K in flushCitys; S path read/discard,s0.S 0001ee; s0.w 000236-00024e / 00059e-0005a2,与初始 flushCitys 结构中的 K[1] 对齐；0x8012 增量路径读取但未明显写回 K。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.25,I,readShort,s0.I[index],s0.S 0001f4-0001fa / 0002ae,short 状态/数值字段。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.26,J,readLong,s0.J[index],s0.S 0001fc-000202 / 0002b6,long 状态/时间/归属类字段候选。,中
+reqFightingCity,0x8012,LscriptPages/game/s0;->S(String),city_update_record,4.27,L,readByte,s0.L[index],s0.S 000204-00020a / 0002be,byte 状态字段。,中

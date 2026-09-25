@@ -1,0 +1,3 @@
+﻿z_o0,z_m,list_source,page_meaning,buttons,labels,confidence
+0,0,"Lo/a.G2(z.D,0)",我方被俘/待营救将领详情候选,GeneralPrison_rescue=营救; GeneralPrison_giveup=放弃; return,被劝次数(Po[0]); 营救次数(Qo[0]); 营救剩余(dp/e4); 标题封地(ip); 所在城(gp+hp),high
+1 or 2 path using m=1,1,"Lo/a.G2(z.D,1)",我方监狱中的俘虏/可劝降将领详情候选,GeneralPrison_purchase=劝降; GeneralPrison_rescue_relieve=释放; return,劝降次数(Po[1]); 被救次数(Qo[1]); 劝降剩余(cp/E3); 将领君主(Xo); 所在城(sv/data.b),high

@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-07-05T07:44:29",
+  "scope": "ordinary fief building protocol entry first pass",
+  "entries": [
+    {
+      "category": "封地信息",
+      "protocol": "reqFiefInfo",
+      "opcode_hex": "0x1246",
+      "opcode_dec": "4678",
+      "method": "LscriptPages/game/q;->g1(int,long)",
+      "direction": "request",
+      "fields": "mode/writeByte; fief_id/writeLong",
+      "evidence": "q.g1 000000-00002a",
+      "meaning": "请求封地详情/刷新封地信息；通过 Lo/a.d0 发送，不走 game.g->y。",
+      "confidence": "高"
+    },
+    {
+      "category": "建筑队列",
+      "protocol": "buildQueueAdd",
+      "opcode_hex": "0x120D",
+      "opcode_dec": "4621",
+      "method": "LscriptPages/game/q;->K1(boolean) / q.w1()",
+      "direction": "request",
+      "fields": "fief_id/writeLong; building_or_slot_key/writeLong",
+      "evidence": "q.K1 000306-000346; q.w1 000106-00012a",
+      "meaning": "建筑队列/建筑相关操作请求；文案出现“联网拆除全部”，实际语义需结合 UI 分支进一步细分。",
+      "confidence": "中高"
+    },
+    {
+      "category": "建筑道具",
+      "protocol": "buildItemUse",
+      "opcode_hex": "dynamic",
+      "opcode_dec": "param int->short",
+      "method": "LscriptPages/game/q;->d(int,long,int,long,short)",
+      "direction": "request",
+      "fields": "fief_id/writeLong; building_pos_or_type/writeShort; item_or_task_id/writeLong; item_count_or_param/writeShort",
+      "evidence": "q.d 000000-000034",
+      "meaning": "对建筑/建造任务使用道具；opcode 由调用参数传入，常用于鲁公/加速/建筑相关道具。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑结果",
+      "protocol": "fief_building_result",
+      "opcode_hex": "0x8200",
+      "opcode_dec": "33280 unsigned / -32256 signed",
+      "method": "LscriptPages/game/q;->i(String)",
+      "direction": "response",
+      "fields": "status/readByte; substatus/readByte; fief_id/readLong; nested Lo/a.j1 update block",
+      "evidence": "dispatcher 000884-00088c; q.i 000000-000028",
+      "meaning": "封地建筑建造/升级类结果候选响应；含完整建筑错误码与封地建筑更新块。",
+      "confidence": "中高"
+    },
+    {
+      "category": "建筑队列结果",
+      "protocol": "buildQueueAdd_result",
+      "opcode_hex": "0x8206",
+      "opcode_dec": "33286 unsigned / -32250 signed",
+      "method": "LscriptPages/game/q;->e(String)",
+      "direction": "response",
+      "fields": "status/readByte; if -1 Lo/a.Z5 + data.b.L; if 0 Lo/a.V5 + fief_id/readLong + byte + Lo/a.k1",
+      "evidence": "dispatcher 000860-000868; q.e 000000-000046",
+      "meaning": "建筑队列增加/建筑相关操作结果候选响应；成功时同步封地/队列状态并显示剩余时间。",
+      "confidence": "中"
+    }
+  ],
+  "new_route_table": "network_d0_send_calls.csv/json",
+  "key_conclusions": [
+    "普通封地建筑/建设类请求大量通过 Lo/a.d0(S, byte[]) 发送，不会出现在此前只扫描 game.g->y 的 40 条发送入口表中。",
+    "已补充 network_d0_send_calls.csv/json，共 251 个 d0 发送点。",
+    "当前确认的建筑相关入口包括 reqFiefInfo/0x1246、buildQueueAdd/0x120D、buildItemUse(动态 opcode)；q.i/q.e 是建筑/队列结果响应候选。",
+    "普通建筑具体“建造 vs 升级 vs 取消/拆除”的精确 opcode 分工仍需继续追 q.K1/t1/u1/v1 与 data/f.u 封装。"
+  ]
+}

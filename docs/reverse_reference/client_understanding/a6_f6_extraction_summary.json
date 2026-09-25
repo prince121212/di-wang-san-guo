@@ -1,0 +1,45 @@
+{
+  "target_methods": [
+    {
+      "method": "Lo/a;->a6(ILjava/lang/String;)V",
+      "code_off": "0x23ffb4",
+      "instruction_bytes": 28,
+      "direct_baseio_reads": 1
+    },
+    {
+      "method": "Lo/a;->f6(ILjava/lang/String;)V",
+      "code_off": "0x240b38",
+      "instruction_bytes": 2884,
+      "direct_baseio_reads": 2
+    },
+    {
+      "method": "Lo/a;->b6(ILjava/lang/String;I)V",
+      "code_off": "0x23ffe0",
+      "instruction_bytes": 1152,
+      "direct_baseio_reads": 57
+    },
+    {
+      "method": "Lo/a;->S5(Ljava/lang/String;)V",
+      "code_off": "0x23e4f0",
+      "instruction_bytes": 158,
+      "direct_baseio_reads": 5
+    }
+  ],
+  "response_0x8215": {
+    "first_handler": "0a7c:Lo/a;->f6(I Ljava/lang/String;)V",
+    "branch_read_sequence": "0a60:readByte(Ljava/lang/String;)B || 0a6c:readByte(Ljava/lang/String;)B",
+    "request_candidate": "0x1215 reqLoadGenerals@o/a->a8"
+  },
+  "request_0x1215_sender": {
+    "method": "Lo/a;->a8()V",
+    "strings": "v0, \"reqLoadGenerals\"",
+    "write_sequence": "000186:invoke-static v0, LscriptAPI/baseAPI/BaseIO;->openDos(Ljava/lang/String;)V || 00018e:invoke-static v0, v1, LscriptAPI/baseAPI/BaseIO;->writeByte(Ljava/lang/String; B)V || 000194:invoke-static v0, v2, LscriptAPI/baseAPI/BaseIO;->writeByte(Ljava/lang/String; B)V || 00019e:invoke-static v0, v1, v2, LscriptAPI/baseAPI/BaseIO;->writeLong(Ljava/lang/String; J)V || 0001a4:invoke-static v0, LscriptAPI/baseAPI/BaseIO;->dos2DataArray(Ljava/lang/String;)[B"
+  },
+  "outputs": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/a6_f6_b6_read_sequences.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/a6_f6_callers.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_sync_related_parsers.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/a6_f6_b6_s5_disasm.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/A6_F6_GENERAL_SYNC.md"
+  ]
+}

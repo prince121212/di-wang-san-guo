@@ -1,0 +1,175 @@
+{
+  "generated_at": "2026-07-05T07:14:27",
+  "protocol": "reqBathAddArmy",
+  "request_opcode_hex": "0x1229",
+  "request_opcode_dec": 4649,
+  "response_opcode_hex": "0x8229",
+  "request_method": "LscriptPages/game/p;->L0(long[])",
+  "response_handler": "Lo/a;->A6 dispatch 0x8229 -> LscriptPages/game/p;->M0(String)",
+  "ui_callers": [
+    "p.s1()I 000c70 批量补兵按钮",
+    "p.y1()I 0000f8 / 00080e setSoliderCmd/adjust 流程"
+  ],
+  "request_fields": [
+    {
+      "protocol": "reqBathAddArmy",
+      "opcode_hex": "0x1229",
+      "method": "LscriptPages/game/p;->L0(long[])",
+      "order": "1",
+      "field": "role_count",
+      "io": "writeByte(array_length)",
+      "evidence": "p.L0 00000a-00000e",
+      "meaning": "本次批量补兵的目标将领/角色数量；来源为 long[] 长度",
+      "confidence": "高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "opcode_hex": "0x1229",
+      "method": "LscriptPages/game/p;->L0(long[])",
+      "order": "2..N",
+      "field": "role_ids[i]",
+      "io": "writeLong",
+      "evidence": "p.L0 000014-000026",
+      "meaning": "逐个写入选中的将领/角色 ID；来源为 p.a() 或 z0/v0 选中数组",
+      "confidence": "高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "opcode_hex": "0x1229",
+      "method": "LscriptPages/game/p;->L0(long[])",
+      "order": "send",
+      "field": "opcode",
+      "io": "game.g->y",
+      "evidence": "p.L0 00002c-000030",
+      "meaning": "发送 reqBathAddArmy，opcode 十进制 4649",
+      "confidence": "高"
+    }
+  ],
+  "response_fields": [
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "header",
+      "order": "1",
+      "field": "status",
+      "io": "readByte",
+      "evidence": "p.M0 000000-000006",
+      "meaning": "状态码；0 为成功，非 0 显示 message",
+      "confidence": "高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "header",
+      "order": "2",
+      "field": "message",
+      "io": "readUTF",
+      "evidence": "p.M0 000008-00000e / 0000c6",
+      "meaning": "服务端提示文案；失败时直接展示",
+      "confidence": "高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "role_update",
+      "order": "3",
+      "field": "role_update_count",
+      "io": "readByte",
+      "evidence": "p.M0 00001a-000020",
+      "meaning": "成功后第一组更新条目数量",
+      "confidence": "高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "role_update",
+      "order": "4.1",
+      "field": "request_role_id_or_mapping_key",
+      "io": "readLong",
+      "evidence": "p.M0 00002c-00003c",
+      "meaning": "读 long 后经 Lo/a.q1(J) 映射为本地实体ID；疑似请求中的将领/角色ID",
+      "confidence": "中高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "role_update",
+      "order": "4.2",
+      "field": "army_type_or_status",
+      "io": "readByte",
+      "evidence": "p.M0 000044-00004c / Lo/a.T8",
+      "meaning": "若映射成功，写入 Lo/a.Pm；疑似将领当前兵种/状态",
+      "confidence": "中"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "role_update",
+      "order": "4.3",
+      "field": "army_count_or_value",
+      "io": "readInt",
+      "evidence": "p.M0 00004c-000066 / Lo/a.S8",
+      "meaning": "若映射成功，写入 Lo/a.Qm；疑似将领当前带兵数/补兵后数量",
+      "confidence": "中"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "fief_soldier_inventory",
+      "order": "5",
+      "field": "fief_or_context_id",
+      "io": "readLong",
+      "evidence": "p.M0 000072-000080 / Lo/a.p3",
+      "meaning": "映射到 Lo/a.ov 索引，作为后续兵种库存数组位置；疑似封地ID",
+      "confidence": "中高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "fief_soldier_inventory",
+      "order": "6",
+      "field": "soldier_type_count",
+      "io": "readByte",
+      "evidence": "p.M0 000082-00008a",
+      "meaning": "后续空闲兵/库存兵种条目数量",
+      "confidence": "高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "fief_soldier_inventory",
+      "order": "7.1",
+      "field": "soldier_type[i]",
+      "io": "readByte",
+      "evidence": "p.M0 000096-00009e / Kv[index]",
+      "meaning": "兵种类型/编号数组，保存到 Lo/a.Kv[index]",
+      "confidence": "中高"
+    },
+    {
+      "protocol": "reqBathAddArmy",
+      "response_opcode_hex": "0x8229",
+      "handler": "LscriptPages/game/p;->M0(String)",
+      "group": "fief_soldier_inventory",
+      "order": "7.2",
+      "field": "soldier_amount[i]",
+      "io": "readInt",
+      "evidence": "p.M0 0000a2-0000aa / Lv[index]",
+      "meaning": "对应兵种数量数组，保存到 Lo/a.Lv[index]",
+      "confidence": "中高"
+    }
+  ],
+  "key_conclusions": [
+    "请求只上传选中的将领/角色 ID 列表，不上传兵种/数量目标；补兵结果由服务端计算并回传。",
+    "响应成功后更新两类本地缓存：将领当前带兵状态/数量，以及封地/上下文的空闲兵库存数组。",
+    "该接口具有服务端权威特征，适合重建时由服务器根据封地空闲兵和将领容量自动补齐。"
+  ]
+}

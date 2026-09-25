@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CORE_SOURCE = ROOT / "shared_core" / "python"
 SERVER_PATH = ROOT / "电脑端辅助前端" / "server.py"
 FIXTURE_PATH = ROOT / "shared_core" / "protocol_parity_fixtures.json"
-CTF_OUT = ROOT / "ctf_out"
+GAME_PACKETS = ROOT / "电脑端辅助前端" / "tests" / "fixtures" / "game_packets"
 if str(CORE_SOURCE) not in sys.path:
     sys.path.insert(0, str(CORE_SOURCE))
 
@@ -45,7 +45,7 @@ SPEC.loader.exec_module(SERVER)
 
 def capture_payload(capture: str, flow_index: int) -> bytes:
     response_file = (
-        CTF_OUT
+        GAME_PACKETS
         / capture
         / "live_analyzed"
         / f"{flow_index:03d}"

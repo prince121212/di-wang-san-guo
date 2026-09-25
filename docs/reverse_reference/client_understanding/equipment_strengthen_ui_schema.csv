@@ -1,0 +1,12 @@
+﻿symbol,kind,meaning,evidence,confidence
+K1,byte static field,装备页子状态机。0=装备弹窗主菜单；1=仓库装备列表/换装；2=强化弹窗；3/4/5/6/7/8=材料入口/说明/缺货提示/特殊强化等跳转态。,z.W0 0x0000 起按 K1 分支；K1=2 区间处理 equipstronger 菜单；z.j 按 K1 绘制不同界面。,high
+I1,long static field,当前装备宿主 id 候选，高概率为当前将领/可装备对象 id。,"卸装 z.W0@0x0134 C0(I1,H1,1)；换装 @0x032a C0(I1,N1[selected],0)；强化 @0x065c/@0x0782 G0(I1,H1,mode)。",medium-high
+H1,long static field,当前选中装备实例 id。,"大量 data.d.*(H1) 访问；强化请求 G0(I1,H1,mode)；卸装 C0(I1,H1,1)。",high
+N1,long[] static field,仓库/可换装装备实例 id 列表。,"K1=1 中由 data.d.f(1,J1) 填充，选中后 C0(I1,N1[selected],0)。",high
+L1,byte static field,自动强化剩余/状态计数。启动时置 20，绘制时显示 21-L1 / 20，停止时 h1 置 -1。,z.W0@0x0682-0x069c 启动；@0x04c4 起循环；z.j@0x0ffa-0x1086 绘制 re_第N次强化。,high
+M1,long static field,自动强化节流时间戳，约 800ms 间隔。,z.W0@0x04cc-0x04f6 用 BaseUtil.getCurTime()-M1 > 800 控制下一次 G0。,high
+D3,byte static field,强化响应到达标志/节奏标志。G0 发送前置 0，H0 响应入口置 1，自动循环消费后再置 0。,z.W0@0x052c 读取并清 0；z.G0 发送后置 0；z.H0 响应入口置 1。,medium-high
+R1,byte static field,强化弹窗菜单焦点/输入状态。,"K1=2 中围绕 q0.l0(""equipstronger"") 和输入键改变 R1。",medium
+U1,String static field,强化 20 次按钮控件 id。自动强化开始时改图标和标题，h1 恢复。,"z.W0@0x06a0 调 Lo/a.g7(U1,12611,12611)、Y6(U1,""中止强化"")；h1 复位。",high
+data.d.q(H1),accessor,当前装备强化等级/强化值；客户端上限检查为 <30。,进入强化前 z.W0@0x00f0；普通强化前 @0x0630；自动停止 @0x0508；失败风险门槛 z.j@0x0f54。,high
+data.d.k(H1),accessor,"当前下一次强化所需材料 [item_id, required_amount]。",z.W0@0x0538、0x05fc；z.a@0x0000；z.j@0x0b4c 显示材料名与库存/需求。,high

@@ -1,0 +1,5 @@
+﻿topic,field_or_formula,status,evidence,conclusion,confidence,server_rebuild_note
+道路速度公式,"data.b.w / k.Z0 road current,max",static_refs_found_only_in_cache_ui_sync,"road_wall_usage_refs: data.b.w only in data.b accessors/init, k.M0/k.o1/k.r0 sync, k.d/k.w/c0 UI/repair methods",客户端未见道路值参与行军时间/速度计算；道路速度公式更可能在服务端，或需要动态样本拟合。,medium-high,初版服务端可自定义兼容速度公式；若追求还原，需要抓取不同 road_value 的出征/阻击耗时样本。
+城防战斗加成公式,"data.b.v / k.Y0 wall current,max",static_refs_found_only_in_cache_ui_sync,"road_wall_usage_refs: data.b.v only in data.b accessors/init, k.M0/k.o1/k.r0 sync, k.d/k.w/c0 UI/repair methods",客户端未见城墙/城防值参与伤害、攻防、战斗回放计算；城防加成公式更可能在服务端结算侧。,medium-high,初版服务端可做配置化加成；若追求还原，需要同守军/不同 wall_value 的攻城战报样本拟合。
+炮塔公式,"data.b.x / k.a1 tower current,max",static_refs_found_only_in_cache_ui_sync,road_wall_usage_refs: data.b.x 与墙/路同组，仅见访问器、初始化、修筑同步和 UI,炮塔字段存在并与修筑系统同构，但本轮未找到炮塔攻击/伤害公式。,medium,服务端初版可返回 0 或先实现展示；完整炮塔机制需后续单独追。
+修筑响应同步,0x8304 -> k.r0,confirmed,repair_response_report.md; k.r0; k.n1,修筑后资源、贡献、道路/城墙/炮塔状态由服务器响应权威同步。,high,服务端必须按协议下发同步字段。

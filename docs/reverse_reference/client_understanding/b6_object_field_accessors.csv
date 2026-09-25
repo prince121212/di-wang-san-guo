@@ -1,0 +1,25 @@
+﻿accessor,field,final_name,note,confidence
+Lo/a.K3(II),Lo/a.do,name,返回对象名称，空表/越界返回空串。,high
+Lo/a.A3(II),Lo/a.jo,level,返回等级。,high
+Lo/a.B2(II),Lo/a.ko,exp_current,返回经验当前值。,high
+Lo/a.C2(II),Lo/a.lo,exp_next_or_cap,返回经验目标/上限值。,high
+Lo/a.D2(II),Lo/a.wo,loyalty_current,返回忠诚当前值。,high
+Lo/a.E2(II),Lo/a.xo,loyalty_max,返回忠诚上限值。,high
+Lo/a.T2(II),Lo/a.ro,energy_current,返回体力当前值。,high
+Lo/a.U2(II),Lo/a.so,energy_max,返回体力上限值。,high
+Lo/a.Q2(II),Lo/a.io,growth_value,返回成长值。,high
+Lo/a.A2(II),Lo/a.Ao,breakout_ability,返回突围能力。,high
+Lo/a.K2(II),Lo/a.mo,force,返回武力。,high
+Lo/a.H3(II),Lo/a.no,intelligence,返回智力。,high
+Lo/a.y3(II),Lo/a.oo,command,返回统帅。,high
+Lo/a.t1(II),Lo/a.po,attack,返回攻击。,high
+Lo/a.v2(II),Lo/a.qo,defense,返回防御。,high
+Lo/a.r1(II),Lo/a.vo,troop_capacity,返回配兵上限。,high
+Lo/a.d4(II),Lo/a.zo,salary_copper,返回俸禄铜钱。,high
+Lo/a.v4(II),Lo/a.Vo,state_code,返回对象状态码。,high
+Lo/a.z3(I),Lo/a.Ho,command_bonus_remaining_seconds,返回 Ho 剩余时间。,medium-high
+Lo/a.V2(II),Lo/a.So,general_name_color_or_growth_tier,返回名称颜色/成长档位候选，多个将领列表用它索引颜色数组。,medium-high
+Lo/a.Q3(II),Lo/a.Eo,object_owner_fief_id,返回对象归属封地/宿主 id；`q.M1`/`z.D` 和 `Lo/a.p3` 会把它作为当前封地 id 使用。,medium-high
+Lo/a.G3(II),Lo/a.Uo,cultivation_growth_full_or_cap_flag,培养 UI 使用；请求 0x1275 前也用它做“成长值已满”预检查。,medium
+Lo/a.s1(II),Lo/a.Fo,soldier_count_or_assigned_troop_count,配兵 UI 使用。,medium-high
+Lo/a.z2(J),Lo/a.jp,host_equipment_id_bindings,按 host_id 返回已装备 id 列表。,high

@@ -1,0 +1,22 @@
+{
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/PRISON_CAPTURE_FIELD_DICTIONARY.md",
+    "字段字典": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_capture_field_dictionary.csv",
+    "页面模式表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_capture_page_modes.csv",
+    "动作请求表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_capture_action_requests.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_capture_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_capture_summary.json"
+  },
+  "row_counts": {
+    "fields": 7,
+    "page_modes": 2,
+    "requests": 5
+  },
+  "main_conclusions": [
+    "Po/Qo labels depend on object table type: type0 被劝/营救, type1 劝降/被救.",
+    "dp/e4 is type0 营救剩余 end-time field.",
+    "gp/ip/hp are type0 captive location fields: city name, fief name, coordinate pair.",
+    "cp/E3 is type1 劝降剩余 cooldown base time."
+  ]
+}

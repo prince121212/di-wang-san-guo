@@ -6,7 +6,7 @@ import com.example.dwpmclone.domain.protocol.BrushYellowBehaviorContract
  * Evidence-backed payload builder for 小黄点刷黄出征.
  *
  * Source evidence:
- * - /Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk/analysis/shuahuang_expedition_decode_2026-07-06/shuahuang_expedition_payload_builder_summary.md
+ * - docs/reverse_reference/protocol/helper_payloads/shuahuang_expedition_payload_builder_summary.md
  * - 2026-07-08 unpacked game dex re-check:
  *   LscriptPages/game/p;->O(I [J J)V writes byte(type), byte(count), longs(generals), long(target)
  *   then sends 0x1520; LscriptPages/game/p;->N(I [J J B B B J)V writes the same prefix,

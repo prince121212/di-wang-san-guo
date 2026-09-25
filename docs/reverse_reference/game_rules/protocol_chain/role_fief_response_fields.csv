@@ -1,0 +1,51 @@
+﻿protocol,response_opcode_hex,handler,group,order,field,io,evidence,meaning,confidence
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,1,dispatcher_status,readByte,A6 000d20-000d3e,A6 对 0x8120 先读状态；0 表示进入 w.e0 解析，非 0 交给 data.i.x 处理,高
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,2,S0,readByte,w.e0 000008-00002e,角色信息子类型/标志；影响后续 UI 行为,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,3,R0,readLong,w.e0 000032-00003a,目标角色/君主 ID,中高
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,4,Q0,readUTF,w.e0 00003e-000046,目标角色/君主名称,中高
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,5,k1,readByte,w.e0 00004a-000052,角色状态/关系标志候选,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,6,g1,readShort,w.e0 000056-00005e,等级/短整数字段候选,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,7,unused_byte_1,readByte,w.e0 000062,被读取但未保存,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,8,T0,readByte,w.e0 000068-000070,关系/国家/性别类标志候选,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,9,U0,readUTF,w.e0 000074-00007c,文本字段 1，候选国家/军团/城池名,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,10,V0,readUTF,w.e0 000080-000088,文本字段 2,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,11,W0,readLong,w.e0 00008c-000094,长整数字段，候选国家/师徒/关系ID,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,12,X0,readInt,w.e0 000098-0000a0,整数字段，候选战功/贡献/等级扩展,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,13,Y0,readUTF,w.e0 0000a4-0000ac,文本字段 3,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,14,Z0,readUTF,w.e0 0000b0-0000b8,文本字段 4,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,15,a1,readByte,w.e0 0000bc-0000c4,字节标志,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,16,b1,readLong,w.e0 0000c8-0000d0,长整数字段,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,17,f1,readLong,w.e0 0000d4-0000dc,长整数字段,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,18,c1,readShort,w.e0 0000e0-0000e8,短整数字段,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,19,d1,readByte,w.e0 0000ec-0000f4,字节标志,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,20,unused_byte_2,readByte,w.e0 0000f8,被读取但未保存,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,21,e1,readByte,w.e0 0000fe-000106,字节标志,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,22,h1,readShort,w.e0 00010a-000112,短整数字段,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,23,i1,readShort,w.e0 000116-00011e,短整数字段,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,24,j1,readLong,w.e0 000122-00012a,长整数字段,中
+reqRoleInfo,0x8120,LscriptPages/game/w;->e0(String),role_info,25,unused_int_1,readInt,w.e0 00012e,被读取但未保存,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_count,1,count_A,readByte,p.T 000000-00000a,第一组列表数量；随后创建 x4..V4 多组数组,中高
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.1,x4[i],readLong,p.T 0000de-0000ea,第一组条目 ID,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.2,y4[i],readByte,p.T 0000ee-0000fa,第一组条目类型/状态,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.3,z4[i],readUTF,p.T 0000fe-00010a,第一组条目名称,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.4,"B4[i], A4[i]","readShort,readShort",p.T 00010e-00012a,坐标/等级类两个 short 候选,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.5,"C4[i],D4[i],E4[i]",readByte*3,p.T 00012e-00015a,三个状态/类型标志,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.6,F4..M4/L4[i],readInt*8 + ignored int,p.T 00015e-0001de,资源/兵力/数值类字段组；另有一个 readInt 未保存,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.7,"O4[i],N4[i]","readShort,readShort",p.T 0001e4-000200,两个 short 数值候选,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.8,"P4[i],Q4[i],R4[i],S4[i]","readUTF,readByte,readUTF,readUTF",p.T 000204-000240,文本/标志/文本/文本字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.9,"ignored_short,ignored_long,T4[i]","readShort,readLong,readByte",p.T 000244-00025c,扩展字段，其中 T4 保存为 byte,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.10,U4[i][0..1],readByte*2,p.T 000260-000284,每条目两个 byte 子字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_A_items,A.11,V4[i][0..2],readLong*3,p.T 000288-0002b4,每条目三个 long 子字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_count,2,count_B,readByte,p.T 0002c0-000320,第二组列表数量；随后创建 m4..w4 数组,中高
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.1,m4[i],readLong,p.T 000326-000332,第二组条目 ID,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.2,"n4[i],p4[i]","readUTF,readUTF",p.T 000336-000352,名称/描述类两个文本字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.3,q4[i],readByte,p.T 000356-000362,字节标志,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.4,s4[i],readUTF,p.T 000366-000372,文本字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.5,"o4[i],t4[i],r4[i]","readByte,readByte,derived",p.T 000376-0003b6,若 t4>=100 则 t4-=100 且 r4=1，疑似特殊标记编码,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.6,u4[i],readUTF,p.T 0003ba-0003c6,文本字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_B_items,B.7,"v4[i],w4[i]","readShort,readShort",p.T 0003ca-0003e6,两个 short 数值/坐标候选,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_C_count,3,count_C,readByte,p.T 0003f0-000480,第三组列表数量；随后创建 W4..m5 和多层子数组,中高
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_C_items,C.1,"W4[i],X4[i],Y4[i],Z4[i],a5[i]","readLong,readUTF,readByte,readShort,readShort",p.T 000486-0004d2,第三组基础条目字段,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_C_items,C.2,optional b5/c5/d5/e5,"readByte gate + UTF,UTF,int,int",p.T 0004d6-00051e,存在标志非 0 时读取扩展文本/数值,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_C_items,C.3,f5/g5 nested pairs,"count byte + (byte,byte)*N",p.T 000522-000574,第一类子列表，每项两个 byte,中
+reqRoleFiefList,0x8510,LscriptPages/game/p;->a1(String)->T(String),group_C_items,C.4,h5/j5/i5/k5/l5/m5 nested records,"count byte + (UTF,short,byte,byte,byte,int)*N",p.T 000576-000648,第二类子列表，疑似驻军/将领/资源明细,中

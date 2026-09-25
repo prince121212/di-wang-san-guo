@@ -1,0 +1,6 @@
+﻿response_opcode,request_opcode,handler,semantic,read_schema,sync_contract,ui_effect,confidence
+0x8233,0x1233,LscriptPages/game/q;->o1(Ljava/lang/String;)V,prisoner control cost preflight,"readByte(ctrl_type); readByte(not_found_flag); if flag!=1 and ctrl_type in {0,1}: readLong(copper_cost); readLong(gold_cost)",none,ctrl_type=0 弹“劝降俘虏”消耗确认并置 z.p0=4；ctrl_type=1 弹“营救被俘”消耗确认并置 z.p0=2；not_found_flag==1 直接提示“俘虏不在”。,high
+0x8234,0x1234,LscriptPages/game/q;->b1(Ljava/lang/String;)V,prisoner persuade/lure result,readByte(result_code); readUTF(server_message),"if result_code in {0,1}: f6(0)+f6(1); else: f6(1); no V5/S5",按 result_code/server_message 显示劝降结果；成功类会刷新我方将领表与俘虏表，并记录“获得名将”事件。,high
+0x8236,0x1236,LscriptPages/game/q;->c1(Ljava/lang/String;)V,release prisoner result,readByte(result_code),if result_code==0: f6(1); no V5/S5,result_code==0 提示释放成功，否则提示释放失败；重置弹窗/状态并调用 q.R0 刷新。,high
+0x8238,0x1238,LscriptPages/game/q;->d1(Ljava/lang/String;)V,rescue captured self general result,readByte(result_code); readBoolean(full_sync_flag),if full_sync_flag: f6(0); else: a6(0); no V5/S5,成功类提示/记录营救成功；-20 显示“已被劝降”；其他失败显示“营救失败”；随后刷新监狱页/HD 页。,high
+0x823b,0x123b,LscriptPages/game/q;->a1(Ljava/lang/String;)V,give up captured self general result,readByte(result_code),if result_code==0: f6(0); no V5/S5,result_code==0 提示放弃成功，否则提示放弃失败；重置弹窗/监狱页并刷新 HD 页。,high

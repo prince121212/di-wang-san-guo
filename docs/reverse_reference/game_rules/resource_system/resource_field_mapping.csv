@@ -1,0 +1,27 @@
+﻿scope,field,io/source,type,meaning,confidence,evidence,server_rebuild_note
+global/player,scriptPages/data/i.d,readLong in i.x/i.b/i.z; updated by awards,long,当前铜钱,high,g0.e uses it under di_标题铜钱; k0.o row label di_标题铜钱; i.A hourly adds m output into d; data.g.w0(-1) returns d,服务端权威保存；同步登录/增量/奖励后下发
+global/player,scriptPages/data/i.e,readLong in i.x/i.b/i.z; updated by awards,long,当前粮食,high,g0.e uses it under di_标题粮食; k0.o row label di_标题粮食; i.A hourly adds n output into e; data.g.w0(-2) returns e,服务端权威保存；同步登录/增量/奖励后下发
+global/player,scriptPages/data/i.m,readInt in i.x/i.b/i.z,int,总产钱/小时,high,q.u labels i.m as di_总产钱; i.A uses m*(now-G)/3600000 to add d,由服务端按封地/建筑/buff计算；客户端只做显示侧本地递增
+global/player,scriptPages/data/i.n,readInt in i.x/i.b/i.z,int,总产粮/小时,high,q.u labels i.n as di_标题总产粮; i.A uses n*(now-H)/3600000 to add e,由服务端按封地/建筑/buff计算；客户端只做显示侧本地递增
+global/player,scriptPages/data/i.G/H,set PageMain.getCurTime after sync,long timestamp,铜钱/粮食本地递增起算时间,high,i.A reads G/H and m/n to increment d/e per hour,服务端可不依赖；用于客户端显示平滑增长
+global/player,scriptPages/data/i.i,readLong in i.x; typed update in i.b type=1; award m0.u,long,当前声望,high,k0.o first row di_标题声望 uses i.i; q0.V re_声望升级 uses i/i.j/i.k; m0.u award success writes i.i,声望奖励、升级阈值由服务端权威计算
+global/player,scriptPages/data/i.j,readLong in i.x; typed update in i.b type=12; also old k on k change,long,当前等级声望下限/上一级阈值,medium-high,q0.V computes i-j and k-j for声望升级进度; i.b type=2 moves old k to j when next threshold changes,配合君主等级/声望阈值表使用
+global/player,scriptPages/data/i.k,readLong in i.x; typed update in i.b type=2,long,下一级声望阈值,medium-high,q0.V uses k-j as总进度、k-i as剩余声望; i.b type=2 updates k,需继续恢复完整等级阈值表
+global/player,scriptPages/data/i.o,readLong in i.x; typed update in i.b type=4,long,战功候选,medium,data.g.w0(-6) returns i.o; data.g resource name table includes 战功 after 声望,需结合战功排行榜/战报动态样本复核
+global/player,scriptPages/data/i.q,readLong in i.x/i.z; typed update in i.b type=6,long,人口当前占用/人口当前值候选,medium-high,q.u label di_人口占用 displays i.q/i.r; q.p0 uses q/r in征兵可招计算,人口/征兵公式需后续联动验证
+global/player,scriptPages/data/i.r,readLong in i.x/i.z; typed update in i.b type=7,long,人口上限候选,medium-high,q.u label di_人口占用 displays i.q/i.r; q.p0 uses q/r,由房屋/科技/称号等计算后下发
+global/player,scriptPages/data/i.u,readByte in i.x; typed update in i.b type=13,int,资源点当前数量候选,medium,k0.o label di_标题资源点 value u/v,需结合资源点占领动态样本确认
+global/player,scriptPages/data/i.v,readByte in i.x; typed update in i.b type=14,byte,资源点上限候选,medium,k0.o label di_标题资源点 value u/v,同上
+global/player,scriptPages/data/i.s,readByte in i.x; typed update in i.b type=8,int,封地上限候选,medium,k0.o label di_标题封地 uses Lo/a.s2().length / i.s,需与角色等级/官职/成长规则结合
+global/player,scriptPages/data/i.t,readByte in i.x; typed update in i.b type=9,int,将领上限候选,medium,q.L label di_将领 displays current generals / i.t,需与将领系统验证
+global/player,scriptPages/data/g.F,readInt in i.b; readLong in i.z; displayed in g0.e,long,黄金,high,g0.e appends g.F after di_标题黄金; data.g.w0(-4) returns g.F,充值/购买/消耗均应服务端权威
+global/player,scriptPages/data/g.G,readInt in i.b; readLong in i.z; displayed in g0.e,long,白银,high,g0.e appends g.G after di_标题白银; data.g.w0(-3) returns g.G,商城白银购买消耗字段；服务端权威
+global/player,scriptPages/data/g.H,readLong in i.b; award m0.u; a0.a.c2,long,账号积分,high,data.g.v0(-14) 通过 f8[13] 返回“账号积分”；data.g.w0(-14) 返回 g.H；i.b/m0.u/a0.a.c2 同步 H；玉石另为 item_id=399,作为 account_points / 账号积分全局字段保存；不要与玉石道具 item_id=399 混淆
+fief,Lo/a.tv[fief],readInt in Lo/a.Y5,int,单封地产钱/小时最终显示值,high,q.L and q.u labels di_标题产钱/di_封地产钱 display tv with /小时,服务端计算每封地最终产量后下发
+fief,Lo/a.uv[fief],readInt in Lo/a.Y5,int,单封地产粮/小时最终显示值,high,q.L and q.u labels di_标题产粮/di_封地产粮 display uv with /小时,服务端计算每封地最终产量后下发
+fief,Lo/a.yv/zv[fief],readShort in Lo/a.Y5,short,驻防当前/上限,high,q.L label di_驻防 displays yv/zv,出征/驻防变化后同步
+fief,Lo/a.Kv/Lv[fief],read repeated byte+int in Lo/a.Y5,byte[]/int[],封地闲兵库存,high,q.L label di_闲兵 calls Lo/a.o4=sum(Lv); p.M0 updates Kv/Lv,征兵/补兵/战斗回城后同步
+fief,Lo/a.Mv/Nv[fief],read repeated byte+int in Lo/a.Y5,byte[]/int[],第二组兵力池，疑似伤兵/预备兵,low-medium,Y5 reads parallel type/count map; Lo/a.Y2 reads Mv/Nv,需后续追治疗/伤兵 UI
+fief,Lo/a.Bv/Cv/Dv,read in Lo/a.k1,byte + byte[] + long[],铜钱增产状态,high,building_output_formula_report 已确认；k1 三组第一组,结束时间/增产倍率由服务端维护
+fief,Lo/a.Ev/Fv/Gv,read in Lo/a.k1,byte + byte[] + long[],粮食增产状态,high,building_output_formula_report 已确认；k1 三组第二组,同上
+fief,Lo/a.Hv/Iv/Jv,read in Lo/a.k1,byte + byte[] + long[],建筑队列/同时建设加成状态,high,building_output_formula_report 已确认；k1 三组第三组,同上

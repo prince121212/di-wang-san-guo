@@ -1,0 +1,152 @@
+{
+  "date": "2026-07-05",
+  "topic": "道路速度与城防战斗加成公式静态追踪状态",
+  "key_findings": [
+    "全 DEX 对 data.b.v/w/x 与 k.Y0/Z0/a1 的引用扫描显示，这些字段主要出现在数据访问器、初始化、修筑 UI、修筑响应同步、城池详情缓存刷新中。",
+    "未发现 data.b.w/k.Z0 道路值参与出征耗时、行军速度或阻击路径的本地计算。",
+    "未发现 data.b.v/k.Y0 城墙/城防值参与客户端战斗伤害、攻防或回放损兵计算。",
+    "结合此前战斗系统结论，客户端更像表现/回放层；道路速度和城防战斗加成大概率由服务端结算或下发结果决定。",
+    "因此现阶段不能从 APK 单独完整恢复道路速度公式和城防战斗加成公式；需要动态样本拟合或重建时自定义兼容公式。"
+  ],
+  "usage_ref_count": 12,
+  "important_refs": [
+    {
+      "class": "LscriptPages/data/b;",
+      "method": "A",
+      "code_off": "0x260a60",
+      "fields": [
+        "LscriptPages/data/b;->x [[I"
+      ],
+      "file": "scriptPages_data_b__A__0x260a60.smali.txt"
+    },
+    {
+      "class": "LscriptPages/data/b;",
+      "method": "L",
+      "code_off": "0x260eb8",
+      "fields": [
+        "LscriptPages/data/b;->v [[I",
+        "LscriptPages/data/b;->w [[I",
+        "LscriptPages/data/b;->x [[I"
+      ],
+      "file": "scriptPages_data_b__L__0x260eb8.smali.txt"
+    },
+    {
+      "class": "LscriptPages/data/b;",
+      "method": "k",
+      "code_off": "0x2609d8",
+      "fields": [
+        "LscriptPages/data/b;->v [[I"
+      ],
+      "file": "scriptPages_data_b__k__0x2609d8.smali.txt"
+    },
+    {
+      "class": "LscriptPages/data/b;",
+      "method": "v",
+      "code_off": "0x260a1c",
+      "fields": [
+        "LscriptPages/data/b;->w [[I"
+      ],
+      "file": "scriptPages_data_b__v__0x260a1c.smali.txt"
+    },
+    {
+      "class": "LscriptPages/data/i;",
+      "method": "a",
+      "code_off": "0x28b71c",
+      "fields": [
+        "LscriptPages/data/b;->v [[I",
+        "LscriptPages/data/b;->w [[I",
+        "LscriptPages/data/b;->x [[I"
+      ],
+      "file": "scriptPages_data_i__a__0x28b71c.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "M0",
+      "code_off": "0x2c9c0c",
+      "fields": [
+        "LscriptPages/data/b;->v [[I",
+        "LscriptPages/data/b;->w [[I",
+        "LscriptPages/data/b;->x [[I"
+      ],
+      "file": "scriptPages_game_k__M0__0x2c9c0c.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "c0",
+      "code_off": "0x2c6b88",
+      "fields": [
+        "LscriptPages/game/k;->Y0 [I",
+        "LscriptPages/game/k;->Z0 [I",
+        "LscriptPages/game/k;->a1 [I"
+      ],
+      "file": "scriptPages_game_k__c0__0x2c6b88.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "d",
+      "code_off": "0x2bc288",
+      "fields": [
+        "LscriptPages/game/k;->Y0 [I",
+        "LscriptPages/game/k;->Z0 [I",
+        "LscriptPages/game/k;->a1 [I"
+      ],
+      "file": "scriptPages_game_k__d__0x2bc288.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "n1",
+      "code_off": "0x2cb5e0",
+      "fields": [
+        "LscriptPages/game/k;->Y0 [I",
+        "LscriptPages/game/k;->Z0 [I",
+        "LscriptPages/game/k;->a1 [I"
+      ],
+      "file": "scriptPages_game_k__n1__0x2cb5e0.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "o1",
+      "code_off": "0x2cb634",
+      "fields": [
+        "LscriptPages/data/b;->v [[I",
+        "LscriptPages/data/b;->w [[I",
+        "LscriptPages/data/b;->x [[I"
+      ],
+      "file": "scriptPages_game_k__o1__0x2cb634.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "r0",
+      "code_off": "0x2c8958",
+      "fields": [
+        "LscriptPages/data/b;->v [[I",
+        "LscriptPages/data/b;->w [[I",
+        "LscriptPages/data/b;->x [[I"
+      ],
+      "file": "scriptPages_game_k__r0__0x2c8958.smali.txt"
+    },
+    {
+      "class": "LscriptPages/game/k;",
+      "method": "w",
+      "code_off": "0x2c1378",
+      "fields": [
+        "LscriptPages/game/k;->Y0 [I",
+        "LscriptPages/game/k;->Z0 [I",
+        "LscriptPages/game/k;->a1 [I"
+      ],
+      "file": "scriptPages_game_k__w__0x2c1378.smali.txt"
+    }
+  ],
+  "generated_files": [
+    "analysis/game_rules/storage_offline_system/road_wall_effect_formula_status_report.md",
+    "analysis/game_rules/storage_offline_system/road_wall_effect_formula_status.csv",
+    "analysis/game_rules/storage_offline_system/road_wall_effect_formula_status_summary.json",
+    "analysis/game_rules/storage_offline_system/road_wall_usage_refs/road_wall_usage_refs.csv",
+    "analysis/game_rules/storage_offline_system/road_wall_usage_refs/road_wall_usage_refs.json"
+  ],
+  "remaining_unknowns": [
+    "道路值到行军时间/速度仍需动态样本拟合。",
+    "城墙/城防到守军战斗力加成仍需动态战报样本拟合。",
+    "炮塔伤害/攻击规则仍未恢复。"
+  ]
+}

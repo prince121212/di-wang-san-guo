@@ -1,0 +1,689 @@
+{
+  "generated_at": "2026-07-05T08:03:08",
+  "scope": "封地基础信息、普通建筑列表、建筑队列/增产状态、每建筑嵌套任务同步块第一版",
+  "entry_points": [
+    {
+      "handler": "Lo/a.Z5(String)",
+      "meaning": "完整封地列表/全量封地缓存初始化，先读 Ov 槽位容量，再逐封地调用 Y5 和 j1。"
+    },
+    {
+      "handler": "Lo/a.Y5(long,String)",
+      "meaning": "单个封地基础信息块，内部调用 k1 读取临时增产/队列状态。"
+    },
+    {
+      "handler": "Lo/a.k1(int,String)",
+      "meaning": "封地级状态块：铜钱增产、粮食增产、同时建筑队列加成。"
+    },
+    {
+      "handler": "Lo/a.j1(long,String)",
+      "meaning": "单个封地普通建筑列表，循环读取建筑槽位/实例/类型/等级/计时/状态，并为每个建筑调用 T5。"
+    },
+    {
+      "handler": "Lo/a.T5(String)",
+      "meaning": "按建筑实例 ID 关联的嵌套生产/训练/资源任务块。"
+    }
+  ],
+  "key_cache_semantics": {
+    "Lo/a.Ov": "建筑槽位容量/最大槽数",
+    "Lo/a.ov": "封地 ID 数组",
+    "Lo/a.xv": "默认同时建筑队列容量",
+    "Lo/a.Pv": "建筑实例/任务 ID，H1 返回，buildItemUse/buildQueueAdd 使用",
+    "Lo/a.Qv": "建筑类型，Z1 返回，-1 代表空槽",
+    "Lo/a.Rv": "建筑等级，L1 返回",
+    "Lo/a.Sv": "建筑建造/升级计时字段，W1 返回",
+    "Lo/a.Uv": "建筑状态符号位缓存，服务端 long 仅正负影响 Y1 状态",
+    "Lo/a.Vv": "建筑槽位/位置编号，Q1 返回",
+    "Lo/a.Cv/Dv/Bv": "铜钱增产效果/截止/类型",
+    "Lo/a.Fv/Gv/Ev": "粮食增产效果/截止/类型",
+    "Lo/a.Iv/Jv/Hv": "同时建筑队列容量加成/截止/类型",
+    "Lo/a.Ym/Zm/an/bn/cn/dn/en/fn/gn/hn": "每建筑嵌套任务列表字段"
+  },
+  "fields": [
+    {
+      "block": "full_fief_list_Z5",
+      "order": 1,
+      "field": "building_slot_capacity",
+      "io": "readByte",
+      "target_cache": "Lo/a.Ov",
+      "evidence": "Z5 000000-000008",
+      "meaning": "每个封地普通建筑槽位容量/最大槽数。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "full_fief_list_Z5",
+      "order": 2,
+      "field": "fief_count",
+      "io": "readByte",
+      "target_cache": "loop count",
+      "evidence": "Z5 000144-00014c",
+      "meaning": "本次完整封地下发的封地数量。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "full_fief_list_Z5",
+      "order": 3,
+      "field": "fief_id",
+      "io": "readLong",
+      "target_cache": "Lo/a.ov[fief_index]",
+      "evidence": "Z5 000150-00015c",
+      "meaning": "封地 ID；随后按该 ID 调 Y5 和 j1。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "full_fief_list_Z5",
+      "order": 4,
+      "field": "fief_base_block",
+      "io": "Y5(J,String)",
+      "target_cache": "pv/qv/rv/...",
+      "evidence": "Z5 000164-000168 calls Y5",
+      "meaning": "封地基础信息、队列/增产状态和资源/士兵库存等块。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "full_fief_list_Z5",
+      "order": 5,
+      "field": "building_list_block",
+      "io": "j1(J,String)",
+      "target_cache": "Pv/Qv/Rv/Sv/Tv/Uv/Vv/Wv + T5 nested",
+      "evidence": "Z5 000172-000176 calls j1",
+      "meaning": "普通建筑列表与每个建筑的嵌套生产/训练块。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 1,
+      "field": "fief_flag_pv",
+      "io": "readByte",
+      "target_cache": "Lo/a.pv[index]",
+      "evidence": "Y5 00000c-000018",
+      "meaning": "封地基础 byte 字段，语义待命名。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 2,
+      "field": "fief_flag_qv",
+      "io": "readByte",
+      "target_cache": "Lo/a.qv[index]",
+      "evidence": "Y5 00001c-000028",
+      "meaning": "封地基础 byte 字段，语义待命名。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 3,
+      "field": "fief_name",
+      "io": "readUTF",
+      "target_cache": "Lo/a.rv[index]",
+      "evidence": "Y5 00002c-000038",
+      "meaning": "封地名称。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 4,
+      "field": "fief_long_sv",
+      "io": "readLong",
+      "target_cache": "Lo/a.sv[index]",
+      "evidence": "Y5 00003c-000048",
+      "meaning": "封地基础 long 字段，可能为归属/时间/坐标相关；需结合 UI。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 5,
+      "field": "fief_int_tv",
+      "io": "readInt",
+      "target_cache": "Lo/a.tv[index]",
+      "evidence": "Y5 00004c-000058",
+      "meaning": "封地基础 int 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 6,
+      "field": "fief_int_uv",
+      "io": "readInt",
+      "target_cache": "Lo/a.uv[index]",
+      "evidence": "Y5 00005c-000068",
+      "meaning": "封地基础 int 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 7,
+      "field": "fief_short_vv",
+      "io": "readShort",
+      "target_cache": "Lo/a.vv[index]",
+      "evidence": "Y5 00006c-000078",
+      "meaning": "封地基础 short 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 8,
+      "field": "fief_short_wv",
+      "io": "readShort",
+      "target_cache": "Lo/a.wv[index]",
+      "evidence": "Y5 00007c-000088",
+      "meaning": "封地基础 short 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 9,
+      "field": "base_build_queue_capacity",
+      "io": "readByte",
+      "target_cache": "Lo/a.xv[index]",
+      "evidence": "Y5 00008c-000098; U1 000000-00002a",
+      "meaning": "默认同时建筑队列容量；若 Iv/Jv 的临时队列 buff 生效，U1 用 Iv[0] 覆盖。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 10,
+      "field": "fief_short_yv",
+      "io": "readShort",
+      "target_cache": "Lo/a.yv[index]",
+      "evidence": "Y5 00009c-0000a8",
+      "meaning": "封地基础 short 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 11,
+      "field": "fief_short_zv",
+      "io": "readShort",
+      "target_cache": "Lo/a.zv[index]",
+      "evidence": "Y5 0000ac-0000b8",
+      "meaning": "封地基础 short 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 12,
+      "field": "fief_flag_Av",
+      "io": "readByte",
+      "target_cache": "Lo/a.Av[index]",
+      "evidence": "Y5 0000bc-0000c8",
+      "meaning": "封地基础 byte 字段。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 13,
+      "field": "fief_buff_block",
+      "io": "k1(index,String)",
+      "target_cache": "Bv/Cv/Dv/Ev/Fv/Gv/Hv/Iv/Jv",
+      "evidence": "Y5 0000cc calls k1",
+      "meaning": "封地临时状态：铜钱增产、粮食增产、同时建筑队列加成。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 14,
+      "field": "kv_lv_count",
+      "io": "readByte",
+      "target_cache": "Lo/a.Kv[index], Lo/a.Lv[index]",
+      "evidence": "Y5 0000d2-000126",
+      "meaning": "第一组封地 byte/int 列表，语义待命名。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 15,
+      "field": "kv_lv_entry_type",
+      "io": "readByte",
+      "target_cache": "Lo/a.Kv[index][i]",
+      "evidence": "Y5 0000fa-00010a",
+      "meaning": "第一组封地列表条目 byte。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 16,
+      "field": "kv_lv_entry_value",
+      "io": "readInt",
+      "target_cache": "Lo/a.Lv[index][i]",
+      "evidence": "Y5 00010e-00011e",
+      "meaning": "第一组封地列表条目 int。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 17,
+      "field": "mv_nv_count",
+      "io": "readByte",
+      "target_cache": "Lo/a.Mv[index], Lo/a.Nv[index]",
+      "evidence": "Y5 000128-000178",
+      "meaning": "第二组封地 byte/int 列表，语义待命名。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 18,
+      "field": "mv_nv_entry_type",
+      "io": "readByte",
+      "target_cache": "Lo/a.Mv[index][i]",
+      "evidence": "Y5 00014c-00015c",
+      "meaning": "第二组封地列表条目 byte。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_base_Y5",
+      "order": 19,
+      "field": "mv_nv_entry_value",
+      "io": "readInt",
+      "target_cache": "Lo/a.Nv[index][i]",
+      "evidence": "Y5 000160-000170",
+      "meaning": "第二组封地列表条目 int。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 1,
+      "field": "copper_boost_count",
+      "io": "readByte",
+      "target_cache": "Bv/Cv/Dv group length",
+      "evidence": "k1 000008-000014",
+      "meaning": "铜钱增产状态数量。UI 在 q.K 中以“di_提示铜钱增产”展示 Cv 百分比，q2/Dv 展示剩余时间。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 2,
+      "field": "copper_boost_percent",
+      "io": "readByte",
+      "target_cache": "Lo/a.Cv[fief][i]",
+      "evidence": "k1 000038-000048; q.K 000392-0003c8",
+      "meaning": "铜钱增产百分比/效果值。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 3,
+      "field": "copper_boost_deadline_delta",
+      "io": "readLong + now",
+      "target_cache": "Lo/a.Dv[fief][i]",
+      "evidence": "k1 00004c-00005e; q2 accessor",
+      "meaning": "服务端下发剩余毫秒/时间差，客户端加当前时间存为截止时间。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 4,
+      "field": "copper_boost_type_or_item",
+      "io": "readByte",
+      "target_cache": "Lo/a.Bv[i]",
+      "evidence": "k1 000062-00006e",
+      "meaning": "铜钱增产类型/道具标记，数组为全局长度。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 5,
+      "field": "grain_boost_count",
+      "io": "readByte",
+      "target_cache": "Ev/Fv/Gv group length",
+      "evidence": "k1 000078-000088",
+      "meaning": "粮食增产状态数量。UI 在 q.K 中以“di_提示粮食增产”展示 Fv 百分比，J2/Gv 展示剩余时间。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 6,
+      "field": "grain_boost_percent",
+      "io": "readByte",
+      "target_cache": "Lo/a.Fv[fief][i]",
+      "evidence": "k1 0000a6-0000b6; q.K 000312-00035e",
+      "meaning": "粮食增产百分比/效果值。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 7,
+      "field": "grain_boost_deadline_delta",
+      "io": "readLong + now",
+      "target_cache": "Lo/a.Gv[fief][i]",
+      "evidence": "k1 0000ba-0000cc; J2 accessor",
+      "meaning": "服务端下发剩余毫秒/时间差，客户端加当前时间存为截止时间。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 8,
+      "field": "grain_boost_type_or_item",
+      "io": "readByte",
+      "target_cache": "Lo/a.Ev[i]",
+      "evidence": "k1 0000d0-0000dc",
+      "meaning": "粮食增产类型/道具标记。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 9,
+      "field": "build_queue_buff_count",
+      "io": "readByte",
+      "target_cache": "Hv/Iv/Jv group length",
+      "evidence": "k1 0000e6-0000f6",
+      "meaning": "同时建筑队列加成状态数量。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 10,
+      "field": "build_queue_capacity_value",
+      "io": "readByte",
+      "target_cache": "Lo/a.Iv[fief][i]",
+      "evidence": "k1 000112-000122; U1 00001e-00002a; q.K 0002da-000300",
+      "meaning": "临时同时建筑队列数量/容量值；UI 文案为“re_提示同时建筑”。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 11,
+      "field": "build_queue_buff_deadline_delta",
+      "io": "readLong + now",
+      "target_cache": "Lo/a.Jv[fief][i]",
+      "evidence": "k1 000126-000138; V1 accessor",
+      "meaning": "服务端下发剩余毫秒/时间差，客户端加当前时间存为截止时间。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "fief_buff_k1",
+      "order": 12,
+      "field": "build_queue_buff_type_or_item",
+      "io": "readByte",
+      "target_cache": "Lo/a.Hv[i]",
+      "evidence": "k1 00013c-000148",
+      "meaning": "同时建筑队列加成类型/道具标记。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 1,
+      "field": "building_count",
+      "io": "readByte",
+      "target_cache": "loop count",
+      "evidence": "j1 0000b2-0000ba",
+      "meaning": "本封地下发的建筑记录数量。超过 Lo/a.Ov 的记录会被消费但不入主槽数组。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 2,
+      "field": "slot_position_id",
+      "io": "readByte",
+      "target_cache": "Lo/a.Vv[fief][i]",
+      "evidence": "j1 00012c-00013c; Q1/J1 accessors",
+      "meaning": "建筑槽位/位置编号；请求 q.h 的第 3 字段来自 Q1，即 Vv。空槽会自动补唯一位置号。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 3,
+      "field": "building_instance_id",
+      "io": "readLong",
+      "target_cache": "Lo/a.Pv[fief][i]",
+      "evidence": "j1 000140-000150; H1/K1 accessors",
+      "meaning": "建筑实例/任务 ID；buildQueueAdd/buildItemUse 使用 H1 返回该 ID。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 4,
+      "field": "building_type",
+      "io": "readByte",
+      "target_cache": "Lo/a.Qv[fief][i]",
+      "evidence": "j1 000154-000164; Z1/r2 accessors",
+      "meaning": "建筑类型；-1 表示空槽。普通建筑升级 q.v1 第 4 字段来自 Z1。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 5,
+      "field": "building_level",
+      "io": "readByte",
+      "target_cache": "Lo/a.Rv[fief][i]",
+      "evidence": "j1 000168-000178; L1 accessor",
+      "meaning": "建筑等级。q.v1 用 L1 与最大等级比较。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 6,
+      "field": "build_timer_ms_or_task_duration",
+      "io": "readInt",
+      "target_cache": "Lo/a.Sv[fief][i]",
+      "evidence": "j1 00017c-00018c; W1/q.L display",
+      "meaning": "建筑建造/升级计时字段。UI 中 W1()/1000 显示剩余时间，T1/Y1 也以 Sv>0 判断队列状态。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 7,
+      "field": "server_progress_int_unused",
+      "io": "readInt then zeroed",
+      "target_cache": "Lo/a.Tv[fief][i]=0",
+      "evidence": "j1 000190-0001a0 reads int; 0001b8-0001c0 overwrites 0",
+      "meaning": "服务端发送但客户端立即清零，疑似旧版进度/状态字段；重建服务端可先发 0。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 8,
+      "field": "build_state_sign_flag",
+      "io": "readLong sign only",
+      "target_cache": "Lo/a.Uv[fief][i]= +/- currentTime",
+      "evidence": "j1 0001a4-0001ec; Y1 000024-000056",
+      "meaning": "客户端只看该 long 的正负：负数缓存为 -now，非负缓存为 now，用于区分 Y1 返回 2/3 状态。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "building_list_j1",
+      "order": 9,
+      "field": "nested_building_task_block",
+      "io": "T5(String)",
+      "target_cache": "Xm/Ym/Zm/an/bn/cn/dn/en/fn/gn/hn",
+      "evidence": "j1 0001f0 calls T5",
+      "meaning": "每个建筑后附加的嵌套生产/训练/资源任务块。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 1,
+      "field": "nested_action",
+      "io": "readByte",
+      "target_cache": "operation mode",
+      "evidence": "T5 000126-000136 / 000090-00009e",
+      "meaning": "嵌套任务块操作：0 删除/清理某 building_instance_id；1 添加/更新任务列表。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 2,
+      "field": "nested_owner_building_id",
+      "io": "readLong",
+      "target_cache": "Lo/a.Xm slot key",
+      "evidence": "T5 00012e-000134 / 000098-00009e",
+      "meaning": "嵌套任务所属建筑实例 ID，与 Pv/building_instance_id 关联。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 3,
+      "field": "nested_task_count",
+      "io": "readByte",
+      "target_cache": "array length",
+      "evidence": "T5 0001ac-0001b4",
+      "meaning": "action=1 时的嵌套任务条数。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 4,
+      "field": "nested_task_id",
+      "io": "readLong",
+      "target_cache": "Lo/a.Ym[nested][i]",
+      "evidence": "T5 000230-000240",
+      "meaning": "嵌套任务/产出条目 ID。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 5,
+      "field": "nested_task_state",
+      "io": "readByte",
+      "target_cache": "Lo/a.Zm[nested][i]",
+      "evidence": "T5 000244-000254; q.C v1 checks value 3",
+      "meaning": "嵌套任务状态；q.C 中值 3 会显示“人口达到”。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 6,
+      "field": "nested_target_type",
+      "io": "readShort",
+      "target_cache": "Lo/a.an[nested][i]",
+      "evidence": "T5 000258-000268; q.C y1 + data.g.u1",
+      "meaning": "嵌套产出/士兵类型；UI 用 data.g.u1(type) 显示名称。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 7,
+      "field": "nested_current_amount",
+      "io": "readInt",
+      "target_cache": "Lo/a.bn[nested][i]",
+      "evidence": "T5 00026c-00027c; q.C w1 display",
+      "meaning": "当前数量/已完成数量。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 8,
+      "field": "nested_target_or_capacity",
+      "io": "readInt",
+      "target_cache": "Lo/a.cn[nested][i]",
+      "evidence": "T5 000280-000290; q.C displays current/max",
+      "meaning": "目标数量/容量上限。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 9,
+      "field": "nested_remaining_or_total_ms",
+      "io": "readLong",
+      "target_cache": "Lo/a.dn[nested][i]",
+      "evidence": "T5 000294-0002a4; x1 accessor; q.C displays remaining time",
+      "meaning": "嵌套任务剩余/总时间毫秒。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 10,
+      "field": "nested_flag_en",
+      "io": "readByte",
+      "target_cache": "Lo/a.en[nested][i]",
+      "evidence": "T5 0002a8-0002b8",
+      "meaning": "嵌套任务 byte 标记。",
+      "confidence": "中",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 11,
+      "field": "nested_tick_interval",
+      "io": "readInt",
+      "target_cache": "Lo/a.fn[nested][i]",
+      "evidence": "T5 0002bc-0002cc",
+      "meaning": "周期/间隔；客户端用 dn % fn 计算下一跳倒计时 hn。",
+      "confidence": "中高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 12,
+      "field": "nested_client_seen_time",
+      "io": "client now",
+      "target_cache": "Lo/a.gn[nested][i]",
+      "evidence": "T5 0002d0-0002d8",
+      "meaning": "客户端接收时间。",
+      "confidence": "高",
+      "notes": ""
+    },
+    {
+      "block": "nested_task_T5",
+      "order": 13,
+      "field": "nested_next_tick_remaining",
+      "io": "computed",
+      "target_cache": "Lo/a.hn[nested][i]",
+      "evidence": "T5 0002dc-000318",
+      "meaning": "由 dn 与 fn 计算出的下一周期剩余时间。",
+      "confidence": "中高",
+      "notes": ""
+    }
+  ],
+  "key_conclusions": [
+    "普通封地建筑同步块并不是单独只返回建筑数组；完整封地列表 Z5 先读封地元信息 Y5，再读建筑列表 j1。",
+    "建筑列表 j1 每条记录字段为 Vv/Pv/Qv/Rv/Sv/Tv/Uv 后接 T5；其中 Qv 是建筑类型，Rv 是等级，Pv 是服务端建筑实例 ID。",
+    "客户端对 j1 的第 7 个 int 字段 Tv 读取后立即清零，服务端初版可发送 0。",
+    "客户端对 j1 的 Uv long 只保留正负号：负数变成 -当前时间，非负变成 当前时间，用于 Y1 区分活动/暂停类状态。",
+    "k1 明确包含铜钱增产、粮食增产、同时建筑队列加成三组状态；U1 会在 Jv 未过期时用 Iv[0] 覆盖默认队列容量 xv。",
+    "T5 是每建筑实例的嵌套任务块，UI 通过 an/bn/cn/dn/Zm 展示兵种/数量/剩余时间等；这对兵营训练、资源建筑产出或队列展示有重建价值。"
+  ]
+}

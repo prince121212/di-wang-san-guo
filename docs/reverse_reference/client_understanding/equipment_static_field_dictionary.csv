@@ -1,0 +1,22 @@
+﻿field,type,name_candidate,source,evidence_or_usage,confidence
+Lo/a.In,[S,装备模板 id 主键表,scriptEquip.sc,data.d.e -> Lo/a.g3(template_id) 查找 index。,high
+Lo/a.Jn,[Z,名品/稀有装备标记候选,scriptEquip.sc,true 行集中在倚天剑、青釭剑、青龙偃月刀、神兽装备、名马等；当前没有发现运行时 accessor。,medium
+Lo/a.Kn,[B,装备等级,scriptEquip.sc,gameHD/b.C 以“等级”标签展示；data.d.z/n 返回该值。,high
+Lo/a.Ln,[S,基础属性值,scriptEquip.sc,Lo/a.z1(template_id) 返回；data.d.j/i 与强化贡献相加。,high
+Lo/a.Mn,[String],装备名称,scriptEquip.sc,data.d.D/o 返回。,high
+Lo/a.Nn,[S,装备属性/部位类型,scriptEquip.sc,Lo/a.S4(template_id) 返回；0=武器/攻击、1=头盔/生命、2=铠甲/防御、3=坐骑/统兵。,high
+Lo/a.On,[String],装备静态描述文本,scriptEquip.sc,脚本中 17 行非空；当前未发现明确 accessor，可能用于特定展示。,medium
+Lo/a.Pn,[S,装备图标/资源 id,scriptEquip.sc,data.d.w/l 返回，UI 传给图标绘制函数。,high
+Lo/a.Wn,[S,属性类型 id 表,scriptEquipType.sc,Lo/a.l3(type_id) 查找 index。,high
+Lo/a.Xn,[String],装备类型名称,scriptEquipType.sc,武器/头盔/铠甲/坐骑。,high
+Lo/a.Yn,[S,属性文案 group id,scriptEquipType.sc,"Lo/a.w2(type_id,value) 经 Yn -> Qn 找文案。",high
+Lo/a.Zn,[[S],强化属性倍率表,scriptEquipType.sc,data.d.E = strengthen_value * Zn[type][quality]；data.d.j = Ln + E。,high
+Lo/a.ao,[[[S],强化材料表,scriptEquipType.sc,"data.d.k 返回 `[item_id, max(1, ao_amount*(strength+1)/100)]`。",high
+Lo/a.Qn,[S,属性文案 group id 表,scriptEquipEffect.sc,Lo/a.w2 用 Yn 值在 Qn 中查组。,high
+Lo/a.Rn,[[String]],属性文案模板,scriptEquipEffect.sc,模板内 `#` 被数值替换，如“增加将领#点攻击力”。,high
+Lo/a.Sn,[[B]],属性文案项 flag,scriptEquipEffect.sc,Lo/a.w2 当前只使用 flag==1 的项；表内均为 1。,medium
+Lo/a.Tn,[S,特效图标映射行 id/序号候选,scriptEquipIconEffect.sc,data.d.x 当前不用 Tn，仅加载保存。,low
+Lo/a.Un,[S,特效装备模板 id,scriptEquipIconEffect.sc,data.d.x 用实例 template_id 匹配 Un。,high
+Lo/a.Vn,[S,特效资源 id,scriptEquipIconEffect.sc,data.d.x 匹配后返回 Vn。,high
+Lo/a.bo,[[[S]],联网装备配置二元组,response 0xe27f,"由 data.g.s4 从服务端响应写入；data.d.B 返回 `[bo[type][quality][0], bo[type][quality][1]]`。",medium
+data.g.v8/w8/x8/B8/C8/D8/y8/z8/A8,mixed,联网装备/强化全局配置候选,response 0xe27f,s4 读取；当前缺少本地响应样本，暂不命名。,low

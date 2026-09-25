@@ -27,7 +27,10 @@ SPEC.loader.exec_module(SERVER)
 
 CAPTURE_FLOWS = (
     ROOT
-    / "ctf_out"
+    / "电脑端辅助前端"
+    / "tests"
+    / "fixtures"
+    / "game_packets"
     / "passive_pcap_hotspot_20260710_185601"
     / "live_analyzed"
 )

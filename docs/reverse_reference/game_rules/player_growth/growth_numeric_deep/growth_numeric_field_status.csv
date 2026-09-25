@@ -1,0 +1,8 @@
+﻿field,meaning,evidence,confidence,server_rebuild_note
+data.i.c,君主等级,q0.H 绘制等级数字；q0.V c<99 才显示升级剩余声望,高,服务端同步等级，客户端显示/开放判断消费
+data.i.i,当前声望,q0.H/q0.V 用 i-j 计算等级内进度,高,服务端权威同步当前声望
+data.i.j,当前等级声望下限,q0.H/q0.V 的进度起点；i.b tag=12 可刷新,中高,配合 k 构成等级阈值区间
+data.i.k,下一级声望阈值,q0.H/q0.V 的进度终点；i.b tag=2 可刷新,中高,未发现本地完整阈值表
+data.i.s,封地上限,k.s1 开辟封地前比较 Lo/a.s2().length < s,高,等级/声望到 s 的公式服务端侧
+data.i.t,将领上限,z.o/k0.o 显示当前将领数/t；本轮未见生成公式,高,扩展公式待追
+data.i.v,资源点上限,k0.o 显示 u/v；本轮未见生成公式,高,扩展公式待追

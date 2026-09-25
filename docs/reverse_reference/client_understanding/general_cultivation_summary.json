@@ -1,0 +1,28 @@
+{
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/GENERAL_CULTIVATION_GROWUP.md",
+    "字段字典": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_field_dictionary.csv",
+    "请求合同表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_requests.csv",
+    "响应 schema 表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_response_schema.csv",
+    "UI 证据表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_ui_evidence.csv",
+    "抓包 opcode 覆盖检查": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_capture_opcode_check.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/general_cultivation_summary.json"
+  },
+  "row_counts": {
+    "fields": 5,
+    "requests": 2,
+    "responses": 9,
+    "ui_evidence": 5,
+    "capture_opcode_rows": 60
+  },
+  "main_conclusions": [
+    "0x1275 request payload is writeLong(general_id) + writeShort(cultivate_count).",
+    "0x8275 response result codes 0/1/2 read general_id and call Lo/a.a6(0, stream).",
+    "item_id 286 is displayed as 将神魂 inventory through Lo/a.p1(286).",
+    "Lo/a.To is current guarantee/failure count candidate; Lo/a.Uo is a cap/full flag candidate; Lo/a.So is name color/growth tier candidate."
+  ],
+  "capture_has_0x1275": false,
+  "capture_has_0x8275": false
+}

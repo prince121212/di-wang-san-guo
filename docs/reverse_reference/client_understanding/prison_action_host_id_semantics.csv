@@ -1,0 +1,4 @@
+﻿symbol,proposed_name,evidence,prison_usage,confidence
+LscriptPages/game/z;->D,current_fief_id_or_prison_host_fief_id,`q.M1(J)` 同时写 `q.o=z.D=input` 与 `z.C=Lo/a.p3(input)`；`Lo/a.p3` 在封地 id 表 `Lo/a.ov` 中定位 index。,"`z.i0(0)` 用 `Lo/a.G2(z.D,0)` 列出 type0 被俘对象；`z.i0(2)` 用 `Lo/a.G2(z.D,1)` 列出 type1 俘虏对象；`z.d1` 把 `z.D` 作为 0x1234/0x1236/0x1238/0x123b 的第一个 long。",medium-high
+Lo/a.Eo[type][idx],object_owner_fief_id,"`Lo/a.Q3(type,idx)` 直接返回 `Eo[type][idx]`；`Lo/a.G2(host,0)` 用 `Eo[0][idx] == host` 过滤 type0 对象；`z.S` 对将领响应取 `Q3(0,idx)` 后调用 `q.M1(fief_id)`。",type0 被俘列表按 `Eo[0]` 归属到当前封地/监狱宿主。,medium-high
+Lo/a.Zo[idx],type1_prison_host_fief_id,"`Lo/a.G2(host,1)` 不用 `Eo[1]`，而是用 type1 扩展 `Zo[idx] == host` 过滤俘虏列表。",type1 “我方监狱中的俘虏/可劝降对象”所属监狱/封地 id。,medium

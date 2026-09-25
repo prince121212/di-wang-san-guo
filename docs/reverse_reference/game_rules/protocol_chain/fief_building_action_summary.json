@@ -1,0 +1,416 @@
+{
+  "generated_at": "2026-07-05T07:53:19",
+  "scope": "普通封地建筑建造/升级/拆除/取消/加速请求动作分工第一版",
+  "primary_protocols": [
+    {
+      "name": "fiefMove_build_action",
+      "opcode_hex": "0x1200",
+      "opcode_dec": 4608,
+      "constructor": "LscriptPages/game/q;->h(int,long,int,int)",
+      "payload": "action/writeByte; fief_id/writeLong; slot/writeShort; building_type/writeShort"
+    },
+    {
+      "name": "buildQueueAdd",
+      "opcode_hex": "0x120D",
+      "opcode_dec": 4621,
+      "constructor": "q.K1/q.w1 inline BaseIO",
+      "payload": "fief_id/writeLong; building_instance_or_slot_id/writeLong"
+    },
+    {
+      "name": "buildItemUse",
+      "opcode_hex": "dynamic",
+      "constructor": "LscriptPages/game/q;->d(int,long,int,long,short)",
+      "payload": "fief_id/writeLong; building_pos_or_type/writeShort; item_or_task_id/writeLong; item_count_or_param/writeShort"
+    }
+  ],
+  "action_code_findings": [
+    {
+      "action": 0,
+      "callers": [
+        "q.u1 建造",
+        "q.v1 升级"
+      ],
+      "meaning": "建造/升级共用；由第 4 short 是否为选择建筑类型或已有建筑类型区分",
+      "confidence": "中高"
+    },
+    {
+      "action": 1,
+      "callers": [
+        "q.w1"
+      ],
+      "meaning": "尝试拆除单个建筑",
+      "confidence": "中高"
+    },
+    {
+      "action": 2,
+      "callers": [
+        "q.t1 cancelbuild"
+      ],
+      "meaning": "取消建造/升级操作候选；已更正不是 6",
+      "confidence": "中高"
+    }
+  ],
+  "response_handlers": [
+    {
+      "protocol": "fief_building_result",
+      "opcode_hex": "0x8200",
+      "signed": -32256,
+      "handler": "q.i(String)",
+      "fields": "status; substatus; fief_id; Lo/a.j1 nested update",
+      "note": "含完整建筑错误码"
+    },
+    {
+      "protocol": "buildQueueAdd_result",
+      "opcode_hex": "0x8206",
+      "signed": -32250,
+      "handler": "q.e(String)",
+      "fields": "status; optional global/success sync block",
+      "note": "成功提示增加建筑列队成功"
+    }
+  ],
+  "rows": [
+    {
+      "category": "普通建筑动作",
+      "protocol": "fiefMove_build_action",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->h(int,long,int,int)",
+      "direction": "request",
+      "order": 1,
+      "field": "action",
+      "io": "writeByte",
+      "evidence": "q.h 00000a int-to-byte; 00000c writeByte; q.u1/q.v1 pass 0; q.w1 pass 1; q.t1 pass 2",
+      "meaning": "建筑动作码：0=建造或升级；1=尝试拆除；2=取消建造/升级候选。具体子动作由后续两个 short 与 UI 分支共同决定。",
+      "confidence": "中高"
+    },
+    {
+      "category": "普通建筑动作",
+      "protocol": "fiefMove_build_action",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->h(int,long,int,int)",
+      "direction": "request",
+      "order": 2,
+      "field": "fief_id",
+      "io": "writeLong",
+      "evidence": "q.h 000012 writeLong(v2/v3); callers use q.o",
+      "meaning": "目标封地 ID。",
+      "confidence": "高"
+    },
+    {
+      "category": "普通建筑动作",
+      "protocol": "fiefMove_build_action",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->h(int,long,int,int)",
+      "direction": "request",
+      "order": 3,
+      "field": "slot_or_building_slot_key",
+      "io": "writeShort",
+      "evidence": "q.h 000018 int-to-short(v4); 00001a writeShort; q.u1/q.v1/q.w1/q.t1 use Lo/a.Q1(q.p,q.a0)",
+      "meaning": "建筑格子/位置键。建造、升级、拆除、取消均从 Q1(p,a0) 取得。",
+      "confidence": "中高"
+    },
+    {
+      "category": "普通建筑动作",
+      "protocol": "fiefMove_build_action",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->h(int,long,int,int) -> data.f.u(...)",
+      "direction": "request",
+      "order": 4,
+      "field": "building_type_or_current_building_type",
+      "io": "writeShort",
+      "evidence": "q.h 000020 int-to-short(v5); 000026 data.f.u writes second short then d0(0x1200); q.u1 passes g0[f0]; q.v1/q.w1/q.t1 pass Lo/a.Z1(q.p,q.a0)",
+      "meaning": "建造时为选择的目标建筑类型；升级/拆除/取消时为当前位置已有建筑类型/建筑键。",
+      "confidence": "中高"
+    },
+    {
+      "category": "普通建筑动作语义",
+      "protocol": "fiefMove_build_create",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->u1() -> q.h(...)",
+      "direction": "request_callsite",
+      "order": 1,
+      "field": "action=0; fief_id=q.o; slot=Q1(p,a0); building_type=g0[f0]",
+      "io": "call q.h",
+      "evidence": "q.u1 000184-0001a4; 0001ae string di_建造",
+      "meaning": "新建建筑入口。客户端先校验前提/队列，再发送 0x1200。",
+      "confidence": "高"
+    },
+    {
+      "category": "普通建筑动作语义",
+      "protocol": "fiefMove_build_upgrade",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->v1() -> q.h(...)",
+      "direction": "request_callsite",
+      "order": 2,
+      "field": "action=0; fief_id=q.o; slot=Q1(p,a0); building_type=Z1(p,a0)",
+      "io": "call q.h",
+      "evidence": "q.v1 000236-00025a; 000224 string di_升级; method start v2=0",
+      "meaning": "升级建筑入口。与新建共用 action=0；通过第 4 字段是否为已有建筑类型区分。",
+      "confidence": "中高"
+    },
+    {
+      "category": "普通建筑动作语义",
+      "protocol": "fiefMove_build_remove_try",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->w1() -> q.h(...)",
+      "direction": "request_callsite",
+      "order": 3,
+      "field": "action=1; fief_id=q.o; slot=Q1(p,a0); building_type=Z1(p,a0)",
+      "io": "call q.h",
+      "evidence": "q.w1 00007c-0000a0; 0000aa string di_联网尝试拆除",
+      "meaning": "尝试拆除单个建筑。若进入“全部拆除/队列”分支，则走 0x120D。",
+      "confidence": "中高"
+    },
+    {
+      "category": "普通建筑动作语义",
+      "protocol": "fiefMove_build_cancel",
+      "opcode_hex": "0x1200",
+      "opcode_dec": "4608",
+      "method": "LscriptPages/game/q;->t1() -> q.h(...)",
+      "direction": "request_callsite",
+      "order": 4,
+      "field": "action=2; fief_id=q.o; slot=Q1(p,a0); building_type=Z1(p,a0)",
+      "io": "call q.h",
+      "evidence": "q.t1 start 000010 const/4 v6,2; cancelbuild 000c9c-000cc0 passes v6; 000c8a string di_联网取消操作",
+      "meaning": "取消当前建造/升级操作候选。此前误判 action=6 已更正为 2；v3/v5 的 6 是按键/状态判断，不是发送动作码。",
+      "confidence": "中高"
+    },
+    {
+      "category": "建筑队列/拆除",
+      "protocol": "buildQueueAdd",
+      "opcode_hex": "0x120D",
+      "opcode_dec": "4621",
+      "method": "LscriptPages/game/q;->K1(boolean) / q.w1()",
+      "direction": "request",
+      "order": 1,
+      "field": "fief_id",
+      "io": "writeLong",
+      "evidence": "q.K1 000322-000332; q.w1 000106-000116",
+      "meaning": "目标封地 ID。",
+      "confidence": "高"
+    },
+    {
+      "category": "建筑队列/拆除",
+      "protocol": "buildQueueAdd",
+      "opcode_hex": "0x120D",
+      "opcode_dec": "4621",
+      "method": "LscriptPages/game/q;->K1(boolean) / q.w1()",
+      "direction": "request",
+      "order": 2,
+      "field": "building_instance_or_slot_id",
+      "io": "writeLong",
+      "evidence": "q.K1 00031a H1(p,a0) -> 000332 writeLong; q.w1 0000fe H1(p,a0) -> 000116 writeLong",
+      "meaning": "建筑实例/格子长整型键。文案为“联网拆除全部”，但响应 q.e 文案为“增加建筑列队成功”，语义应按服务端动作上下文解释。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑道具/加速",
+      "protocol": "buildItemUse",
+      "opcode_hex": "dynamic",
+      "opcode_dec": "dynamic",
+      "method": "LscriptPages/game/q;->d(int,long,int,long,short)",
+      "direction": "request",
+      "order": 1,
+      "field": "fief_id",
+      "io": "writeLong",
+      "evidence": "q.d 00000a writeLong(v2/v3); callers pass q.o",
+      "meaning": "目标封地 ID。",
+      "confidence": "高"
+    },
+    {
+      "category": "建筑道具/加速",
+      "protocol": "buildItemUse",
+      "opcode_hex": "dynamic",
+      "opcode_dec": "dynamic",
+      "method": "LscriptPages/game/q;->d(int,long,int,long,short)",
+      "direction": "request",
+      "order": 2,
+      "field": "building_pos_or_type",
+      "io": "writeShort",
+      "evidence": "q.d 000010-000012; callers often pass o3[l3]",
+      "meaning": "建筑位置/建筑类型/被加速对象类型 short。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑道具/加速",
+      "protocol": "buildItemUse",
+      "opcode_hex": "dynamic",
+      "opcode_dec": "dynamic",
+      "method": "LscriptPages/game/q;->d(int,long,int,long,short)",
+      "direction": "request",
+      "order": 3,
+      "field": "item_or_task_id",
+      "io": "writeLong",
+      "evidence": "q.d 000018 writeLong(v5/v6); callers pass H1(p,a0)",
+      "meaning": "建筑实例、队列任务或道具目标 ID。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑道具/加速",
+      "protocol": "buildItemUse",
+      "opcode_hex": "dynamic",
+      "opcode_dec": "dynamic",
+      "method": "LscriptPages/game/q;->d(int,long,int,long,short)",
+      "direction": "request",
+      "order": 4,
+      "field": "item_count_or_param",
+      "io": "writeShort",
+      "evidence": "q.d 00001e writeShort(v7); q.K1 early calls pass 1; 鲁公/招募令分支 pass h3",
+      "meaning": "使用数量/道具参数。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑道具/加速语义",
+      "protocol": "buildItemUse_build_speed",
+      "opcode_hex": "0x1208",
+      "opcode_dec": "4616",
+      "method": "q.K1(boolean) -> q.d(...)",
+      "direction": "request_callsite",
+      "order": 1,
+      "field": "opcode=4616; fief_id=q.o; object=o3[l3]; target=H1(p,a0); count=1",
+      "io": "call q.d",
+      "evidence": "q.t1 buildPop_speed sets S0(0,4616); q.K1 0002c0-0002fc sends q.d(4616,...)",
+      "meaning": "建筑/建造任务加速或使用建筑加速道具候选。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑道具/加速语义",
+      "protocol": "buildItemUse_recruit_speed",
+      "opcode_hex": "0x1240",
+      "opcode_dec": "4672",
+      "method": "q.K1(boolean) -> q.d(...)",
+      "direction": "request_callsite",
+      "order": 2,
+      "field": "opcode=q.k3=4672; count=1 or h3",
+      "io": "call q.d",
+      "evidence": "q.K1 text di_联网加速招募; calls q.d around 0004d6 and later h3 branch",
+      "meaning": "招募加速/招募令使用候选。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑道具/加速语义",
+      "protocol": "buildItemUse_tech_speed",
+      "opcode_hex": "0x120B",
+      "opcode_dec": "4619",
+      "method": "q.K1(boolean) -> q.d(...)",
+      "direction": "request_callsite",
+      "order": 3,
+      "field": "opcode=q.k3=4619; count=1",
+      "io": "call q.d",
+      "evidence": "q.K1 0004e0-000524; string di_联网科技加速",
+      "meaning": "科技研究加速。属于封地建筑 UI 的道具入口，但业务对象是科技。",
+      "confidence": "中高"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "fief_building_result",
+      "opcode_hex": "0x8200",
+      "opcode_dec": "33280 unsigned / -32256 signed",
+      "method": "LscriptPages/game/q;->i(String)",
+      "direction": "response",
+      "order": 1,
+      "field": "status",
+      "io": "readByte",
+      "evidence": "q.i 000000 readByte; dispatcher evidence in fief_building_protocol_entries_report",
+      "meaning": "建筑动作结果码；0/6 为成功/刷新分支，其余映射为失败原因。",
+      "confidence": "中高"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "fief_building_result",
+      "opcode_hex": "0x8200",
+      "opcode_dec": "33280 unsigned / -32256 signed",
+      "method": "LscriptPages/game/q;->i(String)",
+      "direction": "response",
+      "order": 2,
+      "field": "substatus",
+      "io": "readByte",
+      "evidence": "q.i 000008 readByte",
+      "meaning": "子状态/辅助结果 byte；当前客户端未直接命名。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "fief_building_result",
+      "opcode_hex": "0x8200",
+      "opcode_dec": "33280 unsigned / -32256 signed",
+      "method": "LscriptPages/game/q;->i(String)",
+      "direction": "response",
+      "order": 3,
+      "field": "fief_id",
+      "io": "readLong",
+      "evidence": "q.i 00000e readLong; 000016 Lo/a.p3(fief_id)",
+      "meaning": "被更新封地 ID。若本地不存在则调用 Lo/a.j1 解析新增/更新块。",
+      "confidence": "中高"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "fief_building_result",
+      "opcode_hex": "0x8200",
+      "opcode_dec": "33280 unsigned / -32256 signed",
+      "method": "LscriptPages/game/q;->i(String)",
+      "direction": "response",
+      "order": 4,
+      "field": "fief_building_update_block",
+      "io": "Lo/a.j1(String) nested",
+      "evidence": "q.i 000022 Lo/a.j1(fief_id, stream); q.i 000210 success calls q.s0()",
+      "meaning": "封地建筑数据同步块。具体 j1 内部字段另需单独深追。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "buildQueueAdd_result",
+      "opcode_hex": "0x8206",
+      "opcode_dec": "33286 unsigned / -32250 signed",
+      "method": "LscriptPages/game/q;->e(String)",
+      "direction": "response",
+      "order": 1,
+      "field": "status",
+      "io": "readByte",
+      "evidence": "q.e 000000 readByte",
+      "meaning": "队列/相关操作结果。-1 走全局同步，0 走成功同步，否则显示增加失败。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "buildQueueAdd_result",
+      "opcode_hex": "0x8206",
+      "opcode_dec": "33286 unsigned / -32250 signed",
+      "method": "LscriptPages/game/q;->e(String)",
+      "direction": "response",
+      "order": 2,
+      "field": "global_sync_when_minus1",
+      "io": "Lo/a.Z5 + data.b.L",
+      "evidence": "q.e 00000a-000014",
+      "meaning": "status=-1 时读取全局/资源同步块。",
+      "confidence": "中"
+    },
+    {
+      "category": "建筑响应",
+      "protocol": "buildQueueAdd_result",
+      "opcode_hex": "0x8206",
+      "opcode_dec": "33286 unsigned / -32250 signed",
+      "method": "LscriptPages/game/q;->e(String)",
+      "direction": "response",
+      "order": 3,
+      "field": "success_sync_when_zero",
+      "io": "Lo/a.V5; readLong; readByte; Lo/a.k1",
+      "evidence": "q.e 00001c-000046",
+      "meaning": "status=0 时同步封地、建筑队列/剩余时间等，并提示“增加建筑列队成功”。",
+      "confidence": "中高"
+    }
+  ],
+  "key_conclusions": [
+    "普通建筑建造、升级、拆除、取消不是 reqCityTraitLevelUp；它们主要由 q.h 构造并通过 Lo/a.d0 发送 0x1200。",
+    "q.h 的流名字符串仍叫 fiefMove，但在普通建筑上下文 opcode 是 0x1200，不应与迁封 0x1212 混淆。",
+    "q.u1 建造与 q.v1 升级均发送 action=0；升级和建造靠 slot/building_type 两个 short 的上下文区分。",
+    "cancelbuild 分支传入的 action 是 v6=2；局部出现的 6 是状态/按键判断，不能当作请求动作码。",
+    "buildItemUse 是动态 opcode 通用封装，已确认 4616/4672/4619 分别关联建筑加速、招募加速、科技加速候选。"
+  ]
+}

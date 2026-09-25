@@ -1,0 +1,112 @@
+{
+  "date": "2026-07-05",
+  "topic": "人口/资源点/封地/将领上限字段第一版",
+  "confidence": "字段命名高置信；生成公式中低置信/待继续",
+  "confirmed_fields": [
+    {
+      "field": "data.i.q",
+      "type": "long",
+      "final_name": "人口当前占用",
+      "confidence": "高",
+      "full_sync": "i.x @ 0x0000e2 readLong -> q",
+      "tag_update": "i.b tag=6 readLong -> q",
+      "ui_evidence": "q.u 显示 di_人口占用: q/r；k0.o 首页资源摘要也显示 q/r",
+      "logic_evidence": "g.z0/q.p0 用 r-q 作为征兵人口上限约束",
+      "server_rebuild": "作为账号/角色级当前人口占用同步；征兵、解散、伤兵恢复等会改变该值。"
+    },
+    {
+      "field": "data.i.r",
+      "type": "long",
+      "final_name": "人口上限",
+      "confidence": "高",
+      "full_sync": "i.x @ 0x0000ee readLong -> r",
+      "tag_update": "i.b tag=7 readLong -> r；i.z 也在资源/人口短同步中读入 r",
+      "ui_evidence": "q.u 显示 di_人口占用: q/r；k0.o 首页资源摘要也显示 q/r",
+      "logic_evidence": "g.z0/q.p0 用 r-q 计算可招数量；Lo/a.P1(fief,0) 是封地局部人口上限，不等于全局 r",
+      "server_rebuild": "登录和关键同步时下发全局人口上限；具体生成公式仍需继续追建筑/科技/称号/VIP/官职。"
+    },
+    {
+      "field": "data.i.u",
+      "type": "int/readByte",
+      "final_name": "资源点当前占用/当前数量",
+      "confidence": "高",
+      "full_sync": "i.x @ 0x000112 readByte -> u",
+      "tag_update": "i.b tag=13 readByte -> u",
+      "ui_evidence": "k0.o 在 di_标题资源点 行显示 u/v",
+      "logic_evidence": "目前主要用于标题/摘要显示，未见本地占领结算公式",
+      "server_rebuild": "作为玩家已占资源点数量同步；占领/放弃资源点后更新。"
+    },
+    {
+      "field": "data.i.v",
+      "type": "byte",
+      "final_name": "资源点上限",
+      "confidence": "高",
+      "full_sync": "i.x @ 0x00011e readByte -> v",
+      "tag_update": "i.b tag=14 readByte -> v",
+      "ui_evidence": "k0.o 在 di_标题资源点 行显示 u/v",
+      "logic_evidence": "目前主要用于标题/摘要显示，未见本地生成公式",
+      "server_rebuild": "作为玩家可占资源点上限同步；生成公式仍需动态样本/成长表深追。"
+    },
+    {
+      "field": "data.i.s",
+      "type": "int/readByte",
+      "final_name": "封地上限",
+      "confidence": "高",
+      "full_sync": "i.x @ 0x0000fa readByte -> s",
+      "tag_update": "i.b tag=8 readByte -> s",
+      "ui_evidence": "k0.o 在 di_标题封地 行显示 Lo/a.s2().length / s",
+      "logic_evidence": "data.i.h() 直接返回 s",
+      "server_rebuild": "作为玩家封地上限同步；和君主等级/声望/官职等成长条件的公式仍待追。"
+    },
+    {
+      "field": "data.i.t",
+      "type": "int/readByte",
+      "final_name": "将领上限",
+      "confidence": "高",
+      "full_sync": "i.x @ 0x000106 readByte -> t",
+      "tag_update": "i.b tag=9 readByte -> t",
+      "ui_evidence": "z.o 在 di_将领数 显示 Lo/a.M2(0).length / t；k0.o 将领区域也显示将领数/上限",
+      "logic_evidence": "data.i.w() 直接返回 t；gameHD/k.l、gameHD/g.f 等界面引用 t",
+      "server_rebuild": "作为玩家可拥有/显示将领上限同步；扩展空位、官职/VIP/道具叠加公式待追。"
+    }
+  ],
+  "protocol_sync": {
+    "full_sync_method": "LscriptPages/data/i;->x(String)V",
+    "short_resource_population_sync": "LscriptPages/data/i;->z(String)V 同步 d/e/m/n/q/r/g.F/g.G",
+    "tagged_update_method": "LscriptPages/data/i;->b(String)V",
+    "tag_mapping": {
+      "6": "data.i.q 人口当前占用 readLong",
+      "7": "data.i.r 人口上限 readLong",
+      "8": "data.i.s 封地上限 readByte",
+      "9": "data.i.t 将领上限 readByte",
+      "13": "data.i.u 资源点当前数量 readByte",
+      "14": "data.i.v 资源点上限 readByte"
+    }
+  },
+  "recovered_formula": {
+    "recruitable_amount": "max(0, min(floor(data.i.d/(g.Q1(soldierType)*multiplier)), floor(data.i.e/(g.R1(soldierType)*multiplier)), floor((data.i.r-data.i.q)/g.S1(soldierType))))",
+    "multiplier": "1 when mode/second arg == 0, otherwise 2",
+    "meaning": "铜钱、粮食、剩余人口三者共同限制可招数量"
+  },
+  "key_evidence_files": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_data_i__x__0x28bf60.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_data_i__b__0x28bcfc.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_data_i__z__0x28c230.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_data_g__z0__0x264cb4.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_game_q__u__0x318484.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_game_k0__o__0x3c7b14.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_game_z__o__0x3618f8.smali.txt",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/scriptPages_game_q__p0__0x323e50.smali.txt"
+  ],
+  "remaining_unknowns": [
+    "人口上限 data.i.r 的最终生成公式：建筑人口、科技、称号、官职/VIP/道具如何叠加仍待追。",
+    "封地上限 data.i.s 与君主等级/声望/官职/任务奖励之间的精确关系仍待追。",
+    "将领上限 data.i.t 的扩展空位、道具、官职/VIP 叠加公式仍待追。",
+    "资源点上限 data.i.v 的生成公式和资源点占领/放弃响应字段仍待动态样本验证。"
+  ],
+  "generated_files": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/limit_fields_report.md",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/limit_field_mapping.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/limit_formula_summary.json"
+  ]
+}

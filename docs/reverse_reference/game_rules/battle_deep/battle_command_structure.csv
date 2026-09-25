@@ -1,0 +1,12 @@
+﻿command_type,role,read_sequence,handler,buffer_or_state,evidence_range,formula_relevance,confidence
+1,进入行军区/创建战场部队,readLong(unitId); readByte(campOrSide); readUTF(name); [if new protocol readShort(extraA)]; readShort(soldierTypeOrIcon); [if new protocol readByte(extraB)]; readInt(extraC); readBoolean(flag); readInt(soldierCount); readShort(attackIntervalMs); [if HD/skin branch readShort(skinOrDisplay)],"s->j(I,J,I,String,S,I,B,I,I,S)",C1 命令缓冲 → f0() → s->h(...) 初始化部队；同时写 data.g.Sc/Tc/Uc/Vc/Wc/Xc/Yc/Zc/ad/bd,"s->Z 00005a-000150, 000374-0003d8",attackIntervalMs 最终写入 C0；新协议直接下发，旧协议按兵数编码兼容为 4000/5000/7000ms,高
+2,加入布阵区/预备区候选,readLong(unitId); readByte(slotOrSide); readByte(extraA); readByte(extraB),"s->k(I,J)",data.g.cd/dd/ed/fd/gd,s->Z 00041a-000566,战场位置/状态指令，不含伤害公式,中
+3,加入到战斗区,readLong(unitId); readByte(actorOrSide); readByte(lane); readByte(col),"s->i(I,J,I,I)",data.g.jd/kd/ld/md,s->Z 000572-0006c4,使用 lane/col 进入战斗区，与 s->B/I/C/J 坐标函数相关,高
+4,暂停行军区内行军,readByte(actorIndex),s->e(I),data.g.hd,s->Z 0006d8-000796,移动/演出控制，不含伤害公式,高
+5,离开战斗,readLong(unitId); readByte(reasonOrSide),"s->c(J,I)",data.g.rd/sd/td,s->Z 0007a8-0008d6,部队离场/撤退/死亡候选；伤兵资源仍来自指令结果,高
+6,普通攻击指令,"readByte(attackerCount); repeat readLong(attackerId), readShort(attackerArg); readByte(targetCount); repeat readLong(targetId), readShort(targetArg), readInt(oldOrFlagCandidate), readInt(newRemainOrWallValue)","s->a([J,[S,[J,[S,[I])",data.g.ud/vd/wd/xd/yd/zd/Ad/Bd/Cd/Dd；f0() 消费后更新 B0/N0 等剩余兵数,s->Z 0008e4-000bf0；s->f0 000c42-000cde,客户端不算基础伤害，只读取攻击后剩余值并做 old-new 显示/同步,高
+7,战斗结束,readByte(resultOrFlag),"inline: h1=false; println(""战场：战斗结束"")",结束状态；后续 f0() 执行战斗结束分支,s->Z 000c02-000c1e；s->f0 00107a,结束标记，不含胜负公式；胜负结果由指令流给出,高
+8,使行军区内的部队继续行走,readByte(actorIndex),s->f(I),data.g.id,s->Z 000c24-000c8a,移动/演出控制，不含伤害公式,高
+9,移动到战斗区指定位置,readLong(unitId); readByte(actorOrSide); readByte(lane); readByte(col),"s->d(I,J,I,I)",data.g.nd/od/pd/qd；还会修正短时间内创建的 sprite 目标位置,s->Z 000c9c-000eee,与前后/左右/坑位规则有关，使用 lane/col 坐标,高
+10,战场文本/提示,readShort(textId); data.e$a->a(textId),inline append to s.R2 string array,s.R2,s->Z 000efe-000fb6,展示文本，不含公式,高
+11,战法/技能攻击指令,"readByte(sourceCount); repeat readLong(sourceId), readShort(skillOrBtId), readShort(sourceArg); readByte(targetCount); repeat readLong(targetId), readShort(targetArgA), readShort(targetArgB), readInt(beforeValue), readInt(afterValue)","s->l([J,[S,[S,[J,[S,[S,[I,[I]) and data.g->h(...)",战法指令缓冲；p0(I) 消费后显示战法、BUFF、蓄力/损兵变化,"s->Z 000fbe-001098；s->p0 00035a-0003ba, 000d4a-000dde",客户端用 before-after 显示损兵/效果，不反推基础伤害,高

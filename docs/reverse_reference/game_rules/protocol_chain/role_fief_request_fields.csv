@@ -1,0 +1,8 @@
+﻿protocol,opcode_hex,method,order,field,io,evidence,meaning,confidence
+reqRoleInfo,0x1120,"LscriptPages/game/w;->d0(J,String)",1,target_selector,writeByte,d0 000012-000026,0=按 roleId 查询；1=按名称查询,高
+reqRoleInfo,0x1120,"LscriptPages/game/w;->d0(J,String)",2a,roleName,writeUTF,d0 000016-00001e,当 String 参数非空时写入目标君主/角色名,高
+reqRoleInfo,0x1120,"LscriptPages/game/w;->d0(J,String)",2b,roleId,writeLong,d0 000026-00002c,当 String 参数为空时写入目标 roleId,高
+reqRoleFiefList,0x1310,"LscriptPages/game/p;->g0(I,I) branch type=4",1,mode_or_type,writeByte(1),g0 0000b6-0000c0,固定写 1，疑似查询类型/目标类型,中高
+reqRoleFiefList,0x1310,"LscriptPages/game/p;->g0(I,I) branch type=4",2,target_selector,writeByte,g0 0000c6-0000d8,1=按 X6[u1] 字符串查询；0=按 long 查询,高
+reqRoleFiefList,0x1310,"LscriptPages/game/p;->g0(I,I) branch type=4",3a,targetName_or_countryName,writeUTF,g0 0000ca-0000d0,X6[u1] 非空时写入字符串；可能为目标君主/国家/列表项名,中
+reqRoleFiefList,0x1310,"LscriptPages/game/p;->g0(I,I) branch type=4",3b,targetId,writeLong(0),g0 0000d8-0000de,字符串为空时写 long；当前分支常量为 0,中高

@@ -1,0 +1,6 @@
+﻿category,protocol,opcode_hex,opcode_dec,method,direction,fields,evidence,meaning,confidence
+封地信息,reqFiefInfo,0x1246,4678,"LscriptPages/game/q;->g1(int,long)",request,mode/writeByte; fief_id/writeLong,q.g1 000000-00002a,请求封地详情/刷新封地信息；通过 Lo/a.d0 发送，不走 game.g->y。,高
+建筑队列,buildQueueAdd,0x120D,4621,LscriptPages/game/q;->K1(boolean) / q.w1(),request,fief_id/writeLong; building_or_slot_key/writeLong,q.K1 000306-000346; q.w1 000106-00012a,建筑队列/建筑相关操作请求；文案出现“联网拆除全部”，实际语义需结合 UI 分支进一步细分。,中高
+建筑道具,buildItemUse,dynamic,param int->short,"LscriptPages/game/q;->d(int,long,int,long,short)",request,fief_id/writeLong; building_pos_or_type/writeShort; item_or_task_id/writeLong; item_count_or_param/writeShort,q.d 000000-000034,对建筑/建造任务使用道具；opcode 由调用参数传入，常用于鲁公/加速/建筑相关道具。,中
+建筑结果,fief_building_result,0x8200,33280 unsigned / -32256 signed,LscriptPages/game/q;->i(String),response,status/readByte; substatus/readByte; fief_id/readLong; nested Lo/a.j1 update block,dispatcher 000884-00088c; q.i 000000-000028,封地建筑建造/升级类结果候选响应；含完整建筑错误码与封地建筑更新块。,中高
+建筑队列结果,buildQueueAdd_result,0x8206,33286 unsigned / -32250 signed,LscriptPages/game/q;->e(String),response,status/readByte; if -1 Lo/a.Z5 + data.b.L; if 0 Lo/a.V5 + fief_id/readLong + byte + Lo/a.k1,dispatcher 000860-000868; q.e 000000-000046,建筑队列增加/建筑相关操作结果候选响应；成功时同步封地/队列状态并显示剩余时间。,中

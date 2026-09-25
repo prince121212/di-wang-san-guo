@@ -1668,22 +1668,13 @@ CLASH_HELPER_LOG_MAX_BYTES = 5 * 1024 * 1024
 SHARED_MAP_CLEANUP_INTERVAL_MS = 60 * 1000
 SHARED_MAP_QUERY_MAX_TARGETS = 500
 RUNTIME_LAST_TARGETS_LIMIT = 200
-LEGACY_RULES_DIR = ROOT.parent / "reverse_cases/apk-sanguo-diwanglianmeng-166/analysis"
 ITEM_MAPPING_FILE = Path(os.environ.get(
     "DWPM_ITEM_MAPPING_FILE",
-    str(
-        ASSET_DIR / "item_full_mapping.json"
-        if (ASSET_DIR / "item_full_mapping.json").exists()
-        else LEGACY_RULES_DIR / "game_rules/item_mapping/item_full_mapping.json"
-    ),
+    str(ASSET_DIR / "item_full_mapping.json"),
 )).expanduser()
 EQUIPMENT_MAPPING_FILE = Path(os.environ.get(
     "DWPM_EQUIPMENT_MAPPING_FILE",
-    str(
-        ASSET_DIR / "equipment_template_static_values.csv"
-        if (ASSET_DIR / "equipment_template_static_values.csv").exists()
-        else LEGACY_RULES_DIR / "client_understanding/equipment_template_static_values.csv"
-    ),
+    str(ASSET_DIR / "equipment_template_static_values.csv"),
 )).expanduser()
 
 SOURCE = "diwang.sanguo"
@@ -2215,11 +2206,7 @@ GAME_REQUEST_PURPOSES = {
 BUILDING_TYPE_NAMES = SHARED_BUILDING_TYPE_NAMES
 BUILDING_NAME_TYPES = SHARED_BUILDING_NAME_TYPES
 TECHNOLOGY_NAMES = SHARED_TECHNOLOGY_NAMES
-TECH_LEVEL_RULES_PATH = (
-    ASSET_DIR / "tech_levels.json"
-    if (ASSET_DIR / "tech_levels.json").exists()
-    else LEGACY_RULES_DIR / "game_rules/tables/parsed/tech_levels.json"
-)
+TECH_LEVEL_RULES_PATH = ASSET_DIR / "tech_levels.json"
 
 
 def load_technology_level_costs() -> dict[tuple[int, int], dict[str, int]]:
@@ -2238,11 +2225,7 @@ def load_technology_level_costs() -> dict[tuple[int, int], dict[str, int]]:
 
 
 TECHNOLOGY_LEVEL_COSTS = load_technology_level_costs()
-BUILDING_LEVEL_RULES_PATH = (
-    ASSET_DIR / "building_level_cost_rules.csv"
-    if (ASSET_DIR / "building_level_cost_rules.csv").exists()
-    else LEGACY_RULES_DIR / "game_rules/tables/parsed/building_level_cost_rules.csv"
-)
+BUILDING_LEVEL_RULES_PATH = ASSET_DIR / "building_level_cost_rules.csv"
 
 
 def load_building_level_costs() -> dict[tuple[int, int], dict[str, int]]:

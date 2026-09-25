@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-07-05T08:19:10",
+  "accessor_mapping": {
+    "D1/En": "copper_output",
+    "F1/Fn": "food_output",
+    "P1/Gn": "population_capacity",
+    "N1/Hn": "recruit_queue_count"
+  },
+  "files": [
+    "building_level_effect_rules_named.csv",
+    "building_recruit_queue_rules_named.csv",
+    "building_level_rules_server_ready.csv",
+    "building_effect_queue_field_mapping_report.md"
+  ],
+  "key_conclusions": [
+    "D1/En、F1/Fn、P1/Gn、N1/Hn 已由 UI 文案高置信命名。",
+    "旧的 unlock_tier_or_soldier_stage 应修正为 recruit_queue_count_N1_Hn；兵种可招募显示另由兵种/建筑等级逻辑决定。",
+    "building_level_rules_server_ready.csv 是当前服务端重建最方便使用的普通建筑等级规则表。"
+  ]
+}

@@ -1,0 +1,13 @@
+﻿asset,id_or_field,entry,method,opcode,request_or_flow,evidence,confidence,server_rebuild
+账号积分,resource_id=-14 / data.g.H,资源名/数量解析,"scriptPages/data/g.<clinit>, g.v0, g.w0",local,负数资源 ID 解析,g.f8[13]=账号积分；g.w0(-14)=data.g.H,高,作为独立 long 余额保存；不要与玉石混用。
+账号积分,data.g.H,登录/全量或资源同步,scriptPages/data/i.b,response/local sync,资源同步块,readLong -> sput-wide data.g.H,高,登录和通用资源刷新需要下发 account_points。
+账号积分,data.g.H,奖励领取成功同步,scriptPages/game/m0.u,0x8134 候选响应链,reqGainAward 成功响应,奖励成功后同步 i.i/i.d/i.e/data.g.H/Lo.a.V5,中高,奖励系统可改变或至少同步 account_points。
+账号积分,resource_id=-14,累计消费/活动奖励列表候选,Lo/a.w5,local UI model,consumptionExpend_awardList,将 Lo/a.x8 奖励数量数组包装成资源 ID -14 的奖励项,中,活动奖励配置可支持 resource_id=-14 账号积分奖励；真实发放仍由服务端奖励接口结算。
+玉石,item_id=399,道具表,item_full_mapping.csv,static table,背包道具,399=玉石；描述含科技升级、将领空位激活、装备炼魂、六部、帅府等,高,作为 inventory item 保存和同步，不是 data.g.H。
+玉石,item_id=399,礼包/宝箱来源,package_tail_binary_parse.csv,static table,年货/礼盒/糖果/粽子/西瓜/饺子等奖励,442/445/739/740/741/742 等礼包固定奖励含玉石(399),高,开礼包奖励可发放 jade_item 数量。
+玉石,item_id=399 或服务器货币模式,科技升级消耗,"scriptPages/game/q.A, q.L1, q.W1",techResearch 4671 / 0x123F；取消 4676 / 0x1244,techResearch,q.A 显示 di_需要玉石；q.L1 显示 re_提示升级玉石消耗；q.W1 请求体 long + byte + short + byte + byte + final byte,中高,科技升级接口需支持玉石消耗模式；最终扣减由服务端并同步背包/资源。
+玉石,item_id=399 或黄金二选一,六部/部门升级,La0/a.H,ReqInternalLevelUp 25346 / 0x6302,ReqInternalLevelUp,显示 di_玉石/di_黄金/玉石或黄金；请求写 department_id byte + payment_mode byte,中高,部门升级需校验玉石或黄金支付模式，并返回 data.g.H/资源/背包同步。
+玉石,item_id=399 候选,装备炼魂,scriptPages/data/g.N4,REQ_GENERAL_EQUIP_LIANHUN 25216 / 0x6280,REQ_GENERAL_EQUIP_LIANHUN,炼魂 UI；高级/锁定提示；请求写 general_id/equip_id/mode/lock_count/lock_flags,中,炼魂接口需按模式和锁定属性计算玉石/材料/黄金消耗；客户端不直接写 item_id。
+玉石,item_id=399 或黄金二选一,帅府帅位解锁,Lv/a.b1,REQ_SHUAIFU_ADD_SHUAI_MAX 25606 / 0x6406,REQ_SHUAIFU_ADD_SHUAI_MAX,res_解锁帅位选择方式提示；按钮 unlockCommanderUseYushi/unlockCommanderUseGold；发送 payment byte,中高,帅位扩展需支持玉石/黄金支付模式，成功后同步帅府容量和背包/黄金。
+玉石,item_id=399,文官列表刷新/恢复健康候选,"scriptPages/gameHD/k.V, La0/a.t0",待追,文官刷新、addHealthList,gameHD/k.V 读取 Lo/a.p1(399) 并显示刷新价格；a0.t0 用 g.s1(399) 显示购买价格/恢复健康,中,文官系统中存在玉石价格展示，具体发送入口还需继续追状态机。
+玉石,item_id=399 候选,战法残页兑换,scriptPages/game/q0.O,待追,玉石兑换残页,di_玉石兑换、di_使用玉石兑换残页；显示兑换次数/价格数组,中,战法书/残页兑换需支持玉石消耗，具体请求还需继续追。

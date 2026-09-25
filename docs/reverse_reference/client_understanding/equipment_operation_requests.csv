@@ -1,0 +1,4 @@
+﻿request_opcode,request_method,request_name,body_schema,send_helper,response_opcode,response_handler,notes
+0x1250,LscriptPages/game/z;->E0(J)V,reqGeneralEquipInfo,writeLong(host_id),"Lk/a;->r(String,String,J,String,String,S)",0x8250,LscriptPages/game/z;->F0(Ljava/lang/String;)V,请求某个装备宿主/将领的装备信息；只提交 host_id。
+0x1252,LscriptPages/game/z;->C0(JJI)V,reqGeneralEquipCtrl,writeLong(host_id); writeLong(equipment_id); writeByte(action_type),"Lk/a;->n(String,B,String,String,S)",0x8252,LscriptPages/game/z;->D0(Ljava/lang/String;)V,装备穿戴/卸下/控制操作；action_type=0 为装备/换装，1 为卸装。
+0x1254,LscriptPages/game/z;->G0(JJI)V,reqGeneralEquipLevelup,writeLong(host_id); writeLong(equipment_id); writeByte(levelup_mode),"Lk/a;->n(String,B,String,String,S)",0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,装备强化/升级操作；levelup_mode=0 普通强化，1 特殊强化；发送后 z.D3=0，响应成功时播放强化成功效果。

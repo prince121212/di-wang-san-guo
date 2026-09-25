@@ -1,0 +1,17 @@
+﻿protocol,response_opcode_hex,handler,group,order,field,io,target_cache,evidence,meaning,confidence
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),top,1,status_outer,readByte,local status,k.d1 000000-000008,外层状态；当前逻辑在 status_outer != 0 时才继续处理内层结果；status_outer==0 时直接显示空提示。语义可能是包装/网络状态而非业务成功。,中
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),result,2,result_code,readByte,local result,k.d1 000012-00001e,业务结果码；0 成功，负数为错误原因。,高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.1,city_id,readLong,data.b lookup key,k.m1 000000-000010,成功时由 k.d1 调 k.m1 读取；要更新的城池 ID。,高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.2,trait_level_or_flag_z,readByte,data.b.z[index],k.m1 000008-000022,写入 data.b.z 的 byte，疑似城池特性/天赋等级或状态。,中
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.3,resource_or_cost_A,readInt,data.b.A[index],k.m1 000026-00003e,写入 data.b.A 的 int；请求前 UI 用 data.b.A 与 data.i.d 比较，疑似升级铜钱/资源需求或城池特性数值。,中高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.4,metric_B,readInt,data.b.B[index],k.m1 000042-00005a,写入 data.b.B 的 int。,中
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.5,metric_C,readInt,data.b.C[index],k.m1 00005e-000076,写入 data.b.C 的 int。,中
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.6,remaining_seconds_or_cooldown,readInt,data.b.D[index]=now+value,k.m1 00007a-00009e,读取 int 后加当前时间写入 data.b.D；语义为剩余时间/冷却时间/到期时间偏移。,中高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.7,state_k,readByte,data.b.k[index],k.m1 0000a2-0000ba,写入 data.b.k 的 byte 状态。,中
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),success_sync,3.8,short_m,readInt -> short,data.b.m[index],k.m1 0000be-0000d8,读取 int 后转 short 写入 data.b.m。,中
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),error_codes,err_0,result_code_0,constant compare,toast text,k.d1 00001e-000038,成功,高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),error_codes,err_-4,result_code_-4,constant compare,toast text,k.d1 00003e-000052,铜钱不足,高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),error_codes,err_-5,result_code_-5,constant compare,toast text,k.d1 000056-00006a,粮食不够,高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),error_codes,err_-1,result_code_-1,constant compare,toast text,k.d1 00006e-000082,天赋升级/已在升级或条件不满足候选,中高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),error_codes,err_-2,result_code_-2,constant compare,toast text,k.d1 000086-00009a,天赋最值/已达最大值,高
+reqCityTraitLevelUp,0x8324,LscriptPages/game/k;->d1(String) + k.m1(String),error_codes,err_-3,result_code_-3,constant compare,toast text,k.d1 00009e-0000b2,其他错误,高

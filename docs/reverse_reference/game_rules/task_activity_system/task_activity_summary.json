@@ -1,0 +1,18 @@
+{
+  "topic": "任务/活动系统第一版",
+  "findings": [
+    "未发现完整本地任务ID/条件/奖励总表，任务活动大概率服务端动态下发",
+    "reqActivityTask 0x1136 请求只写 long 类型任务/活动ID",
+    "六部任务委派 0x6342、领奖 0x6343 链路清晰，领奖成功调用 Lo/a.V5",
+    "签到补签 0x6204、活跃/累计签到奖励 0x6206 链路清晰",
+    "scriptFreshman.sc 是新手/玩法说明，不是任务奖励配置表"
+  ],
+  "artifacts": [
+    "task_activity_protocol_mapping.csv",
+    "task_activity_system_first_report.md",
+    "task_activity_string_refs.md/json",
+    "task_activity_method_refs.md/json",
+    "task_activity_disasm_summary.md/json",
+    "freshman_script_strings.md/csv/json"
+  ]
+}

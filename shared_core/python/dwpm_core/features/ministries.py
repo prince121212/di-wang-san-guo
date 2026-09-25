@@ -1,7 +1,8 @@
 """Verified Six Ministries settings and Hubu/Libu protocol rules.
 
-Wire layouts come from ``ctf_out/passive_pcap_hotspot_20260914_111430`` and
-are documented in ``ctf_out/PROTOCOL_SPEC_户部礼部_20260914.md``.  Anything
+Wire layouts come from the 2026-09-14 passive capture
+(``passive_pcap_hotspot_20260914_111430``) and are documented in
+``docs/reverse_reference/protocol/PROTOCOL_SPEC_户部礼部_20260914.md``.  Anything
 the capture did not prove fails closed: unknown shapes raise instead of
 being interpreted, and only the crop/delegation paths backed by capture
 evidence may produce game writes.

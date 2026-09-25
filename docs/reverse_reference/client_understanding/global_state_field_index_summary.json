@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-07-05",
+  "row_count": 95,
+  "domains": {
+    "equipment_state": 15,
+    "fief": 8,
+    "fief_sync": 1,
+    "global/player": 18,
+    "item_stack": 3,
+    "object_b6": 38,
+    "object_sync": 2,
+    "player_identity": 1,
+    "player_limits": 6,
+    "prison_host_index": 3
+  },
+  "high_confidence_count": 67,
+  "sync_blocks": [
+    "scriptPages/data/i.x",
+    "scriptPages/data/i.b",
+    "scriptPages/data/i.z",
+    "Lo/a.V5",
+    "Lo/a.c6",
+    "Lo/a.a6/f6/b6",
+    "Lo/a.Z5/Y5/k1",
+    "scriptPages/data/d"
+  ],
+  "source_reports": {
+    "resource_system": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/resource_system_report.md",
+    "resource_field_mapping": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/resource_field_mapping.csv",
+    "limit_field_mapping": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/limits_deep/limit_field_mapping.csv",
+    "negative_resource_ids": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/game_rules/resource_system/gH_currency_deep/negative_resource_id_mapping_corrected.csv",
+    "v5": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/V5_COMPOSITE_SYNC_BLOCK.md",
+    "c6": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/C6_EQUIPMENT_BANK1_SYNC.md",
+    "a6_f6_b6": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/A6_F6_GENERAL_SYNC.md",
+    "b6_dictionary": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/B6_OBJECT_FIELD_DICTIONARY.md",
+    "data_d_dictionary": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/DATA_D_EQUIPMENT_ACCESSORS.md",
+    "prison_action_response": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/PRISON_ACTION_RESPONSE_CONTRACTS.md"
+  },
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/GLOBAL_STATE_FIELD_INDEX.md",
+    "字段索引 CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/global_state_field_index.csv",
+    "同步块地图 CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/global_state_sync_blocks.csv",
+    "负数资源 ID CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/global_state_negative_resource_ids.csv",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/global_state_field_index_summary.json"
+  }
+}

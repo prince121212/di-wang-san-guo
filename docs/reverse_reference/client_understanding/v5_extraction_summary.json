@@ -1,0 +1,12 @@
+{
+  "v5_method": "Lo/a;->V5(Ljava/lang/String;)V",
+  "v5_code_off": "0x23ee1c",
+  "direct_baseio_reads": 22,
+  "v5_callers": 55,
+  "outputs": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/v5_read_sequence.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/v5_subblock_parsers.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/v5_callers.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/V5_COMPOSITE_SYNC_BLOCK.md"
+  ]
+}

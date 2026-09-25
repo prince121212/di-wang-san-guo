@@ -1,0 +1,8 @@
+﻿method,opcode,request_name,old_name,final_name,body_schema,evidence,confidence
+LscriptPages/game/z;->E0(J)V,0x1250,reqGeneralEquipInfo,long_arg0,host_id,writeLong(host_id),所有 E0 调用点先以同一 long 调 Lo/a.z2(host_id) 或来自 z.n/gameHD host arrays；响应 F0 后 z.z1=Lo/a.z2(z.I1)。,high
+LscriptPages/game/z;->C0(JJI)V,0x1252,reqGeneralEquipCtrl,long_arg0,host_id,writeLong(host_id); writeLong(equipment_id); writeByte(action_type),卸装分支传 data.d.r(equipment_id)；换装分支传当前 z.I1/selected host；D0 后按 z.I1 重算装备列表。,high
+LscriptPages/game/z;->C0(JJI)V,0x1252,reqGeneralEquipCtrl,long_arg1,equipment_id,writeLong(host_id); writeLong(equipment_id); writeByte(action_type),卸装分支传 H1/data.d.C()/z2(host)[idx]；换装分支传 N1/data.d.e()/k0.s2/u2；这些均是装备实例 id 列表。,high
+LscriptPages/game/z;->C0(JJI)V,0x1252,reqGeneralEquipCtrl,int_arg2,action_type,writeLong(host_id); writeLong(equipment_id); writeByte(action_type),0 对应 di_联网换装/di_提示装备中；1 对应 di_联网卸载装备。,high
+LscriptPages/game/z;->G0(JJI)V,0x1254,reqGeneralEquipLevelup,long_arg0,host_id,writeLong(host_id); writeLong(equipment_id); writeByte(levelup_mode),所有 G0 调用点都传 z.I1；z.I1 已由 b0/Y0 证明为当前宿主 id。,high
+LscriptPages/game/z;->G0(JJI)V,0x1254,reqGeneralEquipLevelup,long_arg1,equipment_id,writeLong(host_id); writeLong(equipment_id); writeByte(levelup_mode),所有 G0 调用点都传 z.H1；H1 是当前装备实例 id，强化页大量 data.d.*(H1) 读取。,high
+LscriptPages/game/z;->G0(JJI)V,0x1254,reqGeneralEquipLevelup,int_arg2,levelup_mode,writeLong(host_id); writeLong(equipment_id); writeByte(levelup_mode),0 对应普通强化/自动20次；1 对应提示 di_提示特殊强化中。,"high for 0, medium-high for 1"

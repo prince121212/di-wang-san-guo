@@ -1,0 +1,20 @@
+flow,opcode_hex,opcode_dec,method,offset,order,field,io,type,meaning,evidence,server_rebuild_note
+expeditionPreTipInfo,0x1520,5408,"LscriptPages/game/p;->O(I,[J,J)V",0x307b98,1,expedition_type,writeByte,byte,出征/行动类型；缓存到 p.l0,p.O 000016-000018,用于判断派遣/掠夺/驻守/阻击/攻占/消灭/侦查/副本等行为
+expeditionPreTipInfo,0x1520,5408,"LscriptPages/game/p;->O(I,[J,J)V",0x307b98,2,general_count,writeByte,byte,出征武将数量,p.O 00001e-000022,随后读取等量 general_id
+expeditionPreTipInfo,0x1520,5408,"LscriptPages/game/p;->O(I,[J,J)V",0x307b98,3,general_id[],writeLong * count,long[],参与出征的武将 ID 列表；缓存到 p.k0,p.O 000028-00003e,需校验武将归属、状态、兵力、是否重复使用
+expeditionPreTipInfo,0x1520,5408,"LscriptPages/game/p;->O(I,[J,J)V",0x307b98,4,target_id,writeLong,long,目标 ID；缓存到 p.m0,p.O 000040,可能为山贼/封地/副本/玩家目标等统一 ID
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,1,expedition_type,writeByte,byte,正式出征行动类型,p.N 00000a-00000c,服务端权威校验，不可仅信客户端
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,2,general_count,writeByte,byte,武将数量,p.N 000012-000016,限制最大出征武将数量
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,3,general_id[],writeLong * count,long[],出征武将 ID 列表,p.N 00001c-000032,校验归属、状态、兵力与队列
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,4,target_id,writeLong,long,主目标 ID,p.N 000034,关联地图目标/副本/城池/玩家
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,5,related_long,writeLong,long,额外目标/关联 ID；由参数 p10 写入,p.N 00003a,不同出征类型下含义可能不同，初版保留原样
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,6,attack_strategy,writeByte,byte,攻击策略/战术选择候选,p.N 000040,需与战斗策略 UI 继续对应
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,7,attack_mode,writeByte,byte,攻击模式候选,p.N 000046,需结合 UI 和动态样本命名
+expedition,0x1522,5410,"LscriptPages/game/p;->N(I,[J,J,B,B,B,J)V",0x307b1c,8,unknown_flag,writeByte,byte,未知标记,p.N 00004c,初版应按原客户端发送值处理
+reqThiefList,0x1540,5440,"LscriptPages/game/p;->k1(I,I)V",0x30e790,1,x,writeShort,short,请求山贼分布的地图 X 坐标/区域 X,p.k1 00000a-00000c,服务端返回该区域可见山贼列表
+reqThiefList,0x1540,5440,"LscriptPages/game/p;->k1(I,I)V",0x30e790,2,y,writeShort,short,请求山贼分布的地图 Y 坐标/区域 Y,p.k1 000012-000018,全图枚举可通过滑动/多次请求覆盖
+reqCheckMsg,0x1114,4372,LscriptPages/game/h0;->Z(J)V,0x3b057c,1,message_or_report_id,writeLong,long,邮件/战报/结果详情 ID,h0.Z invokes Lk/a.r with long param,此接口用于详情查看；抓包显示奖励已在结算时到账，不由该接口发放
+REQ_FIGHTINFO,0x1702/0x1707,5890/5895,"LscriptPages/game/s;->c0(J,I)V",0x33a958,1,fight_info_type,writeByte,byte,战斗信息类型；<=3 使用 0x1702，>3 使用 0x1707,s.c0 000038-00003a and 00006e-000078,决定首包/续包/历史回放等模式
+REQ_FIGHTINFO,0x1702/0x1707,5890/5895,"LscriptPages/game/s;->c0(J,I)V",0x33a958,2,fight_id,writeLong,long,战斗/回放 ID,s.c0 000040,用于定位服务端保存的战斗指令流
+REQ_FIGHTINFO,0x1702,5890,"LscriptPages/game/s;->c0(J,I)V",0x33a958,3,last_or_anchor_id,writeLong,long,仅 fight_info_type<=3 时写入 s.o1,s.c0 000046-00004e,候选为续传锚点/上一指令时间戳
+REQ_FIGHTINFO,0x1702,5890,"LscriptPages/game/s;->c0(J,I)V",0x33a958,4,window_or_timeout,writeLong,long,常量 300000,s.c0 000054-00005a,候选为请求窗口/超时/最大时间片

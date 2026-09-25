@@ -1,0 +1,20 @@
+字段/结构,来源方法,协议位置/访问位置,语义第一版,证据,置信度
+m0.r 请求,LscriptPages/game/m0;->r(),0x1130/4400 body=[0],请求任务列表/任务活动列表初始数据,"const/16 4400; new-array [B] len=1; aput-byte 0; Lo/a.d0",中高
+m0.s 响应,LscriptPages/game/m0;->s(String),0x8130/-32464,任务列表响应入口；重置 q0 展示数组并调用 m0.n 解析列表,"dispatcher -32464 -> m0.s; m0.s 清 S7/T7/U7/V7/W7/X7/Y7/Z7 后 m0.n",高
+m0.n group_count,LscriptPages/game/m0;->n(String),每组 readByte v4 + readByte v5，共 4 组,每个任务大类下两个桶的数量；v4 桶会设置 p0=1，v5 桶 p0 默认0,"m0.n 循环 group 0..3；first loop p0=1/w0++；second loop仅读基础字段",高
+m0.m0 / q0.S7,LscriptPages/game/m0;->n(String),readLong,任务/活动 ID,"列表解析 readLong 后写 m0.m0；状态80复制到 q0.S7",高
+m0.n0 / q0.T7,LscriptPages/game/m0;->n(String),readUTF,任务标题/名称,"q0.t 列表和 m0.h 标题都取 T7/n0 显示",高
+m0.o0,LscriptPages/game/m0;->n(String),readBoolean,旧任务弹窗中是否可领取/显示领奖动作的布尔候选,"m0.B/m0.h 使用 o0 决定是否触发 m0.t/显示按钮",中高
+m0.p0 / q0.U7,LscriptPages/game/m0;->n(String),本地桶状态；第一桶=1，第二桶=0,新任务列表展示状态；1 时显示 lingquAward/getAwordBtn,"q0.t: U7==1 绘制 lingquAward sprite；m0.n 第一桶 aput-byte 1",高
+m0.q0 / q0.V7,LscriptPages/game/m0;->w(String),detail readByte count + repeat readUTF,任务目标/任务条件文本数组,"q0.t 在 di_标题任务目标 下拼接 V7；m0.h 在任务目标区逐条 drawStringRect",高
+m0.r0 / q0.W7,LscriptPages/game/m0;->w(String),detail readUTF,任务描述文本,"q0.t/m0.h 在 di_标题任务描述 下显示 W7/r0",高
+m0.s0 / q0.X7,LscriptPages/game/m0;->w(String),detail readUTF,任务指引文本,"q0.t/m0.h 在 di_标题任务指引 下显示 X7/s0",高
+m0.t0 / q0.Y7,LscriptPages/game/m0;->w(String),仅 group==0：readByte reward_count + reward_id/amount,结构化奖励数组 int[reward_count][2],"q0.t/m0.h 在 di_标题任务奖励 下解析 Y7；group==0 才读",高
+m0.u0 / q0.Z7,LscriptPages/game/m0;->w(String),group==1/2/3：readUTF,文本型奖励说明,"q0.t 若 Z7 非空则直接显示任务奖励文本",高
+m0.v 请求,LscriptPages/game/m0;->v(I,J),0x1132/4402 body=byte group + long task_id,请求单个任务详情,"openDos reqTaskInfo; writeByte group; writeLong id; Lo/a.d0 4402",高
+m0.w 响应,LscriptPages/game/m0;->w(String),0x8132/-32462,任务详情响应；填充描述/目标/指引/奖励字段,"dispatcher -32462 -> m0.w；status==0 后读 group/id/detail fields",高
+m0.t 请求,LscriptPages/game/m0;->t(J,String),0x1134/4404 body=long task_id + byte has_input + optional UTF,领取任务奖励/提交输入领取,"openDos reqGainAward; writeLong; writeByte(input!=null); optional writeUTF",高
+m0.u 响应,LscriptPages/game/m0;->u(String),0x8134/-32460,领奖响应；先刷新任务列表，成功后同步等级/声望/铜钱/粮食/账号积分和 Lo/a.V5,"readByte status; m0.n; status==0 readByte data.i.C; readLong i/d/e/H; Lo/a.V5; readUTF message",高
+reward_id<=-1000,LscriptPages/game/m0;->w/q0.t,readShort amount,装备/道具名候选；显示时 -id-1000 -> data.d.o(),"m0.w id<=-1000 读 short amount；q0.t/m0.h 用 data.d.o(-id-1000) 填 re_获取道具",中
+-999<reward_id<0,LscriptPages/game/m0;->w/q0.t,readInt amount,资源/特殊奖励候选；-8 特判轻骑兵，其余按本地负数资源名数组显示,"m0.w id<0 读 int amount；q0.t 对 -8 显示轻骑兵，对其他负数取白银/黄金/粮食/铜钱/声望数组",中高
+reward_id>=0,LscriptPages/game/m0;->w/q0.t,readShort amount,普通道具奖励；按 item_id 显示图标/名称,"m0.w id>=0 读 short amount；q0.t 用 data.g.c1/s1 显示",高

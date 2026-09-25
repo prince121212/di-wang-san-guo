@@ -1,0 +1,8 @@
+﻿field,accessor,type0_name,type0_evidence,type1_name,type1_evidence,confidence
+Lo/a.Po[type][idx],Lo/a.F3(II),captured_self_persuaded_count,"`z.n` o0==0 在 `di_被劝次数` 下读取 F3(0,idx)。",prisoner_persuade_count,"`z.n` o0!=0 在 `di_劝降次数` 下读取 F3(1,idx)。",high
+Lo/a.Qo[type][idx],Lo/a.f4(II),captured_self_rescue_count,"`z.n` o0==0 在 `di_营救次数` 下读取 f4(0,idx)。",prisoner_rescued_count,"`z.n` o0!=0 在 `di_被救次数` 下读取 f4(1,idx)。",high
+Lo/a.dp[idx],Lo/a.e4(I),captured_self_rescue_cooldown_end_time,`z.n` o0==0 在 `di_营救剩余` 下显示 e4(idx) 剩余时间；`z.d1` 点击营救前若 e4(idx)>0 提示 `di_再次营救`。,,仅 b6 type!=1 且 Vo==3 扩展块读取；type1 分支用 cp/E3 做劝降剩余。,high
+Lo/a.gp[idx],(direct array),captured_self_city_name,`z.n` o0==0 在 `di_所在城` 下显示 gp[idx]，并与 hp 坐标拼接。,,type1 当前用城池表 Lo/a.sv + data/b 取所在城。,medium-high
+Lo/a.hp[idx][0/1],Lo/a.A1(J),captured_self_city_coord_pair,"`z.n` o0==0 拼接 `gp + (hp[0],hp[1])`；A1(host_id) 内部通过 c3(0,id) 返回 hp[idx]。",,type1 当前用 data/b.g/h 从城池 id 计算坐标。,medium-high
+Lo/a.ip[idx],(direct array),captured_self_fief_name,`z.n` o0==0 在 `di_标题封地` 下显示 ip[idx]。,,type1 当前显示 `di_将领君主`/`Xo` 等归属信息。,medium-high
+Lo/a.cp[idx],Lo/a.E3(I),,,prisoner_persuade_cooldown_base_time,"`E3(idx)=max(cp[idx]+3600000-now,0)`；`z.n` o0!=0 在 `di_劝降剩余` 下显示，`z.d1` 点击劝降前若 E3(idx)>0 提示 `di_再次劝降`。",high for type1

@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-07-05",
+  "response_opcodes": [
+    "0x8233",
+    "0x8234",
+    "0x8236",
+    "0x8238",
+    "0x823b"
+  ],
+  "request_opcodes": [
+    "0x1233",
+    "0x1234",
+    "0x1236",
+    "0x1238",
+    "0x123b"
+  ],
+  "no_v5_or_s5_in_handlers": true,
+  "z_D_proposed_name": "current_fief_id_or_prison_host_fief_id",
+  "host_id_fields": [
+    {
+      "symbol": "LscriptPages/game/z;->D",
+      "proposed_name": "current_fief_id_or_prison_host_fief_id",
+      "evidence": "`q.M1(J)` 同时写 `q.o=z.D=input` 与 `z.C=Lo/a.p3(input)`；`Lo/a.p3` 在封地 id 表 `Lo/a.ov` 中定位 index。",
+      "prison_usage": "`z.i0(0)` 用 `Lo/a.G2(z.D,0)` 列出 type0 被俘对象；`z.i0(2)` 用 `Lo/a.G2(z.D,1)` 列出 type1 俘虏对象；`z.d1` 把 `z.D` 作为 0x1234/0x1236/0x1238/0x123b 的第一个 long。",
+      "confidence": "medium-high"
+    },
+    {
+      "symbol": "Lo/a.Eo[type][idx]",
+      "proposed_name": "object_owner_fief_id",
+      "evidence": "`Lo/a.Q3(type,idx)` 直接返回 `Eo[type][idx]`；`Lo/a.G2(host,0)` 用 `Eo[0][idx] == host` 过滤 type0 对象；`z.S` 对将领响应取 `Q3(0,idx)` 后调用 `q.M1(fief_id)`。",
+      "prison_usage": "type0 被俘列表按 `Eo[0]` 归属到当前封地/监狱宿主。",
+      "confidence": "medium-high"
+    },
+    {
+      "symbol": "Lo/a.Zo[idx]",
+      "proposed_name": "type1_prison_host_fief_id",
+      "evidence": "`Lo/a.G2(host,1)` 不用 `Eo[1]`，而是用 type1 扩展 `Zo[idx] == host` 过滤俘虏列表。",
+      "prison_usage": "type1 “我方监狱中的俘虏/可劝降对象”所属监狱/封地 id。",
+      "confidence": "medium"
+    }
+  ],
+  "unknowns": [
+    "0x8234 result_code 0 vs 1 exact split needs a real sample",
+    "0x8238 result_code 0 vs 1 exact split needs a real sample",
+    "pay_mode 0/1 should still be validated dynamically"
+  ],
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/PRISON_ACTION_RESPONSE_CONTRACTS.md",
+    "响应 schema CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_action_response_schema.csv",
+    "结果码 CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_action_result_codes.csv",
+    "host id 语义 CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_action_host_id_semantics.csv",
+    "抓包 opcode 检查 CSV": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_action_capture_opcode_check.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_action_response_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/prison_action_response_summary.json"
+  }
+}

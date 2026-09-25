@@ -1,0 +1,31 @@
+{
+  "date": "2026-07-05",
+  "topic": "资源点/攻城目标剩余字段与道路城墙语义补充",
+  "key_findings": [
+    "全 DEX 静态字段引用扫描显示：v5/z5/B5/O5/P5/K5/L5 与 c6/e6/p6/q6/n6/o6 这些剩余字段，除 p.f/p.c1 读取和存储外，没有发现其他方法使用。",
+    "因此这些剩余字段当前只能标为隐藏状态/兼容/时间候选，不能强行命名为产量或储量。",
+    "p.f 的 M5[] 不是普通字段，而是一个 ID 标记列表；p.f 读出 M5 后与 q5[] 匹配，并设置 N5[matched]=true。",
+    "y5/b6 已从“数值候选”提升为城池道路值；A5/d6 已从“数值候选”提升为城墙/城防值。",
+    "文本规则确认：修筑道路能提高城池道路值，道路值越高军队行动速度越快；修筑城墙能提高城池防御值，城防越高驻防部队战斗力越高。",
+    "修墙换算文本高置信：60粮食=1点城墙，1黄金=1000点城墙；修路换算出现 roadvaule 和粮食/黄金道路文案，但本轮未完全抽取分支。"
+  ],
+  "generated_files": [
+    "analysis/game_rules/storage_offline_system/resource_point_remaining_fields.csv",
+    "analysis/game_rules/storage_offline_system/resource_point_remaining_fields_report.md",
+    "analysis/game_rules/storage_offline_system/resource_point_remaining_fields_summary.json",
+    "analysis/game_rules/storage_offline_system/resource_point_remaining_refs/field_refs.md",
+    "analysis/game_rules/storage_offline_system/resource_point_remaining_refs/field_refs.json"
+  ],
+  "evidence": {
+    "field_ref_scan": "resource_point_remaining_refs/field_refs.json：目标剩余字段只命中 p.f 与 p.c1 两个读取方法",
+    "M5_marker": "p.f 读取 M5[] 后调用 r0.M(M5[i], q5[])，命中则 N5[index]=true",
+    "road_wall_ui": "p.s 与 p.q 均出现 di_道路/di_城墙 标签",
+    "road_wall_text": "sentence_rule_hits：修路说明/修墙说明；k.D1：roadvaule/wallvaule 修筑文案"
+  },
+  "remaining_unknowns": [
+    "v5/Y5 的业务名仍未知。",
+    "z5/B5/O5/P5 与 c6/e6/p6/q6 未见使用，可能是服务端兼容字段、隐藏条件或旧 UI 遗留。",
+    "K5/L5 与 n6/o6 仍可能是保护/刷新/占领时间戳，需要真实响应样本。",
+    "修路完整换算公式还需单独整理 scriptPages/game/k.D1 分支。"
+  ]
+}

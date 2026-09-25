@@ -1,0 +1,5 @@
+模块,请求名,请求opcode,响应opcode,handler,请求体,响应/同步特征,置信度
+初始信息,REQ_LIBUTASK_INFO,0x6340 / 25408,0xE340 / -7360,"La0/a.E -> i(dis,0)",,status/message + header + task list + Ng/Og 加成块,高
+列表刷新,Req_libutaskList,0x6341 / 25409,0xE341 / -7359,"La0/a.D -> i(dis,1)",,status/message + header + task list；无 Ng/Og,高
+委派任务,Req_libutaskDispatch,0x6342 / 25410,0xE342 / -7358,La0/a.C,writeInt task_id; writeByte general_count; repeat writeLong general_id,刷新单任务字段；更新文官委派状态,高
+领取奖励,Req_libutaskAward,0x6343 / 25411,0xE343 / -7357,La0/a.B,writeInt task_id,刷新任务列表、文官、Lo/a.V5 资产同步、Lo/a.m 俸禄余额,高

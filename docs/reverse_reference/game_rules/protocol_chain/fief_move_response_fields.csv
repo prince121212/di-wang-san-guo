@@ -1,0 +1,16 @@
+﻿protocol,response_opcode_hex,handler,group,order,field,io,evidence,meaning,confidence
+fiefMove,0x8212,LscriptPages/game/q;->W(String),header,1,status,readByte,q.W 000000-000006,0=迁封成功；负数为具体失败原因,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),success_update,2,moved_fief_id,readLong,q.W 00000c-000014,成功时返回被迁移的封地 ID，保存到 q.o,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),success_update,3,new_city_or_position,readLong,q.W 000018-000020 / 000024-00003e,成功时返回新城池/位置；低 16 位写入 Lo/a.sv[p3(fief)],中高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),success_update,4,extra_block_flag,readByte,q.W 000042-00004e,非 0 时调用 Lo/a.V5 读取一段额外同步数据,中
+fiefMove,0x8212,LscriptPages/game/q;->W(String),success_update,5,refresh_flag,readBoolean,q.W 000054-000060,true 时调用 data.b.L 继续读取/刷新数据,中
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-1,ERR_NO_SPECIFIED,status=-1,q.W 000070-000084,提示：没有指定,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-2,ERR_INVALID_MOVE,status=-2,q.W 00008e-0000a4,提示：迁封无效,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-3,ERR_NO_EMPTY_FIEF,status=-3,q.W 0000ae-0000c4,提示：没有空封,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-4,ERR_NO_MOVABLE_CITY,status=-4,q.W 0000ce-0000e4,提示：无可迁城,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-5,ERR_ORIGIN_CITY,status=-5,q.W 0000ec-000102,提示：原封地城池,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-6,ERR_OTHER,status=-6,q.W 00010a-000120,提示：其他错误,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-7,ERR_BASE_FIEF_MOVE,status=-7,q.W 000128-00013e,提示：基地迁封,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-8,ERR_NO_CITY,status=-8,q.W 000146-00015c,提示：没有城池,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),status_mapping,-9,ERR_NOT_YOURS,status=-9,q.W 000164-00017c,提示：不属于您,高
+fiefMove,0x8212,LscriptPages/game/q;->W(String),success_action,0,success_followup,status=0,q.W 000184-00019a,"成功后请求角色详情 reqRoleInfo(-1,data.i.b)，并调用 q.g1(0,fiefId) 刷新 UI/列表",中高

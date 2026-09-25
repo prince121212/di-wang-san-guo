@@ -1,0 +1,30 @@
+字段/结构,来源方法,协议位置/访问位置,语义第一版,证据,置信度
+REQ_LIBUTASK_INFO 请求,La0/a.d(),"opcode 0x6340 / 25408；无业务 body；Lk/a.s(""REQ_LIBUTASK_INFO"",...,25408)",六部任务主信息/初始化请求；清空 vg 并进入联网载入状态,d() 0x003e const-string REQ_LIBUTASK_INFO；0x0042 const/16 25408,高
+Req_libutaskList 请求,La0/a.q(),"opcode 0x6341 / 25409；无业务 body；Lk/a.s(""Req_libutaskList"",...,25409)",六部任务列表刷新请求,q() 0x000e const-string Req_libutaskList；0x0012 const/16 25409,高
+Req_libutaskDispatch 请求,La0/a.F(),opcode 0x6342 / 25410；writeInt task_id；writeByte general_count；repeat writeLong general_id,委派文官执行六部任务,F() 0x0d32 openDos Req_libutaskDispatch；0x0d3c writeInt；0x0d44 writeByte；0x0d52 writeLong；0x0d5e 25410,高
+Req_libutaskAward 请求,La0/a.F(),opcode 0x6343 / 25411；writeInt task_id,领取六部任务奖励,F() 0x03ec openDos Req_libutaskAward；0x03f6 writeInt；0x040a 25411,高
+0xE340 初始信息响应,La0/a.E(String),"readByte status -> Xh；readUTF message -> Yh；status==0 调 i(dis,0)",REQ_LIBUTASK_INFO 响应；包含 header、任务列表，以及每文官任务加成 Ng/Og 附加块,"dispatcher -7360 -> E；E() 0x002e invoke i(dis,0)",高
+0xE341 列表刷新响应,La0/a.D(String),"readByte status -> ai；readUTF message -> bi；status==0 调 i(dis,1)",Req_libutaskList 响应；包含 header、任务列表；不读取 Ng/Og 附加块,"dispatcher -7359 -> D；D() 0x002e invoke i(dis,1)",高
+0xE342 委派响应,La0/a.C(String),"readByte status -> di；readUTF message -> ei；成功后 readInt task_id + h(task_id,idx,dis)；再 readInt assignment_marker；readByte general_count；repeat readLong general_id + readByte general_state",委派成功后刷新单个任务字段，并更新参与文官状态/所属任务,C() 0x002c readInt task_id；0x0046 readInt；0x004e readByte count；0x005c readLong；0x0064 readByte,高
+0xE343 领奖响应,La0/a.B(String),"readByte status -> gi；readUTF message -> hi；status>=0 读 readInt task_id；j(dis,1) 刷任务列表；readByte general_count；repeat readLong general_id + Lo/a.a0；清 Lo/a.F 中等于 task_id 的槽；Lo/a.V5；readInt -> Lo/a.m",六部任务领奖后刷新列表、刷新文官、清委派标记、同步资产与六部俸禄,"B() 0x002c readInt；0x0036 j(dis,1)；0x0040 readByte；0x0052 readLong；0x0090 Lo/a.V5；0x0096 readInt -> Lo/a.m",高
+"i(dis,mode) header","La0/a.i(String,int)","readInt Lo/a.m；readByte og；readLong pg；readShort qg；readShort rg；readLong tg；readByte sg；readInt ug；更新当前城池/部门状态 Lo/a.g；再调 j(dis,mode)",六部任务页共享 header：俸禄/部门状态/时间字段/服务器时间或偏移等；部分字段语义仍需动态命名,i() 0x0000 readInt -> Lo/a.m；0x000c readByte -> og；0x0018 readLong -> pg；0x0024/0x0030 readShort；0x003c readLong；0x0048 readByte；0x0054 readInt -> ug,中高
+"j(dis,mode) 列表容器","La0/a.j(String,int)","readByte task_count；为 vg/wg/xg/Ag/yg/zg/Bg/Cg/Dg/Eg/Fg/Gg/Jg/Hg/Ig/Kg/Lg/Mg 分配数组；循环 readInt task_id + h(task_id,index,dis)；mode==0 时额外 readByte count + repeat readLong general_id + readShort bonus",六部任务列表主容器；mode==0 的 Ng/Og 是文官对任务成功率的个体加成候选,j() 0x0000 readByte count；0x00a0 readInt task_id；0x00b4 if mode==0；0x00d4 readLong Ng；0x00dc readShort Og,高
+vg[],La0/a.h / I0 / F / i0,每任务 readInt task_id；I0(task_id) 查索引；领奖/委派/详情均以它定位,六部任务 ID,h() 0x0000 aput task_id；I0() 遍历 vg；F() 领奖/详情/委派用 vg[index],高
+zg[],La0/a.h / i0 / q1,readUTF；列表和详情直接绘制,任务标题/内容名称,h() 0x0018 readUTF -> zg；i0() 0x065a 绘制；q1() 0x0050 -> Of,高
+xg[],La0/a.h / q1,readByte -> short；详情显示 “等级 N级”,任务等级,h() 0x0028 readByte -> xg；q1() 0x0078 -> Nf；a() 显示 di_等级,高
+Bg[],La0/a.h / i0 / q1,readByte -> short；Lo/a.K 取颜色，Lo/a.M 取文本,任务品阶/品质,h() 0x003a readByte -> Bg；i0() 0x05ac Lo/a.K/M；q1() 0x005c -> Pf/Qf,高
+wg[] -> Cg[],La0/a.h,readShort wg；末尾通过 Lo/a.n0/p0/q0/r0 映射为 Cg 文本；详情标签为 “类型”,任务类型 ID 与类型名称候选,h() 0x0008 readShort -> wg；0x01ba..0x0232 查表生成 Cg；a() 0x0310 显示 di_类型/Rf,中高
+Kg[],La0/a.h / q1 / a,readShort；通过 Lo/a.u0/v0 映射显示在 “地形” 行,地形 ID,h() 0x0082 readShort -> Kg；q1() 0x0090 -> Sf；a() 0x037e..0x03e0 查 Lo/a.u0/v0,高
+Lg[],La0/a.h / q1 / a,readShort；通过 Lo/a.w0/x0 映射显示在 “目标” 行,目标 ID/目标类型,h() 0x0092 readShort -> Lg；q1() 0x009c -> Tf；a() 0x040c..0x0460 查 Lo/a.w0/x0,高
+Mg[][],La0/a.h / q1 / a / J0,readByte count；repeat readShort；通过 Lo/a.s0/t0 显示在 “状态” 行；J0 中参与成功率加成匹配,任务状态/条件标签数组；也是成功率计算的条件集合候选,h() 0x004c readByte + 0x0070 readShort；q1() 0x00b4 -> Uf；a() 0x0484..0x0524 显示；J0() 以 short[] 入参匹配,中高
+Jg[] / Wf,La0/a.h / q1 / F,readByte -> short；详情和委派页显示 “文官/已选委派人数 x/Wf”；F 中超过则提示“超过委派上限”,可委派文官上限/所需人数上限,h() 0x00a2 readByte -> Jg；q1() 0x01aa -> Wf；F() 0x0bdc di_超过委派上限,高
+dispatch_state_raw -> Ag[],La0/a.h / F / i0,readByte raw；raw==1 且 Hg==0 => Ag=1；raw==1 且 Hg>0 => Ag=0 并把 Hg 转为绝对完成时间；raw!=1 => Ag=-1,任务状态：-1 未委派/可查看；0 进行中；1 可领奖/已完成候选,h() 0x00b4 readByte raw；0x016c..0x01b6 设置 Ag；F() 0x03d2 Ag==1 才发 Award；i0() 0x086e/0x08f6 显示状态,高
+Hg[] / Yf,La0/a.h / i0 / q1,readInt；raw==1 且 >0 时转成 PageMain.getCurTime()+seconds*1000；列表/详情显示倒计时,已委派任务剩余秒/完成时间戳,h() 0x00d0 readInt -> Hg；0x0192..0x01ac 转绝对时间；i0() 0x0866 倒计时；q1() 0x00c0 -> Yf,高
+Ig[] / Xf,La0/a.h / q1,readInt；详情中 Xf=Ig-ug，负数归零；未委派详情行显示 “时间”,任务耗时/可用时间候选，需结合 ug 动态确认,h() 0x00be readInt -> Ig；q1() 0x01b6..0x01c6 Xf=Ig-ug；a() 0x05f4 显示 r0.w0(Xf),中
+Gg[],La0/a.h / i0 / q1,readInt；奖励文本拼为 “六部经验 xN”,六部经验奖励,h() 0x00e2 readInt -> Gg；i0() 0x075a；q1() 0x00cc,高
+Fg[],La0/a.h / i0 / q1,readInt；奖励文本拼为 “六部俸禄 xN 株”,六部俸禄奖励,h() 0x0148 readInt -> Fg；i0() 0x0762；q1() 0x00d4,高
+Dg[][] / Eg[][],La0/a.h / i0 / q1,"readByte reward_count；repeat readShort item_or_resource_id + readByte amount；显示时 game/m.w(id,""x"") + amount",额外奖励条目：道具/资源 ID 与数量,h() 0x00f2 readByte；0x0118 readShort -> Dg；0x012c readByte -> Eg；i0() 0x076a/0x0772；q1() 0x00dc/0x00e4,高
+yg[] / bg,La0/a.h / i0 / q1,readByte -> int；列表/详情拼 “任务成功率 N%”,任务成功率百分比,h() 0x0158 readByte -> yg；i0() 0x0908 显示 %；q1() 0x00a8 -> bg,高
+Ng[] / Og[],La0/a.j(mode=0) / J0,仅初始信息响应 mode==0 读取：readLong general_id + readShort bonus；J0 中若选中文官 ID 命中 Ng，则把 Og 加入成功率,文官个体任务加成/推荐加成候选,j() 0x00d4 readLong Ng；0x00dc readShort Og；J0() 0x0232..0x0268 匹配并累加,中高
+C 响应 assignment_marker,La0/a.C(String),委派成功后 readInt v0；对每个返回 general_id，Lo/a.F[index]=v0、Lo/a.x[index]=state,文官当前任务/部门标记候选；通常应等于 task_id 或服务端分配 ID,C() 0x0046 readInt；0x007a aput Lo/a.F；0x0082 aput Lo/a.x,中
+B 响应 Lo/a.V5,La0/a.B(String),领奖成功后 Lo/a.V5(dis)，末尾 readInt -> Lo/a.m,奖励到账复合同步块 + 六部俸禄余额刷新,B() 0x0090 Lo/a.V5；0x0096 readInt -> Lo/a.m,高

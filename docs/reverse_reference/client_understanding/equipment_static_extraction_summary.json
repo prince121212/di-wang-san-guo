@@ -1,0 +1,38 @@
+{
+  "source_assets": {
+    "scriptEquip.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/all_scripts/assets/script/scriptEquip.sc",
+    "scriptEquipType.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/all_scripts/assets/script/scriptEquipType.sc",
+    "scriptEquipEffect.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/all_scripts/assets/script/scriptEquipEffect.sc",
+    "scriptEquipIconEffect.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/all_scripts/assets/script/scriptEquipIconEffect.sc"
+  },
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "counts": {
+    "equipment_templates": 161,
+    "equipment_types": 4,
+    "effect_text_groups": 11,
+    "icon_effect_rows": 10,
+    "loader_schema_rows": 40,
+    "field_dictionary_rows": 21,
+    "helper_rows": 18
+  },
+  "stat_type_distribution": {
+    "0": 58,
+    "1": 32,
+    "2": 35,
+    "3": 36
+  },
+  "famous_flag_true_count": 24,
+  "nonempty_description_count": 17,
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/EQUIPMENT_STATIC_TABLES.md",
+    "加载字段顺序": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_template_loader_fields.csv",
+    "静态字段字典": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_static_field_dictionary.csv",
+    "helper/accessor 字典": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_helper_methods.csv",
+    "模板实值表 scriptEquip.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_template_static_values.csv",
+    "类型/强化实值表 scriptEquipType.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_type_static_values.csv",
+    "属性文案实值表 scriptEquipEffect.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_effect_text_values.csv",
+    "特效图标实值表 scriptEquipIconEffect.sc": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_icon_effect_values.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_static_tables_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_static_extraction_summary.json"
+  }
+}

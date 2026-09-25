@@ -1,0 +1,7 @@
+﻿protocol,opcode_hex,method,order,field,io,evidence,meaning,confidence
+fiefMove,0x1212,"LscriptPages/game/q;->T(long,int,int,long,String)",1,source_fief_id,writeLong,q.T 00000a,待迁移的封地 ID；调用点均使用 q.o,高
+fiefMove,0x1212,"LscriptPages/game/q;->T(long,int,int,long,String)",2,target_city_or_slot,writeShort,q.T 000010-000012 / H1 o3[l3],目标城池/目标槽位 short；调用点来自 o3[l3],中高
+fiefMove,0x1212,"LscriptPages/game/q;->T(long,int,int,long,String)",3,target_selector,writeByte,q.T 000018-000020,选择目标标识方式；0=后续写 long，非0=后续写 UTF；同时保存到 q.e4 影响返回 UI,高
+fiefMove,0x1212,"LscriptPages/game/q;->T(long,int,int,long,String)",4a,target_id,writeLong,q.T 000024-000028,target_selector==0 时写入；第一调用点传 -1,中
+fiefMove,0x1212,"LscriptPages/game/q;->T(long,int,int,long,String)",4b,target_name,writeUTF,q.T 00002e-000030 / H1 W3[I2]/P3,target_selector!=0 时写入；调用点传目标城池/候选名称字符串,中高
+fiefMove,0x1212,"LscriptPages/game/q;->T(long,int,int,long,String)",send,opcode,game.g->y,q.T 000036-00003a,发送 fiefMove，opcode 十进制 4626,高

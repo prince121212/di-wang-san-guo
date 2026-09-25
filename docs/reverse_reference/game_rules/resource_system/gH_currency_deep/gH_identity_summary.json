@@ -1,0 +1,33 @@
+{
+  "date": "2026-07-05",
+  "topic": "data.g.H 最终命名与玉石区分",
+  "final_name": "账号积分",
+  "field": "LscriptPages/data/g;->H J",
+  "resource_id": -14,
+  "confidence": "高",
+  "key_findings": [
+    "LscriptPages/data/g.<clinit> 初始化负数资源名表 f8，其中第 14 项是“账号积分”。",
+    "LscriptPages/data/g.v0(I) 对 -1..-14 返回 f8[abs(id)-1]，因此 v0(-14)=账号积分。",
+    "LscriptPages/data/g.w0(I) 对 -14 返回 data.g.H，因此 data.g.H 是“账号积分”的数量字段。",
+    "玉石是 item_id=399 的普通/功能道具，描述中写明可用于科技升级、将领空位激活、装备炼魂、六部和帅府系统；它和 data.g.H 的证据链不同。",
+    "此前把 data.g.H 标为“玉石/扩展货币候选”应修正为：data.g.H=账号积分；玉石=道具 item_id 399。"
+  ],
+  "generated_files": [
+    "analysis/game_rules/resource_system/gH_currency_deep/gH_identity_report.md",
+    "analysis/game_rules/resource_system/gH_currency_deep/gH_identity_evidence.csv",
+    "analysis/game_rules/resource_system/gH_currency_deep/negative_resource_id_mapping_corrected.csv",
+    "analysis/game_rules/resource_system/gH_currency_deep/gH_identity_summary.json",
+    "analysis/game_rules/resource_system/gH_currency_deep/gH_field_refs.csv/json",
+    "analysis/game_rules/resource_system/gH_currency_deep/jade_string_method_refs.csv/json"
+  ],
+  "important_evidence": {
+    "name_table": "scriptPages_data_g__clinit__0x2706d4.smali.txt: f8[13]=\"账号积分\"",
+    "name_resolver": "scriptPages_data_g__v0__0x26f7fc.smali.txt: negative id maps to f8[abs(id)-1]",
+    "value_resolver": "scriptPages_data_g__w0__0x270428.smali.txt: -14 -> data.g.H",
+    "item_jade": "item_full_mapping.csv: item_id=399 name=玉石 desc=价值连城，用途广泛，可用于科技升级、将领空位激活、装备炼魂、六部系统使用和帅府系统使用等。"
+  },
+  "remaining_unknowns": [
+    "账号积分的获取/消耗业务入口仍需继续按活动/账号系统追踪。",
+    "玉石 item_id=399 的具体消耗协议分散在科技、装备炼魂、六部、帅府等模块，需后续分模块整理。"
+  ]
+}

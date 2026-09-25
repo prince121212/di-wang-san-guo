@@ -1,0 +1,161 @@
+{
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/B6_OBJECT_FIELD_DICTIONARY.md",
+    "字段字典": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/b6_object_field_dictionary.csv",
+    "Accessor 映射": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/b6_object_field_accessors.csv",
+    "UI 证据": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/b6_object_field_ui_evidence.csv",
+    "字段引用摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/b6_object_field_references.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/b6_object_field_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/b6_object_field_summary.json"
+  },
+  "row_counts": {
+    "field_rows": 60,
+    "accessor_rows": 24,
+    "ui_evidence_rows": 17,
+    "reference_rows": 338
+  },
+  "high_confidence_fields": [
+    {
+      "field": "do",
+      "final_name": "name",
+      "confidence": "high"
+    },
+    {
+      "field": "io",
+      "final_name": "growth_value",
+      "confidence": "high"
+    },
+    {
+      "field": "jo",
+      "final_name": "level",
+      "confidence": "high"
+    },
+    {
+      "field": "ko",
+      "final_name": "exp_current",
+      "confidence": "high"
+    },
+    {
+      "field": "lo",
+      "final_name": "exp_next_or_cap",
+      "confidence": "high"
+    },
+    {
+      "field": "mo",
+      "final_name": "force",
+      "confidence": "high"
+    },
+    {
+      "field": "no",
+      "final_name": "intelligence",
+      "confidence": "high"
+    },
+    {
+      "field": "oo",
+      "final_name": "command",
+      "confidence": "high"
+    },
+    {
+      "field": "po",
+      "final_name": "attack",
+      "confidence": "high"
+    },
+    {
+      "field": "qo",
+      "final_name": "defense",
+      "confidence": "high"
+    },
+    {
+      "field": "ro",
+      "final_name": "energy_current",
+      "confidence": "high"
+    },
+    {
+      "field": "so",
+      "final_name": "energy_max",
+      "confidence": "high"
+    },
+    {
+      "field": "vo",
+      "final_name": "troop_capacity",
+      "confidence": "high"
+    },
+    {
+      "field": "wo",
+      "final_name": "loyalty_current",
+      "confidence": "high"
+    },
+    {
+      "field": "xo",
+      "final_name": "loyalty_max",
+      "confidence": "high"
+    },
+    {
+      "field": "zo",
+      "final_name": "salary_copper",
+      "confidence": "high"
+    },
+    {
+      "field": "Ao",
+      "final_name": "breakout_ability",
+      "confidence": "high"
+    },
+    {
+      "field": "No",
+      "final_name": "state_end_time",
+      "confidence": "high"
+    },
+    {
+      "field": "Vo",
+      "final_name": "state_code",
+      "confidence": "high"
+    },
+    {
+      "field": "Po",
+      "final_name": "capture_persuade_count_by_view",
+      "confidence": "high"
+    },
+    {
+      "field": "Qo",
+      "final_name": "capture_rescue_count_by_view",
+      "confidence": "high"
+    },
+    {
+      "field": "Xo",
+      "final_name": "owner_lord_name_type1",
+      "confidence": "high for type1"
+    },
+    {
+      "field": "bp",
+      "final_name": "country_name_type1",
+      "confidence": "high for type1"
+    },
+    {
+      "field": "cp",
+      "final_name": "prisoner_persuade_cooldown_base_time_type1",
+      "confidence": "high for type1"
+    },
+    {
+      "field": "dp",
+      "final_name": "captured_self_rescue_cooldown_end_time",
+      "confidence": "high"
+    },
+    {
+      "field": "co",
+      "final_name": "object_id_table",
+      "confidence": "high"
+    },
+    {
+      "field": "Oo",
+      "final_name": "last_energy_tick_time",
+      "confidence": "high"
+    },
+    {
+      "field": "jp",
+      "final_name": "host_equipment_id_bindings",
+      "confidence": "high"
+    }
+  ],
+  "main_conclusion": "type0 b6 fields now cover name/level/exp/loyalty/energy/growth/force/intelligence/command/attack/defense/troop_capacity/salary/state/equipment bindings."
+}

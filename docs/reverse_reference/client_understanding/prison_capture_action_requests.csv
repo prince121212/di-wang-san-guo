@@ -1,0 +1,6 @@
+﻿opcode,method,name,payload,callsite,response
+0x1233,"scriptPages/game/q.n1(I,J)",reqPrisonerCtrlInfo,writeByte(ctrl_type); writeLong(general_id),z.d1 营救/劝降前置消耗提示：ctrl_type=1 营救，ctrl_type=0 劝降。,0x8233 -> q.o1
+0x1238,"scriptPages/game/q.Z0(0x1238,D,general_id,pay_mode)",prisoner rescue,writeLong(z.D); writeLong(general_id); writeByte(pay_mode),z.d1 联网营救俘虏；pay_mode 0/1 对应铜钱/黄金候选。,0x8238 -> q.d1
+0x1234,"scriptPages/game/q.Z0(0x1234,D,general_id,pay_mode)",prisoner persuade/lure,writeLong(z.D); writeLong(general_id); writeByte(pay_mode),z.d1 联网劝降俘虏；pay_mode 0/1 对应铜钱/黄金候选。,0x8234 -> q.b1
+0x123b,"scriptPages/game/q.Z0(0x123b,D,general_id,0)",give up captured self general,writeLong(z.D); writeLong(general_id); writeByte(0),z.d1 放弃被俘将领。,0x823b -> q.a1
+0x1236,"scriptPages/game/q.Z0(0x1236,D,general_id,0)",release prisoner,writeLong(z.D); writeLong(general_id); writeByte(0),z.d1 释放俘虏；成长值>=90 时会二次确认。,0x8236 -> q.c1

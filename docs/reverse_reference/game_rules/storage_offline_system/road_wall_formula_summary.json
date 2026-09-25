@@ -1,0 +1,52 @@
+{
+  "date": "2026-07-05",
+  "topic": "道路/城墙公式深追第一版",
+  "key_conclusions": [
+    "道路值 road_value：文本明确“道路值越高，军队行动速度越快”；道路不通会导致无法阻击。具体速度公式仍未恢复。",
+    "城墙/城防 wall_value：文本明确“城防越高，驻防部队战斗力越高”；攻城活动/城主竞选中破坏城墙可获得积分，冲城车只攻击城墙。具体战斗加成公式仍未恢复。",
+    "修墙换算：60粮食=1城墙；1黄金=1000城墙。",
+    "修路换算：300粮食=1道路；1黄金=500道路。",
+    "客户端确认文案的贡献显示：粮食修墙/修路均 floor(输入粮食/3000) 后受当日贡献上限字段限制；黄金修墙为 黄金*20，黄金修路为 黄金*50 后受上限字段限制。",
+    "修筑请求复用 reqCityGarrisonList，opcode=4868，请求体：byte 0、cityId/long、type/byte、currency/byte、amount/long。"
+  ],
+  "protocol": {
+    "method": "LscriptPages/game/k;->i1(J,String,int,int,long)V",
+    "request_name": "reqCityGarrisonList",
+    "opcode": 4868,
+    "fields": [
+      "constant byte 0",
+      "city_id/writeLong",
+      "repair_type/writeByte",
+      "currency_type/writeByte",
+      "amount/writeLong"
+    ],
+    "repair_type_candidates": {
+      "1": "修墙",
+      "2": "修路",
+      "3": "修塔候选"
+    },
+    "currency_type": {
+      "0": "粮食",
+      "1": "黄金"
+    },
+    "amount_semantics": "资源输入数量：粮食数量或黄金数量"
+  },
+  "generated_files": [
+    "analysis/game_rules/storage_offline_system/road_wall_formula_report.md",
+    "analysis/game_rules/storage_offline_system/road_wall_formula_fields.csv",
+    "analysis/game_rules/storage_offline_system/road_wall_formula_summary.json",
+    "analysis/game_rules/storage_offline_system/road_wall_disasm/"
+  ],
+  "evidence_files": [
+    "analysis/game_rules/sentence_rule_hits.md",
+    "analysis/game_rules/resource_system/method_disasm_resource_extra/scriptPages_game_k__D1__0x2b95d0.smali.txt",
+    "analysis/game_rules/resource_system/method_disasm_resource_extra/scriptPages_game_k__d__0x2bc288.smali.txt",
+    "analysis/game_rules/storage_offline_system/road_wall_disasm/scriptPages_game_k__i1__0x2cb280.smali.txt"
+  ],
+  "remaining_unknowns": [
+    "道路值到行军时间/速度的精确公式",
+    "城墙/城防值到驻防部队战斗力加成的精确公式",
+    "修筑成功响应中服务端如何同步道路/城墙/贡献/资源字段",
+    "修塔完整规则未纳入本轮"
+  ]
+}

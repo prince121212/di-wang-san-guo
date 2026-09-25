@@ -1,0 +1,8 @@
+模块,请求名,请求opcode,响应opcode,handler,请求体/读流,同步/状态,置信度
+活动任务点击/领取,reqActivityTask,0x1136/4406,0x8136/-32458,LscriptPages/game/m0;->y(String),请求体 writeLong task/activity id；响应 readByte status，status!=0 调 m0.n 继续读任务/奖励详情,活动任务详情/领取类入口；具体状态由 m0.n 子块解析,中高
+六部任务委派,Req_libutaskDispatch,0x6342/25410,0xE342/-7358,La0/a;->C(String),请求体 writeInt task_id + writeByte general_count + repeat writeLong general_id；响应 status/message，成功读 task_id 并更新任务/将领委派状态,委派成功会更新 Lo/a.F/Lo/a.x 等将领任务状态,高
+六部任务奖励,Req_libutaskAward,0x6343/25411,0xE343/-7357,La0/a;->B(String),请求体 writeInt task_id；响应 status/message，成功读 task_id、任务奖励块、若干 general_id 状态、Lo/a.V5、Lo/a.m,奖励到账走 Lo/a.V5 复合同步块,高
+六部任务列表/刷新候选,Req_libutaskList,0x6341?/25409?,0xE341/-7359,La0/a;->D(String),响应 readByte status + readUTF message，status==0 调 a0/a.i(dis,1) 读取列表,请求入口在 a0/a.F 附近；opcode 由 dispatcher 相邻项推断,中
+签到补签,buqian,0x6204/25092,0xE204/-7676,LscriptPages/gameHD/a;->j(String),请求体 writeShort day + writeByte flag/payment；响应 status，成功调用 m0.t(t0,null) 刷新日历/活动数据,补签前本地检查黄金>=10,高
+活跃/累计签到奖励,leijijiangli,0x6206/25094,0xE206/-7674,LscriptPages/gameHD/a;->i(String),请求体通过 k/a.n 发送一个 byte 门槛/奖励档位；响应 status，失败读UTF message,领取活跃奖励/累计签到奖励候选,中高
+签到/日历全量数据,reqActivityHD/相关,0x6200/25088?,0xE200/-7680,LscriptPages/gameHD/a;->h(String),响应读取大量 byte/long/UTF，包含个人活跃度、周/月活跃分、累计签到、活跃奖励等面板数据,日历/活跃/签到主状态同步,中

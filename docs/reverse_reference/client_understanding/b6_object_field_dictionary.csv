@@ -1,0 +1,61 @@
+﻿field,final_name,meaning,confidence,b6_read_offset,b6_read_call,b6_block,b6_target_or_field,b6_read_note,reference_count
+do,name,对象/将领名称。,high,0x0010,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.common,Lo/a.do[type][idx],对象显示名/名称字符串候选；将领列表 UI 的核心字段。,6
+eo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0024,readShort(Ljava/lang/String;)S,b6.common,Lo/a.eo[type][idx],对象 short 参数 #1。,5
+fo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0038,readByte(Ljava/lang/String;)B,b6.common,Lo/a.fo[type][idx],对象 byte 参数 #1。,4
+go,class_or_type_code,对象分类/兵种/称号类 byte，`W3` 用 `Tp/Up` 表映射为显示字符串；具体业务名待静态表继续追。,medium,0x004c,readByte(Ljava/lang/String;)B,b6.common,Lo/a.go[type][idx],对象 byte 参数 #2。,6
+ho,unknown,未命名；需要继续结合 UI/抓包。,low,0x0060,readShort(Ljava/lang/String;)S,b6.common,Lo/a.ho[type][idx],对象 short 参数 #2。,5
+io,growth_value,成长值；将领详情/监狱 UI 在“成长值”标签下读取 `Q2`。,high,0x0074,readShort(Ljava/lang/String;)S,b6.common,Lo/a.io[type][idx],对象 short 参数 #3。,5
+jo,level,等级；UI 以 `K3(name) + (A3 level) + 级` 显示。,high,0x0088,readByte(Ljava/lang/String;)B,b6.common,Lo/a.jo[type][idx],对象 byte 参数 #3。,7
+ko,exp_current,经验当前值；监狱/将领详情 UI 以 `B2/C2` 显示经验进度。,high,0x009c,readInt(Ljava/lang/String;)I,b6.common,Lo/a.ko[type][idx],对象 int 参数 #1。,7
+lo,exp_next_or_cap,经验目标/上限值；与 `ko` 组成经验进度。,high,0x00b0,readInt(Ljava/lang/String;)I,b6.common,Lo/a.lo[type][idx],对象 int 参数 #2。,5
+mo,force,武力；将领详情 UI 在“武力”标签下读取 `K2`。,high,0x00c4,readShort(Ljava/lang/String;)S,b6.common,Lo/a.mo[type][idx],对象 short 参数 #4。,5
+no,intelligence,智力；将领详情 UI 在“智力”标签下读取 `H3`。,high,0x00d8,readShort(Ljava/lang/String;)S,b6.common,Lo/a.no[type][idx],对象 short 参数 #5。,5
+oo,command,统帅；将领详情 UI 在“统帅”标签下读取 `y3`。,high,0x00ec,readShort(Ljava/lang/String;)S,b6.common,Lo/a.oo[type][idx],对象 short 参数 #6。,6
+po,attack,攻击；将领详情 UI 在“攻击”标签下读取 `t1`。,high,0x0100,readShort(Ljava/lang/String;)S,b6.common,Lo/a.po[type][idx],对象 short 参数 #7。,5
+qo,defense,防御；将领详情 UI 在“防御”标签下读取 `v2`。,high,0x0114,readShort(Ljava/lang/String;)S,b6.common,Lo/a.qo[type][idx],对象 short 参数 #8。,5
+ro,energy_current,体力/行动力当前值；`a8` 本地每小时 +10 并受 `so` 上限限制，`z.C` 加体力响应更新 `ro/so`。,high,0x0128,readShort(Ljava/lang/String;)S,b6.common,Lo/a.ro[type][idx],对象 short 参数 #9；a8 会本地随时间递增并受 so 上限限制。,8
+so,energy_max,体力/行动力上限；`a8` 作为 `ro` 上限，UI 以 `T2/U2` 显示。,high,0x013c,readShort(Ljava/lang/String;)S,b6.common,Lo/a.so[type][idx],对象 short 参数 #10；a8 中作为 ro 的上限。,7
+to,unknown,未命名；需要继续结合 UI/抓包。,low,0x0150,readShort(Ljava/lang/String;)S,b6.common,Lo/a.to[type][idx],对象 short 参数 #11。,4
+uo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0164,readShort(Ljava/lang/String;)S,b6.common,Lo/a.uo[type][idx],对象 short 参数 #12。,4
+vo,troop_capacity,配兵上限/统兵容量；将领详情 UI 在“配兵上限”标签下读取 `r1`。,high,0x0178,readInt(Ljava/lang/String;)I,b6.common,Lo/a.vo[type][idx],对象 int 参数 #3。,6
+wo,loyalty_current,忠诚度当前值；`z.I` 加忠诚响应更新 `wo/xo`，UI 显示忠诚度 `D2/E2`。,high,0x018c,readByte(Ljava/lang/String;)B,b6.common,Lo/a.wo[type][idx],对象 byte 参数 #4。,7
+xo,loyalty_max,忠诚度上限/满值；`z.I` 提示“将领忠诚已全加满”并更新 `wo/xo`。,high,0x01a0,readByte(Ljava/lang/String;)B,b6.common,Lo/a.xo[type][idx],对象 byte 参数 #5。,7
+zo,salary_copper,俸禄铜钱；将领详情 UI 在“俸禄”标签下读取 `d4` 并追加“铜钱”。,high,0x01b4,readShort(Ljava/lang/String;)S,b6.common,Lo/a.zo[type][idx],对象 short 参数 #13。,5
+Ao,breakout_ability,突围能力；将领详情 UI 在“突围能力”标签下读取 `A2`。,high,0x01c8,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Ao[type][idx],对象 short 参数 #14。,5
+Bo,unknown,未命名；需要继续结合 UI/抓包。,low,0x01dc,readByte(Ljava/lang/String;)B,b6.common,Lo/a.Bo[type][idx],对象 byte 参数 #6。,4
+Co,unknown,未命名；需要继续结合 UI/抓包。,low,0x01f0,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Co[type][idx],对象 short 参数 #15。,5
+Do,unknown,未命名；需要继续结合 UI/抓包。,low,0x0204,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Do[type][idx],对象 short 参数 #16。,4
+Eo,object_owner_fief_id,"对象归属封地/宿主 id；`Q3(type,idx)` 直接返回该字段，`G2(host,0)` 用 `Eo[0][idx]==host` 过滤 type0 对象，`z.S` 会取 `Q3(0,idx)` 后调用 `q.M1(fief_id)`。",medium-high,0x0218,readLong(Ljava/lang/String;)J,b6.common,Lo/a.Eo[type][idx],对象 long 参数 #1；f6 重载列表前把 Eo 初始化为 -1。,11
+Fo,soldier_count_or_assigned_troop_count,当前带兵/配兵数量候选；HD 配兵 UI 与 `s1(II)` 使用该 long 字段。,medium-high,0x022c,readLong(Ljava/lang/String;)J,b6.common,Lo/a.Fo[type][idx],对象 long 参数 #2。,7
+Jo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0240,readInt(Ljava/lang/String;)I,b6.common,Lo/a.Jo[type][idx],对象 int 参数 #4。,4
+Ko,unknown,未命名；需要继续结合 UI/抓包。,low,0x0254,readInt(Ljava/lang/String;)I,b6.common,Lo/a.Ko[type][idx],对象 int 参数 #5。,4
+Lo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0268,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Lo[type][idx],对象 short 参数 #17。,4
+Mo,unknown,未命名；需要继续结合 UI/抓包。,low,0x027c,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Mo[type][idx],对象 short 参数 #18。,4
+No,state_end_time,状态倒计时结束时间；b6 读取相对 long 后存为 `curTime + delta`，`a8` 在状态 5 时用它清状态。,high,0x0288,readLong(Ljava/lang/String;)J,b6.common,Lo/a.No[type][idx]=curTime+readLong; Lo/a.Oo[type][idx]=curTime,相对时间/倒计时字段；客户端转为绝对结束时间并记录同步时刻。,8
+Vo,state_code,对象状态 byte；`v4` accessor 读取，`a8` 处理状态 5/9 倒计时，`b6` 在 type!=1 且状态 3 时读取额外字段。,high,0x02b2,readByte(Ljava/lang/String;)B,b6.common,Lo/a.Vo[type][idx],对象状态 byte；a8 会检查状态 5/9 的倒计时，b6 type!=1 分支会检查状态 3。,10
+Po,capture_persuade_count_by_view,监狱/俘虏次数字段；type0 在“被劝次数”下显示，type1 在“劝降次数”下显示。,high,0x02c6,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Po[type][idx],对象 short 参数 #19。,5
+Qo,capture_rescue_count_by_view,监狱/俘虏次数字段；type0 在“营救次数”下显示，type1 在“被救次数”下显示。,high,0x02da,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Qo[type][idx],对象 short 参数 #20。,5
+Ro,state9_end_time_or_binding_cleanup_time,状态 9 的结束/清理时间；`a8` 超时后清 `Ro` 并按宿主 id 清装备绑定。,medium-high,0x02ee,readLong(Ljava/lang/String;)J,b6.common,Lo/a.Ro[type][idx],对象 long/时间参数 #3；a8 状态 9 会用它判断超时并清理装备绑定。,5
+So,general_name_color_or_growth_tier,将领名称颜色/成长档位候选；`V2` accessor 读取后只见用于索引 `gameHD/h.Q`、`gameHD/g.T1` 等颜色数组给将领名称上色。,medium-high,0x0302,readByte(Ljava/lang/String;)B,b6.common,Lo/a.So[type][idx],对象 byte 参数 #7。,5
+To,cultivation_guarantee_count_current,将领培养当前保底/失败累计次数候选；培养 UI 在“保底次数”标签下作为第一个数值读取，培养失败响应仍走 `a6` 同步。,medium-high,0x0316,readShort(Ljava/lang/String;)S,b6.common,Lo/a.To[type][idx],对象 short 参数 #21。,6
+Uo,cultivation_growth_full_or_cap_flag,"培养保底配对/成长已满标志候选；`G3` accessor 读取，培养 UI 与 `To` 配对显示，同时发送 `0x1275` 前若 `G3(0,idx)!=0` 会直接提示“将领成长值已满”。",medium,0x032a,readShort(Ljava/lang/String;)S,b6.common,Lo/a.Uo[type][idx],对象 short 参数 #22。,5
+Wo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0340,readLong(Ljava/lang/String;)J,b6.type1_extra,Lo/a.Wo[idx],仅 type==1 读取的 long 扩展字段 #1。,4
+Xo,owner_lord_name_type1,type==1 扩展字段；将领详情 UI 在“归属君主”标签下显示 `Xo[idx]`。,high for type1,0x0350,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type1_extra,Lo/a.Xo[idx],仅 type==1 读取的字符串扩展字段 #1。,6
+Yo,unknown,未命名；需要继续结合 UI/抓包。,low,0x0360,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type1_extra,Lo/a.Yo[idx],仅 type==1 读取的字符串扩展字段 #2。,4
+Zo,type1_prison_host_fief_id,"type==1 扩展 long；`G2(host,1)` 不走 `Eo[1]`，而是用 `Zo[idx]==host` 过滤我方监狱俘虏/可劝降对象。",medium,0x0370,readLong(Ljava/lang/String;)J,b6.type1_extra,Lo/a.Zo[idx],仅 type==1 读取的 long 扩展字段 #2。,6
+ap,unknown,未命名；需要继续结合 UI/抓包。,low,0x0380,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type1_extra,Lo/a.ap[idx],仅 type==1 读取的字符串扩展字段 #3。,4
+bp,country_name_type1,type==1 扩展字段；将领详情 UI 在“所属国”标签下显示 `bp[idx]`。,high for type1,0x0390,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type1_extra,Lo/a.bp[idx],仅 type==1 读取的字符串扩展字段 #4。,5
+cp,prisoner_persuade_cooldown_base_time_type1,"type==1 扩展 long；`E3(idx)=max(cp+3600000-now,0)`，监狱俘虏页显示“劝降剩余”，点击劝降前若剩余>0 提示“再次劝降”。",high for type1,0x03a0,readLong(Ljava/lang/String;)J,b6.type1_extra,Lo/a.cp[idx],仅 type==1 读取的 long 扩展字段 #3。,5
+yo,unknown,未命名；需要继续结合 UI/抓包。,low,0x03b6,readInt(Ljava/lang/String;)I,b6.type0_or_not1_extra,Lo/a.yo[type][idx],type!=1 扩展 int 字段；当前实际多见 type 0。,6
+Ho,command_bonus_end_time,统兵加成剩余时间候选；type!=1 扩展字段，UI 在 `Io!=-1` 且 `z3(Ho)>0` 时显示“统兵加成剩余时间”。,medium-high,0x03c6,readInt(Ljava/lang/String;)I,b6.type0_or_not1_extra,Lo/a.Ho[idx]=curTime+readInt,type!=1 扩展相对时间字段。,4
+Io,command_bonus_value_or_flag,统兵加成数值/标记候选；与 `Ho` 一起控制“统兵加成剩余时间”显示。,medium,0x03da,readShort(Ljava/lang/String;)S,b6.type0_or_not1_extra,Lo/a.Io[idx],type!=1 扩展 short 字段。,7
+dp,captured_self_rescue_cooldown_end_time,仅 type!=1 且 `Vo==3` 读取的结束时间；`e4` 显示“营救剩余”，点击营救前若剩余>0 提示“再次营救”。,high,0x03fc,readInt(Ljava/lang/String;)I,b6.type0_status3_extra,Lo/a.dp[idx]=curTime+readInt,仅 type!=1 且 Vo[type][idx]==3 时读取的相对时间字段。,4
+ep,unknown,未命名；需要继续结合 UI/抓包。,low,0x0410,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type0_status3_extra,Lo/a.ep[idx],仅 type!=1 且 Vo==3 的字符串扩展字段 #1。,2
+fp,unknown,未命名；需要继续结合 UI/抓包。,low,0x0420,readByte(Ljava/lang/String;)B,b6.type0_status3_extra,Lo/a.fp[idx],仅 type!=1 且 Vo==3 的 byte 扩展字段。,2
+gp,captured_self_city_name,仅 `Vo==3` 扩展字符串；type0 监狱详情在“所在城”下显示，并与 `hp` 坐标拼接。,medium-high,0x0430,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type0_status3_extra,Lo/a.gp[idx],仅 type!=1 且 Vo==3 的字符串扩展字段 #2。,4
+hp,captured_self_city_coord_pair,"仅 `Vo==3` 扩展 short[2]；`A1(J)` 按对象 id 返回坐标，type0 监狱详情显示为 `gp(x,y)`。",medium-high,0x045a,readShort(Ljava/lang/String;)S,b6.type0_status3_extra,Lo/a.hp[idx][1],仅 type!=1 且 Vo==3 的二元 short 参数 #1。,5
+ip,captured_self_fief_name,仅 `Vo==3` 扩展字符串；type0 监狱详情在“封地”下显示。,medium-high,0x046a,readUTF(Ljava/lang/String;)Ljava/lang/String;,b6.type0_status3_extra,Lo/a.ip[idx],仅 type!=1 且 Vo==3 的字符串扩展字段 #3。,4
+co,object_id_table,二维对象 id 表；type0 高置信为将领/可装备宿主主表，type1 为第二对象表。,high,,,,,,17
+Oo,last_energy_tick_time,体力本地恢复计时基准；b6 写为当前时间，`a8` 用它判断是否超过 1 小时并给 `ro` +10。,high,,,,,,5
+jp,host_equipment_id_bindings,type0 宿主装备绑定侧表；`c6` 按 host_id 写入，`z2(host_id)` 返回宿主已穿戴装备 id 列表。,high,,,,,,11
+kp,host_skill_or_aux_short_bindings,宿主辅助 short 绑定表；`d6` 更新，`z.t0` 请求 general skill info 前会读取，候选为将领技能绑定/技能状态。,medium,,,,,,8

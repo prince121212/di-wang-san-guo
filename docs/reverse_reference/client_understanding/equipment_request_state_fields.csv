@@ -1,0 +1,8 @@
+﻿symbol,final_name,evidence,confidence
+z.I1,current_host_id / current_general_id candidate,写入点只有 z.Y0 和 z.b0。Y0: I1=z.n[M]，随后 z.z1=Lo/a.z2(I1) 和 E0(I1)。b0: 第三个参数写入 I1，而所有调用均传宿主 id（z.n[index] 或 data.d.r(equipment_id)）。,high
+z.H1,current_equipment_id,"z.b0 第一个参数写入 H1；z.d 从 z.z1 选中项写入 H1；后续所有 data.d.*(H1)、C0(I1,H1,1)、G0(I1,H1,mode) 都按装备实例使用。",high
+z.J1,current_equipment_type_or_slot_filter,"z.b0 第二参数写入 J1；若 H1!=-1 则被 data.d.F(H1) 覆盖；data.d.f(1,J1) 用它筛选可换装备。",medium-high
+z.N1,candidate_equipment_id_list,"由 data.d.f(1,J1) 或同类 helper 生成；W0 选中后 C0(I1,N1[index],0)。",high
+z.z1,current_host_equipped_equipment_ids,由 Lo/a.z2(I1/host_id) 返回；z.d 从 z.z1 选择 H1；F0/D0/H0 响应后重新 z.z1=Lo/a.z2(I1)。,high
+scriptPages/data/d.r(equipment_id),equipment_host_id_backlink,"bank1 装备反链 accessor；卸装路径总是 C0(data.d.r(equipment_id), equipment_id, 1)。",high
+z.C3,post-equipment-operation UI refresh context,大量 C0 前设置为 0/1；不进入请求体，只影响 D0/H0 后续 UI 刷新/跳转。,medium

@@ -1,0 +1,7 @@
+﻿field,type,final_name,confidence,full_sync,tag_update,ui_evidence,logic_evidence,server_rebuild
+data.i.q,long,人口当前占用,高,i.x @ 0x0000e2 readLong -> q,i.b tag=6 readLong -> q,q.u 显示 di_人口占用: q/r；k0.o 首页资源摘要也显示 q/r,g.z0/q.p0 用 r-q 作为征兵人口上限约束,作为账号/角色级当前人口占用同步；征兵、解散、伤兵恢复等会改变该值。
+data.i.r,long,人口上限,高,i.x @ 0x0000ee readLong -> r,i.b tag=7 readLong -> r；i.z 也在资源/人口短同步中读入 r,q.u 显示 di_人口占用: q/r；k0.o 首页资源摘要也显示 q/r,"g.z0/q.p0 用 r-q 计算可招数量；Lo/a.P1(fief,0) 是封地局部人口上限，不等于全局 r",登录和关键同步时下发全局人口上限；具体生成公式仍需继续追建筑/科技/称号/VIP/官职。
+data.i.u,int/readByte,资源点当前占用/当前数量,高,i.x @ 0x000112 readByte -> u,i.b tag=13 readByte -> u,k0.o 在 di_标题资源点 行显示 u/v,目前主要用于标题/摘要显示，未见本地占领结算公式,作为玩家已占资源点数量同步；占领/放弃资源点后更新。
+data.i.v,byte,资源点上限,高,i.x @ 0x00011e readByte -> v,i.b tag=14 readByte -> v,k0.o 在 di_标题资源点 行显示 u/v,目前主要用于标题/摘要显示，未见本地生成公式,作为玩家可占资源点上限同步；生成公式仍需动态样本/成长表深追。
+data.i.s,int/readByte,封地上限,高,i.x @ 0x0000fa readByte -> s,i.b tag=8 readByte -> s,k0.o 在 di_标题封地 行显示 Lo/a.s2().length / s,data.i.h() 直接返回 s,作为玩家封地上限同步；和君主等级/声望/官职等成长条件的公式仍待追。
+data.i.t,int/readByte,将领上限,高,i.x @ 0x000106 readByte -> t,i.b tag=9 readByte -> t,z.o 在 di_将领数 显示 Lo/a.M2(0).length / t；k0.o 将领区域也显示将领数/上限,data.i.w() 直接返回 t；gameHD/k.l、gameHD/g.f 等界面引用 t,作为玩家可拥有/显示将领上限同步；扩展空位、官职/VIP/道具叠加公式待追。

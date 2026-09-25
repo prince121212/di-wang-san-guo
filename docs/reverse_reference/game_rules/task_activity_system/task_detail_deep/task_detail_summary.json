@@ -1,0 +1,24 @@
+{
+  "topic": "普通任务详情/领取响应字段第一版",
+  "protocols": [
+    {"request":"task list", "opcode":"0x1130/4400", "response":"0x8130/-32464", "handler":"m0.s -> m0.n"},
+    {"request":"reqTaskInfo", "opcode":"0x1132/4402", "response":"0x8132/-32462", "handler":"m0.w"},
+    {"request":"reqGainAward", "opcode":"0x1134/4404", "response":"0x8134/-32460", "handler":"m0.u"}
+  ],
+  "core_fields": {
+    "S7/m0.m0":"task_id",
+    "T7/m0.n0":"task_title",
+    "U7/m0.p0":"list_status_claimable_candidate",
+    "V7/m0.q0":"target_lines",
+    "W7/m0.r0":"description",
+    "X7/m0.s0":"guide_text",
+    "Y7/m0.t0":"structured_reward_for_group0",
+    "Z7/m0.u0":"reward_text_for_group1_2_3"
+  },
+  "findings": [
+    "任务列表按4个group下发，每组有两个数量桶；第一桶设置U7/p0=1",
+    "任务详情由reqTaskInfo按group+task_id请求，响应填充描述、目标、指引和奖励",
+    "group==0使用结构化奖励数组reward_id+amount，group==1/2/3使用文本奖励",
+    "reqGainAward响应先刷新任务列表，成功后同步声望、铜钱、粮食、账号积分和Lo/a.V5"
+  ]
+}

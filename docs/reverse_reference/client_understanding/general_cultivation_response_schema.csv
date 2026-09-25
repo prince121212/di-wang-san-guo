@@ -1,0 +1,10 @@
+﻿response_opcode,handler,branch,result_code,schema,client_effect
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,h.a == false,0,"readByte result; readLong general_id; idx=Lo/a.c3(0,general_id); Lo/a.a6(0,stream)",提示 di_培养失败；仍接受 a6 单将领同步，服务端可借此推进保底次数。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,h.a == false,1,"readByte result; readLong general_id; idx=Lo/a.c3(0,general_id); Lo/a.a6(0,stream)",h.T=1；提示 di_培养成功。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,h.a == false,2,"readByte result; readLong general_id; idx=Lo/a.c3(0,general_id); Lo/a.a6(0,stream)","h.T=1；提示“培养成功,成长值提升到” + Lo/a.Q2(0,idx)。"
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,h.a == true,0/1/2,与 h.a==false 分支同构；结果写入 gameHD/g.d 和 g.u1。,提示失败/成功/批量成功；成功后 g.u1=1。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,both,-1,readByte result only,提示 di_提示其他错误。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,both,-2,readByte result only,提示 di_确认前往商城购买将神魂；设置 h.V 或 g.v1，供后续跳转商城/购买确认。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,both,-3,readByte result only,提示 di_将领成长值已满。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,both,-4,readByte result only,提示 di_将领非培养状态。
+0x8275,LscriptPages/gameHD/g;->E(Ljava/lang/String;)V,both,-5,readByte result only,提示 di_提示未开放。

@@ -1,0 +1,9 @@
+﻿flow_idx,payload_sha256,group_index,group_label_candidate,primary_count,secondary_count,total_count,first_id,first_name,trailing_short,consumed_to_offset
+35,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,0,普通/成长任务候选,0,11,11,0x2714,种植技术,0,271
+35,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,1,活动/运营任务候选,0,15,15,0x9b58ffba,每日在线领好礼,0,764
+35,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,2,国家/大型玩法入口候选,0,5,5,0x7919,百家争鸣,0,881
+35,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,3,兑换/特殊入口候选,0,2,2,0x791a,元宝换黄金,0,932
+50,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,0,普通/成长任务候选,0,11,11,0x2714,种植技术,0,271
+50,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,1,活动/运营任务候选,0,15,15,0x9b58ffba,每日在线领好礼,0,764
+50,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,2,国家/大型玩法入口候选,0,5,5,0x7919,百家争鸣,0,881
+50,520339677cb7c4beabb6b29ccc37218a4835386fcca22608d6e75f70f2c9b417,3,兑换/特殊入口候选,0,2,2,0x791a,元宝换黄金,0,932

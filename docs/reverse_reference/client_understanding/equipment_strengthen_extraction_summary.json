@@ -1,0 +1,36 @@
+{
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "selected_methods": [
+    "LscriptPages/game/z;->W0()I",
+    "LscriptPages/game/z;->a()V",
+    "LscriptPages/game/z;->j()V",
+    "LscriptPages/game/z;->e0()V",
+    "LscriptPages/game/z;->h1()V",
+    "LscriptPages/game/z;->u0(J)Z",
+    "LscriptPages/game/z;->V(I)[S",
+    "LscriptPages/game/z;->C0(JJI)V",
+    "LscriptPages/game/z;->G0(JJI)V",
+    "LscriptPages/game/z;->H0(Ljava/lang/String;)V"
+  ],
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/EQUIPMENT_STRENGTHEN_UI_AND_FORMULAS.md",
+    "UI 状态/字段表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_strengthen_ui_schema.csv",
+    "操作流程表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_strengthen_operation_flow.csv",
+    "公式字典": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_strengthen_formula_dictionary.csv",
+    "方法摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_strengthen_method_summary.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_strengthen_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_strengthen_extraction_summary.json"
+  },
+  "row_counts": {
+    "ui_schema_rows": 11,
+    "operation_flow_rows": 8,
+    "formula_rows": 8,
+    "method_summary_rows": 10
+  },
+  "high_level_findings": [
+    "normal_strengthen = z.G0(I1,H1,0) / opcode 0x1254",
+    "special_strengthen = z.G0(I1,H1,1) / opcode 0x1254",
+    "auto_20_strengthen loops single z.G0(I1,H1,0) requests, not a batch protocol",
+    "material and attribute formulas are client-display formulas; result authority remains server-side"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "date": "2026-07-05",
+  "topic": "修筑成功响应字段深追",
+  "request_opcode": "0x1304 / 4868",
+  "response_opcode": "0x8304 / signed -31996",
+  "dispatcher": "Lo/a;->A6 000d98-000da0 dispatches signed -31996 to LscriptPages/game/k;->r0(String)",
+  "handler": "LscriptPages/game/k;->r0(String)",
+  "key_findings": [
+    "0x8304 是修墙/修路/修塔候选请求 0x1304 的响应；dispatcher 以 signed short -31996 出现并调用 k.r0(String)。",
+    "响应头读取 status 与 message；函数末尾统一显示 message。status=-8 会额外调用 Lo/a.f6(0,dis) 读取通用同步块。",
+    "响应直接同步黄金 data.g.F、粮食 data.i.e、贡献 data.i.p。i.p 通过君主/国家 UI 的 di_贡献 文案高置信确认是贡献字段。",
+    "若 city_id != -1，响应继续同步城池的城墙 current/max、道路 current/max、炮塔 current/max 候选，以及三类修筑贡献额度二元组。",
+    "城池状态会写入 data.b.v/w/x、k.Y0/Z0/a1、当前 cityinfo repair 面板缓存、neighbor/role city list 缓存，并调用 s0.h0 更新地图城市摘要。"
+  ],
+  "response_order": [
+    "status/readByte",
+    "message/readUTF",
+    "unknown_byte/readByte",
+    "unknown_int_1/readInt",
+    "unknown_int_2/readInt",
+    "gold/readLong -> data.g.F",
+    "food/readLong -> data.i.e",
+    "contribution/readLong -> data.i.p",
+    "city_id/readLong",
+    "if city_id != -1: wall[2]/road[2]/tower[2]/six contribution-limit ints"
+  ],
+  "generated_files": [
+    "analysis/game_rules/storage_offline_system/repair_response_fields.csv",
+    "analysis/game_rules/storage_offline_system/repair_response_report.md",
+    "analysis/game_rules/storage_offline_system/repair_response_summary.json",
+    "analysis/game_rules/storage_offline_system/repair_response_disasm/"
+  ],
+  "evidence_files": [
+    "analysis/game_rules/protocol_chain/method_disasm_role_fief/o_a__A6__dispatch.smali.txt",
+    "analysis/game_rules/storage_offline_system/repair_response_disasm/scriptPages_game_k__r0__0x2c8958.smali.txt",
+    "analysis/game_rules/storage_offline_system/repair_response_disasm/scriptPages_game_k__n1__0x2cb5e0.smali.txt",
+    "analysis/game_rules/storage_offline_system/repair_response_disasm/i_p_refs/i_p_refs_summary.json"
+  ],
+  "remaining_unknowns": [
+    "响应头 unknown_byte/unknown_int_1/unknown_int_2 未见保存，暂标兼容字段。",
+    "贡献额度二元组中 b1/d1/f1 已参与 D1 文案上限，c1/e1/g1 的精确含义仍待动态样本。",
+    "炮塔 current/max 与修塔完整规则仅作为候选，本轮未继续展开。"
+  ]
+}

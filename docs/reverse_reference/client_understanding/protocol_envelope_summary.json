@@ -1,0 +1,71 @@
+{
+  "capture": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/captures/mitm/game_capture_20260705_020959/extracted/game_flows.json",
+  "flow_count": 20,
+  "entry_flow_idxs": [
+    29,
+    30,
+    31,
+    33,
+    35
+  ],
+  "request_command_count": 27,
+  "response_packet_count": 33,
+  "parse_error_count": 0,
+  "parse_errors": [],
+  "all_requests_consumed": true,
+  "all_responses_consumed": true,
+  "unique_headers": [
+    "1660606`7054`0000480502"
+  ],
+  "unique_dm_hex": [
+    "0x56ee99de606f4744"
+  ],
+  "unique_gm_hex": [
+    "0x0000000000000000"
+  ],
+  "unique_obfuscation_flags": [
+    0
+  ],
+  "unique_fragment_flags": [
+    0
+  ],
+  "all_signatures_empty": true,
+  "request_opcodes": [
+    "0x1008",
+    "0x1016",
+    "0x1102",
+    "0x1104",
+    "0x1113",
+    "0x1130",
+    "0x1800",
+    "0x3110",
+    "0x3160",
+    "0x6200"
+  ],
+  "response_opcodes": [
+    "0x8001",
+    "0x8004",
+    "0x8008",
+    "0x800a",
+    "0x800d",
+    "0x8102",
+    "0x8104",
+    "0x8113",
+    "0x8130",
+    "0x8146",
+    "0x8280",
+    "0x8800",
+    "0xa110",
+    "0xa129",
+    "0xa160",
+    "0xe200"
+  ],
+  "outputs": {
+    "markdown": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/PROTOCOL_ENVELOPE_AND_ENTRY_CONTRACT.md",
+    "flow_summary_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/protocol_envelope_flow_summary.csv",
+    "request_commands_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/protocol_envelope_request_commands.csv",
+    "response_packets_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/protocol_envelope_response_packets.csv",
+    "entry_contract_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/protocol_entry_minimal_contract.csv",
+    "disasm": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/protocol_envelope_disasm.txt"
+  }
+}

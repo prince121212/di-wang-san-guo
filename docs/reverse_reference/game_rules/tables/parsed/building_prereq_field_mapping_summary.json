@@ -1,0 +1,629 @@
+{
+  "generated_at": "2026-07-05T08:15:06",
+  "source": "building_level_prereq_rules.csv raw field + Lo/a.U5 exact read order",
+  "u5_evidence": {
+    "method": "Lo/a;->U5(String)",
+    "code_off": "0x23e8d4",
+    "row_read_order": "level/readByte -> index=level-1; pn/readShort cast byte; qn/readByte; rn/readByte; sn/readShort cast byte; tn/readByte; un/readShort cast byte; vn/readInt; trailing/readByte",
+    "q_l_evidence": "q.l 0000d4-00017e reads Lo/a.un[building][level-1] as required building type and R1(building,level)=Lo/a.qn[building][level-1] as required level."
+  },
+  "field_mapping": {
+    "pn": "first short parameter; accessor S1; exact business meaning pending",
+    "qn": "byte parameter returned by R1; when q.l sees un != -1, this is required level for that required building type",
+    "rn": "byte gate/role level candidate; not yet tied to a direct accessor in this round",
+    "sn": "second short parameter; referenced in q.v UI candidate; exact business meaning pending",
+    "tn": "byte parameter paired with sn candidate",
+    "un": "required building type used by q.l prerequisite check",
+    "vn": "int parameter; exact business meaning pending",
+    "trailing_flag": "final byte consumed by U5 and not stored; likely row flag/reserved"
+  },
+  "stats": {
+    "pn_req_building_or_param": {
+      "unique": 1,
+      "most_common": [
+        [
+          0,
+          100
+        ]
+      ],
+      "non_default_examples": []
+    },
+    "qn_req_level_for_un": {
+      "unique": 16,
+      "most_common": [
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          8
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          4,
+          8
+        ],
+        [
+          5,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          9,
+          8
+        ],
+        [
+          10,
+          8
+        ],
+        [
+          11,
+          4
+        ],
+        [
+          12,
+          4
+        ],
+        [
+          13,
+          4
+        ],
+        [
+          14,
+          4
+        ],
+        [
+          15,
+          3
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "non_default_examples": [
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 2,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 1,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0200000100ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 3,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 2,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0300000200ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 4,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 3,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0400000300ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 5,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 4,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0500000400ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 6,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 5,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0600000500ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 7,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 6,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0700000600ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 8,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 7,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0800000700ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 9,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 8,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0900000800ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 10,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 9,
+          "rn_req_role_or_gate_level": 0,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 0,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0a00000900ffff00ffff0000000000"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 11,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 10,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0b00000a14ffff00ffff0000000001"
+        }
+      ]
+    },
+    "rn_req_role_or_gate_level": {
+      "unique": 2,
+      "most_common": [
+        [
+          0,
+          85
+        ],
+        [
+          20,
+          15
+        ]
+      ],
+      "non_default_examples": [
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 11,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 10,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0b00000a14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 12,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 11,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0c00000b14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 13,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 12,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0d00000c14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 14,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 13,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0e00000d14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 15,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 14,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0f00000e14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 11,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 11,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0b00000b14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 12,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 12,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0c00000c14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 13,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 13,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0d00000d14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 14,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 14,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0e00000e14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 15,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 15,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0f00000f14ffff00ffff0000000001"
+        }
+      ]
+    },
+    "sn_req_building_or_param2": {
+      "unique": 1,
+      "most_common": [
+        [
+          -1,
+          100
+        ]
+      ],
+      "non_default_examples": []
+    },
+    "tn_req_level2_or_flag": {
+      "unique": 1,
+      "most_common": [
+        [
+          0,
+          100
+        ]
+      ],
+      "non_default_examples": []
+    },
+    "un_required_building_type_for_q_l": {
+      "unique": 1,
+      "most_common": [
+        [
+          -1,
+          100
+        ]
+      ],
+      "non_default_examples": []
+    },
+    "vn_int_param": {
+      "unique": 1,
+      "most_common": [
+        [
+          0,
+          100
+        ]
+      ],
+      "non_default_examples": []
+    },
+    "trailing_flag_byte": {
+      "unique": 2,
+      "most_common": [
+        [
+          0,
+          80
+        ],
+        [
+          1,
+          20
+        ]
+      ],
+      "non_default_examples": [
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 11,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 10,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0b00000a14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 12,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 11,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0c00000b14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 13,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 12,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0d00000c14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 14,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 13,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0e00000d14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "0",
+          "名称": "大厅",
+          "level": 15,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 14,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0f00000e14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 11,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 11,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0b00000b14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 12,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 12,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0c00000c14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 13,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 13,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0d00000d14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 14,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 14,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0e00000e14ffff00ffff0000000001"
+        },
+        {
+          "building_id": "1",
+          "名称": "房屋",
+          "level": 15,
+          "pn_req_building_or_param": 0,
+          "qn_req_level_for_un": 15,
+          "rn_req_role_or_gate_level": 20,
+          "sn_req_building_or_param2": -1,
+          "tn_req_level2_or_flag": 0,
+          "un_required_building_type_for_q_l": -1,
+          "vn_int_param": 0,
+          "trailing_flag_byte": 1,
+          "client_accessors": "S1->pn, R1->qn, q.l uses un+R1, U5 stores rn/sn/tn/vn but direct semantics pending",
+          "raw": "0f00000f14ffff00ffff0000000001"
+        }
+      ]
+    }
+  },
+  "key_conclusions": [
+    "15-byte 前置行已经按 U5 真实读流重新命名，旧 prereq 表中字段偏移解释不完全准确，应以 building_level_prereq_rules_named.csv 为准。",
+    "客户端 q.l 的实际建造/升级前置校验只明确使用 un_required_building_type_for_q_l 与 qn_req_level_for_un。",
+    "当前样本中多数 un 为 -1，说明很多前置条件可能由 pn/rn/sn/tn/vn 或服务端校验承担；这些字段仍需继续追 UI/代码。",
+    "trailing_flag_byte 在 U5 中被 readByte 消费但没有缓存，可能是行标记/保留位。"
+  ]
+}

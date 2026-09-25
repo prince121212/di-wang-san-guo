@@ -1,0 +1,66 @@
+{
+  "topic": "六部任务列表字段深拆第一版",
+  "protocols": [
+    {
+      "request": "REQ_LIBUTASK_INFO",
+      "opcode": "0x6340/25408",
+      "response": "0xE340/-7360",
+      "handler": "La0/a.E -> i(dis,0)",
+      "body": "empty",
+      "notes": "initial info + task list + Ng/Og bonus block"
+    },
+    {
+      "request": "Req_libutaskList",
+      "opcode": "0x6341/25409",
+      "response": "0xE341/-7359",
+      "handler": "La0/a.D -> i(dis,1)",
+      "body": "empty",
+      "notes": "task list refresh"
+    },
+    {
+      "request": "Req_libutaskDispatch",
+      "opcode": "0x6342/25410",
+      "response": "0xE342/-7358",
+      "handler": "La0/a.C",
+      "body": "int task_id; byte count; long general_id[]"
+    },
+    {
+      "request": "Req_libutaskAward",
+      "opcode": "0x6343/25411",
+      "response": "0xE343/-7357",
+      "handler": "La0/a.B",
+      "body": "int task_id"
+    }
+  ],
+  "core_fields": {
+    "task_id": "vg[]",
+    "title": "zg[]",
+    "level": "xg[]",
+    "quality_rank": "Bg[]",
+    "type_name": "Cg[] via wg[]",
+    "terrain_id": "Kg[]",
+    "target_id": "Lg[]",
+    "state_tags": "Mg[][]",
+    "dispatch_limit": "Jg[]/Wf",
+    "task_state": "Ag[]: -1 not dispatched, 0 in progress, 1 claimable/completed candidate",
+    "remaining_or_finish_time": "Hg[]",
+    "duration_candidate": "Ig[] - ug",
+    "success_rate": "yg[]",
+    "reward_libu_exp": "Gg[]",
+    "reward_libu_salary": "Fg[]",
+    "reward_items": "Dg[][]/Eg[][]",
+    "general_bonus": "Ng[]/Og[] only in initial info response"
+  },
+  "findings": [
+    "六部任务完整列表并非本地静态表；服务端通过 0xE340/0xE341 动态下发。",
+    "列表字段已能覆盖标题、等级、品阶、类型、地形、目标、状态标签、奖励、成功率、耗时/倒计时、委派人数上限和领奖状态。",
+    "委派请求只提交 task_id 与文官 ID 列表，成功率/耗时/奖励由服务端返回并刷新，客户端不应作为权威。",
+    "领奖响应会调用 Lo/a.V5 复合同步块并刷新六部俸禄余额，服务端重建必须保证幂等和已领奖状态。"
+  ],
+  "remaining_unknowns": [
+    "header 中 og/pg/qg/rg/tg/sg/ug 精确业务名",
+    "Ig 与 ug 的绝对/相对时间语义需要动态样本确认",
+    "wg/Kg/Lg/Mg 对应静态表 Lo/a.* 的中文全集可另行导出",
+    "Ag=1 UI 同时显示成功率，需动态样本确认是否为“可领奖/成功完成”还是“已完成待判定”"
+  ]
+}

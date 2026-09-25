@@ -1,0 +1,22 @@
+area,source_method,offset_or_evidence,raw_field_or_call,confirmed_name,wire_type_or_storage,semantics,confidence,server_rebuild_note
+fief_base_sync,Lo/a.Y5(J,String),0x4c-0x58,Lo/a->tv [I readInt,coin_output_per_hour,int,封地铜钱产量/小时,high,服务端应下发最终值；客户端直接展示
+fief_base_sync,Lo/a.Y5(J,String),0x5c-0x68,Lo/a->uv [I readInt,food_output_per_hour,int,封地粮食产量/小时,high,服务端应下发最终值；客户端直接展示
+fief_base_sync,Lo/a.Y5(J,String),0x6c-0x78,Lo/a->vv [S readShort,unknown_short_1,short,未命名封地字段,low,暂保留原值
+fief_base_sync,Lo/a.Y5(J,String),0x7c-0x88,Lo/a->wv [S readShort,unknown_short_2,short,未命名封地字段,low,暂保留原值
+fief_base_sync,Lo/a.Y5(J,String),0x8c-0x98,Lo/a->xv [B readByte,base_build_queue_limit_or_state,byte,建筑队列基础上限/状态；U1在无队列buff时取xv,medium,需结合等级/道具进一步验证
+fief_base_sync,Lo/a.Y5(J,String),0x9c-0xa8,Lo/a->yv [S readShort,garrison_current,short,驻防当前值,medium,q.L显示 yv/zv 在“驻防”栏
+fief_base_sync,Lo/a.Y5(J,String),0xac-0xb8,Lo/a->zv [S readShort,garrison_limit,short,驻防上限值,medium,q.L显示 yv/zv 在“驻防”栏
+fief_base_sync,Lo/a.Y5(J,String),0xbc-0xc8,Lo/a->Av [B readByte,recruit_queue_limit,byte,征兵队列上限,high,q.L显示 R4(fief)/Av 在“征兵队列”栏
+coin_buff_sync,Lo/a.k1(int,String),0x00-0x72,Bv/Cv/Dv,coin_output_buff_entries,count + repeated(byte type,long remain_or_expiry,byte value),铜钱增产临时状态,high,k0.g 用 Bv/Cv/Dv + q2 展示提示铜钱增产和剩余时间
+food_buff_sync,Lo/a.k1(int,String),0x78-0xe0,Ev/Fv/Gv,food_output_buff_entries,count + repeated(byte type,long remain_or_expiry,byte value),粮食增产临时状态,high,k0.g 用 Ev/Fv/Gv + J2 展示提示粮食增产和剩余时间
+queue_buff_sync,Lo/a.k1(int,String),0xe6-0x152,Hv/Iv/Jv,build_queue_buff_entries,count + repeated(byte type,long remain_or_expiry,byte value),建筑队列/同时建设加成临时状态,medium,U1在V1剩余时间>0时取Iv[0]覆盖xv
+building_effect_table,Lo/a.D1(I,I),0x00-0x24,En,coin_building_level_effect,int[][],建筑等级铜钱产量效果,high,静态表来自scriptBuilding.sc尾部
+building_effect_table,Lo/a.F1(I,I),0x00-0x24,Fn,food_building_level_effect,int[][],建筑等级粮食产量效果,high,静态表来自scriptBuilding.sc尾部
+building_effect_table,Lo/a.P1(I,I),0x00-0x24,Gn,population_building_level_effect,int[][],建筑等级人口上限效果,high,静态表来自scriptBuilding.sc尾部
+building_effect_table,Lo/a.N1(I,I),0x00-0x24,Hn,recruit_queue_level_effect,int[][],建筑等级征兵队列效果,high,静态表来自scriptBuilding.sc尾部
+fief_overview_ui,LscriptPages/game/q.L(),0x354-0x3a0,tv/uv + di_小时,output_display,UI display,封地概览直接展示“产钱/产粮 = tv/uv / 小时”,high,这是最终展示字段证据
+fief_overview_ui,LscriptPages/game/q.L(),0x222-0x254,d2/U1,building_queue_display,UI display,建筑队列：当前正建设数量/上限,high,d2计数Sv>0；U1取xv或Iv临时加成
+fief_overview_ui,LscriptPages/game/q.L(),0x262-0x284,o4,free_soldier_total,UI display,闲兵总数=sum Lv[fief],high,o4累加Lv数组
+fief_overview_ui,LscriptPages/game/q.L(),0x292-0x2c6,R4/Av,recruit_queue_display,UI display,征兵队列：当前训练队列/上限,high,R4统计当前征兵任务；Av为上限
+resource_map,Lo/a.r4(I,I),0x00-0x32,Kv/Lv,typed_free_soldier_lookup,map byte->int,按兵种/类型查询Lv数量,medium,配合o4总和；重建时保留为封地闲兵map
+resource_map,Lo/a.Y2(I,I),0x00-0x32,Mv/Nv,typed_secondary_soldier_lookup,map byte->int,第二组按类型数量；疑似伤兵/预备兵/其他兵力池,low,语义需继续从UI追踪

@@ -310,9 +310,9 @@ class MilitarySnapshotProtocolShapesTest {
 
     private fun capturePayload(flow: Int): ByteArray {
         val root = listOf(
-            File("../ctf_out/passive_pcap_hotspot_20260726_173635"),
-            File("../../ctf_out/passive_pcap_hotspot_20260726_173635"),
-            File("ctf_out/passive_pcap_hotspot_20260726_173635")
+            File("../电脑端辅助前端/tests/fixtures/game_packets/passive_pcap_hotspot_20260726_173635"),
+            File("../../电脑端辅助前端/tests/fixtures/game_packets/passive_pcap_hotspot_20260726_173635"),
+            File("电脑端辅助前端/tests/fixtures/game_packets/passive_pcap_hotspot_20260726_173635")
         ).firstOrNull(File::isDirectory)
             ?: error("军情真实抓包目录缺失")
         val response = File(root, "live_analyzed/${flow.toString().padStart(3, '0')}/resp.bin")

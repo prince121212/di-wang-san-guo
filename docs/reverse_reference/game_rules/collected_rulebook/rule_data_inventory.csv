@@ -1,0 +1,202 @@
+﻿分类,相对路径,记录数,字段数,字段名,备注
+战法/战斗,analysis/game_rules/battle_tables/bt_book_piece.csv,35,7,id / 名称 / 字段A / 字段B / 字段C / raw_tail / offset,
+战法/战斗,analysis/game_rules/battle_tables/bt_book_pro_table.csv,4,5,id / 描述 / raw_head / offset / 记录长度,
+战法/战斗,analysis/game_rules/battle_tables/bt_effects.csv,25,5,id / 名称/短名 / 效果描述 / raw_tail / offset,
+战法/战斗,analysis/game_rules/battle_tables/bt_level_texts.csv,875,4,bt_id / 名称 / 序号 / 描述/公式,
+战法/战斗,analysis/game_rules/battle_tables/bt_list_summary.csv,35,7,id / 名称 / 记录长度 / 字符串数 / 核心描述/公式样例 / 全部文本样例 / offset,
+兵种,analysis/game_rules/soldier_table/soldier_values.csv,16,17,id / 名称 / 大类码 / 大类 / 阶位 / 字段A_疑似普通攻击/兵种等级 / 攻击 / 防御 / 生命 / 速度 / 字段F_疑似射程/负重/行动值 / 铜钱成本_推定 / 粮食成本_推定 / 材料成本_推定 / 招募时间_推定 / 人口占用 / 描述,
+建筑,analysis/game_rules/tables/parsed/buildings.csv,9,9,id / 名称 / 类型字段 / 最大等级 / 前置建筑ID / 描述 / 资源/图片ID列表 / tail_len / offset,
+装备,analysis/game_rules/tables/parsed/equip_effects.csv,11,5,id / flags / text / offset / note,
+装备,analysis/game_rules/tables/parsed/equip_types.csv,4,6,id / 名称 / 子类型/槽位 / 属性ID列表 / 品质/效果项 / offset,
+道具,analysis/game_rules/tables/parsed/item_effects.csv,48,5,id / flags / text / offset / note,
+将领/技能,analysis/game_rules/tables/parsed/skill_effects.csv,22,5,id / 标题 / 字段raw / 描述 / offset,
+将领/技能,analysis/game_rules/tables/parsed/skills.csv,45,10,id / 名称 / 技能族 / 等级 / 效果ID / 效果标题 / 触发率/数值 / 效果描述 / raw_suffix / offset,
+科技,analysis/game_rules/tables/parsed/tech_effects.csv,47,5,id / flags / text / offset / note,
+科技,analysis/game_rules/tables/parsed/tech_levels.csv,195,9,tech_id / 名称 / 等级 / 效果值 / 成本A / 成本B / 成本C / 耗时秒 / 需求/点数参数,
+科技,analysis/game_rules/tables/parsed/tech_summary.csv,22,15,id / 名称 / 最大等级 / 图标ID / 效果ID/字段 / 效果文本_by_字段 / 效果文本_by_tech_id / 字段1 / 字段2 / 字段3 / level_rows / cost_rows / req_rows / offset / parse_ok,
+商城,analysis/vuln_shop/mall_goods/mall_goods_table.csv,166,13,category / page / total_pages / row_index / good_id / item_id / item_name / item_type / price1 / price2 / stock_or_limit / source / raw,
+山贼地图,analysis/vuln_shop/bandit_map_0x1540/bandit_0x1540_records.csv,66,13,flow_idx / ts / target_id / name / level / x / y / desc / resource1 / resource2 / loot_ids / unit_count / units,
+山贼地图,analysis/vuln_shop/bandit_map_0x1540/full_scan_7_archer_category_corrected_20260705_0415/level7_all_units_raw.csv,596,12,target_id / x / y / desc / resource1 / resource2 / loot_ids / major_codes / majors / units / query_x / query_y,
+副本/战役,analysis/game_rules/fb_tables/fb_stage_table.csv,111,13,seq / campaign / stage / title / objective / enemy_summary / enemy_total / reward_summary / location / scene_files / story / string_count / offset_start,scriptFB.sc 展示层结构化
+道具,analysis/game_rules/item_mapping/item_full_mapping.csv,758,15,item_id / name / type / type_label / desc / effect_ids / effect_summary / is_package_or_box / has_probability_text / mall_good_ids / mall_summary / dynamic_evidence / tail_len / offset / tail_hex_prefix,scriptItem.sc 全量道具映射
+道具,analysis/game_rules/item_mapping/item_effect_resolved.csv,97,15,item_id / name / type / type_label / desc / effect_ids / effect_summary / is_package_or_box / has_probability_text / mall_good_ids / mall_summary / dynamic_evidence / tail_len / offset / tail_hex_prefix,已解析直接效果动作的道具
+道具,analysis/game_rules/item_mapping/item_mall_mapping.csv,142,15,item_id / name / type / type_label / desc / effect_ids / effect_summary / is_package_or_box / has_probability_text / mall_good_ids / mall_summary / dynamic_evidence / tail_len / offset / tail_hex_prefix,商城关联道具
+道具,analysis/game_rules/item_mapping/item_package_box_candidates.csv,407,15,item_id / name / type / type_label / desc / effect_ids / effect_summary / is_package_or_box / has_probability_text / mall_good_ids / mall_summary / dynamic_evidence / tail_len / offset / tail_hex_prefix,礼包/宝箱/资源包候选
+道具,analysis/game_rules/item_mapping/package_reward_text_mapping.csv,407,13,item_id / name / type_label / package_kind / key_required / guaranteed_reward_text / reward_tokens / resolved_reward_item_refs / probability_categories / probability_text / mall_summary / dynamic_evidence / desc,礼包/宝箱/资源包描述文本结构化
+道具,analysis/game_rules/item_mapping/package_tail_binary_parse.csv,407,11,item_id / name / parse_status / resource_rewards / item_rewards / resource_count / item_reward_count / sections / remaining_hex_prefix / tail_len / desc,礼包/宝箱 tail 二进制解析全量
+道具,analysis/game_rules/item_mapping/package_tail_binary_parsed_ok.csv,142,11,item_id / name / parse_status / resource_rewards / item_rewards / resource_count / item_reward_count / sections / remaining_hex_prefix / tail_len / desc,成功解析固定资源/道具奖励子集
+副本/战役,analysis/game_rules/fb_scene_scripts/scene_script_summary.csv,242,11,scene_file / exists / size / version / declared_len / command_count / string_count / actor_candidates / dialogue_preview / stage_refs / note,副本场景脚本头和字符串摘要
+副本/战役,analysis/game_rules/fb_scene_scripts/scene_script_strings.csv,1239,6,scene_file / offset / len / class / text / stage_refs,副本场景脚本中文字符串
+副本/战役,analysis/game_rules/fb_scene_scripts/stage_scene_aggregate.csv,111,14,seq / campaign / stage / title / enemy_summary / enemy_total / scene_files / scene_exists_count / scene_missing_count / missing_scene_files / total_command_count / total_string_count / actor_candidates / dialogue_preview,关卡到场景脚本聚合
+副本/场景opcode,analysis/game_rules/fb_scene_scripts/scene_opcode_observations.csv,4102,16,scene_file / cmd_index / offset_hex / opcode_hex / opcode_dec / length / role_guess / text / name / actor_or_cmd_id / resource_or_portrait_id / duration_or_count / x / y / raw_hex_prefix / decoded_fields_json,场景 opcode 命令明细；含 opcode、长度、语义候选、文本/演员/坐标字段
+副本/场景opcode,analysis/game_rules/fb_scene_scripts/scene_opcode_scene_summary.csv,188,7,scene_file / version / declared_len / file_size / declared_count / physical_command_records / opcode_counts_json,每个场景脚本 opcode 统计与头字段/物理命令数
+副本/场景opcode,analysis/game_rules/fb_scene_scripts/scene_opcode_initial_findings.json,1,10,generated_at / scene_dir / scene_files_parsed / parse_failures / total_command_records / dialogue_text_commands / named_actor_commands / header_count_mismatch_count / header_count_mismatch_examples / opcode_summary,opcode 初步反推 JSON 汇总
+玩家成长,analysis/game_rules/player_growth/growth_sentence_hits.csv,910,4,id / key / categories / text,sentence.txt 中等级/封地/官职/贡献/称号/新手任务等文本命中
+玩家成长,analysis/game_rules/player_growth/growth_faq_hits.csv,24,4,q_no / question / answer / categories,FAQ 中成长/封地/官职/贡献/称号相关 Q&A
+玩家成长,analysis/game_rules/player_growth/freshman_entries.csv,68,6,id / type / field_a / field_b / tail / text,scriptFreshman.sc 新手/成长引导结构化记录
+玩家成长,analysis/game_rules/player_growth/growth_binary_string_hits.csv,196,5,file / offset / len / categories / text,scriptGuide/Banyou/MMhelp 中成长相关帮助/引导文本
+玩家成长,analysis/game_rules/player_growth/role_name_parts.csv,1164,3,id / name / group_flag,scriptRoleName.sc 将领姓名/名部件
+玩家成长,analysis/game_rules/player_growth/role_professions.csv,4,4,id / profession / tail_hex / field_bytes,scriptRoleProf.sc 将领职业
+玩家成长,analysis/game_rules/player_growth/player_growth_summary.json,1,11,generated_at / sentence_hits / faq_hits / freshman_meta / freshman_entries / binary_growth_string_hits / role_name_parts / role_name_group_counts / role_professions / sentence_category_counts / binary_category_counts,玩家成长规则解析汇总 JSON
+称号/成就,analysis/game_rules/title_system/title_sentence_hits.csv,44,5,id / key / hit_terms / categories / text,sentence.txt 中称号/成就相关文本命中
+称号/成就,analysis/game_rules/title_system/title_faq_hits.csv,1,4,q_no / question / answer / hit_terms,FAQ 中称号/成就相关问答
+称号/成就,analysis/game_rules/title_system/title_help_hits.csv,80,4,file / offset / hit_terms / text,scriptBanyou/scriptMMhelp/scriptFB 等帮助脚本中的称号/成就文本
+称号/成就,analysis/game_rules/title_system/title_box_mapping.csv,47,7,item_id / item_name / title_name / title_code_from_tail / desc / tail_hex_prefix / note,称号相关道具/称号宝箱与 tail 疑似称号编码映射
+称号/成就,analysis/game_rules/title_system/title_protocol_methods.csv,12,8,direction / opcode_dec / opcode_hex / method / logical_name / io_sequence / evidence / meaning,DEX 反汇编确认的称号/成就请求和响应读写结构
+称号/成就,analysis/game_rules/title_system/title_capture_hits.csv,1621,11,capture_set / flow_idx / ts / side / hit_type / opcode_hex / opcode_dec / offset / matched_strings / req_cmd_candidates / resp_cmd_candidates,抓包中称号/成就相关 opcode 或字符串命中；当前直接 opcode 为 0
+称号/成就,analysis/game_rules/title_system/title_system_summary.json,1,12,generated_at / sentence_hits / faq_hits / help_hits / title_box_rows / title_box_with_tail_code / protocol_rows / capture_hits / capture_opcode_hits / capture_string_only_hits / sentence_category_counts / top_title_box_codes,称号/成就系统解析汇总 JSON
+战斗指令流,analysis/game_rules/battle_deep/battle_command_structure.csv,11,8,command_type / role / read_sequence / handler / buffer_or_state / evidence_range / formula_relevance / confidence,s->Z(String) 战斗/战报 command type 1..11 读取结构与 handler
+战斗指令流,analysis/game_rules/battle_deep/battle_command_baseio_reads.csv,11,3,command_type / role / baseio_reads_in_range,每类战斗 command type 的 BaseIO read 调用地址索引
+战斗指令流,analysis/game_rules/battle_deep/battle_command_structure.json,1,7,generated_at / smali / header / command_count / commands / read_index / key_conclusions,战斗指令流结构汇总 JSON
+战斗模拟器,analysis/game_rules/battle_deep/battle_simulator_rms_format.csv,9,6,order / field / writer / reader / meaning / calc_evidence,KING_BATTLE_SIMULATOR3.0 RMS record #1 阵容槽字段读写镜像
+战斗模拟器,analysis/game_rules/battle_deep/battle_simulator_path_evidence.csv,5,4,component / role / evidence / formula_signal,战斗模拟器路径方法/偏移证据索引
+战斗模拟器,analysis/game_rules/battle_deep/battle_simulator_path_summary.json,1,5,generated_at / paths / rms_format / stats / conclusion,战斗模拟器本地 RMS/UI 路径 JSON 汇总
+战斗模拟器,analysis/game_rules/battle_deep/battle_simulator_protocol_fields.csv,10,6,stage / method / offset / operation / fields / meaning,ReqChallengeTaskAward 开始战斗请求/响应字段顺序与证据
+战斗模拟器,analysis/game_rules/battle_deep/battle_simulator_start_path_summary.json,1,10,generated_at / conclusion / request_opcode_dec / request_opcode_hex / request_name / response_handler / request_builder / ui_controller / fields / formula_impact,开始战斗请求链路 JSON 汇总
+战斗模拟器,analysis/game_rules/battle_deep/battle_start_field_refs.json,55,8,field / class / method / desc / code_off / off / op / out,模拟器开始战斗关键字段引用扫描
+协议链路,analysis/game_rules/protocol_chain/network_send_calls.csv,40,12,class / method / desc / code_off / invoke_off / invoke / arg_regs / const_strings / const_ints / opcode_dec / opcode_hex / nearby_recent,DEX 网络发送入口原始扫描表
+协议链路,analysis/game_rules/protocol_chain/network_send_calls_classified.csv,40,13,category / class / method / desc / code_off / invoke_off / invoke / arg_regs / const_strings / const_ints / opcode_dec / opcode_hex / nearby_recent,DEX 网络发送入口按基础机制模块分类表
+协议链路,analysis/game_rules/protocol_chain/network_send_calls.json,40,3,generated_at / count / rows,DEX 网络发送入口 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/role_fief_request_fields.csv,7,9,protocol / opcode_hex / method / order / field / io / evidence / meaning / confidence,reqRoleInfo/reqRoleFiefList 请求体字段顺序
+协议链路,analysis/game_rules/protocol_chain/role_fief_response_fields.csv,50,10,protocol / response_opcode_hex / handler / group / order / field / io / evidence / meaning / confidence,reqRoleInfo 响应成功体与 p.T 三大列表响应字段顺序
+协议链路,analysis/game_rules/protocol_chain/role_fief_protocol_summary.json,1,3,generated_at / protocols / notes,角色详情/封地列表协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/bath_add_army_request_fields.csv,3,9,protocol / opcode_hex / method / order / field / io / evidence / meaning / confidence,reqBathAddArmy 批量补兵请求体字段顺序
+协议链路,analysis/game_rules/protocol_chain/bath_add_army_response_fields.csv,10,10,protocol / response_opcode_hex / handler / group / order / field / io / evidence / meaning / confidence,reqBathAddArmy 0x8229 响应字段顺序
+协议链路,analysis/game_rules/protocol_chain/bath_add_army_protocol_summary.json,1,11,generated_at / protocol / request_opcode_hex / request_opcode_dec / response_opcode_hex / request_method / response_handler / ui_callers / request_fields / response_fields / key_conclusions,reqBathAddArmy 批量补兵协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/fief_move_request_fields.csv,6,9,protocol / opcode_hex / method / order / field / io / evidence / meaning / confidence,fiefMove 迁封请求体字段顺序
+协议链路,analysis/game_rules/protocol_chain/fief_move_response_fields.csv,15,10,protocol / response_opcode_hex / handler / group / order / field / io / evidence / meaning / confidence,fiefMove 0x8212 响应字段顺序与错误码映射
+协议链路,analysis/game_rules/protocol_chain/fief_move_protocol_summary.json,1,11,generated_at / protocol / request_opcode_hex / request_opcode_dec / response_opcode_hex / request_method / response_handler / ui_callers / request_fields / response_fields / key_conclusions,fiefMove 迁封协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/fighting_city_request_fields.csv,6,9,protocol / opcode_hex / method / order / field / io / evidence / meaning / confidence,reqFightingCity 0x1012 请求体字段顺序
+协议链路,analysis/game_rules/protocol_chain/fighting_city_response_fields.csv,31,11,protocol / response_opcode_hex / handler / group / order / field / io / target_cache / evidence / meaning / confidence,0x8012 -> s0.S 城池战斗目标响应字段顺序
+协议链路,analysis/game_rules/protocol_chain/fighting_city_protocol_summary.json,1,14,generated_at / protocol / request_opcode_hex / request_opcode_dec / response_opcode_hex / response_opcode_dec_unsigned / response_opcode_dec_signed / request_method / response_handler / dispatcher_evidence / related_initial_cache / request_fields / response_fields / key_conclusions,reqFightingCity 城池战斗入口协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/flush_city_initial_cache_fields.csv,34,11,protocol / response_opcode_hex / handler / group / order / field / io / target_cache / evidence / meaning / confidence,0x800D/flushCitys 城池地图初始缓存字段顺序
+协议链路,analysis/game_rules/protocol_chain/flush_city_initial_cache_summary.json,1,11,generated_at / protocol / response_opcode_hex / response_opcode_dec_unsigned / response_opcode_dec_signed / dispatcher / raw_payload_sink / parser / fields / record_field_count / key_conclusions,0x800D/flushCitys 城池地图初始缓存 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/gain_award_request_fields.csv,4,9,protocol / opcode_hex / method / order / field / io / evidence / meaning / confidence,reqGainAward 0x1134 请求体字段顺序
+协议链路,analysis/game_rules/protocol_chain/gain_award_response_fields.csv,43,11,protocol / response_opcode_hex / handler / group / order / field / io / target_cache / evidence / meaning / confidence,0x8134 -> m0.u/m0.n 奖励领取响应字段顺序
+协议链路,analysis/game_rules/protocol_chain/gain_award_protocol_summary.json,1,14,generated_at / protocol / request_opcode_hex / request_opcode_dec / response_opcode_hex / response_opcode_dec_unsigned / response_opcode_dec_signed / request_method / response_handler / common_award_list_parser / dispatcher_evidence / request_fields / response_fields / key_conclusions,reqGainAward 奖励领取协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/city_trait_levelup_request_fields.csv,4,9,protocol / opcode_hex / method / order / field / io / evidence / meaning / confidence,reqCityTraitLevelUp 0x1324 请求体字段顺序
+协议链路,analysis/game_rules/protocol_chain/city_trait_levelup_response_fields.csv,16,11,protocol / response_opcode_hex / handler / group / order / field / io / target_cache / evidence / meaning / confidence,0x8324 -> k.d1/k.m1 城池特性升级响应字段顺序
+协议链路,analysis/game_rules/protocol_chain/city_trait_levelup_protocol_summary.json,1,14,generated_at / protocol / request_opcode_hex / request_opcode_dec / response_opcode_hex / response_opcode_dec_unsigned / response_opcode_dec_signed / request_method / response_handler / success_sync_parser / dispatcher_evidence / request_fields / response_fields / key_conclusions,reqCityTraitLevelUp 城池特性升级协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/network_d0_send_calls.csv,251,10,class / method / desc / code_off / invoke_off / opcode_dec_near / opcode_hex_near / strings / writes / context,"Lo/a.d0(S,[B) 发送入口扫描表，补充 game.g->y 路由盲区"
+协议链路,analysis/game_rules/protocol_chain/network_d0_send_calls.json,1,3,generated_at / count / rows,"Lo/a.d0(S,[B) 发送入口 JSON 汇总"
+协议链路,analysis/game_rules/protocol_chain/fief_building_protocol_entries.csv,5,10,category / protocol / opcode_hex / opcode_dec / method / direction / fields / evidence / meaning / confidence,普通封地建筑/建设协议入口第一版
+协议链路,analysis/game_rules/protocol_chain/fief_building_protocol_entries_summary.json,1,5,generated_at / scope / entries / new_route_table / key_conclusions,普通封地建筑/建设协议入口 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/fief_building_action_fields.csv,24,12,category / protocol / opcode_hex / opcode_dec / method / direction / order / field / io / evidence / meaning / confidence,普通封地建筑动作协议字段、调用语义与响应字段第一版
+协议链路,analysis/game_rules/protocol_chain/fief_building_action_summary.json,1,7,generated_at / scope / primary_protocols / action_code_findings / response_handlers / rows / key_conclusions,普通封地建筑动作协议 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/fief_building_sync_fields.csv,58,9,block / order / field / io / target_cache / evidence / meaning / confidence / notes,封地建筑同步块 Z5/Y5/k1/j1/T5 字段顺序第一版
+协议链路,analysis/game_rules/protocol_chain/fief_building_sync_summary.json,1,6,generated_at / scope / entry_points / key_cache_semantics / fields / key_conclusions,封地建筑同步块 JSON 汇总
+协议链路,analysis/game_rules/protocol_chain/fief_sync_field_refs.json,1,20,Pv / Qv / Rv / Sv / Tv / Uv / Vv / Wv / Bv / Cv / Dv / Ev / Fv / Gv / Hv / Iv / Jv / xv / ov / Ov,封地建筑同步相关 Lo/a 字段引用索引
+规则表,analysis/game_rules/tables/parsed/building_level_rules_report.md,73,1,markdown,普通建筑每级规则数值报告
+规则表,analysis/game_rules/tables/parsed/building_tail_headers.csv,8,11,id / 名称 / 最大等级 / 前置建筑ID / 描述 / 图片ID列表 / tail_header_flag / tail_label_a_le / tail_label_b_le / prereq_row_count / offset,scriptBuilding.sc 建筑尾部头字段
+规则表,analysis/game_rules/tables/parsed/building_level_prereq_rules.csv,100,12,building_id / 名称 / level / req_primary_building_id_be / req_primary_level_byte / req_role_or_gate_level_byte / req_secondary_building_id_be / req_secondary_level_byte / req_tertiary_building_id_be / req_tertiary_level_byte / tail_flag_u32_be / raw,普通建筑每级前置/门槛原始行
+规则表,analysis/game_rules/tables/parsed/building_level_cost_rules.csv,100,8,building_id / 名称 / level / cost_copper_or_A / cost_food_or_B / cost_extra_or_C / build_time_seconds / raw,普通建筑每级升级成本与耗时
+规则表,analysis/game_rules/tables/parsed/building_level_effect_rules.csv,45,7,building_id / 名称 / level / effect_a / effect_b / effect_c / raw,大厅/房屋/农场每级效果值
+规则表,analysis/game_rules/tables/parsed/building_level_unlock_rules.csv,40,5,building_id / 名称 / level / unlock_tier_or_soldier_stage / raw,兵营等级到解锁阶段映射
+规则表,analysis/game_rules/tables/parsed/building_level_rules_combined.csv,100,13,building_id / 名称 / level / cost_copper_or_A / cost_food_or_B / cost_extra_or_C / build_time_seconds / effect_a / effect_b / effect_c / unlock_tier_or_soldier_stage / req_primary_level_byte / req_role_or_gate_level_byte,普通建筑每级规则合并表
+规则表,analysis/game_rules/tables/parsed/building_level_rules_summary.json,1,11,generated_at / source / record_count / tail_schema / files / buildings / sample_cost_rows / sample_effect_rows / sample_unlock_rows / parse_notes / key_conclusions,普通建筑每级规则 JSON 汇总
+规则表,analysis/game_rules/tables/parsed/building_prereq_field_mapping_report.md,55,1,markdown,建筑前置条件字段命名报告
+规则表,analysis/game_rules/tables/parsed/building_level_prereq_rules_named.csv,100,13,building_id / 名称 / level / pn_req_building_or_param / qn_req_level_for_un / rn_req_role_or_gate_level / sn_req_building_or_param2 / tn_req_level2_or_flag / un_required_building_type_for_q_l / vn_int_param / trailing_flag_byte / client_accessors / raw,按 Lo/a.U5 真实读流命名的建筑前置条件行
+规则表,analysis/game_rules/tables/parsed/building_prereq_field_mapping_summary.json,1,6,generated_at / source / u5_evidence / field_mapping / stats / key_conclusions,建筑前置字段映射 JSON 汇总
+规则表,analysis/game_rules/tables/parsed/building_level_rules_combined_named.csv,100,19,building_id / 名称 / level / cost_copper_or_A / cost_food_or_B / cost_extra_or_C / build_time_seconds / effect_a / effect_b / effect_c / unlock_tier_or_soldier_stage / pn_req_building_or_param / qn_req_level_for_un / rn_req_role_or_gate_level / sn_req_building_or_param2 / tn_req_level2_or_flag / un_required_building_type_for_q_l / vn_int_param / trailing_flag_byte,普通建筑每级规则命名版合并表
+规则表,analysis/game_rules/tables/parsed/building_effect_queue_field_mapping_report.md,62,1,markdown,建筑产出/人口/征兵队列字段命名报告
+规则表,analysis/game_rules/tables/parsed/building_level_effect_rules_named.csv,45,7,building_id / 名称 / level / copper_output_D1_En / food_output_F1_Fn / population_capacity_P1_Gn / raw,建筑产出/人口效果命名版表
+规则表,analysis/game_rules/tables/parsed/building_recruit_queue_rules_named.csv,40,5,building_id / 名称 / level / recruit_queue_count_N1_Hn / raw,兵营征兵队列数量命名版表
+规则表,analysis/game_rules/tables/parsed/building_level_rules_server_ready.csv,100,15,building_id / 名称 / level / upgrade_cost_copper_candidate / upgrade_cost_food_candidate / upgrade_cost_extra_candidate / upgrade_time_seconds_candidate / copper_output_D1_En / food_output_F1_Fn / population_capacity_P1_Gn / recruit_queue_count_N1_Hn / qn_required_level_for_un / rn_role_or_gate_level_candidate / un_required_building_type / trailing_high_level_flag_candidate,服务端重建可用普通建筑等级规则合并表
+规则表,analysis/game_rules/tables/parsed/building_effect_queue_field_mapping_summary.json,1,4,generated_at / accessor_mapping / files / key_conclusions,建筑产出/征兵队列字段命名 JSON 汇总
+协议/封地,analysis/game_rules/protocol_chain/building_output_formula_fields.csv,21,9,area / source_method / offset_or_evidence / raw_field_or_call / confirmed_name / wire_type_or_storage / semantics / confidence / server_rebuild_note,建筑产出最终显示值、临时增产状态和队列字段命名第一版
+协议/封地,analysis/game_rules/protocol_chain/building_output_formula_summary.json,1,6,topic / status / created_at / confirmed / not_yet_fully_recovered / key_files,建筑产出公式链路第一版 JSON 汇总
+协议/封地,analysis/game_rules/protocol_chain/building_output_formula_report.md,1,0,,建筑产出/人口/队列公式与字段整理报告
+协议/封地,analysis/game_rules/protocol_chain/building_output_formula_refs.md,1,0,,建筑产出相关方法/字段引用索引
+协议/出征战斗,analysis/game_rules/protocol_chain/expedition_protocol_report.md,1,0,,出征/战斗结算协议第一版报告
+协议/出征战斗,analysis/game_rules/protocol_chain/expedition_request_fields.csv,19,12,flow / opcode_hex / opcode_dec / method / offset / order / field / io / type / meaning / evidence / server_rebuild_note,出征、山贼、战报、战斗回放请求字段表
+协议/出征战斗,analysis/game_rules/protocol_chain/expedition_response_fields.csv,16,11,flow / method / offset / order / field / io / type / condition / meaning / evidence / server_rebuild_note,出征响应、状态快照、战报/战斗回放响应字段骨架
+协议/出征战斗,analysis/game_rules/protocol_chain/expedition_protocol_summary.json,1,9,title / date / scope / confirmed_opcodes / expedition_success_response / expedition_type_labels / state_labels / server_rebuild_implications / unknowns,出征/战斗结算协议 JSON 汇总
+协议/出征战斗,analysis/game_rules/protocol_chain/method_disasm_expedition/expedition_extra_methods_summary.md,1,0,,出征相关补充方法反汇编摘要
+战法/战斗,analysis/game_rules/battle_deep/battle_formula_coordinate_status_report.md,1,0,,战斗公式/蓄力/坐标状态汇总报告
+战法/战斗,analysis/game_rules/battle_deep/battle_formula_coordinate_status.csv,7,7,topic / status / confidence / confirmed / not_confirmed / evidence / server_rebuild_note,战斗公式/蓄力/坐标恢复状态表
+战法/战斗,analysis/game_rules/battle_deep/battle_formula_coordinate_status_summary.json,1,6,title / date / key_conclusion / rows / important_files / server_rebuild_priority,战斗公式/蓄力/坐标 JSON 摘要
+山贼/地图,analysis/game_rules/bandit_system/bandit_system_report.md,1,0,,山贼系统规则第一版报告
+山贼/地图,analysis/game_rules/bandit_system/bandit_all_unique_enriched.csv,5224,14,target_id / level / x / y / desc / resource1 / resource2 / loot_ids / loot_names / unit_count / unit_categories / units / query_x / query_y,全等级山贼去重表增强版
+山贼/地图,analysis/game_rules/bandit_system/bandit_level_stats.csv,10,14,level / count / resource1_min / resource1_max / resource1_avg / resource2_min / resource2_max / resource2_avg / unit_count_min / unit_count_max / unit_count_values / top_desc / unit_categories_seen / top_loot_ids,山贼按等级统计资源/守军/描述
+山贼/地图,analysis/game_rules/bandit_system/bandit_unit_category_combo_stats.csv,37,3,level / unit_category_combo / count,山贼守军大类组合统计
+山贼/地图,analysis/game_rules/bandit_system/bandit_loot_id_mapping.csv,91,7,loot_id / seen_count / levels_seen / level_counts / item_name / item_type_label / item_desc,山贼掉落ID频次表
+山贼/地图,analysis/game_rules/bandit_system/bandit_loot_id_mapping_enriched.csv,91,8,loot_id / seen_count / levels_seen / level_counts / item_name / item_type_label / item_desc / decode_candidates,山贼掉落ID编码候选映射表
+山贼/地图,analysis/game_rules/bandit_system/level7_all_units_raw.csv,596,12,target_id / x / y / desc / resource1 / resource2 / loot_ids / major_codes / majors / units / query_x / query_y,修正后的7级山贼守军大类明细
+山贼/地图,analysis/game_rules/bandit_system/level7_pure_archer_major.csv,4,8,target_id / x / y / desc / resource1 / resource2 / loot_ids / units,7级纯弓弩大类山贼坐标
+山贼/地图,analysis/game_rules/bandit_system/bandit_system_summary.json,1,11,date / topic / source_files / scan_scope / request_protocol / level_stats / loot_rows_count / level7_summary / generated_files / data_scope_note / loot_id_encoding_note,山贼系统第一版 JSON 汇总
+资源系统,analysis/game_rules/resource_system/resource_system_report.md,1,0,,资源系统第一版报告
+资源系统,analysis/game_rules/resource_system/resource_field_mapping.csv,26,8,scope / field / io/source / type / meaning / confidence / evidence / server_rebuild_note,资源字段命名与证据表
+资源系统,analysis/game_rules/resource_system/resource_sync_chains.csv,10,7,chain / method / offset / direction / read/write sequence / effect / confidence,资源同步链路表
+资源系统,analysis/game_rules/resource_system/resource_system_summary.json,1,6,date / topic / key_conclusions / generated_files / important_methods / unknowns,资源系统第一版 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/storage_offline_field_mapping.csv,12,6,领域 / 客户端字段/方法 / 证据位置 / 当前判定 / 置信度 / 说明/重建建议,仓储/离线/资源点候选字段映射
+资源系统,analysis/game_rules/storage_offline_system/resource_point_protocol_fields.csv,47,7,结构 / 字段序号 / 客户端字段 / 读取类型 / 当前语义候选 / 置信度 / 证据/备注,资源点 reqResourceList 与列表/详情协议字段骨架
+资源系统,analysis/game_rules/storage_offline_system/storage_offline_summary.json,1,8,date / topic / scope / key_conclusions / important_methods / generated_files / server_rebuild_recommendations / unknowns,仓储/离线/资源点第一版 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/resource_point_field_semantics_report.md,1,0,,资源点/攻城目标字段语义深追第一版报告
+资源系统,analysis/game_rules/storage_offline_system/resource_point_field_semantics.csv,24,9,语义分组 / 显示标签/用途 / p.f字段 / p.c1同构字段 / 读取类型 / 语义判定 / 置信度 / 关键证据 / 服务端重建建议,资源点/攻城目标字段语义映射表
+资源系统,analysis/game_rules/storage_offline_system/resource_point_field_semantics_summary.json,1,8,date / topic / scope / key_findings / confidence_notes / generated_files / important_evidence / remaining_unknowns,资源点/攻城目标字段语义深追 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/resource_point_remaining_fields_report.md,1,0,,资源点/攻城目标剩余字段与道路城墙语义补充报告
+资源系统,analysis/game_rules/storage_offline_system/resource_point_remaining_fields.csv,12,8,字段组 / p.f字段 / p.c1同构字段 / 静态引用情况 / 语义结论 / 置信度 / 证据 / 服务端重建建议,资源点/攻城目标剩余字段语义补充表
+资源系统,analysis/game_rules/storage_offline_system/resource_point_remaining_fields_summary.json,1,6,date / topic / key_findings / generated_files / evidence / remaining_unknowns,资源点/攻城目标剩余字段语义补充 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/resource_point_remaining_refs/field_refs.md,1,0,,资源点剩余字段全 DEX 引用扫描报告
+资源系统,analysis/game_rules/storage_offline_system/resource_point_remaining_refs/field_refs.json,2,5,class / name / desc / code_off / hits,资源点剩余字段全 DEX 引用扫描 JSON
+资源系统,analysis/game_rules/storage_offline_system/road_wall_formula_report.md,1,0,,道路/城墙公式深追第一版报告
+资源系统,analysis/game_rules/storage_offline_system/road_wall_formula_fields.csv,14,8,规则项 / 操作类型 / 资源类型 / 客户端变量/字段 / 公式/字段顺序 / 置信度 / 证据 / 服务端重建建议,道路/城墙修筑换算、贡献公式和请求协议字段表
+资源系统,analysis/game_rules/storage_offline_system/road_wall_formula_summary.json,1,7,date / topic / key_conclusions / protocol / generated_files / evidence_files / remaining_unknowns,道路/城墙公式深追 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/repair_response_report.md,1,0,,修筑成功响应字段深追报告
+资源系统,analysis/game_rules/storage_offline_system/repair_response_fields.csv,19,11,protocol / response_opcode_hex / handler / group / order / field / io / target_cache / evidence / meaning / confidence,修筑响应 0x8304 字段顺序与语义表
+资源系统,analysis/game_rules/storage_offline_system/repair_response_summary.json,1,11,date / topic / request_opcode / response_opcode / dispatcher / handler / key_findings / response_order / generated_files / evidence_files / remaining_unknowns,修筑响应字段 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/repair_response_disasm/repair_response_methods_summary.md,1,0,,修筑响应相关 k 方法反汇编摘要
+资源系统,analysis/game_rules/storage_offline_system/repair_response_disasm/repair_response_methods_summary.json,11,10,name / desc / code_off / reads / writes / strings / calls / fields / consts / file,修筑响应相关 k 方法反汇编摘要 JSON
+资源系统,analysis/game_rules/storage_offline_system/repair_response_disasm/i_p_refs/i_p_refs_summary.json,16,7,class / name / desc / code_off / field_hits / strings / file,贡献字段 data.i.p 引用证据 JSON
+资源系统,analysis/game_rules/storage_offline_system/road_wall_effect_formula_status_report.md,1,0,,道路速度与城防加成公式静态追踪状态报告
+资源系统,analysis/game_rules/storage_offline_system/road_wall_effect_formula_status.csv,4,7,topic / field_or_formula / status / evidence / conclusion / confidence / server_rebuild_note,道路速度、城防加成、炮塔公式恢复状态表
+资源系统,analysis/game_rules/storage_offline_system/road_wall_effect_formula_status_summary.json,1,7,date / topic / key_findings / usage_ref_count / important_refs / generated_files / remaining_unknowns,道路速度与城防加成公式静态追踪 JSON 汇总
+资源系统,analysis/game_rules/storage_offline_system/road_wall_usage_refs/road_wall_usage_refs.csv,12,7,class / method / desc / code_off / fields / strings / file,道路/城墙/炮塔字段全 DEX 引用扫描表
+资源系统,analysis/game_rules/storage_offline_system/road_wall_usage_refs/road_wall_usage_refs.json,12,8,class / name / desc / code_off / hits / strings / calls / file,道路/城墙/炮塔字段全 DEX 引用扫描 JSON
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/gH_identity_report.md,1,0,,data.g.H 最终命名与玉石区分报告
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/gH_identity_evidence.csv,8,5,证据项 / 位置/文件 / 关键内容 / 结论 / 置信度,data.g.H 命名证据链与玉石区分证据表
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/negative_resource_id_mapping_corrected.csv,14,5,resource_id / display_name_from_g.f8 / value_field_from_g.w0 / confidence / note,负数资源 ID -1..-14 修正映射表
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/gH_identity_summary.json,1,10,date / topic / final_name / field / resource_id / confidence / key_findings / generated_files / important_evidence / remaining_unknowns,data.g.H 最终命名 JSON 汇总
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/gH_field_refs.csv,4,8,class / method / desc / code_off / hits / strings / read_calls / file,data.g.H 精确字段引用扫描表
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/gH_field_refs.json,4,11,class / name / desc / code_off / hits / strings / reads / writes / invokes / consts / file,data.g.H 精确字段引用扫描 JSON
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/jade_string_method_refs.csv,25,6,class / method / desc / code_off / hits / file,玉石相关 UI/流程字符串引用扫描表
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/jade_string_method_refs.json,25,7,class / name / desc / code_off / hits / strings / file,玉石相关 UI/流程字符串引用扫描 JSON
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/g_w0_call_windows.csv,7,8,class / method / desc / code_off / invoke_off / contains_minus14 / window / strings,data.g.w0 调用窗口扫描表
+资源系统,analysis/game_rules/resource_system/gH_currency_deep/g_w0_call_windows.json,7,8,class / name / desc / code_off / invoke_off / window / contains_minus14 / strings,data.g.w0 调用窗口扫描 JSON
+资源系统,analysis/game_rules/resource_system/limits_deep/limit_fields_report.md,1,0,,人口/资源点/封地/将领上限字段第一版报告
+资源系统,analysis/game_rules/resource_system/limits_deep/limit_field_mapping.csv,6,9,field / type / final_name / confidence / full_sync / tag_update / ui_evidence / logic_evidence / server_rebuild,人口/资源点/封地/将领上限字段映射表
+资源系统,analysis/game_rules/resource_system/limits_deep/limit_formula_summary.json,1,9,date / topic / confidence / confirmed_fields / protocol_sync / recovered_formula / key_evidence_files / remaining_unknowns / generated_files,人口/资源点/封地/将领上限字段与征兵公式 JSON 汇总
+资源系统,analysis/game_rules/resource_system/limits_deep/limit_field_refs.csv,30,9,class / method / desc / code_off / fields / hits / strings / reads / file,人口/资源点/封地/将领上限相关字段引用扫描表
+资源系统,analysis/game_rules/resource_system/limits_deep/limit_field_refs.json,30,11,class / name / desc / code_off / hits / strings / reads / writes / invokes / consts / file,人口/资源点/封地/将领上限相关字段引用扫描 JSON
+资源系统,analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_status_report.md,1,0,,玩家成长数值深追状态报告
+资源系统,analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_field_status.csv,7,5,field / meaning / evidence / confidence / server_rebuild_note,玩家成长字段状态表
+资源系统,analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_status_summary.json,1,7,date / topic / confirmed / recovered_formulas / negative_findings / generated_files / next_steps,玩家成长数值深追状态 JSON 汇总
+资源系统,analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_candidate_methods.csv,81,9,class / method / desc / code_off / score / strings / fields / calls / consts,玩家成长候选方法扫描表
+资源系统,analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_candidate_methods.json,81,10,class / method / desc / code_off / strings / fields / calls / consts / score / file,玩家成长候选方法扫描 JSON
+资源系统,analysis/game_rules/player_growth/growth_numeric_deep/growth_numeric_candidate_disasm_summary.json,80,10,class / method / desc / code_off / strings / fields / calls / consts / score / file,玩家成长候选方法反汇编摘要 JSON
+资源系统,analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_deep_report.md,1,0,,账号积分与玉石入口深追第一版报告
+资源系统,analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_entry_mapping.csv,12,9,asset / id_or_field / entry / method / opcode / request_or_flow / evidence / confidence / server_rebuild,账号积分与玉石入口映射表
+资源系统,analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_summary.json,1,6,date / topic / account_points / jade / generated_files / remaining_unknowns,账号积分与玉石入口 JSON 汇总
+资源系统,analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_candidate_methods.csv,37,12,class / method / desc / code_off / hit_count / hits / strings / consts / calls / writes / reads / fields,账号积分/玉石候选方法扫描表
+资源系统,analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_candidate_methods.json,37,12,class / method / desc / code_off / hit_count / hits / strings / consts / calls / writes / reads / fields,账号积分/玉石候选方法扫描 JSON
+资源系统,analysis/game_rules/resource_system/account_points_jade_deep/account_points_jade_disasm_summary.json,37,13,class / method / desc / code_off / hit_count / hits / strings / consts / calls / writes / reads / fields / file,账号积分/玉石候选方法反汇编摘要 JSON
+资源系统,analysis/game_rules/resource_system/jade_response_sync_deep/jade_response_sync_report.md,182,1,markdown,玉石消耗响应与背包同步报告
+资源系统,analysis/game_rules/resource_system/jade_response_sync_deep/jade_response_sync_mapping.csv,7,9,模块 / 请求名 / 请求opcode / 响应opcode / handler / code_off / 同步特征 / 服务端重建建议 / 置信度,玉石响应同步 mapping 表
+资源系统,analysis/game_rules/resource_system/jade_response_sync_deep/jade_response_sync_summary.json,3,3,topic / core_findings / artifacts,玉石响应同步 summary JSON
+任务/活动,analysis/game_rules/task_activity_system/task_activity_system_first_report.md,151,1,markdown,任务/活动系统第一版报告
+任务/活动,analysis/game_rules/task_activity_system/task_activity_protocol_mapping.csv,7,8,模块 / 请求名 / 请求opcode / 响应opcode / handler / 请求体/读流 / 同步/状态 / 置信度,任务/活动关键协议 mapping 表
+任务/活动,analysis/game_rules/task_activity_system/task_activity_summary.json,3,3,topic / findings / artifacts,任务/活动 summary JSON
+任务/活动,analysis/game_rules/task_activity_system/task_activity_string_refs.json,486,0,,任务/活动 DEX 字符串引用 JSON
+任务/活动,analysis/game_rules/task_activity_system/task_activity_method_refs.json,527,0,,任务/活动 DEX 方法引用 JSON
+任务/活动,analysis/game_rules/task_activity_system/task_activity_disasm_summary.json,60,0,,任务/活动关键方法反汇编摘要 JSON
+任务/活动,analysis/game_rules/task_activity_system/freshman_script_strings.csv,59,5,index / offset / length / kind / text,scriptFreshman 新手/玩法说明字符串 CSV
+任务/活动,analysis/game_rules/task_activity_system/task_detail_deep/task_detail_deep_report.md,262,1,markdown,普通任务详情/领取响应字段报告
+任务/活动,analysis/game_rules/task_activity_system/task_detail_deep/task_detail_field_mapping.csv,19,6,字段/结构 / 来源方法 / 协议位置/访问位置 / 语义第一版 / 证据 / 置信度,普通任务详情字段 mapping 表
+任务/活动,analysis/game_rules/task_activity_system/task_detail_deep/task_detail_summary.json,4,4,topic / protocols / core_fields / findings,普通任务详情 summary JSON
+任务/活动,analysis/game_rules/task_activity_system/task_detail_deep/task_detail_methods_summary.json,15,0,,普通任务详情关键方法反汇编摘要 JSON
+任务/活动,analysis/game_rules/task_activity_system/libu_task_deep/libu_task_report.md,256,1,markdown,六部任务列表字段深拆报告
+任务/活动,analysis/game_rules/task_activity_system/libu_task_deep/libu_task_protocol_mapping.csv,4,8,模块 / 请求名 / 请求opcode / 响应opcode / handler / 请求体 / 响应/同步特征 / 置信度,六部任务协议 mapping 表
+任务/活动,analysis/game_rules/task_activity_system/libu_task_deep/libu_task_field_mapping.csv,29,6,字段/结构 / 来源方法 / 协议位置/访问位置 / 语义第一版 / 证据 / 置信度,六部任务字段 mapping 表
+任务/活动,analysis/game_rules/task_activity_system/libu_task_deep/libu_task_summary.json,5,5,topic / protocols / core_fields / findings / remaining_unknowns,六部任务 summary JSON
+任务/活动,analysis/game_rules/task_activity_system/libu_task_deep/libu_task_methods_summary.md,18,1,markdown,六部任务关键方法摘要 Markdown
+任务/活动,analysis/game_rules/task_activity_system/libu_task_deep/libu_task_methods_summary.json,14,9,class / method / desc / code_off / file / reads / writes / strings / fields,六部任务关键方法摘要 JSON

@@ -1,0 +1,13 @@
+﻿parser_or_accessor,kind,role,notes
+Lo/a;->V5(String),direct parser,读取 data.g.F/G、Lo/a.bv/cv/dv、scriptPages/data/d bank0、Lo/a.ev/fv/gv,当前报告主体；V5 本身不展开 data.i 角色资产，也不读取建筑/封地队列。
+LscriptPages/data/d;->G()V,initializer,初始化装备二维数组 d/e/f/g/h/i/j/l/m，数组第一维固定 2,bank0 由 V5 全量重建；bank1 由 Lo/a.c6 增量维护。
+LscriptPages/data/d;->y(J)V,locator,按装备实例 id 在 bank0/bank1 中查找，并设置 n/o 为命中 bank 与 index,多数 accessor 的前置定位函数。
+LscriptPages/data/d;->e()[J,accessor,返回 bank0 装备 id 列表,背包/装备列表 UI 高频使用。
+LscriptPages/data/d;->C()[J,accessor,返回 bank1 中非负装备 id 列表,bank1 疑似已装备/临时挂载装备集合。
+LscriptPages/data/d;->f(I I)[J,filter accessor,按装备大类/来源 mask 合并过滤 bank0/bank1 id,参数 mask 低两位分别控制 bank0/bank1。
+LscriptPages/data/d;->b(J)V,mutation helper,从 bank1 删除指定装备 id 并清空并行字段,V5 导入 bank0 时若同 id 已在 bank1，会调用 b(J) 去重。
+LscriptPages/data/d;->a(J)V,mutation helper,按 data.d.k 记录的宿主 long 删除 bank1 装备,Lo/a.c6 更新某个宿主/将领/封地装备前清理旧记录。
+Lo/a;->c6(String),secondary parser,读取宿主 long、装备 id 列表、bank1 装备记录，并按 f[?][0..1] 排序,不是 V5 内部调用；但与 V5 使用同一 data.d 装备结构，是装备系统下一优先级。
+LscriptPages/data/d;->D/w/z(J),accessor family,用 e[bank][idx] 映射装备名称/部位/类型等展示字段,依赖 Lo/a.g3、Lo/a.Mn/Pn/Kn 等静态装备表。
+LscriptPages/data/d;->t/q/u(J),accessor family,读取 f[bank][idx][0/1] 及品质文字,data.d.b 静态字符串表为 普通/良好/优秀/卓越。
+LscriptPages/data/d;->j/i/E/k/B(J),derived stat family,结合装备模板表与 f byte 向量推导属性数值/文案,说明服务端只需同步紧凑字段，客户端会做展示推导；权威结算仍需另证。

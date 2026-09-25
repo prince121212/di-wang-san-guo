@@ -1,0 +1,45 @@
+{
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "outputs": {
+    "主报告": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/EQUIPMENT_REQUEST_PARAMETER_NAMING.md",
+    "调用点表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_request_call_sites.csv",
+    "状态字段表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_request_state_fields.csv",
+    "状态写入点表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_request_state_writes.csv",
+    "参数结论表": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_request_parameter_conclusions.csv",
+    "反汇编摘录": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_request_parameter_disasm.txt",
+    "机器摘要": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/equipment_request_parameter_summary.json"
+  },
+  "target_requests": {
+    "LscriptPages/game/z;->E0(J)V": {
+      "opcode": "0x1250",
+      "request_name": "reqGeneralEquipInfo",
+      "final_signature": "E0(host_id)"
+    },
+    "LscriptPages/game/z;->C0(JJI)V": {
+      "opcode": "0x1252",
+      "request_name": "reqGeneralEquipCtrl",
+      "final_signature": "C0(host_id, equipment_id, action_type)"
+    },
+    "LscriptPages/game/z;->G0(JJI)V": {
+      "opcode": "0x1254",
+      "request_name": "reqGeneralEquipLevelup",
+      "final_signature": "G0(host_id, equipment_id, levelup_mode)"
+    }
+  },
+  "row_counts": {
+    "call_sites": 19,
+    "state_writes": 31,
+    "state_fields": 7,
+    "parameter_conclusions": 7
+  },
+  "call_site_counts_by_target": {
+    "LscriptPages/game/z;->E0(J)V": 3,
+    "LscriptPages/game/z;->C0(JJI)V": 12,
+    "LscriptPages/game/z;->G0(JJI)V": 4
+  },
+  "main_conclusion": {
+    "E0": "E0(host_id)",
+    "C0": "C0(host_id, equipment_id, action_type)",
+    "G0": "G0(host_id, equipment_id, levelup_mode)"
+  }
+}

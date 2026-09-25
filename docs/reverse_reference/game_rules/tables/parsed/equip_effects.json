@@ -1,0 +1,90 @@
+[
+  {
+    "id": 0,
+    "flags": "0101",
+    "text_len": 25,
+    "text": "增加将领#点攻击力",
+    "offset": "0x2",
+    "note": ""
+  },
+  {
+    "id": 1,
+    "flags": "0101",
+    "text_len": 22,
+    "text": "增加将领#点统帅",
+    "offset": "0x21",
+    "note": ""
+  },
+  {
+    "id": 2,
+    "flags": "0101",
+    "text_len": 22,
+    "text": "增加将领#点统帅",
+    "offset": "0x3d",
+    "note": ""
+  },
+  {
+    "id": 3,
+    "flags": "0101",
+    "text_len": 22,
+    "text": "增加将领#点统帅",
+    "offset": "0x59",
+    "note": ""
+  },
+  {
+    "id": 4,
+    "flags": "0101",
+    "text_len": 20,
+    "text": "增加将领#%统帅",
+    "offset": "0x75",
+    "note": ""
+  },
+  {
+    "id": 5,
+    "flags": "0101",
+    "text_len": 20,
+    "text": "增加将领#%统帅",
+    "offset": "0x8f",
+    "note": ""
+  },
+  {
+    "id": 6,
+    "flags": "0101",
+    "text_len": 20,
+    "text": "增加将领#%统帅",
+    "offset": "0xa9",
+    "note": ""
+  },
+  {
+    "id": 7,
+    "flags": "0101",
+    "text_len": 28,
+    "text": "增加将领#点突围能力",
+    "offset": "0xc3",
+    "note": ""
+  },
+  {
+    "id": 8,
+    "flags": "0101",
+    "text_len": 31,
+    "text": "增加统帅部队#点生命值",
+    "offset": "0xe5",
+    "note": ""
+  },
+  {
+    "id": 9,
+    "flags": "0101",
+    "text_len": 25,
+    "text": "增加将领#点防御力",
+    "offset": "0x10a",
+    "note": ""
+  },
+  {
+    "id": 10,
+    "flags": "0101",
+    "text_len": 26,
+    "text": "增加将领#个统兵数.",
+    "offset": "0x129",
+    "note": ""
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "a6_method": "Lo/a;->A6(S [B Ljava/lang/String;)Z",
+  "response_opcode_candidates": 458,
+  "unique_handler_candidates": 497,
+  "outputs": [
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/response_dispatch_clean.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/handler_direct_read_sequences.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/response_handler_contracts.csv",
+    "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/PROTOCOL_RESPONSE_DISPATCH_CLEAN.md"
+  ]
+}

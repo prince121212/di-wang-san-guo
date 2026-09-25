@@ -1,0 +1,15 @@
+﻿response_opcode,handler,offset,read_or_call,field_or_action,meaning,confidence
+0x8250,LscriptPages/game/z;->F0(Ljava/lang/String;)V,0x0000,readByte,sync_mode,若 sync_mode==0 调用 c6；否则调用 f6(0)。,high
+0x8250,LscriptPages/game/z;->F0(Ljava/lang/String;)V,0x000c/0x0016,Lo/a.c6 or Lo/a.f6(0),equipment/general sync,sync_mode==0 更新装备 bank1；非 0 全量刷新 type0 对象/将领列表。,high
+0x8250,LscriptPages/game/z;->F0(Ljava/lang/String;)V,0x001c-0x0028,Lo/a.z2(z.I1) -> z.z1,refresh displayed equipment ids,按当前宿主 id 重算装备 id 列表。无 V5/S5。,high
+0x8252,LscriptPages/game/z;->D0(Ljava/lang/String;)V,0x0000,readBoolean,success,操作成功标志；影响提示与 UI 关闭/刷新。,high
+0x8252,LscriptPages/game/z;->D0(Ljava/lang/String;)V,0x0008,readUTF,message,服务端提示文本，成功/失败都会用于弹窗或状态提示。,high
+0x8252,LscriptPages/game/z;->D0(Ljava/lang/String;)V,0x0010,readByte,sync_mode,sync_mode==0: c6 + a6(0)；sync_mode!=0: f6(0)。,high
+0x8252,LscriptPages/game/z;->D0(Ljava/lang/String;)V,0x001e/0x0024/0x002c,Lo/a.c6 + Lo/a.a6(0) or Lo/a.f6(0),equipment bank1 + host object sync,穿戴/卸下后要么增量更新 bank1 与单个将领对象，要么全量重建 type0 对象表。,high
+0x8252,LscriptPages/game/z;->D0(Ljava/lang/String;)V,0x0032/0x0038,Lo/a.V5 + Lo/a.S5,asset + object-state sync,随后同步复合资产块和 30 槽状态表。,high
+0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,0x0000,sput z.D3=1,levelup response flag,进入强化响应流程前设置 UI 状态标记。,medium
+0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,0x0006,readBoolean,success,强化/升级成功标志；成功时会播放 DEPOT_LEVEL_UP_SUCCESS_EFFECT。,high
+0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,0x000e,readUTF,message,强化/升级提示文本；若包含“强化等级→20”还触发统计/埋点字符串“强化”。,high
+0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,0x0016,readByte,sync_mode,sync_mode==0: c6 + a6(0)；sync_mode==1: f6(0)；其他值不进 c6/f6，但仍继续 V5。,high
+0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,0x0024/0x002a/0x0036,Lo/a.c6 + Lo/a.a6(0) or Lo/a.f6(0),equipment bank1 + host object sync,强化可能改变装备字段和将领/宿主属性，因此按 sync_mode 刷装备与 type0 对象。,high
+0x8254,LscriptPages/game/z;->H0(Ljava/lang/String;)V,0x003c,Lo/a.V5,asset sync,同步复合资产块。不同于 0x8252，本 handler 不调用 S5。,high

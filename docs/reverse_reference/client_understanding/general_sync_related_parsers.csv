@@ -1,0 +1,10 @@
+﻿parser_or_field,kind,role,notes
+Lo/a;->a8()V,request generator,发送 `reqLoadGenerals`，写入 byte 0、byte 0、`scriptPages/data/i.a`，opcode `0x1215`。,"响应 `0x8215` 会进入 `Lo/a.f6(type,stream)`。"
+Lo/a.A6 response 0x8215,dispatcher branch,"先读一个 byte 作为成功/状态门，再读一个 byte 作为 type；仅 type 0/1 路径调用 `f6(type,stream)`。",分发证据在 `response_dispatch_clean.csv`。
+"Lo/a;->f6(I,String)",bulk parser,初始化/重建 `co/do/eo/.../Uo` 等 2x30 对象字段数组，读取 count 与每个对象 id，并调用 b6。,`np=false` 表示 reqLoadGenerals 请求节流/加载标志被清除。
+"Lo/a;->a6(I,String)",single-row wrapper,"读取对象 id 后通过 `c3(type,id)` 定位现有 slot，再调用 b6 更新单条对象字段。",常见于将领加点、装备、修炼、道具使用等响应。
+"Lo/a;->b6(I,String,I)",row parser,读取单个对象的完整字段合同；common 字段后按 type 分支读取扩展字段。,服务端未来必须严格按该顺序返回，否则后续 stream 失位。
+"Lo/a;->c3(I,J)I",locator,在 `Lo/a.co[type]` 中查找 long id 并返回 index，未命中为 -1。,`a6` 与 `c6` 都依赖该对象 id 字典。
+Lo/a;->co [[J,id table,二维对象 id 表，第一维 type，第二维 slot，容量通常 30。,type 0 高置信为将领/可装备宿主主表；type 1 是同构扩展对象表，语义待更多 UI/抓包确认。
+Lo/a;->jp [[J / Lo/a;->kp [[S,binding side tables,type 0 重载时会按旧 id 映射保留 jp/kp；c6 会写 jp 装备绑定。,说明 f6(type0) 与 c6 bank1 装备宿主绑定存在直接耦合。
+Lo/a;->S5(String),companion parser,维护 `Nm/Om/Pm/Qm` 四个 30 长度状态表。,常跟 `f6(0/1)` 出现在出征/地图快照、装备操作响应之后。

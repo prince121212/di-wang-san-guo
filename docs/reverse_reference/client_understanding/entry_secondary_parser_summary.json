@@ -1,0 +1,31 @@
+{
+  "capture": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/captures/mitm/game_capture_20260705_020959/extracted/game_flows.json",
+  "dex": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/recovered/original_classes_1.dex",
+  "opcode_counts": {
+    "0xe200": 4,
+    "0x8130": 2
+  },
+  "unique_payloads": {
+    "0xe200": 1,
+    "0x8130": 1
+  },
+  "parse_error_count": 0,
+  "parse_errors": [],
+  "all_consumed": true,
+  "task_group_rows": 8,
+  "task_entry_rows": 66,
+  "e200_summary_rows": 4,
+  "e200_reward_rows": 44,
+  "e200_active_rows": 72,
+  "outputs": {
+    "markdown": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/ENTRY_SECONDARY_PARSERS_8130_E200.md",
+    "schema_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_secondary_parser_schema.csv",
+    "occurrences_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_secondary_payload_occurrences.csv",
+    "task_groups_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_8130_task_groups.csv",
+    "task_entries_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_8130_task_entries.csv",
+    "e200_summary_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_e200_summary.csv",
+    "e200_rewards_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_e200_rewards.csv",
+    "e200_active_csv": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_e200_active_tasks.csv",
+    "disasm": "/Users/huangchangwei/Desktop/gitSpaceC/Toy/帝王三国/reverse_cases/apk-sanguo-diwanglianmeng-166/analysis/client_understanding/entry_secondary_parser_disasm.txt"
+  }
+}
