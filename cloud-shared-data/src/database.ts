@@ -323,16 +323,19 @@ export async function observeRegions(
 // 5-minute sighting throttle would delay exactly the information v2 exists to
 // deliver.  Neither statement touches map_target_regions: those links only
 // feed the legacy orphan sweep, and v2 removes targets explicitly.
-export async function applyUpserts(
+function upsertStatement(
   db: D1Database,
   serverKey: string,
   mapKind: MapKind,
   targets: TargetObservation[],
   now: number,
-): Promise<void> {
-  if (targets.length === 0) return;
-  const encoded = JSON.stringify(targets);
-  await db.prepare(
+): D1PreparedStatement {
+  // Overlapping observations may repeat an ID. Preserve the previous
+  // last-observation-wins result without rewriting intermediate versions.
+  const encoded = JSON.stringify([...new Map(
+    targets.map((target) => [target.targetId, target]),
+  ).values()]);
+  return db.prepare(
     `INSERT INTO map_targets(
        server_key,map_kind,target_id,x,y,target_type,level,data_json,
        last_seen_at,changed_at
@@ -352,7 +355,8 @@ export async function applyUpserts(
      ON CONFLICT(server_key,map_kind,target_id) DO UPDATE SET
        x=excluded.x, y=excluded.y, target_type=excluded.target_type,
        level=excluded.level, data_json=excluded.data_json,
-       last_seen_at=excluded.last_seen_at, changed_at=excluded.changed_at,
+       last_seen_at=MAX(map_targets.last_seen_at, excluded.last_seen_at),
+       changed_at=excluded.changed_at,
        status=CASE
          WHEN map_targets.status='missing' THEN 'available'
          WHEN map_targets.status='uncertain' AND map_targets.lease_until<=?
@@ -370,8 +374,67 @@ export async function applyUpserts(
        lease_until=CASE
          WHEN map_targets.status='missing'
            OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)
-           THEN 0 ELSE map_targets.lease_until END`,
-  ).bind(serverKey, mapKind, now, now, encoded, now, now, now, now).run();
+           THEN 0 ELSE map_targets.lease_until END
+     WHERE map_targets.x IS NOT excluded.x
+        OR map_targets.y IS NOT excluded.y
+        OR map_targets.target_type IS NOT excluded.target_type
+        OR map_targets.level IS NOT excluded.level
+        OR map_targets.data_json IS NOT excluded.data_json
+        OR map_targets.status='missing'
+        OR (map_targets.status='uncertain' AND map_targets.lease_until<=?)
+        OR map_targets.last_seen_at<?`,
+  ).bind(
+    serverKey, mapKind, now, now, encoded, now, now, now, now, now,
+    now - targetTtlMillis(mapKind),
+  );
+}
+
+export async function applyUpserts(
+  db: D1Database,
+  serverKey: string,
+  mapKind: MapKind,
+  targets: TargetObservation[],
+  now: number,
+): Promise<void> {
+  if (targets.length === 0) return;
+  // An event can be retried after a lost response or sent by multiple peers.
+  // Identical live data is not a new event: leave its timestamps/version
+  // alone. Real field changes and revivals still apply immediately; an
+  // expired row can be renewed so an equal sighting is not stuck behind TTL.
+  await upsertStatement(db, serverKey, mapKind, targets, now).run();
+}
+
+function goneStatements(
+  db: D1Database,
+  serverKey: string,
+  mapKind: MapKind,
+  targetIds: string[],
+  now: number,
+): D1PreparedStatement[] {
+  // D1 allows only 100 bound parameters per query. The API accepts 200 IDs:
+  // expanding them into placeholders made every batch over 96 fail *after*
+  // upserts had committed, permanently pinning clients' shared event outbox.
+  const encoded = JSON.stringify(targetIds);
+  // A tombstone, not a delete: status='missing' rows are the only channel the
+  // change feed has to tell replicas that a target died.  Physical removal
+  // stays with the TTL sweep.  'reserved' and 'dispatching' are excluded -
+  // their holder is mid-flight and outranks any scan that stopped seeing it.
+  return [
+    db.prepare(
+      `UPDATE map_targets
+       SET status='missing', status_at=?, changed_at=?
+       WHERE server_key=? AND map_kind=?
+         AND target_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+         AND status NOT IN ('reserved','dispatching','missing')`,
+    ).bind(now, now, serverKey, mapKind, encoded),
+    // Stale links would let the legacy orphan logic or a future rescan keep
+    // the target alive in readers that still walk map_target_regions.
+    db.prepare(
+      `DELETE FROM map_target_regions
+       WHERE server_key=? AND map_kind=?
+         AND target_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))`,
+    ).bind(serverKey, mapKind, encoded),
+  ];
 }
 
 export async function applyGone(
@@ -382,26 +445,32 @@ export async function applyGone(
   now: number,
 ): Promise<number> {
   if (targetIds.length === 0) return 0;
-  const placeholders = targetIds.map(() => "?").join(",");
-  // A tombstone, not a delete: status='missing' rows are the only channel the
-  // change feed has to tell replicas that a target died.  Physical removal
-  // stays with the TTL sweep.  'reserved' and 'dispatching' are excluded -
-  // their holder is mid-flight and outranks any scan that stopped seeing it.
-  const statements = [
-    db.prepare(
-      `UPDATE map_targets
-       SET status='missing', status_at=?, changed_at=?
-       WHERE server_key=? AND map_kind=?
-         AND target_id IN (${placeholders})
-         AND status NOT IN ('reserved','dispatching')`,
-    ).bind(now, now, serverKey, mapKind, ...targetIds),
-    // Stale links would let the legacy orphan logic or a future rescan keep
-    // the target alive in readers that still walk map_target_regions.
-    db.prepare(
-      `DELETE FROM map_target_regions
-       WHERE server_key=? AND map_kind=? AND target_id IN (${placeholders})`,
-    ).bind(serverKey, mapKind, ...targetIds),
-  ];
-  const [tombstoned] = await db.batch(statements);
+  const [tombstoned] = await db.batch(
+    goneStatements(db, serverKey, mapKind, targetIds, now),
+  );
   return Number(tombstoned.meta.changes ?? 0);
+}
+
+export async function applyMapEvents(
+  db: D1Database,
+  serverKey: string,
+  mapKind: MapKind,
+  targets: TargetObservation[],
+  targetIds: string[],
+  now: number,
+): Promise<number> {
+  // The HTTP response acknowledges ONE outbox batch. D1 batch is
+  // transactional: a failed tombstone/link cleanup must not leave successful
+  // upserts behind and charge/replay them on every retry.
+  const statements: D1PreparedStatement[] = [];
+  if (targets.length) {
+    statements.push(upsertStatement(db, serverKey, mapKind, targets, now));
+  }
+  const goneIndex = statements.length;
+  if (targetIds.length) {
+    statements.push(...goneStatements(db, serverKey, mapKind, targetIds, now));
+  }
+  if (!statements.length) return 0;
+  const results = await db.batch(statements);
+  return targetIds.length ? Number(results[goneIndex].meta.changes ?? 0) : 0;
 }

@@ -3,8 +3,14 @@
   "name": "dwpm-cloud-shared-data",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": { "urllib": "./src/alipay-http.ts", "node:util": "./src/payment-node-util.ts" },
   "workers_dev": false,
   "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "RUNTIME_CONFIG", "class_name": "RuntimeConfigStore" }]
+  },
+  "migrations": [{ "tag": "runtime-config-v1", "new_sqlite_classes": ["RuntimeConfigStore"] }],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -30,6 +36,15 @@
     "crons": ["*/30 * * * *"]
   },
   "vars": {
+    // Prepared production application; closed until credentials and acceptance are complete.
+    "ALIPAY_MODE": "production",
+    "ALIPAY_APP_ID": "2021007102687318",
+    "ALIPAY_ORIGIN": "https://dwpm-data.292828.xyz",
+    "ALIPAY_ENABLED": "false",
+    "ALIPAY_APP_PAY_ENABLED": "false",
+    "ALIPAY_LIVE_APPROVED": "false",
+    // Owner-approved prices; this does NOT enable payments or production approval.
+    "ALIPAY_PLAN_PRICES": "{\"month\":\"9.90\",\"quarter\":\"25.90\",\"year\":\"49.90\"}",
     "SHARED_ACCOUNT_THRESHOLD": "2",
     "PRESENCE_TTL_MILLIS": "300000",
     "SCAN_FRESH_MILLIS": "120000",

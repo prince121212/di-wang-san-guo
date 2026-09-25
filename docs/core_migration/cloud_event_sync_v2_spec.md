@@ -54,15 +54,16 @@ CREATE INDEX IF NOT EXISTS idx_map_targets_changed
 ### 新端点 2：`POST /v1/maps/targets/changes`（变化订阅）
 
 请求：common + `mapKind` + `since: {changedAt, targetId}`（游标，首参 `{changedAt:0,targetId:""}`）+ 可选视野参数 + `limit`（默认 500）。
-行为：`WHERE server_key=? AND map_kind=? AND (changed_at > ? OR (changed_at = ? AND target_id > ?))` + 视野过滤，`ORDER BY changed_at ASC, target_id ASC LIMIT ?`。
+行为：`WHERE server_key=? AND map_kind=? AND (changed_at,target_id) > (?,?)` + 视野过滤，`ORDER BY changed_at ASC, target_id ASC LIMIT ?`。必须使用复合索引的游标范围，不能仅让索引定位区服前缀后再逐行执行等价 OR 条件；后者在空增量时仍扫描整个区服地图。
 响应：`{ok, targets:[行], cursor:{changedAt,targetId}, serverTimeMillis}`。无变化时 targets 为空、cursor 回显入参。客户端把整个 cursor 当不透明值存储。
 注意：status='missing' 的行必须包含在结果里（这是死亡传播的唯一通道）。
 
 ### 端点 3 扩展：`POST /v1/maps/observations` 增加 v2 字段
 
 请求在 legacy `regions` 之外允许：`upserts: [target]`（≤200）、`gone: [targetId]`（≤200）。两者都没有时走 legacy 路径（现有行为不动）。
-- `upserts`：目标对象形状同 v1 regions 内嵌 target（targetId/x/y/type/level/data）。INSERT ... ON CONFLICT(server_key,map_kind,target_id) DO UPDATE 全字段 + `last_seen_at=now, changed_at=now` + status 恢复逻辑（同现有：missing→available、过期 uncertain→available、清租约）。**不做** 5 分钟节流——客户端保证只送真实变化。同时维护 map_target_regions 链接？不需要：v2 的链接只用于 legacy 孤儿清理；v2 gone 是显式的。若 upserts 附带 `{regionX, regionY}` 可选字段则写链接，否则不写。简化：v2 不写 map_target_regions。
-- `gone`：`UPDATE map_targets SET status='missing', status_at=?, changed_at=? WHERE server_key=? AND map_kind=? AND target_id IN (...) AND status NOT IN ('reserved','dispatching')`；并 `DELETE FROM map_target_regions WHERE ... target_id IN (...)`。
+- `upserts`：目标对象形状同 v1 regions 内嵌 target（targetId/x/y/type/level/data）。真实字段变化立即写入，不做5分钟节流；但客户端去重不能保证网络恰好交付一次，服务端必须跳过**有效期内数据相同、无需复活**的重放，不更新它的时间戳与版本。missing→available、过期 uncertain→available 仍按原规则清租约，过期记录的相同观察可续期，活动预占/在途状态不能被观察抹掉。同批重复 ID 保留最后一条观察。v2 不写 map_target_regions。
+- `gone`：通过 `target_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))` 批量写 missing 墓碑，并清理旧链接；reserved/dispatching 仍受保护，已经 missing 的行不重复改时间和版本。200个 ID 不能展开成204个绑定参数。
+- 两组输入全部验证后，以**同一个 D1 batch 事务**执行 upserts、gone、链接清理。请求失败不得留下已单独提交的 upserts，使客户端保留整个批次后再次付出重复写入成本。`upsertedCount` 保持“本批已接收的上报条数”含义，不等于实际写行数；`goneCount` 是本次变成墓碑的行数。
 - legacy 路径里的孤儿硬删除保留（旧客户端行为不变）。
 
 ### 心跳：`POST /v1/presence/heartbeat` 修改

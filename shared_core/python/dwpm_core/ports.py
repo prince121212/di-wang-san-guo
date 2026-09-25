@@ -98,6 +98,13 @@ class RawHttpPort(Protocol):
         ...
 
 
+class MembershipPort(Protocol):
+    """Device-wide, native-protected membership authorization; no bearer secrets cross this port."""
+
+    def check(self, force: bool = False) -> Mapping[str, object]:
+        ...
+
+
 class CloudSharedDataPort(Protocol):
     """Authenticated transport for the narrow shared-data Worker API.
 
@@ -282,6 +289,7 @@ class PlatformPorts:
     game_commands: Optional[GameCommandPort] = None
     raw_http: Optional[RawHttpPort] = None
     cloud_shared_data: Optional[CloudSharedDataPort] = None
+    membership: Optional[MembershipPort] = None
     account_runtime: AccountRuntimePort = field(
         default_factory=NullAccountRuntimePort
     )

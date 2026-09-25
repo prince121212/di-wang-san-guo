@@ -678,12 +678,15 @@ function updateAccountHeader() {
   }
   if (open) {
     const startedCount = appState.accounts.filter(account => account.started).length;
-    open.textContent = appState.accounts.length ? `${startedCount}开` : "未登录";
+    open.textContent = appState.accounts.length ? `游戏 ${startedCount} 开` : "游戏账号未添加";
   }
   if (expire) {
-    expire.textContent = acc ? "到期时间2026-07-08 03:59:04" : "到期时间2026-07-08 03:59:04";
+    const view = window.DwpmMembershipPresentation?.present(window.DwpmMembershipState);
+    expire.textContent = window.DWPMNativeApi ? (view?.label || "正在检查会员") : "本地运行";
+    expire.title = window.DWPMNativeApi && view?.hasExpiry ? "有效期至 " + view.dateTime : "";
+    expire.dataset.tone = window.DWPMNativeApi ? (view?.tone || "pending") : "neutral";
   }
-  if (renew) renew.textContent = "续期";
+  if (renew) renew.textContent = window.DWPMNativeApi ? "会员中心" : "续期";
   if (enabled) {
     const status = acc?.status || "stopped";
     // 已开启 only ever meant "登录成功"; the saved tasks are started separately
@@ -691,9 +694,10 @@ function updateAccountHeader() {
     // online for hours with every option ticked and nothing running - the bag
     // never swept, no 出征 - while this badge said 已开启.  Say both here.
     const tasksIdle = status === "online" && !accountTasksStarted(acc);
-    enabled.textContent = accountStatusText(status)
+    enabled.textContent = (acc ? accountStatusText(status) : "未添加游戏账号")
       + (tasksIdle ? "·任务未启动" : "")
-      + accountReconnectStatusText(acc);
+      + accountReconnectStatusText(acc)
+      + (acc && window.DwpmMembershipState?.required && !window.DwpmMembershipState.allowed ? "·会员暂停" : "");
     enabled.className = `enabled-text ${
       tasksIdle ? "status-tasks-idle" : accountStatusClass(status)
     }`;
@@ -704,6 +708,10 @@ function updateAccountHeader() {
   renderRecentRequestDots(acc);
   renderProxySelect();
 }
+
+// A successful recheck must update the assistant header immediately, not wait
+// for account polling or a tab switch. Both views use the same presentation.
+window.addEventListener("dwpm-membership-updated", () => updateAccountHeader());
 
 function proxySelectValue(acc) {
   const mode = acc?.proxyMode || "auto";
@@ -1769,6 +1777,7 @@ function renderCommon() {
         ${designRow("丢弃物品：", policyMultiHtml(b.discardItemNames, inventoryItemNameOptions(b.discardItemNames), "discard-items"))}
         ${designRow("丢弃装备：", `<input id="discardEquipment" class="design-check" type="checkbox" ${b.discardEquipment ? "checked" : ""}>${policyMultiHtml(normalizeEquipmentQualities(b.discardEquipmentQualities, b.maxEquipmentQuality), equipmentQualityNames, "discard-equipment-qualities", "policy-multi-compact")}<span>等级&lt;</span><input id="maxEquipmentLevel" class="design-input num-compact" type="number" min="1" max="100" value="${escAttr(b.maxEquipmentLevel ?? 20)}">`)}
         ${designRow("自动开箱：", `<input id="autoOpenEnabled" class="design-check" type="checkbox" ${b.autoOpenEnabled ? "checked" : ""}>${policyMultiHtml(b.autoOpenItemNames, autoOpenItemOptions, "auto-open-items")}`)}
+        ${designRow("处理顺序：", "需钥匙的宝箱同时勾选开箱和丢弃时，先用现有钥匙开箱，钥匙用完后丢弃剩余；只勾选开箱则保留。")}
       </div>
       ${note("丢弃装备可多选品质；只处理宝库中未穿戴、未强化、未炼魂且低于设定等级的装备，80级以上与名将装备始终保留<br/>青铜宝箱和精铁宝箱需要对应钥匙")}
     </div>`;
@@ -4080,7 +4089,7 @@ function renderMainPageShell() {
   document.querySelectorAll(".quick-switch-btn[data-page]").forEach(item => {
     item.classList.toggle("active", item.dataset.page === activeMainPage);
   });
-  if (activeMainPage === "Home") renderHomeAccountOptions();
+  if (activeMainPage === "Home" && !isMobileLocal) renderHomeAccountOptions();
 }
 
 async function callGuideReference(method, ...args) {
@@ -5510,7 +5519,94 @@ function saveGeneralMultiOwner(root) {
     saveFutureMilitaryDom();
   }
 }
+// cloneNode copies markup, not onclick/onchange handlers. Bind the complete
+// picker on every dynamic-table bind, using assignment so rebinding is safe.
+function resetClonedGeneralPickers(scope) {
+  scope.querySelectorAll(".formation-general-multi").forEach(root => {
+    root.classList.remove("open");
+    const search = root.querySelector(".formation-general-search");
+    if (search) search.value = "";
+    root.querySelectorAll(".formation-general-option").forEach(label => { label.style.display = ""; });
+  });
+}
+function bindGeneralMultiControls() {
+  document.querySelectorAll(".formation-general-summary").forEach(btn => btn.onclick = (e) => {
+    e.stopPropagation();
+    const root = btn.closest(".formation-general-multi");
+    document.querySelectorAll(".formation-general-multi.open").forEach(x => { if (x !== root) x.classList.remove("open"); });
+    root?.classList.toggle("open");
+  });
+  document.querySelectorAll(".formation-general-check").forEach(el => el.onchange = () => {
+    const root = el.closest(".formation-general-multi");
+    const maxSelected = Number(root?.dataset.maxSelected || 0);
+    if (el.checked && maxSelected > 0 && selectedGeneralIdsInRoot(root).length > maxSelected) {
+      el.checked = false;
+      showToast(`每个出征编队最多选择${maxSelected}名将领`, "error");
+      syncGeneralMultiUi(root);
+      return;
+    }
+    const currentIds = selectedGeneralIdsInRoot(root);
+    const anchorInput = currentIds.length
+      ? Array.from(root.querySelectorAll(".formation-general-check"))
+        .find(input => String(input.value) === currentIds[0])
+      : null;
+    const anchorFiefId = String(anchorInput?.dataset.fiefId || "");
+    const selectedFiefId = String(el.dataset.fiefId || "");
+    if (el.checked && anchorFiefId && selectedFiefId !== anchorFiefId) {
+      el.checked = false;
+      showToast("同一编队的将领必须位于同一封地", "error");
+      syncGeneralMultiUi(root);
+      return;
+    }
+    const order = selectedGeneralIdsInRoot(root).filter(id => id !== String(el.value || ""));
+    if (el.checked) order.push(String(el.value || ""));
+    if (root) root.dataset.selectedOrder = order.join(",");
+    syncGeneralMultiUi(root);
+    saveGeneralMultiOwner(root);
+  });
+  document.querySelectorAll(".formation-general-search").forEach(input => input.oninput = () => {
+    const q = String(input.value || "").trim();
+    input.closest(".formation-general-panel")?.querySelectorAll(".formation-general-option").forEach(label => {
+      label.style.display = !q || label.textContent.includes(q) ? "flex" : "none";
+    });
+  });
+  document.querySelectorAll(".fg-all").forEach(btn => btn.onclick = (e) => {
+    e.stopPropagation();
+    const root = btn.closest(".formation-general-multi");
+    const currentIds = selectedGeneralIdsInRoot(root);
+    const inputs = Array.from(root?.querySelectorAll(".formation-general-check") || []);
+    const firstInput = currentIds.length
+      ? inputs.find(input => String(input.value) === currentIds[0])
+      : inputs.find(input => !input.disabled);
+    const anchorFiefId = String(firstInput?.dataset.fiefId || "");
+    const maxSelected = Number(root?.dataset.maxSelected || 0);
+    let selectedCount = 0;
+    inputs.forEach(input => {
+      const eligible = !!anchorFiefId && String(input.dataset.fiefId || "") === anchorFiefId;
+      input.checked = eligible && (!maxSelected || selectedCount < maxSelected);
+      if (input.checked) selectedCount += 1;
+    });
+    if (root) {
+      const previous = currentIds.filter(id => inputs.some(input => input.checked && String(input.value) === id));
+      const added = inputs.map(input => String(input.value || "")).filter(id => (
+        inputs.some(input => input.checked && String(input.value) === id) && !previous.includes(id)
+      ));
+      root.dataset.selectedOrder = [...previous, ...added].join(",");
+    }
+    syncGeneralMultiUi(root);
+    saveGeneralMultiOwner(root);
+  });
+  document.querySelectorAll(".fg-clear").forEach(btn => btn.onclick = (e) => {
+    e.stopPropagation();
+    const root = btn.closest(".formation-general-multi");
+    root?.querySelectorAll(".formation-general-check").forEach(x => { x.checked = false; });
+    if (root) root.dataset.selectedOrder = "";
+    syncGeneralMultiUi(root);
+    saveGeneralMultiOwner(root);
+  });
+}
 function bindDesignDynamicControls() {
+  bindGeneralMultiControls();
   document.querySelectorAll(".dynamic-delete").forEach(btn => btn.onclick = () => {
     const tr = btn.closest("tr");
     const tbody = tr?.parentElement;
@@ -5539,6 +5635,7 @@ function bindDesignDynamicControls() {
       else input.value = input.placeholder || "";
     });
     clone.querySelectorAll("select").forEach(select => { select.selectedIndex = 0; });
+    resetClonedGeneralPickers(clone);
     syncGeneralMultiScope(clone);
     tbody.appendChild(clone);
     bindDesignDynamicControls();
@@ -5551,7 +5648,12 @@ function bindDesignDynamicControls() {
     const srcRows = checkedRows.length ? checkedRows : Array.from(tbody.querySelectorAll("tr")).slice(0, 1);
     // 副本页不再提供复制按钮（一次只能出征一支编队），因此这里不需要再为它
     // 清空勾选：那段分支永远不会执行，留着只会让人以为副本支持多条编队。
-    srcRows.forEach(row => tbody.appendChild(row.cloneNode(true)));
+    srcRows.forEach(row => {
+      const clone = row.cloneNode(true);
+      resetClonedGeneralPickers(clone);
+      syncGeneralMultiScope(clone);
+      tbody.appendChild(clone);
+    });
     bindDesignDynamicControls();
   });
   document.querySelectorAll(".dynamic-clear").forEach(btn => btn.onclick = () => {
@@ -5781,80 +5883,6 @@ function bindLiveControls() {
     render();
   };
   document.querySelectorAll(".formation-soldier,.formation-count,.formation-enabled").forEach(el => el.onchange = saveFormationDom);
-  document.querySelectorAll(".formation-general-summary").forEach(btn => btn.onclick = (e) => {
-    e.stopPropagation();
-    const root = btn.closest(".formation-general-multi");
-    document.querySelectorAll(".formation-general-multi.open").forEach(x => { if (x !== root) x.classList.remove("open"); });
-    root?.classList.toggle("open");
-  });
-  document.querySelectorAll(".formation-general-check").forEach(el => el.onchange = () => {
-    const root = el.closest(".formation-general-multi");
-    const maxSelected = Number(root?.dataset.maxSelected || 0);
-    if (el.checked && maxSelected > 0 && selectedGeneralIdsInRoot(root).length > maxSelected) {
-      el.checked = false;
-      showToast(`每个出征编队最多选择${maxSelected}名将领`, "error");
-      syncGeneralMultiUi(root);
-      return;
-    }
-    const currentIds = selectedGeneralIdsInRoot(root);
-    const anchorInput = currentIds.length
-      ? Array.from(root.querySelectorAll(".formation-general-check"))
-        .find(input => String(input.value) === currentIds[0])
-      : null;
-    const anchorFiefId = String(anchorInput?.dataset.fiefId || "");
-    const selectedFiefId = String(el.dataset.fiefId || "");
-    if (el.checked && anchorFiefId && selectedFiefId !== anchorFiefId) {
-      el.checked = false;
-      showToast("同一编队的将领必须位于同一封地", "error");
-      syncGeneralMultiUi(root);
-      return;
-    }
-    const order = selectedGeneralIdsInRoot(root).filter(id => id !== String(el.value || ""));
-    if (el.checked) order.push(String(el.value || ""));
-    if (root) root.dataset.selectedOrder = order.join(",");
-    syncGeneralMultiUi(root);
-    saveGeneralMultiOwner(root);
-  });
-  document.querySelectorAll(".formation-general-search").forEach(input => input.oninput = () => {
-    const q = String(input.value || "").trim();
-    input.closest(".formation-general-panel")?.querySelectorAll(".formation-general-option").forEach(label => {
-      label.style.display = !q || label.textContent.includes(q) ? "flex" : "none";
-    });
-  });
-  document.querySelectorAll(".fg-all").forEach(btn => btn.onclick = (e) => {
-    e.stopPropagation();
-    const root = btn.closest(".formation-general-multi");
-    const currentIds = selectedGeneralIdsInRoot(root);
-    const inputs = Array.from(root?.querySelectorAll(".formation-general-check") || []);
-    const firstInput = currentIds.length
-      ? inputs.find(input => String(input.value) === currentIds[0])
-      : inputs.find(input => !input.disabled);
-    const anchorFiefId = String(firstInput?.dataset.fiefId || "");
-    const maxSelected = Number(root?.dataset.maxSelected || 0);
-    let selectedCount = 0;
-    inputs.forEach(input => {
-      const eligible = !!anchorFiefId && String(input.dataset.fiefId || "") === anchorFiefId;
-      input.checked = eligible && (!maxSelected || selectedCount < maxSelected);
-      if (input.checked) selectedCount += 1;
-    });
-    if (root) {
-      const previous = currentIds.filter(id => inputs.some(input => input.checked && String(input.value) === id));
-      const added = inputs.map(input => String(input.value || "")).filter(id => (
-        inputs.some(input => input.checked && String(input.value) === id) && !previous.includes(id)
-      ));
-      root.dataset.selectedOrder = [...previous, ...added].join(",");
-    }
-    syncGeneralMultiUi(root);
-    saveGeneralMultiOwner(root);
-  });
-  document.querySelectorAll(".fg-clear").forEach(btn => btn.onclick = (e) => {
-    e.stopPropagation();
-    const root = btn.closest(".formation-general-multi");
-    root?.querySelectorAll(".formation-general-check").forEach(x => { x.checked = false; });
-    if (root) root.dataset.selectedOrder = "";
-    syncGeneralMultiUi(root);
-    saveGeneralMultiOwner(root);
-  });
   document.querySelectorAll(".formation-delete").forEach(btn => btn.onclick = () => { saveFormationDom(); appState.formations.splice(Number(btn.dataset.index), 1); render(); });
   const addF = document.getElementById("addFormationBtn");
   if (addF) addF.onclick = () => { saveFormationDom(); appState.formations.push(formationPlaceholderRow()); render(); };

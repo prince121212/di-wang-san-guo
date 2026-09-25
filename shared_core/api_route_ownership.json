@@ -421,6 +421,17 @@
     { "method": "POST", "path": "/api/core/operations/cancel", "owner": "android-host", "note": "取消尚未完成的共享网络 operation" },
 
     { "method": "GET", "path": "/api/background/permissions", "owner": "android-host", "note": "读取 Android 系统后台托管权限；不属于游戏业务核心" },
+    { "method": "GET", "path": "/api/member/status", "owner": "android-host", "note": "只读会员摘要，不返回登录凭证或设备私钥" },
+    { "method": "GET", "path": "/api/member/payment-catalog", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/payment-create", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/payment-status", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/payment-open", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/check", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/send-code", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/register", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/login", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/reset-password", "owner": "android-host" },
+    { "method": "POST", "path": "/api/member/logout", "owner": "android-host" },
     { "method": "POST", "path": "/api/background/permissions/open", "owner": "android-host", "note": "打开 Android 系统权限设置页；不访问游戏服务器" },
 
     { "method": "GET", "path": "/api/dashboard", "owner": "desktop-host", "note": "电脑多账号总控；Android 当前有多余实现，目标移除" },

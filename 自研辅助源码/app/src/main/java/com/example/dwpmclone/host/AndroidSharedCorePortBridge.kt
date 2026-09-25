@@ -63,6 +63,8 @@ class AndroidSharedCorePortBridge(context: Context) {
 
     fun dataDirectory(): String = appContext.filesDir.absolutePath
 
+    fun checkMembership(force: Boolean): String = MembershipClient.get(appContext).check(force).toString()
+
     fun savePassword(accountRef: String, password: String) {
         accountRef.trim().toLongOrNull()?.takeIf { it > 0L }
             ?.let { credentials.savePassword(it, password) }
@@ -109,8 +111,7 @@ class AndroidSharedCorePortBridge(context: Context) {
 
     fun cloudSharedDataConfigured(): Boolean {
         val rawUrl = BuildConfig.CLOUD_SHARED_DATA_URL.trim()
-        val token = BuildConfig.CLOUD_SHARED_DATA_TOKEN.trim()
-        if (rawUrl.isBlank() || token.isBlank()) return false
+        if (rawUrl.isBlank()) return false
         return runCatching {
             val url = URL(rawUrl)
             url.host.isNotBlank() && (
@@ -129,6 +130,8 @@ class AndroidSharedCorePortBridge(context: Context) {
         require(method == "GET" || method == "POST") { "共享云端数据仅支持 GET/POST" }
         val path = request.optString("path").trim()
         require(path in CLOUD_SHARED_DATA_PATHS) { "共享云端数据接口路径无效" }
+        val dataToken = if (path == "/v1/client/config") "" else MembershipClient.get(appContext).cloudDataToken()
+        check(path == "/v1/client/config" || dataToken.isNotBlank()) { "会员数据授权不可用" }
         val baseUrl = BuildConfig.CLOUD_SHARED_DATA_URL.trim().trimEnd('/')
         val url = URL(baseUrl + path)
         val encoded = (request.optJSONObject("body") ?: JSONObject())
@@ -138,10 +141,7 @@ class AndroidSharedCorePortBridge(context: Context) {
             requestMethod = method
             connectTimeout = 5_000
             readTimeout = 8_000
-            setRequestProperty(
-                "Authorization",
-                "Bearer ${BuildConfig.CLOUD_SHARED_DATA_TOKEN.trim()}"
-            )
+            if (dataToken.isNotBlank()) setRequestProperty("Authorization", "Bearer $dataToken")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("User-Agent", "DWPM-Cloud-Shared-Data/1.0")
@@ -605,7 +605,7 @@ class AndroidSharedCorePortBridge(context: Context) {
             @Suppress("DEPRECATION")
             Notification.Builder(appContext)
         }
-        val title = event.optString("title").ifBlank { "帝王三国辅助" }
+        val title = event.optString("title").ifBlank { BuildConfig.APP_NAME }
         val message = event.optString("message")
             .ifBlank { event.optString("text") }
             .ifBlank { "共享核心任务状态已更新" }
@@ -664,6 +664,7 @@ class AndroidSharedCorePortBridge(context: Context) {
         val RETRYABLE_READ_ONLY_HTTP_STATUSES = setOf(502, 503, 504)
         val CLOUD_SHARED_DATA_PATHS = setOf(
             "/v1/presence/heartbeat",
+            "/v1/client/config",
             "/v1/servers/catalog",
             "/v1/servers/directory/sync",
             "/v1/servers/directory/query",

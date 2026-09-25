@@ -22,6 +22,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.os.UserManager
 import com.example.dwpmclone.AssistantWebActivity
+import com.example.dwpmclone.BuildConfig
 import com.example.dwpmclone.data.account.AccountLoginState
 import com.example.dwpmclone.data.account.AccountSessionRecovery
 import com.example.dwpmclone.host.ResidentLivenessWatchdog
@@ -1017,7 +1018,7 @@ class AssistantForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "自研服务本地调度",
+                "${BuildConfig.APP_NAME}本地调度",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "手机本地托管和任务调度状态"
@@ -1049,7 +1050,7 @@ class AssistantForegroundService : Service() {
         }
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("自研服务")
+            .setContentTitle(BuildConfig.APP_NAME)
             .setContentText(contentText)
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_media_pause, "停止托管", stopIntent)

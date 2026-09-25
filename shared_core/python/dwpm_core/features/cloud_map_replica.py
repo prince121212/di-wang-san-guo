@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -29,6 +31,17 @@ SYNC_PAGE_LIMIT = 500
 
 #: v2 observations 单请求 upserts/gone 上限，与 Worker 端一致。
 UPLOAD_BATCH_LIMIT = 200
+
+#: 兼容已部署的旧 Worker：gone 的 UPDATE 有 4 个固定参数，D1 上限 100。
+#: 即使新 Worker 已改为 json_each，旧端也必须能推进，不能等服务端升级。
+UPLOAD_GONE_BATCH_LIMIT = 96
+
+#: 上报失败只延后队列，不阻塞本地读/其他任务，也不在高频 tick 中重试风暴。
+UPLOAD_RETRY_INTERVAL_MILLIS = 15_000
+
+# A refused cached candidate is not supply. Keep its observation/outbox, but
+# take it out of the hot pool while other targets can be discovered.
+CANDIDATE_REFUSAL_RETRY_MILLIS = 60_000
 
 #: 视野半径在配置距离外的冗余格数（规格：max(配置距离) + 20 格方形）。
 VIEW_RADIUS_PADDING = 20
@@ -111,7 +124,7 @@ class CloudMapReplicaStore:
     def _reset_state(self) -> None:
         # 副本行保持云端行形状（targetId/x/y/type/level/lastSeenAtMillis/
         # changedAtMillis/status/statusAtMillis/leaseUntilMillis/
-        # retryAfterMillis/data），本地可用性判定直接用其中的状态字段。
+        # retryAfterMillis/data）。观测库存不等于本轮派遣资格。
         self._targets: Dict[str, Dict[str, Any]] = {}
         # 自己上传过的目标记忆：{targetId: {"row": 观测行, "cells": [[x, y]...]}}
         self._upload_memory: Dict[str, Dict[str, Any]] = {}
@@ -125,6 +138,11 @@ class CloudMapReplicaStore:
         self._view: Optional[Dict[str, int]] = None
         self._pending_upserts: Dict[str, Dict[str, Any]] = {}
         self._pending_gone: Dict[str, bool] = {}
+        self._next_upload_retry_at = 0
+        self._candidate_blocks: Dict[str, Dict[str, Any]] = {}
+        # Preserve superseded availability uploads as held facts, not fake ACKs.
+        self._local_consumed: Dict[str, Dict[str, int]] = {}
+        self._next_refresh_retry_at = 0
 
     def _log(self, level: str, message: str) -> None:
         if self._logger is None:
@@ -187,6 +205,16 @@ class CloudMapReplicaStore:
             self._pending_gone = {
                 str(key): True for key in dict(raw.get("pendingGone") or {})
             }
+            self._candidate_blocks = {
+                str(key): dict(value)
+                for key, value in dict(raw.get("candidateBlocks") or {}).items()
+                if isinstance(value, dict)
+            }
+            self._local_consumed = {
+                str(key): {str(k): int(v) for k, v in value.items()}
+                for key, value in dict(raw.get("localConsumed") or {}).items()
+                if isinstance(value, dict)
+            }
         except Exception as error:
             # 损坏的副本不能带病使用：清空后下次 ensure_fresh 全量重同步。
             self._log("warn", f"云端地图副本文件损坏，已重建：{error}")
@@ -206,17 +234,29 @@ class CloudMapReplicaStore:
             "view": self._view,
             "pendingUpserts": self._pending_upserts,
             "pendingGone": self._pending_gone,
+            "candidateBlocks": self._candidate_blocks,
+            "localConsumed": self._local_consumed,
             "updatedAtMillis": int(self._clock()),
         }
+        temporary_path = None
         try:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
-            self._file_path.write_text(
-                json.dumps(payload, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._file_path.parent,
+                prefix=self._file_path.name + ".", suffix=".tmp", delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                json.dump(payload, temporary, ensure_ascii=False)
+            os.replace(temporary_path, self._file_path)
         except Exception as error:
-            # 持久化失败只影响下次启动的重同步成本，不阻断本轮行为。
+            # Dispatch safety still lives in the durable expedition ledger.
             self._log("warn", f"云端地图副本写入失败：{error}")
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # 只读属性
@@ -239,6 +279,10 @@ class CloudMapReplicaStore:
     @property
     def pending_upload_count(self) -> int:
         return len(self._pending_upserts) + len(self._pending_gone)
+
+    def upload_pending(self, target_id: str) -> bool:
+        with self._lock:
+            return str(target_id).strip().lower() in self._pending_upserts
 
     def set_view(
         self,
@@ -281,14 +325,23 @@ class CloudMapReplicaStore:
     # 下行：全量同步 + 变化订阅
     # ------------------------------------------------------------------
 
-    @staticmethod
     def _apply_row(
+        self,
         targets: Dict[str, Dict[str, Any]],
         row: Dict[str, Any],
     ) -> None:
         target_id = str(row.get("targetId") or "").strip().lower()
         if not target_id:
             return
+        block = self._candidate_blocks.get(target_id)
+        if (
+            block and block.get("reason") == "unknown-target"
+            and int(row.get("changedAtMillis") or 0)
+            > int(block.get("cloudRevision") or 0)
+        ):
+            # A newer cloud revision proves the row exists there. An old
+            # available row replayed by sync is not such evidence.
+            block["publicationConfirmed"] = True
         # status='missing' 的墓碑行是死亡传播的唯一通道：本地立即删除。
         if str(row.get("status") or "") == "missing":
             targets.pop(target_id, None)
@@ -382,6 +435,12 @@ class CloudMapReplicaStore:
             last_seen = int(row.get("lastSeenAtMillis") or 0)
             if last_seen > 0 and now - last_seen > ttl:
                 del self._targets[target_id]
+        for target_id, block in list(self._candidate_blocks.items()):
+            if now - int(block.get("blockedAtMillis") or 0) > ttl:
+                del self._candidate_blocks[target_id]
+        for target_id, fact in list(self._local_consumed.items()):
+            if now - int(fact["atMillis"]) > ttl and target_id not in self._pending_upserts:
+                del self._local_consumed[target_id]
 
     def ensure_fresh(self, now: Optional[int] = None) -> bool:
         """保证副本可用于本地筛选：未全量则分页拉全量，否则按节奏拉增量。
@@ -396,9 +455,13 @@ class CloudMapReplicaStore:
                 return False
             now_millis = int(self._clock() if now is None else now)
             if not self._full_sync_done:
+                if now_millis < self._next_refresh_retry_at:
+                    return False
                 try:
                     self._full_sync()
+                    self._next_refresh_retry_at = 0
                 except Exception as error:
+                    self._next_refresh_retry_at = now_millis + UPLOAD_RETRY_INTERVAL_MILLIS
                     if self._looks_like_missing_endpoint(error):
                         self._legacy = True
                     self._log(
@@ -410,11 +473,14 @@ class CloudMapReplicaStore:
             elif (
                 now_millis - self._last_changes_fetch_at
                 > CHANGES_MIN_INTERVAL_MILLIS
+                and now_millis >= self._next_refresh_retry_at
             ):
                 try:
                     self._fetch_changes()
                     self._last_changes_fetch_at = now_millis
+                    self._next_refresh_retry_at = 0
                 except Exception as error:
+                    self._next_refresh_retry_at = now_millis + UPLOAD_RETRY_INTERVAL_MILLIS
                     if self._looks_like_missing_endpoint(error):
                         self._legacy = True
                         self._log(
@@ -427,6 +493,11 @@ class CloudMapReplicaStore:
                         "warn",
                         f"云端地图增量拉取失败，本轮沿用旧副本：{error}",
                     )
+            # A local candidate can suppress further game scans even though
+            # its upload never reached the cloud. Drain one bounded batch on
+            # ordinary reads too; otherwise a failed scan upload can deadlock
+            # every subsequent reservation indefinitely.
+            self.flush_uploads()
             self._expire_stale(now_millis)
             self._save()
             return True
@@ -458,6 +529,8 @@ class CloudMapReplicaStore:
         region_y: int,
         seen_targets: List[Dict[str, Any]],
         now: Optional[int] = None,
+        *,
+        protected_target_ids: Optional[set[str]] = None,
     ) -> Dict[str, List[str]]:
         """把一次格子扫描与上传记忆比对，产出 upserts/gone 待发事件。
 
@@ -479,6 +552,27 @@ class CloudMapReplicaStore:
                     continue
                 target_id = observation["targetId"]
                 seen_ids.add(target_id)
+                consumed = self._local_consumed.get(target_id)
+                revived_consumed = bool(
+                    consumed
+                    and now_millis > consumed["atMillis"]
+                    and target_id not in (protected_target_ids or set())
+                    and int(consumed.get("observedAfterMillis") or 0) <= consumed["atMillis"]
+                )
+                if revived_consumed:
+                    consumed["observedAfterMillis"] = now_millis
+                block = self._candidate_blocks.get(target_id)
+                if (
+                    block and block.get("reason") in {"dispatched", "missing"}
+                    and now_millis > int(block.get("blockedAtMillis") or 0)
+                    and target_id not in (protected_target_ids or set())
+                ):
+                    # Only a fresh game observation after ownership ended can
+                    # revive a consumed target; cloud/cache replay cannot.
+                    del self._candidate_blocks[target_id]
+                # The newest sighting supersedes an unsent disappearance.
+                # Sending both would upsert, then immediately tombstone it.
+                self._pending_gone.pop(target_id, None)
                 memory = self._upload_memory.get(target_id)
                 if memory is None:
                     self._upload_memory[target_id] = {
@@ -488,22 +582,30 @@ class CloudMapReplicaStore:
                     self._pending_upserts[target_id] = dict(observation)
                     upserted.append(target_id)
                 else:
-                    if memory["row"] != observation:
+                    if memory["row"] != observation or revived_consumed:
                         memory["row"] = dict(observation)
                         self._pending_upserts[target_id] = dict(observation)
                         upserted.append(target_id)
                     if cell not in memory["cells"]:
                         memory["cells"].append(list(cell))
-                # 与服务端 upsert 的 status 恢复逻辑对齐：扫描亲眼所见
-                # 的目标本地恢复 available 并清租约。
+                # A sighting is not a lease release. Match the server's upsert:
+                # it preserves active reservations/dispatches/rejections.
+                previous = self._targets.get(target_id) or {}
+                previous_status = str(previous.get("status") or "available")
+                revive = previous_status == "missing" or (
+                    previous_status == "uncertain"
+                    and int(previous.get("leaseUntilMillis") or 0) <= now_millis
+                )
+                status = "available" if revive else previous_status
                 self._targets[target_id] = {
                     **observation,
                     "lastSeenAtMillis": now_millis,
-                    "changedAtMillis": now_millis,
-                    "status": "available",
-                    "statusAtMillis": now_millis,
-                    "leaseUntilMillis": 0,
-                    "retryAfterMillis": 0,
+                    # Keep the last *cloud* revision separate from local time.
+                    "changedAtMillis": int(previous.get("changedAtMillis") or 0),
+                    "status": status,
+                    "statusAtMillis": int(previous.get("statusAtMillis") or now_millis),
+                    "leaseUntilMillis": 0 if revive else int(previous.get("leaseUntilMillis") or 0),
+                    "retryAfterMillis": 0 if revive else int(previous.get("retryAfterMillis") or 0),
                 }
             gone: List[str] = []
             for target_id in list(self._upload_memory):
@@ -523,13 +625,36 @@ class CloudMapReplicaStore:
             self._save()
             return {"upserts": upserted, "gone": gone}
 
+    def record_consumed_targets(self, targets: Dict[str, int]) -> None:
+        """Reconcile durable game receipts, including after a crash/restart.
+
+        Dispatch accepted does not prove a target died. Hold its older upsert
+        rather than inventing a gone event; only a new unowned game observation
+        may supersede consumption. Cloud replay/healthy heartbeat cannot do so.
+        """
+        with self._lock:
+            changed = False
+            for target_id, at in targets.items():
+                at = int(at)
+                if int((self._local_consumed.get(target_id) or {}).get("atMillis") or 0) >= at:
+                    continue
+                self._local_consumed[target_id] = {"atMillis": at}
+                row = self._targets.get(target_id) or {}
+                self._candidate_blocks[target_id] = {
+                    "reason": "dispatched", "blockedAtMillis": at,
+                    "retryAtMillis": at + self.ttl_millis,
+                    "cloudRevision": int(row.get("changedAtMillis") or 0),
+                    "publicationConfirmed": False,
+                }
+                changed = True
+            if changed:
+                self._save()
+
     def requeue_upload(self, target_id: str) -> bool:
         """云端不认识这个目标时，把副本行重新排队上报。
 
-        副本是客户端的真相，云端是共享镜像；镜像丢了行（旧孤儿清扫硬删、
-        或上行从未到达），正确的修复是重新发布真相，而不是删掉自己的
-        认知——目标若其实已死，下一次真实扫描会以 gone 上报，游戏服务器
-        也会在出征时最终裁决。返回 False 表示副本里也没有这条记录。
+        保留这条历史观测，不把补报排队误当作目标仍活着或云端已确认。
+        派遣资格另由 candidate_blocks 控制。返回 False 表示副本也没有记录。
         """
 
         with self._lock:
@@ -544,19 +669,28 @@ class CloudMapReplicaStore:
             return True
 
     def flush_uploads(self) -> bool:
-        """把待发事件组成 v2 observations 请求发送；成功才清队列。
+        """最多发送一批 v2 事件；成功才清该批，积压留给后续读/扫描推进。
 
-        失败保留队列下轮重试（新信息不少一条），返回 False 由调用方记
-        日志，不抛异常——扫描本身已经成功，不能因上报失败丢掉本轮成果。
+        失败保留队列并限频重试，返回 False、不抛异常。True 仅表示本批
+        成功（或无待发事件），不能当作整个队列/某个指定目标已经上报。
         """
 
         with self._lock:
             if not self._pending_upserts and not self._pending_gone:
                 return True
-            upserts = list(self._pending_upserts.values())[
-                :UPLOAD_BATCH_LIMIT
-            ]
-            gone = list(self._pending_gone)[:UPLOAD_BATCH_LIMIT]
+            now_millis = int(self._clock())
+            if now_millis < self._next_upload_retry_at:
+                return False
+            upserts = [
+                row for target_id, row in self._pending_upserts.items()
+                if target_id not in self._local_consumed
+                or int(self._local_consumed[target_id].get("observedAfterMillis") or 0)
+                > self._local_consumed[target_id]["atMillis"]
+            ][:UPLOAD_BATCH_LIMIT]
+            gone = list(self._pending_gone)[:UPLOAD_GONE_BATCH_LIMIT]
+            if not upserts and not gone:
+                return False  # Held observations are neither sent nor acknowledged.
+            pending_before = self.pending_upload_count
             body: Dict[str, Any] = {"mapKind": self._map_kind}
             if upserts:
                 body["upserts"] = upserts
@@ -565,21 +699,93 @@ class CloudMapReplicaStore:
             try:
                 self._exchange("/v1/maps/observations", body)
             except Exception as error:
+                self._next_upload_retry_at = (
+                    now_millis + UPLOAD_RETRY_INTERVAL_MILLIS
+                )
                 self._log(
                     "warn",
-                    f"云端地图事件上报失败，队列保留待重试：{error}",
+                    "云端地图事件上报失败，队列保留并限频重试"
+                    f"（目标{len(self._pending_upserts)}条、"
+                    f"消失{len(self._pending_gone)}条）：{error}",
                 )
                 return False
+            recovered = self._next_upload_retry_at > 0
+            self._next_upload_retry_at = 0
             for observation in upserts:
-                self._pending_upserts.pop(observation["targetId"], None)
+                target_id = observation["targetId"]
+                self._pending_upserts.pop(target_id, None)
+                block = self._candidate_blocks.get(target_id)
+                if block and block.get("reason") == "unknown-target":
+                    # Only acknowledgement of THIS batch/target is evidence.
+                    block["publicationConfirmed"] = True
             for target_id in gone:
                 self._pending_gone.pop(target_id, None)
             self._save()
+            if recovered or pending_before > len(upserts) + len(gone):
+                self._log(
+                    "info",
+                    f"云端地图待发队列已推进：上报目标{len(upserts)}条、"
+                    f"消失{len(gone)}条，剩余{self.pending_upload_count}条",
+                )
             return True
 
     # ------------------------------------------------------------------
     # 本地候选筛选
     # ------------------------------------------------------------------
+
+    def defer_candidate(
+        self, target_id: str, reason: str, *, retry_at_millis: int = 0,
+    ) -> None:
+        """Durable eligibility overlay; never discard observations or events."""
+        target_id = str(target_id).strip().lower()
+        if not target_id:
+            return
+        with self._lock:
+            now = int(self._clock())
+            row = self._targets.get(target_id) or {}
+            self._candidate_blocks[target_id] = {
+                "reason": str(reason),
+                "blockedAtMillis": now,
+                "retryAtMillis": max(
+                    now + CANDIDATE_REFUSAL_RETRY_MILLIS,
+                    int(retry_at_millis),
+                ),
+                "cloudRevision": int(row.get("changedAtMillis") or 0),
+                "publicationConfirmed": False,
+            }
+            self._save()
+
+    def candidate_eligible(self, target_id: str, now: Optional[int] = None) -> bool:
+        """Also gates legacy queries and raw scans, not just replica reads."""
+        with self._lock:
+            now_millis = int(self._clock() if now is None else now)
+            block = self._candidate_blocks.get(str(target_id).strip().lower())
+            if not block:
+                return True
+            if now_millis - int(block.get("blockedAtMillis") or 0) > self.ttl_millis:
+                return True
+            if block.get("reason") in {"dispatched", "missing"}:
+                return False
+            if now_millis < int(block.get("retryAtMillis") or 0):
+                return False
+            return (
+                block.get("reason") != "unknown-target"
+                or block.get("publicationConfirmed") is True
+            )
+
+    def offline_peer_blocks(self) -> set[str]:
+        """Keep already-known peer leases even while new coordination is down."""
+        with self._lock:
+            now = int(self._clock())
+            return {
+                target_id for target_id, row in self._targets.items()
+                if row.get("status") in {"reserved", "dispatching", "uncertain"}
+                and int(row.get("leaseUntilMillis") or 0) > now
+            } | {
+                target_id for target_id, block in self._candidate_blocks.items()
+                if block.get("reason") == "unavailable"
+                and int(block.get("retryAtMillis") or 0) > now
+            }
 
     def candidate_targets(
         self,
@@ -596,6 +802,8 @@ class CloudMapReplicaStore:
             ttl = self.ttl_millis
             result: List[Dict[str, Any]] = []
             for row in self._targets.values():
+                if not self.candidate_eligible(str(row["targetId"]), now_millis):
+                    continue
                 last_seen = int(row.get("lastSeenAtMillis") or 0)
                 if last_seen > 0 and now_millis - last_seen > ttl:
                     continue

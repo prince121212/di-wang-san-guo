@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import struct
 import sys
 import tempfile
 import types
@@ -25,10 +26,12 @@ from dwpm_core.features.cloud_map_replica import (  # noqa: E402
     BANDIT_TARGET_TTL_MILLIS,
     CHANGES_MIN_INTERVAL_MILLIS,
     MINE_TARGET_TTL_MILLIS,
+    UPLOAD_RETRY_INTERVAL_MILLIS,
     CloudMapReplicaStore,
     shard_coordinates,
 )
 from dwpm_core.features.targets import brush_scan_coordinates  # noqa: E402
+from dwpm_core.operations import OperationKnownFailureError  # noqa: E402
 from dwpm_core.ports import PlatformPorts  # noqa: E402
 
 
@@ -303,6 +306,7 @@ class CloudMapReplicaStoreTests(unittest.TestCase):
         )
 
         exchange.fail_paths.clear()
+        clock.value += UPLOAD_RETRY_INTERVAL_MILLIS
         self.assertTrue(store.flush_uploads())
         self.assertEqual(store.pending_upload_count, 0)
         self.assertEqual(
@@ -439,13 +443,13 @@ class CloudMapReplicaStoreTests(unittest.TestCase):
             old_exchange.sync_calls, 1, "确认 404 后不再每轮重复探测"
         )
 
-    def test_transient_sync_failure_falls_back_only_for_the_round(self) -> None:
+    def test_transient_sync_failure_falls_back_and_retries_after_bounded_backoff(self) -> None:
         clock = MutableClock()
         exchange = FakeExchange()
         exchange.fail_paths.add("/v1/maps/targets/sync")
         store = self._store(exchange, clock)
         self.assertFalse(store.ensure_fresh())
-        self.assertFalse(store.legacy, "瞬时报错不置 legacy，下轮仍重试 v2")
+        self.assertFalse(store.legacy, "瞬时报错不置 legacy，退避后仍重试 v2")
         exchange.fail_paths.clear()
         exchange.sync_pages = [
             {
@@ -454,6 +458,9 @@ class CloudMapReplicaStoreTests(unittest.TestCase):
                 "nextCursor": None,
             }
         ]
+        self.assertFalse(store.ensure_fresh(), "同一热循环不能反复探测失败的端点")
+        self.assertEqual(len(exchange.calls), 1)
+        clock.value += UPLOAD_RETRY_INTERVAL_MILLIS
         self.assertTrue(store.ensure_fresh())
         self.assertEqual(len(store.candidate_targets()), 1)
 
@@ -461,14 +468,20 @@ class CloudMapReplicaStoreTests(unittest.TestCase):
 class FakeV2CloudPort:
     """v2 Worker 假实现：sync/changes/v2 observations + 带名单的心跳。"""
 
-    def __init__(self) -> None:
+    def __init__(self, actor_count: int = 2, actor_index: int = 0) -> None:
         self.calls: list[dict] = []
         self.sync_targets: list[dict] = []
+        self.actor_count = actor_count
+        self.actor_index = actor_index
 
     def configured(self) -> bool:
         return True
 
     def exchange(self, request):
+        if request["path"] == "/v1/client/config":
+            return {"status": 200, "body": {"ok": True, "config": {
+                "schemaVersion": 1, "cloudBrushMapEnabled": True, "revision": 0,
+            }}}
         value = copy.deepcopy(dict(request))
         self.calls.append(value)
         path = value["path"]
@@ -477,11 +490,17 @@ class FakeV2CloudPort:
             return {"status": 200, "body": {
                 "ok": True,
                 "mode": "CLOUD_SHARED",
-                "onlineAccountCount": 2,
+                "onlineAccountCount": self.actor_count,
                 "threshold": 2,
-                # "peer-zzz" 字典序在任何 sha256 十六进制之后，所以自己
-                # 恒为分片下标 0/2。
-                "onlineActorIds": [body["actorId"], "peer-zzz"],
+                "onlineActorIds": [
+                    *(f"!peer-{i}" for i in range(self.actor_index)),
+                    body["actorId"],
+                    *(
+                        f"peer-zzz-{i}" for i in range(
+                            self.actor_count - self.actor_index - 1
+                        )
+                    ),
+                ],
             }}
         if path == "/v1/maps/targets/sync":
             return {"status": 200, "body": {
@@ -596,12 +615,267 @@ class CloudMapReplicaFacadeTests(unittest.TestCase):
             json.loads(public["residentAutomationStateJson"]),
         )
 
+    def _record_map_requests(self, facade, *, target_at=None):
+        """Keep the real scan reader: stubbing it hides window/shard bugs."""
+        requests: list[tuple[int, int]] = []
+        fixture = json.loads(
+            (ROOT / "shared_core" / "protocol_parity_fixtures.json").read_text(
+                encoding="utf-8"
+            )
+        )["fixtures"]["targetSearch8540Complete"]
+
+        def command(
+            _self, _account_ref, opcode, payload, _phase, context, *,
+            mutation_sent,
+        ):
+            self.assertEqual(opcode, 0x1540)
+            self.assertFalse(mutation_sent)
+            self.assertTrue(context["readOnly"])
+            requests.append(struct.unpack(">HH", payload))
+            response = (
+                bytes.fromhex(fixture["responseHex"])
+                if target_at is not None and len(requests) == target_at
+                else bytes.fromhex("00bb003800")
+            )
+            return {"packets": [{"opcode": 0x8540, "payload": response}]}
+
+        facade._execute_host_game_command = types.MethodType(command, facade)
+        return requests
+
+    def test_resident_real_reader_prioritizes_each_shard_then_covers_full_area(self):
+        """An 80-coordinate search must not silently shrink to the first nine.
+
+        The resident cursor indexes a shard; the reader validates overrides
+        against the original coordinate space. Exercise both, not a stub that
+        blindly accepts _scanCoordinatesOverride.
+        """
+        all_coordinates = brush_scan_coordinates(91, 26, 80)
+        for actor_count, actor_index in ((2, 0), (2, 1), (3, 0), (3, 1), (3, 2)):
+            with self.subTest(actors=actor_count, index=actor_index):
+                cloud = FakeV2CloudPort(actor_count, actor_index)
+                facade, directory, config, state = self._facade(cloud)
+                config["common"]["brush"].update({
+                    "startX": 91, "startY": 26, "scanLimit": 80,
+                })
+                requests = self._record_map_requests(facade)
+                shard = all_coordinates[actor_index::actor_count]
+                order = shard + [c for c in all_coordinates if c not in set(shard)]
+                try:
+                    for offset in range(0, len(order), 5):
+                        before = len(requests)
+                        result = facade._run_configured_brush_tick(
+                            FakeExecution(), "303", config, state, {}
+                        )
+                        expected = order[offset:offset + 5]
+                        self.assertEqual(requests[before:], expected)
+                        self.assertEqual(result["scannedCount"], len(expected))
+                        self.assertEqual(result["scanBatchSize"], len(expected))
+                        self.assertEqual(result["scanOffset"], offset)
+                        self.assertEqual(result["scanLimit"], len(order))
+                        wrapped = offset + len(expected) == len(order)
+                        self.assertEqual(result["scanWrapped"], wrapped)
+                        self.assertEqual(
+                            result["nextScanOffset"],
+                            0 if wrapped else offset + len(expected),
+                        )
+                        # Continue from durable state, as after a host restart.
+                        public = json.loads(facade.account_record_json("303"))[
+                            "account"
+                        ]["session"]["publicState"]
+                        state = json.loads(public["residentAutomationStateJson"])
+                    self.assertEqual(requests, order)
+                    self.assertNotIn(
+                        "/v1/maps/scans/claim",
+                        [call["path"] for call in cloud.calls],
+                    )
+                finally:
+                    facade.close()
+                    directory.cleanup()
+
+    def test_resident_shard_offset_is_revalidated_when_membership_changes(self):
+        cloud = FakeV2CloudPort()
+        facade, directory, config, state = self._facade(cloud)
+        config["common"]["brush"]["scanLimit"] = 80
+        requests = self._record_map_requests(facade)
+        try:
+            first = facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
+            )
+            # A saved local-space/old-shard cursor can fit the full 80-coordinate
+            # range while being past the end of this actor's 40-coordinate shard.
+            state["brush"]["scanCursorsByRule"][first["scanRuleKey"]][
+                "nextScanOffset"
+            ] = 61
+            state["brush"]["scanCursorsByRule"][first["scanRuleKey"]].pop("scanOrderKey")
+            requests.clear()
+            result = facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
+            )
+            self.assertEqual(result["scanOffset"], 0)
+            self.assertEqual(result["scannedCount"], 5)
+            self.assertEqual(requests, brush_scan_coordinates(10, 10, 80)[::2][:5])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_resident_late_shard_match_stops_and_persists_exact_next_position(self):
+        cloud = FakeV2CloudPort(actor_index=1)
+        facade, directory, config, state = self._facade(cloud)
+        config["common"]["brush"]["scanLimit"] = 80
+        config["common"]["brush"]["rules"][0]["compositionFilter"] = {
+            "maxFoot": 5, "maxBow": 5, "maxCavalry": 5, "maxChariot": 5,
+            "requireFoot": False,
+        }
+        requests = self._record_map_requests(facade, target_at=7)
+        accepted_targets: list[dict] = []
+
+        def accepted(_self, _execution, body, _context):
+            accepted_targets.append(dict(body["target"]))
+            return {"result": {
+                "success": True,
+                "successBattleId": 9202,
+                "target": dict(body["target"]),
+            }}
+
+        facade._run_brush_execute_game_workflow = types.MethodType(accepted, facade)
+        try:
+            facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
+            )
+            result = facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
+            )
+            self.assertEqual(result["state"], "dispatched")
+            self.assertEqual(len(accepted_targets), 1)
+            self.assertEqual(requests, brush_scan_coordinates(10, 10, 80)[1::2][:7])
+            self.assertEqual(result["scanOffset"], 5)
+            self.assertEqual(result["scannedCount"], 2)
+            self.assertEqual(result["nextScanOffset"], 7)
+            self.assertFalse(result["scanWrapped"])
+            public = json.loads(facade.account_record_json("303"))[
+                "account"
+            ]["session"]["publicState"]
+            stored = json.loads(public["residentAutomationStateJson"])
+            self.assertEqual(
+                stored["brush"]["scanCursorsByRule"][result["scanRuleKey"]][
+                    "nextScanOffset"
+                ],
+                7,
+            )
+            self.assertIn(
+                "/v1/maps/targets/reserve",
+                [call["path"] for call in cloud.calls],
+            )
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_assigned_scan_without_observations_cannot_advance_the_cursor(self):
+        cloud = FakeV2CloudPort()
+        facade, directory, config, state = self._facade(cloud)
+        config["common"]["brush"]["scanLimit"] = 80
+        self._record_map_requests(facade)
+        try:
+            result = facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
+            )
+            saved_cursor = copy.deepcopy(
+                state["brush"]["scanCursorsByRule"][result["scanRuleKey"]]
+            )
+
+            def no_progress(_self, _execution, _body, _context):
+                return {"targets": [], "scanResults": [], "scannedCount": 0}
+
+            facade._run_brush_search_game_workflow = types.MethodType(
+                no_progress, facade
+            )
+            with self.assertRaises(OperationKnownFailureError) as raised:
+                facade._run_configured_brush_tick(
+                    FakeExecution(), "303", config, state, {}
+                )
+            self.assertEqual(raised.exception.code, "BRUSH_SCAN_PROGRESS_MISSING")
+            self.assertEqual(
+                state["brush"]["scanCursorsByRule"][result["scanRuleKey"]],
+                saved_cursor,
+            )
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_no_match_evidence_survives_rotation_between_different_rule_filters(self):
+        cloud = FakeV2CloudPort()
+        facade, directory, config, state = self._facade(cloud)
+        brush = config["common"]["brush"]
+        brush["scanLimit"] = 80
+        template = brush["rules"][0]
+        brush["rules"] = [
+            {**copy.deepcopy(template), "sourceRowIndex": i, "levels": [level]}
+            for i, level in enumerate((8, 7, 7, 7))
+        ]
+        # The advice is independent of cloud transport and must work in both
+        # local and shared scanning. Real empty responses count as observations.
+        facade._cloud_presence_mode = lambda _ref: {"mode": "LOCAL_ONLY"}
+        self._record_map_requests(facade)
+        keys: dict[int, str] = {}
+        try:
+            for tick in range(60):
+                result = facade._run_configured_brush_tick(
+                    FakeExecution(), "303", config, state, {}
+                )
+                keys[result["sourceRowIndex"]] = result["scanRuleKey"]
+                self.assertEqual(
+                    result["state"],
+                    "no-targets" if tick < 56 else "filter-strict",
+                    f"tick {tick}: rotation must not reset another rule's evidence",
+                )
+            cursors = state["brush"]["scanCursorsByRule"]
+            self.assertEqual(
+                [cursors[keys[i]]["noMatchScannedCoords"] for i in range(4)],
+                [75, 75, 75, 75],
+            )
+
+            def cached(_self, **_kwargs):
+                return [{
+                    "id": 0x1234, "x": 10, "y": 10, "kind": "山贼", "level": 8,
+                    "dropCategories": ["宝物"],
+                    "composition": {
+                        "foot": 0, "bow": 5, "cavalry": 0, "chariot": 0,
+                        "source": "8540-units",
+                    },
+                }]
+
+            def accepted(_self, _execution, body, _context):
+                return {"result": {
+                    "success": True,
+                    "successBattleId": 9203,
+                    "target": dict(body["target"]),
+                }}
+
+            facade._local_brush_targets = types.MethodType(cached, facade)
+            facade._run_brush_execute_game_workflow = types.MethodType(accepted, facade)
+            result = facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
+            )
+            self.assertEqual(result["state"], "dispatched")
+            cursors = state["brush"]["scanCursorsByRule"]
+            self.assertEqual(
+                [cursors[keys[i]]["noMatchScannedCoords"] for i in range(4)],
+                [0, 75, 75, 75],
+                "a match only clears evidence for the selected rule",
+            )
+        finally:
+            facade.close()
+            directory.cleanup()
+
     def test_v2_tick_uses_replica_shard_and_event_upload(self) -> None:
         cloud = FakeV2CloudPort()
         facade, directory, config, state = self._facade(cloud)
         captured: list[dict] = []
         all_coordinates = brush_scan_coordinates(10, 10, 6)
-        expected_shard = [list(value) for value in all_coordinates[::2]]
+        expected_scan = [
+            list(value) for value in
+            (all_coordinates[::2] + all_coordinates[1::2])[:5]
+        ]
 
         def scanned(_self, _execution, body, _context):
             captured.append(dict(body))
@@ -659,9 +933,9 @@ class CloudMapReplicaFacadeTests(unittest.TestCase):
             self.assertNotIn(
                 "/v1/maps/scans/claim", paths, "v2 不再占用扫描租约"
             )
-            # 确定性分片：2 个在线账号、自己是下标 0 → 偶数下标坐标。
+            # 优先本分片，目标仍不足则补扫其余区域；每批仍最多 5 个。
             self.assertEqual(
-                captured[0]["_scanCoordinatesOverride"], expected_shard
+                captured[0]["_scanCoordinatesOverride"], expected_scan
             )
             observations = [
                 call["body"] for call in cloud.calls

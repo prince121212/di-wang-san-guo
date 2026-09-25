@@ -2203,8 +2203,14 @@ class SharedPythonCoreTests(unittest.TestCase):
             .read_text(encoding="utf-8")
         )["fixtures"]
         general_id = int(fixtures["generalRecord8004"]["expected"]["id"])
+        # A formation fragment is not a resource snapshot. Exercise healing
+        # with a real role header and a known food balance, including real zero.
+        head = bytearray.fromhex(fixtures["roleHead8004"]["responseHex"])
+        resources_offset = 20 + int.from_bytes(head[18:20], "big") + 2
+        struct.pack_into(">qq", head, resources_offset, 0, 300_000)
         state_hex = (
-            fixtures["generalRecord8004"]["responseHex"]
+            head.hex()
+            + fixtures["generalRecord8004"]["responseHex"]
             + fixtures["idleArmy8004"]["responseHex"]
         )
         fief_id = 555

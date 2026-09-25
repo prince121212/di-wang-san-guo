@@ -1663,7 +1663,7 @@ class SharedResidentAutomationTests(unittest.TestCase):
                         "id": 88,
                         "x": 10,
                         "y": 10,
-                        "mineType": "SILVER",
+                        "mineType": "SILVER", "level": 1,
                         "playerOccupied": False,
                     }]
                 },
@@ -2254,6 +2254,12 @@ class SharedResidentAutomationTests(unittest.TestCase):
         one feature over, and the same symptom: the workflow returns blocked,
         the record still looks ordinary, and the pair repeats twice a second
         while holding the lane.
+
+        背包整理 stores its boundary the same way and answers "never": a bag
+        mutation is always safe to plan again from a fresh read, and its
+        ledger settles itself once the verification window passes.  Holding
+        it for a human froze one real account for a day over a 山贼头巾 stack
+        that 刷黄 kept refilling, with every equipment discard queued behind.
         """
 
         for feature, field, record in (
@@ -2268,11 +2274,6 @@ class SharedResidentAutomationTests(unittest.TestCase):
                 "domestic",
                 "domesticPendingActionJson",
                 {"progress": {"building/12": {"state": "uncertain"}}},
-            ),
-            (
-                "inventory",
-                "inventoryPendingActionJson",
-                {"actionState": "uncertain"},
             ),
         ):
             with self.subTest(feature=feature):
@@ -2293,6 +2294,21 @@ class SharedResidentAutomationTests(unittest.TestCase):
                 finally:
                     facade.close()
                     directory.cleanup()
+
+        facade, _clock, directory = self._facade()
+        try:
+            for action_state in ("sending", "uncertain", "accepted", "rejected"):
+                with self.subTest(feature="inventory", action_state=action_state):
+                    self.assertFalse(
+                        facade._pending_nested_send_unsettled(  # noqa: SLF001
+                            "inventory",
+                            {"actionState": action_state, "requiresAttention": True},
+                        ),
+                        "a bag ledger never needs a human; it settles itself",
+                    )
+        finally:
+            facade.close()
+            directory.cleanup()
 
     def test_process_reopen_preserves_plan_cursor_and_stopped_task_never_starts(
         self,

@@ -10,8 +10,10 @@ import struct
 import threading
 import urllib.parse
 from copy import deepcopy
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from uuid import uuid4
 
 from .account.lifecycle import AccountLifecyclePolicy
 from .account.login import (
@@ -44,16 +46,35 @@ from .automation import (
     raid_return_decision,
     resident_due_decision,
 )
+from .recovery_policy import (
+    copper_recovery_food_amount,
+    is_heal_resource_failure,
+    pending_business_progress,
+    resource_wait_notices,
+    resource_wait_result,
+)
 from .features.alarm import (
     normalize_alarm_policy,
     plan_alarm_observation,
     plan_error_alarm,
+)
+from .features.brush_lanes import (
+    BRUSH_ACTIVE_FIELD,
+    brush_consumed_targets,
+    brush_consumed_target_update,
+    brush_lane_notices,
+    brush_lane_storage_updates,
+    brush_record_general_ids,
+    brush_record_key,
+    brush_recovery_records,
+    brush_skip_heal_update,
 )
 from .features.cloud_map_replica import (
     VIEW_RADIUS_PADDING,
     CloudMapReplicaStore,
     shard_coordinates,
 )
+from .features.local_map import LocalMapStore
 from .features.formation import (
     TroopShortageError,
     assignment_receipt_matches_plan,
@@ -80,12 +101,15 @@ from .features.generals import (
 from .features.inventory import (
     AUTO_OPEN_ITEM_NAMES,
     EQUIPMENT_QUALITY_NAMES,
+    automatic_inventory_snapshot_is_complete,
     equipment_quality_codes,
+    inventory_action_identity,
     inventory_reward_log_text,
     observe_automatic_inventory_action,
     parse_8104_inventory,
     plan_next_automatic_inventory_action,
     plan_open_one_inventory,
+    settle_unverifiable_inventory_action,
 )
 from .features.expedition import (
     build_dungeon_expedition_payload,
@@ -243,6 +267,7 @@ from .hashing import compute_core_hash
 from .host_ports import HostGameCommandError
 from .local_views import (
     account_log_write_plan,
+    food_to_copper_success_record,
     general_energy_success_record,
     ministry_delegate_success_record,
     ministry_harvest_success_record,
@@ -565,10 +590,19 @@ class CoreFacade:
         ] = {}
         self._cloud_mode_lock = threading.RLock()
         self._cloud_modes: Dict[str, Dict[str, Any]] = {}
+        self._cloud_config_loaded: set[str] = set()
+        self._cloud_config_locks: Dict[str, threading.RLock] = {}
+        self._cloud_successes: Dict[tuple[str, str], int] = {}
         self._cloud_heartbeats_inflight: set[str] = set()
         self._cloud_directory_sync_inflight: set[str] = set()
         self._cloud_manual_scan_cursors: Dict[str, int] = {}
         self._cloud_map_replicas: Dict[str, CloudMapReplicaStore] = {}
+        # Only target admission is locked, never a march/battle or cloud I/O.
+        self._brush_target_lock = threading.RLock()
+        self._member_cleanup = threading.local()
+        self._membership_start_lock = threading.RLock()
+        self._local_maps: Dict[str, LocalMapStore] = {}
+        self._brush_cloud_work = threading.local()
         self._automation_recovery_runner_registered = False
         self._raid_action_runner_registered = False
         self._lossless_action_runner_registered = False
@@ -1555,13 +1589,16 @@ class CoreFacade:
         # The game credential, rather than the role/area ID, is the true
         # exclusivity boundary. Serializing only by accountRef lets two areas
         # of the same platform account pass the duplicate check concurrently.
-        with self._account_identity_login_lock(account_ref):
-            with self._account_login_lock(account_ref):
-                return self._run_account_login_workflow_locked(
-                    body,
-                    context,
-                    execution,
-                )
+        # Paid-device slots must be admitted atomically across different game
+        # accounts. Otherwise two parallel starts can both observe one free slot.
+        with self._membership_start_lock if self._ports.membership is not None else nullcontext():
+            with self._account_identity_login_lock(account_ref):
+                with self._account_login_lock(account_ref):
+                    return self._run_account_login_workflow_locked(
+                        body,
+                        context,
+                        execution,
+                    )
 
     def _run_account_login_workflow_locked(
         self,
@@ -1571,6 +1608,13 @@ class CoreFacade:
     ) -> Dict[str, Any]:
         account_ref = self._account_ref(body, context)
         mode = str(body.get("mode") or "start").strip().lower()
+        self._require_membership(force=(context.get("source") != "shared-service-relogin"))
+        if mode == "start" and self._ports.membership is not None:
+            others = [a for a in self._accounts.snapshot()["accounts"]
+                      if str(a.get("accountRef")) != account_ref and a.get("enabled")]
+            if len(others) >= 2:
+                raise OperationKnownFailureError("一台手机最多同时运行两个游戏账号，请先停止一个账号",
+                                                  code="MEMBER_GAME_ACCOUNT_LIMIT")
         recovery_attempt = (
             str(context.get("source") or "") == "shared-service-relogin"
         )
@@ -1663,6 +1707,7 @@ class CoreFacade:
                 mode,
             )
             if mode == "start":
+                self.refresh_cloud_runtime_config(actual_ref, force=True)
                 self._ports.account_runtime.start_hosting(actual_ref)
             if actual_ref != account_ref:
                 self._accounts.delete(account_ref)
@@ -2927,6 +2972,7 @@ class CoreFacade:
             parsed_targets = parse_bandit_targets(payload)
             for target in parsed_targets:
                 target["scanCoord"] = [int(x), int(y)]
+            self._observe_local_map(account_ref, "bandit", (x, y), parsed_targets)
             discovered.extend(parsed_targets)
             matched_count = sum(1 for target in parsed_targets if matches(target))
             scan_result: Dict[str, Any] = {
@@ -3197,6 +3243,7 @@ class CoreFacade:
                 ) from error
             for target in targets:
                 target["scanCoord"] = [x, y]
+            self._observe_local_map(account_ref, "mine", (x, y), targets)
             discovered.extend(targets)
             scan_result: Dict[str, Any] = {
                 "scanCoord": [int(x), int(y)],
@@ -4574,6 +4621,12 @@ class CoreFacade:
         target = self._dispatch_target_payload(
             body.get("target"), action_name="刷黄"
         )
+        # Provenance participates in consumed-target checks at the final
+        # admission lock too; normalization must not turn an old cache into
+        # an apparently fresh game observation.
+        for flag in ("fromCache", "fromLocalSnapshot", "fromSharedMap", "fromCloudSharedMap"):
+            if body["target"].get(flag) is True:
+                target[flag] = True
         settings = body.get("hostSettings")
         settings = dict(settings) if isinstance(settings, dict) else {}
         return {
@@ -7900,6 +7953,13 @@ class CoreFacade:
         account_ref = str(body["accountRef"])
         target = dict(body["target"])
         now_millis = int(self._ports.clock.now_millis())
+        if target.get("fromCache") and str(
+            target.get("id") or target.get("targetId") or 0
+        ) in brush_consumed_targets(self._account_public_state(account_ref), now_millis):
+            raise OperationKnownFailureError(
+                "该刷黄目标已派遣或失效，旧缓存不能作为再次出征依据",
+                code="BRUSH_TARGET_ALREADY_CONSUMED",
+            )
         host_settings = self._expedition_host_settings(body)
         host_config = (
             dict(host_settings.get("config"))
@@ -7922,6 +7982,8 @@ class CoreFacade:
             if value not in (None, "")
         ]
         pending_recovery = {
+            "recoveryKey": "brush:" + uuid4().hex,
+            "mapMode": str(self._brush_cloud_attempt(account_ref).get("mode") or "LOCAL_ONLY"),
             "generalIds": requested_ids,
             "generalFacts": [],
             "formationId": requested_ids[0] if requested_ids else None,
@@ -7945,11 +8007,13 @@ class CoreFacade:
             "deleteMailForSpeed": bool(
                 recovery_setting("deleteMailForSpeed", False)
             ),
+            **{
+                key: body[key]
+                for key in ("sourceRowIndex", "formationNumber", "formationSourceRowIndex")
+                if key in body
+            },
         }
-        self._update_account_public_state(
-            account_ref,
-            {"brushPendingRecoveryJson": self._json(pending_recovery)},
-        )
+        self._begin_brush_recovery_record(account_ref, pending_recovery)
 
         def before_preflight(metadata: Dict[str, Any]) -> None:
             pending_recovery.update({
@@ -7975,6 +8039,7 @@ class CoreFacade:
                 action_name="刷黄",
                 require_role_level=30,
                 require_full_loyalty=False,
+                brush_recovery_key=pending_recovery["recoveryKey"],
             )
         except OperationKnownFailureError as error:
             pending_recovery.update({
@@ -8145,13 +8210,30 @@ class CoreFacade:
                     account_ref, "brushPendingRecoveryJson", pending_recovery
                 )
             raise
-        success = bool(dispatch_receipt and dispatch_receipt.get("success"))
         battle_id = int((dispatch_receipt or {}).get("battleId") or 0)
+        if dispatch_receipt and dispatch_receipt.get("success") and battle_id <= 0:
+            pending_recovery.update({
+                "sendState": "uncertain",
+                "requiresAttention": True,
+                "dispatchError": "刷黄回执称成功但缺少有效 battleId，禁止重发",
+            })
+            self._save_automation_pending_record(
+                account_ref, BRUSH_ACTIVE_FIELD, pending_recovery
+            )
+            raise OperationUncertainError(pending_recovery["dispatchError"])
+        success = bool(dispatch_receipt and dispatch_receipt.get("success")) and battle_id > 0
         message = str((dispatch_receipt or {}).get("message") or "")
         if not success:
+            failure_updates = {"brushPendingRecoveryJson": "{}"}
+            if _brush_target_is_gone(message):
+                failure_updates.update(brush_consumed_target_update(
+                    self._account_public_state(account_ref),
+                    {**pending_recovery, "sendState": "target-missing"},
+                    int(self._ports.clock.now_millis()),
+                ))
             self._update_account_public_state(
                 account_ref,
-                {"brushPendingRecoveryJson": "{}"},
+                failure_updates,
             )
             raise OperationKnownFailureError(
                 message or "0x8522 未确认刷黄出征成功",
@@ -8165,11 +8247,41 @@ class CoreFacade:
             "sendState": "accepted",
             "battleId": battle_id or None,
             "acceptedAtMillis": int(self._ports.clock.now_millis()),
+            "nextPollAtMillis": int(self._ports.clock.now_millis()) + int(
+                self._behavior_contract["brushYellow"]["schedule"]["postDispatchPollMillis"]
+            ),
         })
-        self._update_account_public_state(
-            account_ref,
-            {"brushPendingRecoveryJson": self._json(pending_recovery)},
+        accepted_updates: Dict[str, Any] = brush_consumed_target_update(
+            self._account_public_state(account_ref),
+            pending_recovery,
+            int(self._ports.clock.now_millis()),
         )
+        dispatch_counted = "formationNumber" in body
+        if dispatch_counted:
+            # Receipt and daily count commit together. A restart after this
+            # point must neither lose nor double-count any parallel battle.
+            resident_state = self._public_json_object(
+                self._account_public_state(account_ref).get("residentAutomationStateJson")
+            )
+            brush_state = dict(resident_state.get("brush") or {})
+            day_key = china_day_key(int(pending_recovery["acceptedAtMillis"]))
+            count = int(brush_state.get("usedCount") or 0)
+            if brush_state.get("dayKey") != day_key:
+                count = 0
+            brush_state.update({"dayKey": day_key, "usedCount": count + 1})
+            resident_state["brush"] = brush_state
+            pending_recovery["dispatchCounted"] = True
+            accepted_updates["residentAutomationStateJson"] = self._json(resident_state)
+        accepted_updates[BRUSH_ACTIVE_FIELD] = self._json(pending_recovery)
+        self._update_account_public_state(account_ref, accepted_updates)
+        # No network here. The durable receipt remains authoritative even if
+        # the optional replica cannot be saved; it is reconciled on next use.
+        try:
+            self._cloud_map_replica(account_ref, "bandit")
+        except Exception as error:
+            self._log_brush_map_route(
+                account_ref, "warn", f"刷黄回执已保存，地图消费标记待下次同步：{error}"
+            )
         return {
             "ok": True,
             "result": {
@@ -8177,6 +8289,7 @@ class CoreFacade:
                 "settlementPending": True,
                 "counted": False,
                 "successBattleId": battle_id or None,
+                "dispatchCounted": dispatch_counted,
                 "battleText": message or f"刷黄出征已确认：battleId={battle_id}",
                 "target": target,
                 "targetHex": target_hex,
@@ -8271,10 +8384,7 @@ class CoreFacade:
             "speedEnabled": bool(body.get("speedEnabled", False)),
             "withdrawDefense": bool(body.get("withdrawDefense", False)),
         }
-        self._update_account_public_state(
-            account_ref,
-            {"minePendingGarrisonJson": self._json(pending_garrison)},
-        )
+        self._begin_mine_recovery_record(account_ref, pending_garrison)
 
         def before_preflight(metadata: Dict[str, Any]) -> None:
             pending_garrison.update({
@@ -8517,7 +8627,8 @@ class CoreFacade:
         })
         self._update_account_public_state(
             account_ref,
-            {"minePendingGarrisonJson": self._json(pending_garrison)},
+            {"minePendingGarrisonJson": self._json(pending_garrison),
+             **self._mine_consumed_update(account_ref, resource_id)},
         )
         speed_result: Dict[str, Any] | None = None
         if bool(pending_garrison.get("speedEnabled")):
@@ -8695,6 +8806,348 @@ class CoreFacade:
             self._account_public_state(account_ref).get(field)
         )
 
+    def _brush_recovery_records(self, account_ref: str) -> Dict[str, Dict[str, Any]]:
+        account = self._accounts.get(str(account_ref))
+        if account is None:
+            return {}
+        session = account.get("session") or {}
+        try:
+            return brush_recovery_records(session.get("publicState") or {})
+        except (ValueError, TypeError) as error:
+            raise OperationKnownFailureError(
+                f"刷黄分编队账本不可读，已禁止新出征：{error}",
+                code="BRUSH_LANE_LEDGER_INVALID",
+            ) from error
+
+    def _check_brush_general_reservations(
+        self, account_ref: str, general_ids: list[int], *, own_key: str = ""
+    ) -> None:
+        for key, record in self._brush_recovery_records(account_ref).items():
+            if key == own_key:
+                continue
+            owned = brush_record_general_ids(record)
+            overlap = owned.intersection(general_ids)
+            if not owned or overlap:
+                raise OperationKnownFailureError(
+                    "将领仍属于未结清的刷黄编队，禁止重复派遣："
+                    + (",".join(map(str, sorted(overlap))) if owned else "账本将领不明"),
+                    code="EXPEDITION_GENERALS_RESERVED",
+                    details={"generalIds": sorted(overlap), "recoveryKey": key},
+                )
+
+    def _begin_brush_recovery_record(
+        self, account_ref: str, record: Dict[str, Any]
+    ) -> None:
+        """Reserve generals before any request; preserve every older battle."""
+        with self._brush_target_lock:
+            self._begin_locked_brush_recovery_record(account_ref, record)
+
+    @staticmethod
+    def _brush_map_scope(account: Dict[str, Any]) -> tuple[str, str]:
+        public = (account.get("session") or {}).get("publicState") or {}
+        try:
+            platform = normalize_platform_key(str(
+                account.get("platformKey") or account.get("platform") or ""
+            ))
+        except ValueError:
+            platform = ""
+        return platform, str(public.get("serverKey") or account.get("serverId") or "")
+
+    def _local_map_store(self, account_ref: str, kind: str) -> LocalMapStore:
+        scope = self._brush_map_scope(self._accounts.get(str(account_ref)) or {})
+        # Unknown identity cannot be safely shared with another account.
+        identity = list(scope) if all(scope) else ["account", str(account_ref)]
+        key = hashlib.sha256(self._json([*identity, kind]).encode()).hexdigest()
+        with self._brush_target_lock:
+            if key not in self._local_maps:
+                path = (self._accounts_path.parent / f"local-map-{key}.json"
+                        if self._accounts_path is not None else None)
+                self._local_maps[key] = LocalMapStore(path)
+            return self._local_maps[key]
+
+    def _local_map_ttl(self, kind: str) -> int:
+        return int(self._behavior_contract[
+            "mine" if kind == "mine" else "mapSearch"]["targetCacheTtlMillis"])
+
+    def _observe_local_map(self, account_ref: str, kind: str,
+                           coordinate: tuple[int, int], targets: list[Dict[str, Any]]) -> None:
+        # Reuse the normalized public target schema, not its cloud transport.
+        rows = []
+        for target in targets:
+            observation = self._cloud_target_observation(kind, target)
+            row = self._cloud_target_from_row(kind, observation) if observation else None
+            if row:
+                row.pop("fromCloudSharedMap", None)
+                row.pop("fromSharedMap", None)
+                row.pop("sharedTargetKey", None)
+                row["scanCoord"] = list(coordinate)
+                rows.append(row)
+        try:
+            self._local_map_store(account_ref, kind).observe(
+                coordinate, rows, int(self._ports.clock.now_millis()), self._local_map_ttl(kind))
+        except OSError as error:
+            self._ports.logs.write({"level": "warn", "source": "local-map",
+                                    "accountRef": account_ref, "message": str(error)})
+
+    def _local_brush_targets(self, *, account_ref: str, kind: str,
+                             fingerprint: str, ttl_millis: int,
+                             coordinates: Optional[list[tuple[int, int]]] = None) -> list[Dict[str, Any]]:
+        # Old host snapshots have no platform identity and store filtered
+        # results. Known live accounts rescan into the new unfiltered pool;
+        # keep the legacy reader for hosts without a resolved server identity.
+        if not all(self._brush_map_scope(self._accounts.get(str(account_ref)) or {})):
+            return self._load_map_snapshot_targets(account_ref=account_ref, kind=kind,
+                fingerprint=fingerprint, ttl_millis=ttl_millis)
+        return self._local_map_store(account_ref, "bandit").targets(
+            int(self._ports.clock.now_millis()), ttl_millis, coordinates)
+
+    def _same_device_accounts(self, account_ref: str) -> list[Dict[str, Any]]:
+        scope = self._brush_map_scope(self._accounts.get(str(account_ref)) or {})
+        return [row for row in self._accounts.snapshot()["accounts"]
+                if str(row.get("accountRef")) == str(account_ref)
+                or (all(scope) and self._brush_map_scope(row) == scope)]
+
+    def _mine_target_blocks(self, account_ref: str) -> set[int]:
+        occupied: set[int] = set()
+        consumed_at: Dict[int, int] = {}
+        for account in self._same_device_accounts(account_ref):
+            public = (account.get("session") or {}).get("publicState") or {}
+            raw = public.get("minePendingGarrisonJson") or "{}"
+            try:
+                pending = json.loads(raw) if isinstance(raw, str) else raw
+                if not isinstance(pending, dict):
+                    raise ValueError("invalid mine ledger")
+                if pending and not (pending.get("mineId") or (pending.get("target") or {}).get("id")):
+                    raise ValueError("mine ledger has no target")
+            except (ValueError, TypeError) as error:
+                raise OperationKnownFailureError("本机同服打矿账本不可读，禁止新出征",
+                                                  code="MINE_LOCAL_LEDGER_INVALID") from error
+            pending_id = int(pending.get("mineId") or (pending.get("target") or {}).get("id") or 0)
+            if pending_id:
+                occupied.add(pending_id)
+            consumed = self._public_json_object(public.get("mineConsumedTargetsJson"))
+            for target_id, seen in consumed.items():
+                target_id = int(target_id)
+                consumed_at[target_id] = max(consumed_at.get(target_id, 0), int(seen))
+            # Upgrade safety for the most recent pre-local occupation.
+            last = self._public_json_object(public.get("mineLastGarrisonJson"))
+            target_id = int((last.get("target") or {}).get("id") or 0)
+            if target_id:
+                consumed_at[target_id] = max(consumed_at.get(target_id, 0), int(last.get("completedAtMillis") or 0))
+        observations = self._local_map_store(account_ref, "mine").targets(
+            int(self._ports.clock.now_millis()), self._local_map_ttl("mine"))
+        observed = {int(row["id"]): row for row in observations}
+        occupied.update(int(row["id"]) for row in observations if row.get("playerOccupied"))
+        occupied.update(target_id for target_id, seen in consumed_at.items()
+                        if int(observed.get(target_id, {}).get("localObservedAtMillis") or 0) <= seen)
+        return occupied
+
+    def _mine_target_available(self, account_ref: str, target: Dict[str, Any]) -> bool:
+        target_id = int(target.get("id") or target.get("targetId") or 0)
+        return target_id > 0 and target_id not in self._mine_target_blocks(account_ref)
+
+    def _begin_mine_recovery_record(self, account_ref: str, record: Dict[str, Any]) -> None:
+        # Same lock as brush admission: check + durable ownership, no network.
+        with self._brush_target_lock:
+            if self._automation_pending_record(account_ref, "minePendingGarrisonJson"):
+                raise OperationKnownFailureError("已有未结清打矿出征，禁止覆盖账本",
+                                                  code="MINE_ALREADY_PENDING")
+            if not self._mine_target_available(account_ref, record["target"]):
+                raise OperationKnownFailureError("本机同服账号已派遣或占领该矿点，请选择其他目标",
+                                                  code="MINE_TARGET_ALREADY_PENDING")
+            self._update_account_public_state(account_ref,
+                {"minePendingGarrisonJson": self._json(record)})
+
+    def _mine_consumed_update(self, account_ref: str, target_id: int) -> Dict[str, str]:
+        consumed = self._public_json_object(
+            self._account_public_state(account_ref).get("mineConsumedTargetsJson"))
+        consumed[str(target_id)] = int(self._ports.clock.now_millis())
+        return {"mineConsumedTargetsJson": self._json(consumed)}
+
+    def _run_local_mine_search(self, execution: OperationExecutionContext,
+                               body: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
+        exact = str(body["scope"]) == "定点"
+        coordinates = ([(int(body["startX"]), int(body["startY"]))] if exact else
+                       brush_scan_coordinates(int(body["startX"]), int(body["startY"]), int(body["scanLimit"])))
+        blocked = self._mine_target_blocks(account_ref)
+
+        def matches(target: Dict[str, Any]) -> bool:
+            return int(target.get("id") or 0) not in blocked and mine_target_matches(
+                target, resource_types=list(body.get("resourceTypes") or []),
+                levels=list(body.get("levels") or []), only_empty=bool(body.get("onlyEmpty")),
+                only_defended=bool(body.get("onlyDefended")),
+                exact_x=int(body["startX"]) if exact else None,
+                exact_y=int(body["startY"]) if exact else None)
+
+        targets = [row for row in self._local_map_store(account_ref, "mine").targets(
+            int(self._ports.clock.now_millis()), self._local_map_ttl("mine"), coordinates)
+            if matches(row)]
+        scan: Dict[str, Any] = {}
+        if not targets:
+            cursors = self._public_json_object(self._account_public_state(account_ref).get("localMineScanJson"))
+            key = hashlib.sha256(self._json(body).encode()).hexdigest()
+            offset = int(cursors.get(key) or 0) % len(coordinates)
+            batch = coordinates[offset:offset + int(self._behavior_contract["mapSearch"]["preparationBatchSize"])]
+            scan = self._run_mine_search_game_workflow(execution, {
+                **body, "_scanCoordinatesOverride": [list(c) for c in batch]}, context)
+            cursors[key] = (offset + len(batch)) % len(coordinates)
+            self._update_account_public_state(account_ref, {"localMineScanJson": self._json(dict(list(cursors.items())[-128:]))})
+            blocked = self._mine_target_blocks(account_ref)
+            targets = [dict(row) for row in scan.get("targets") or [] if matches(row)]
+        targets.sort(key=lambda t: ((int(t["x"]) - int(body["startX"])) ** 2
+                                    + (int(t["y"]) - int(body["startY"])) ** 2,
+                                    -int(t.get("level") or 0), int(t["id"])))
+        return {**scan, "ok": True, "mapMode": "LOCAL_ONLY", "cloudSharedMap": False,
+                "targets": targets, "mines": targets, "points": targets, "count": len(targets)}
+
+    def _run_local_mine_execute(self, execution: OperationExecutionContext,
+                                body: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            result = self._run_mine_execute_game_workflow(execution, body, context)
+        except OperationKnownFailureError as error:
+            if error.code in {"MINE_PREVIEW_TARGET_MISMATCH", "MINE_PLAYER_OCCUPIED", "MINE_TARGET_INVALID"}:
+                self._local_map_store(str(body["accountRef"]), "mine").invalidate(int(body["target"]["id"]))
+            raise
+        return {**result, "mapMode": "LOCAL_ONLY", "cloudSharedMap": False}
+
+    def _same_device_brush_targets(
+        self, account_ref: str
+    ) -> tuple[set[int], Dict[str, int]]:
+        """Offline coordination is device-local, and still includes stopped accounts."""
+        account = self._accounts.get(str(account_ref)) or {}
+        scope = self._brush_map_scope(account)
+        occupied: set[int] = set()
+        consumed: Dict[str, int] = {}
+        now = int(self._ports.clock.now_millis())
+        for row in self._accounts.snapshot()["accounts"]:
+            ref = str(row.get("accountRef") or "")
+            if ref != str(account_ref) and (
+                not all(scope) or self._brush_map_scope(row) != scope
+            ):
+                continue
+            for record in self._brush_recovery_records(ref).values():
+                target_id = int(record.get("targetId") or (record.get("target") or {}).get("id") or 0)
+                if target_id > 0:
+                    occupied.add(target_id)
+            public = (row.get("session") or {}).get("publicState") or {}
+            for target_id, seen_at in brush_consumed_targets(public, now).items():
+                consumed[target_id] = max(consumed.get(target_id, 0), seen_at)
+        return occupied, consumed
+
+    def _begin_locked_brush_recovery_record(
+        self, account_ref: str, record: Dict[str, Any]
+    ) -> None:
+        self._check_brush_general_reservations(
+            account_ref, list(brush_record_general_ids(record))
+        )
+        records = self._brush_recovery_records(account_ref)
+        target_id = int(record.get("targetId") or 0)
+        occupied, consumed = self._same_device_brush_targets(account_ref)
+        if target_id and target_id in occupied:
+            raise OperationKnownFailureError(
+                "目标已由本机同服刷黄编队出征，禁止重复发送",
+                code="BRUSH_TARGET_ALREADY_PENDING",
+            )
+        if (record.get("target") or {}).get("fromCache") and str(target_id) in consumed:
+            raise OperationKnownFailureError(
+                "本机同服账号已派遣该目标，旧缓存不能作为再次出征依据",
+                code="BRUSH_TARGET_ALREADY_CONSUMED",
+            )
+        key = brush_record_key(record)
+        if key in records:
+            raise OperationKnownFailureError(
+                "刷黄出征账本身份重复，禁止覆盖", code="BRUSH_LANE_LEDGER_INVALID"
+            )
+        records[key] = dict(record)
+        # Both fields are committed by the same durable account-store write.
+        self._update_account_public_state(
+            account_ref, brush_lane_storage_updates(records, key)
+        )
+
+    def _activate_brush_recovery_record(
+        self, account_ref: str, key: str
+    ) -> Dict[str, Any]:
+        records = self._brush_recovery_records(account_ref)
+        active = self._automation_pending_record(account_ref, BRUSH_ACTIVE_FIELD)
+        if not active or active.get("recoveryKey") != key:
+            self._update_account_public_state(
+                account_ref, brush_lane_storage_updates(records, key)
+            )
+        return dict(records[key])
+
+    def _brush_reserved_rule_indexes(
+        self, account_ref: str, rules: list[Dict[str, Any]]
+    ) -> set[int]:
+        records = self._brush_recovery_records(account_ref)
+        owned: set[int] = set()
+        for record in records.values():
+            ids = brush_record_general_ids(record)
+            if not ids:
+                return set(range(len(rules)))
+            owned.update(ids)
+        return {
+            index for index, rule in enumerate(rules)
+            if owned.intersection(self._brush_rule_general_ids(rule))
+        }
+
+    def _brush_has_independent_rule(
+        self,
+        account_ref: str,
+        *,
+        paused_by: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        public = self._account_public_state(account_ref)
+        config = self._public_json_object(public.get("residentAutomationConfigJson"))
+        rules = [
+            rule for rule in (config.get("common") or {}).get("brush", {}).get("rules", [])
+            if isinstance(rule, dict) and rule.get("enabled") is True
+        ]
+        reserved = self._brush_reserved_rule_indexes(account_ref, rules)
+        now = int(self._ports.clock.now_millis())
+        if paused_by is not None:
+            # Only yield a pause whose affected formation is durably known.
+            # A legacy/unscoped retry hint may cover the whole feature; an
+            # unrelated team's older cooldown is not evidence otherwise.
+            affected = set(self._brush_rule_general_ids(paused_by))
+            if "sourceRowIndex" in paused_by:
+                try:
+                    source_index = int(paused_by["sourceRowIndex"])
+                    for rule in rules:
+                        if int(rule.get("sourceRowIndex", -1)) == source_index:
+                            affected.update(self._brush_rule_general_ids(rule))
+                except (TypeError, ValueError, OverflowError):
+                    return False
+            if not affected or not self._general_energy_cooldown_block(
+                account_ref, sorted(affected), now
+            ):
+                return False
+        return any(
+            index not in reserved
+            and not self._general_energy_cooldown_block(
+                account_ref, self._brush_rule_general_ids(rule), now
+            )
+            for index, rule in enumerate(rules)
+        )
+
+    def _brush_known_busy_rule_indexes(
+        self, account_ref: str, rules: list[Dict[str, Any]],
+        *, generals: Optional[list[Dict[str, Any]]] = None,
+    ) -> set[int]:
+        if generals is None:
+            public = self._account_public_state(account_ref)
+            generals = self._public_json_list(public.get("generalsJson"))
+        busy = {
+            int(row["id"]) for row in generals
+            if isinstance(row, dict) and row.get("id")
+            and any(row.get(key) is not None for key in ("status", "statusText", "displayStatus"))
+            and not general_is_idle(row)
+        }
+        return {
+            index for index, rule in enumerate(rules)
+            if busy.intersection(self._brush_rule_general_ids(rule))
+        }
+
     @staticmethod
     def _pending_record_advanced(
         before: Dict[str, Any],
@@ -8707,22 +9160,9 @@ class CoreFacade:
         anywhere".  Everything else is the workflow's own record of progress.
         """
 
-        noise = {
-            "updatedAtMillis",
-            "lastObservedAtMillis",
-            "lastErrorAtMillis",
-            "nextPollAtMillis",
-            "blockedAtMillis",
-        }
-        return {
-            key: value
-            for key, value in (before or {}).items()
-            if key not in noise
-        } != {
-            key: value
-            for key, value in (after or {}).items()
-            if key not in noise
-        }
+        return pending_business_progress(before or {}) != pending_business_progress(
+            after or {}
+        )
 
     def _bind_pending_lane_deadline(
         self,
@@ -10245,7 +10685,7 @@ class CoreFacade:
         step_key: str,
         action: Callable[[Any], Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Run one idempotent maintenance step with a durable send boundary."""
+        """Run one state-derived maintenance step with a durable send boundary."""
 
         progress = self._public_json_object(
             pending.get("recoveryProgress")
@@ -10259,7 +10699,9 @@ class CoreFacade:
                 "skipped": "already-completed",
                 "message": str(previous.get("message") or "已完成"),
             }
-        if previous_state in {"sending", "uncertain", "rejected"}:
+        # A definitive rejection is a settled outcome, not an unknown send.
+        # The action re-reads current resources before making a new attempt.
+        if previous_state in {"sending", "uncertain"}:
             raise OperationKnownFailureError(
                 f"刷黄战后步骤 {section}/{step_key} 曾越过发送边界，"
                 "当前禁止自动重放",
@@ -10436,9 +10878,7 @@ class CoreFacade:
                     or "刷黄战后新维护治疗已完成"
                 ),
             }
-        if str(current_attempt.get("state") or "") in {
-            "sending", "uncertain", "rejected",
-        }:
+        if str(current_attempt.get("state") or "") in {"sending", "uncertain"}:
             raise OperationKnownFailureError(
                 f"刷黄战后新维护步骤 healByFief/{step_key} "
                 "曾越过发送边界，当前禁止自动重放",
@@ -10737,6 +11177,11 @@ class CoreFacade:
     ) -> Dict[str, Any]:
         execution.publish_progress(10, {"phase": "brush-recovery-state"})
         now_millis = int(self._ports.clock.now_millis())
+        consumed_update = brush_consumed_target_update(
+            self._account_public_state(account_ref), pending, now_millis
+        )
+        if consumed_update:
+            self._update_account_public_state(account_ref, consumed_update)
         schedule = dict(self._behavior_contract["brushYellow"]["schedule"])
         send_state = str(pending.get("sendState") or "")
         pre_dispatch_state = str(
@@ -10877,8 +11322,9 @@ class CoreFacade:
             )
             brush_state = dict(resident_state.get("brush") or {})
             brush_state.update({
-                "skipHealOnce": True,
-                "skipHealReason": "operator-reconciled-uncertain-dispatch",
+                **brush_skip_heal_update(
+                    brush_state, pending, "operator-reconciled-uncertain-dispatch"
+                ),
                 "nextWakeAtMillis": now_millis
                 + int(schedule.get("transientRetryMillis") or 10_000),
             })
@@ -11004,8 +11450,9 @@ class CoreFacade:
                 )
                 brush_state = dict(resident_state.get("brush") or {})
                 brush_state.update({
-                    "skipHealOnce": True,
-                    "skipHealReason": "uncertain-pre-dispatch-heal",
+                    **brush_skip_heal_update(
+                        brush_state, pending, "uncertain-pre-dispatch-heal"
+                    ),
                     "nextWakeAtMillis": retry_at,
                 })
                 resident_state["brush"] = brush_state
@@ -11116,8 +11563,9 @@ class CoreFacade:
                 )
                 brush_state = dict(resident_state.get("brush") or {})
                 brush_state.update({
-                    "skipHealOnce": True,
-                    "skipHealReason": "auto-reconciled-uncertain-dispatch",
+                    **brush_skip_heal_update(
+                        brush_state, pending, "auto-reconciled-uncertain-dispatch"
+                    ),
                     "nextWakeAtMillis": now_millis
                     + int(schedule.get("transientRetryMillis") or 10_000),
                 })
@@ -11449,6 +11897,14 @@ class CoreFacade:
             {
                 "brushPendingRecoveryJson": "{}",
                 "brushLastRecoveryJson": self._json({
+                    **{
+                        key: updated[key]
+                        for key in (
+                            "recoveryKey", "sourceRowIndex", "formationNumber",
+                            "formationSourceRowIndex", "acceptedAtMillis",
+                        )
+                        if key in updated
+                    },
                     "completedAtMillis": completed_at,
                     "generalIds": selected_ids,
                     "battleId": updated.get("battleId"),
@@ -11705,6 +12161,7 @@ class CoreFacade:
                         "sourceRowIndex": updated.get("sourceRowIndex"),
                         "message": str(decision.get("reason") or "打矿闭环完成"),
                     }),
+                    **self._mine_consumed_update(account_ref, int(updated.get("mineId") or target.get("id") or 0)),
                 },
             )
             # 撤回 is the half of 打矿 the operator actually has to trust: the
@@ -12068,6 +12525,78 @@ class CoreFacade:
         self._narrate_resident_blocks(account_ref, normalized)
         return normalized
 
+    def resident_resource_notices(self, account_ref: str) -> Dict[str, Any]:
+        public = self._account_public_state(account_ref)
+        state = self._public_json_object(public.get("residentAutomationStateJson"))
+        return {
+            "ok": True,
+            "notices": resource_wait_notices(state, FEATURE_LABELS) + brush_lane_notices(public),
+        }
+
+    def resident_resource_notices_json(self, account_ref: str) -> str:
+        return self._json(self.resident_resource_notices(account_ref))
+
+    def _defer_resident_resource_failure(
+        self,
+        account_ref: str,
+        feature: str,
+        error: OperationKnownFailureError,
+        pending_field: str,
+        pending: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        state = self._public_json_object(
+            self._account_public_state(account_ref).get("residentAutomationStateJson")
+        )
+        result = resource_wait_result(
+            feature,
+            error.code,
+            str(error),
+            now_millis=int(self._ports.clock.now_millis()),
+            previous=pending if feature == "brush" and pending else state.get(feature),
+        )
+        if result is not None and pending and pending_field:
+            # Apply the same deadline to both entry paths. A feature-state
+            # timer alone cannot stop its higher-priority pending workflow.
+            updated = {
+                **pending,
+                "lastErrorCode": error.code,
+                "lastError": str(error),
+                "requiresAttention": False,
+                "resourceWait": result["resourceWait"],
+                "nextPollAtMillis": result["taskNextWakeAtMillis"],
+                "isolatedUntilMillis": result["taskNextWakeAtMillis"],
+            }
+            updated.pop("isolatedAtMillis", None)
+            self._save_automation_pending_record(account_ref, pending_field, updated)
+        return result
+
+    def _record_resident_uncertain_failure(
+        self,
+        account_ref: str,
+        feature: str,
+        error: OperationUncertainError,
+        *,
+        brush_recovery_key: str = "",
+    ) -> None:
+        """Scope an unknown send to its owner without downgrading the outcome."""
+
+        error.details["feature"] = (
+            "brushYellow" if feature == "brush" else feature
+        )
+        self._apply_resident_result_state(account_ref, {
+            "feature": error.details["feature"],
+            "state": "uncertain",
+            "success": False,
+            "requiresAttention": True,
+            "message": str(error),
+            "errorCode": "OPERATION_UNCERTAIN",
+            "brushRecoveryKey": brush_recovery_key,
+            "nextWakeAtMillis": (
+                int(self._ports.clock.now_millis())
+                + PENDING_UNCERTAIN_PROBE_BACKOFF_MILLIS
+            ),
+        })
+
     def _narrate_resident_blocks(
         self,
         account_ref: str,
@@ -12231,6 +12760,23 @@ class CoreFacade:
         state: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
+        return self._run_brush_with_map_route(
+            account_ref,
+            lambda mode, attempt: self._run_configured_brush_tick_routed(
+                execution, account_ref, configs, state, context, mode, attempt
+            ),
+        )
+
+    def _run_configured_brush_tick_routed(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+        map_mode: str,
+        attempt: Dict[str, Any],
+    ) -> Dict[str, Any]:
         common = dict(configs.get("common") or {})
         brush = dict(common.get("brush") or {})
         rules = [
@@ -12261,6 +12807,30 @@ class CoreFacade:
             )
             if block is not None:
                 paused_rules[index] = block
+        reserved_rules = self._brush_reserved_rule_indexes(account_ref, rules)
+        busy_rules = self._brush_known_busy_rule_indexes(account_ref, rules)
+        unavailable_rules = reserved_rules | set(paused_rules) | busy_rules
+        if busy_rules - reserved_rules and len(unavailable_rules) == len(rules):
+            # Busy outside a brush ledger can be an old/manual/other-feature
+            # march. Do not make a cached busy observation a permanent pause.
+            state_hex, generals, army = self._fresh_formation_state(
+                account_ref, context, read_only=True
+            )
+            self._persist_automation_general_snapshot(account_ref, state_hex, generals, army)
+            busy_rules = self._brush_known_busy_rule_indexes(
+                account_ref, rules, generals=generals
+            )
+            unavailable_rules = reserved_rules | set(paused_rules) | busy_rules
+        if (reserved_rules or busy_rules) and len(unavailable_rules) == len(rules):
+            # Normally filtered before configured scheduling. Keep the same
+            # invariant for direct calls and a configuration changed mid-tick.
+            return {
+                "feature": "brush", "state": "waiting", "success": True,
+                "message": "刷黄编队均在出征恢复或暂停中，等待各编队独立回闲",
+                "nextWakeAtMillis": int(self._ports.clock.now_millis()) + int(
+                    self._behavior_contract["brushYellow"]["schedule"]["busyGeneralPollMillis"]
+                ),
+            }
         if paused_rules and len(paused_rules) == len(rules):
             earliest = min(
                 int(block["untilMillis"]) for block in paused_rules.values()
@@ -12281,11 +12851,15 @@ class CoreFacade:
             )
         for offset in range(len(rules)):
             candidate = (cursor + offset) % len(rules)
-            if candidate not in paused_rules:
+            if candidate not in unavailable_rules:
                 rule_index = candidate
                 break
         cursor = rule_index
         rule = rules[rule_index]
+        scoped_skip_heal = dict(brush_state.get("skipHealForGenerals") or {})
+        selected_general_keys = {str(value) for value in self._brush_rule_general_ids(rule)}
+        if scoped_skip_heal:
+            skip_heal_once = bool(selected_general_keys.intersection(scoped_skip_heal))
         rule_keys = [
             self._brush_scan_rule_key(row, index)
             for index, row in enumerate(rules)
@@ -12369,19 +12943,14 @@ class CoreFacade:
         except (TypeError, ValueError):
             scan_offset = 0
         scan_limit = int(search_body["scanLimit"])
-        if (
-            str(rule_scan_state.get("fingerprint") or "")
-            != scan_fingerprint
-            or not 0 <= scan_offset < scan_limit
-        ):
+        if str(rule_scan_state.get("fingerprint") or "") != scan_fingerprint:
+            # Scan evidence belongs to this rule's filter, not the last rule
+            # served by the round-robin. Editing it invalidates only its facts.
+            rule_scan_state = {}
             scan_offset = 0
-        cloud_mode = self._cloud_presence_mode(account_ref)
-        if str(cloud_mode.get("mode") or "") == "CLOUD_UNAVAILABLE":
-            raise OperationKnownFailureError(
-                "共享地图连接暂不可用，本轮刷黄已安全延后",
-                code="CLOUD_SHARED_DATA_UNAVAILABLE",
-            )
-        cloud_shared = str(cloud_mode.get("mode") or "") == "CLOUD_SHARED"
+        elif not 0 <= scan_offset < scan_limit:
+            scan_offset = 0
+        cloud_shared = map_mode == "CLOUD_SHARED"
         search_body.update({
             "scanOffset": scan_offset,
             "scanBatchSize": min(
@@ -12399,8 +12968,21 @@ class CoreFacade:
                 20, int(search_body["scanBatchSize"])
             )
 
+        occupied_targets, consumed_targets = self._same_device_brush_targets(account_ref)
+        known_peer_targets: set[int] = set()
+        if map_mode == "LOCAL_FALLBACK":
+            replica = self._cloud_map_replica(account_ref, "bandit")
+            if replica is not None:
+                known_peer_targets = {
+                    int(target_id, 16) for target_id in replica.offline_peer_blocks()
+                }
+
         def matches_cloud_target(target: Dict[str, Any]) -> bool:
             return (
+                int(target.get("id") or target.get("targetId") or 0) not in occupied_targets
+                and int(target.get("id") or target.get("targetId") or 0) not in known_peer_targets
+                and str(target.get("id") or target.get("targetId") or 0) not in consumed_targets
+                and
                 target_matches_search_filter(
                     target,
                     str(search_body["targetKind"]),
@@ -12417,20 +12999,15 @@ class CoreFacade:
             )
 
         execution.publish_progress(5, {"phase": "resident-brush-search"})
-        # Known targets come from two stores of the same kind of evidence, so
-        # they are unioned rather than chosen between.  Selecting exclusively
-        # made entering shared mode a *loss*: an account with 215 usable cached
-        # bandits stopped reading them the moment a peer came online, and the
-        # cloud answered with nothing, so it went back to sweeping five
-        # coordinates per tick.  Conflict avoidance does not depend on this
-        # choice - in shared mode every candidate must still win a cloud
-        # reservation before a single packet is dispatched - so a wider
-        # candidate set cannot cause two accounts to collide.
+        # Local-only mode may reuse its snapshot. Shared mode uses published
+        # candidates so the cloud can arbitrate every target before dispatch.
         cached_targets = [
             target
-            for target in self._load_map_snapshot_targets(
+            for target in self._local_brush_targets(
                 account_ref=account_ref,
                 kind="BANDIT",
+                coordinates=brush_scan_coordinates(int(search_body["startX"]),
+                    int(search_body["startY"]), int(search_body["scanLimit"])),
                 fingerprint=(
                     f"{int(search_body['startX'])},"
                     f"{int(search_body['startY'])}|"
@@ -12473,6 +13050,11 @@ class CoreFacade:
             int(target.get("x") or 0),
             int(target.get("id") or 0),
         ))
+        if cloud_shared and brush_state.get("scanRequiredAfterReservationRefusal"):
+            # A pool that just failed arbitration is not supply. Even an
+            # immediately acknowledged repair must yield one bounded scan,
+            # rather than making the same cached row monopolize an idle team.
+            cloud_targets = []
 
         if cloud_targets:
             searched = {
@@ -12495,13 +13077,44 @@ class CoreFacade:
                 account_ref, all_coordinates
             )
             if scan_space is not None:
-                # v2：扫描协调下云端——按心跳在线名单确定性分片，各账号扫
-                # 自己 index % N == i 的坐标，不再占用云端扫描租约。
+                # Online presence does not prove a peer is scanning: it may
+                # keep finding targets in the shared pool and never resume its
+                # assigned area. Shards are a *priority*, not an exclusion.
+                # Only when supply needs more scans do we continue through the
+                # remaining coordinates, still at most one small batch/tick.
+                primary_coordinates = set(scan_space)
+                primary_count = len(scan_space)
+                scan_space = list(scan_space) + [
+                    coordinate for coordinate in all_coordinates
+                    if coordinate not in primary_coordinates
+                ]
+                scan_order_key = hashlib.sha256(
+                    self._json(scan_space).encode("utf-8")
+                ).hexdigest()
+                old_order_key = str(rule_scan_state.get("scanOrderKey") or "")
+                if old_order_key != scan_order_key:
+                    # Old primary-only evidence cannot justify a whole-area
+                    # filter warning before the catch-up pass has completed.
+                    rule_scan_state["filterAdviceActive"] = False
+                if (
+                    not 0 <= scan_offset < len(scan_space)
+                    or (old_order_key and old_order_key != scan_order_key)
+                    # V101 cursors indexed only the primary shard. Preserve
+                    # valid progress on upgrade, not an out-of-range old offset.
+                    or (not old_order_key and scan_offset >= primary_count)
+                ):
+                    scan_offset = 0
                 proposed = scan_space[scan_offset:scan_offset + batch_size]
                 claim_tokens: Dict[tuple[int, int], str] = {}
                 claimed_coordinates = list(proposed)
             else:
                 # 旧 Worker（心跳没有 onlineActorIds）：保留 v1 扫描租约。
+                primary_coordinates = set(all_coordinates)
+                scan_order_key = "legacy-full"
+                if rule_scan_state.get("scanOrderKey") not in (
+                    None, "", scan_order_key,
+                ):
+                    scan_offset = 0
                 scan_space = all_coordinates
                 proposed = all_coordinates[scan_offset:scan_offset + batch_size]
                 claims = self._cloud_claim_map_scans(
@@ -12517,6 +13130,13 @@ class CoreFacade:
                 ]
             cloud_search_body = {
                 **search_body,
+                # The cursor indexes shard-prioritized order, not all_coordinates.
+                # The raw reader validates overrides against its own selected
+                # window: applying the shard offset there again silently drops
+                # almost every coordinate. Validate against the full space;
+                # the explicit override still bounds actual work to this batch.
+                "scanOffset": 0,
+                "scanBatchSize": len(all_coordinates),
                 "_scanCoordinatesOverride": [
                     list(value) for value in claimed_coordinates
                 ],
@@ -12544,6 +13164,12 @@ class CoreFacade:
                         if isinstance(value.get("scanCoord"), (list, tuple))
                         and len(value["scanCoord"]) >= 2
                     }
+                    if not scanned_coordinates:
+                        raise OperationKnownFailureError(
+                            "找黄已分配扫描坐标，但没有完成实际查询；"
+                            "保留当前位置，稍后重试",
+                            code="BRUSH_SCAN_PROGRESS_MISSING",
+                        )
                 else:
                     searched = {
                         "ok": True,
@@ -12592,17 +13218,33 @@ class CoreFacade:
                 "nextScanOffset": 0 if wrapped else next_offset,
                 "scanWrapped": wrapped,
                 "cloudSharedMap": True,
+                "scanOrderKey": scan_order_key,
+                "catchUpScannedCount": len(
+                    scanned_coordinates - primary_coordinates
+                ),
             })
         else:
             # Exact pre-cloud behavior: one actor scans the same local batch
             # and writes only its existing per-device snapshot.
+            if rule_scan_state.get("scanOrderKey") not in (None, "", "local"):
+                search_body["scanOffset"] = 0
+            if map_mode == "LOCAL_FALLBACK":
+                search_body["includeScanObservationTargets"] = True
             searched = self._run_brush_search_game_workflow(
                 execution, search_body, context
             )
+            if map_mode == "LOCAL_FALLBACK":
+                self._cloud_publish_map_observations(
+                    account_ref, "bandit", list(searched.get("scanResults") or []),
+                    {}, queue_only=True,
+                )
+            searched["scanOrderKey"] = "local"
         targets = [
             dict(row)
             for row in searched.get("targets") or []
             if isinstance(row, dict)
+            and int(row.get("id") or row.get("targetId") or 0) not in occupied_targets
+            and int(row.get("id") or row.get("targetId") or 0) not in known_peer_targets
         ]
         schedule = dict(self._behavior_contract["brushYellow"]["schedule"])
         now_millis = int(self._ports.clock.now_millis())
@@ -12617,12 +13259,14 @@ class CoreFacade:
                 "scanWrapped",
                 "scannedCoordinates",
                 "scanResults",
+                "catchUpScannedCount",
             )
             if key in searched
         }
         scan_metadata["scanRuleKey"] = scan_rule_key
         scan_progress_available = "nextScanOffset" in searched
         if scan_progress_available:
+            brush_state.pop("scanRequiredAfterReservationRefusal", None)
             try:
                 next_scan_offset = int(searched["nextScanOffset"])
             except (TypeError, ValueError):
@@ -12631,14 +13275,16 @@ class CoreFacade:
                 next_scan_offset = 0
             scanned_count = max(0, int(searched.get("scannedCount") or 0))
             scan_wrapped = bool(searched.get("scanWrapped"))
-            scan_cursors[scan_rule_key] = {
+            rule_scan_state.update({
                 "fingerprint": scan_fingerprint,
                 "nextScanOffset": next_scan_offset,
                 "lastScanOffset": int(searched.get("scanOffset") or 0),
                 "lastScannedCount": scanned_count,
                 "lastScanWrapped": scan_wrapped,
+                "scanOrderKey": str(searched.get("scanOrderKey") or ""),
                 "updatedAtMillis": now_millis,
-            }
+            })
+            scan_cursors[scan_rule_key] = rule_scan_state
             brush_state["scanCursorsByRule"] = scan_cursors
             brush_state["lastScanBatch"] = {
                 "ruleKey": scan_rule_key,
@@ -12697,28 +13343,38 @@ class CoreFacade:
             # "暂时没有目标" and "筛选条件在这个区里几乎选不出目标" both
             # surface as a no-targets tick; only accumulated evidence tells
             # them apart.  Count actually-scanned coordinates against the
-            # filter fingerprint: a changed fingerprint means the operator
-            # already adjusted (restart the count), and a matched target -
-            # the path below this branch - proves the filter produces, so it
-            # clears the count there.  scanned_count is 0 for a batch whose
-            # coordinates were all leased by peers, which correctly makes no
-            # progress toward the threshold.
+            # rule's filter fingerprint. A single global counter was reset on
+            # every rotation between Lv8 and Lv7, hiding hours without targets.
+            # Edits/matches clear only this rule's evidence. A peer-leased
+            # batch has scanned_count == 0 and must not count as an observation.
             if scan_progress_available:
-                if (
-                    str(brush_state.get("filterAdviceFingerprint") or "")
-                    != scan_fingerprint
-                ):
-                    brush_state["filterAdviceFingerprint"] = scan_fingerprint
-                    brush_state["noMatchScannedCoords"] = 0
-                    brush_state["filterAdviceActive"] = False
-                brush_state["noMatchScannedCoords"] = (
-                    int(brush_state.get("noMatchScannedCoords") or 0)
+                rule_scan_state["noMatchScannedCoords"] = (
+                    max(0, int(rule_scan_state.get("noMatchScannedCoords") or 0))
                     + scanned_count
                 )
-                if brush_state["noMatchScannedCoords"] >= (
-                    BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS
-                ):
-                    brush_state["filterAdviceActive"] = True
+                rule_scan_state["filterAdviceActive"] = (
+                    bool(rule_scan_state.get("filterAdviceActive"))
+                    or (
+                        rule_scan_state["noMatchScannedCoords"]
+                        >= BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS
+                        # A partial primary shard is not evidence that the
+                        # user's whole configured search area lacks targets.
+                        and (not cloud_shared or bool(searched.get("scanWrapped")))
+                    )
+                )
+                scan_cursors[scan_rule_key] = rule_scan_state
+                brush_state["scanCursorsByRule"] = scan_cursors
+            # Retain the legacy scalar fields as the selected rule's public
+            # projection; they are no longer the source of accumulated facts.
+            brush_state.update({
+                "filterAdviceFingerprint": scan_fingerprint,
+                "noMatchScannedCoords": int(
+                    rule_scan_state.get("noMatchScannedCoords") or 0
+                ),
+                "filterAdviceActive": bool(
+                    rule_scan_state.get("filterAdviceActive")
+                ),
+            })
             last_state = "no-targets"
             if brush_state.get("filterAdviceActive"):
                 last_state = "filter-strict"
@@ -12728,7 +13384,7 @@ class CoreFacade:
                 last_message = (
                     f"【建议】筛选条件可能过严：刷黄编队{formation_number}已连续"
                     f"扫描{BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS}个坐标以上"
-                    "（近一整圈）未找到符合条件的山贼，可在常规-常用页面放宽"
+                    "（含复查）未找到符合条件的山贼，可在常规-常用页面放宽"
                     "兵种组成、等级或掉落筛选以提高刷黄效率"
                 )
             brush_state.update({
@@ -12752,13 +13408,21 @@ class CoreFacade:
             }
         # A matched target - even one that turns out to be unreservable in the
         # shared pool below - proves the filter produces results, so the
-        # too-strict bookkeeping ends here.  The dispatch and the reservation
-        # failure paths both persist brush_state before returning.
-        if brush_state.get("filterAdviceActive") or int(
-            brush_state.get("noMatchScannedCoords") or 0
-        ):
-            brush_state["noMatchScannedCoords"] = 0
-            brush_state["filterAdviceActive"] = False
+        # too-strict bookkeeping for this rule ends here. Other formations'
+        # no-match evidence remains valid. Both dispatch and reservation
+        # failure paths persist brush_state before returning.
+        rule_scan_state.update({
+            "fingerprint": scan_fingerprint,
+            "noMatchScannedCoords": 0,
+            "filterAdviceActive": False,
+        })
+        scan_cursors[scan_rule_key] = rule_scan_state
+        brush_state.update({
+            "scanCursorsByRule": scan_cursors,
+            "filterAdviceFingerprint": scan_fingerprint,
+            "noMatchScannedCoords": 0,
+            "filterAdviceActive": False,
+        })
         execution_host_settings: Dict[str, Any] = {
             "formations": list(configs.get("formations") or []),
             "config": common,
@@ -12768,7 +13432,12 @@ class CoreFacade:
         selected_target = dict(targets[0])
         reservation_token = ""
         if cloud_shared:
-            for candidate in targets:
+            # Bound arbitration work as well as scans. A large stale pool
+            # must not make one configured turn perform hundreds of requests.
+            reservation_candidates = targets[:int(
+                self._behavior_contract["mapSearch"]["preparationBatchSize"]
+            )]
+            for candidate in reservation_candidates:
                 token = self._cloud_reserve_map_target(
                     account_ref, "bandit", candidate
                 )
@@ -12784,6 +13453,7 @@ class CoreFacade:
                     "cursor": (cursor + 1) % len(rules),
                     "nextWakeAtMillis": now_millis + retry_delay,
                     "lastState": "no-targets",
+                    "scanRequiredAfterReservationRefusal": True,
                     # Name the candidate count: this message read as a normal
                     # peer collision while the real cause was that none of the
                     # candidates could ever be reserved, which is what let 35
@@ -12791,8 +13461,9 @@ class CoreFacade:
                     # peer holding the lease *or* the cloud having lost the row
                     # (re-uploaded on sight, healed next round) - name both.
                     "lastMessage": (
-                        f"共享地图{len(targets)}个匹配目标本轮均未能领取"
-                        "（被同区服账号占用或云端记录同步中），稍后重试"
+                        f"共享地图本轮尝试的{len(reservation_candidates)}个匹配目标均未能领取"
+                        "（占用或云端记录同步中），已暂时隔离；"
+                        "下一轮补扫其他目标（不更改筛选）"
                     ),
                 })
                 state["brush"] = brush_state
@@ -12819,6 +13490,11 @@ class CoreFacade:
                 },
                 context,
             )
+            execute_body.update({
+                "sourceRowIndex": source_row_index,
+                "formationNumber": formation_number,
+                "formationSourceRowIndex": formation_source_row_index,
+            })
         except Exception as error:
             if reservation_token:
                 self._cloud_update_map_target_status(
@@ -12843,11 +13519,19 @@ class CoreFacade:
                 "共享刷黄目标预占已失效，本轮未发送游戏请求",
                 code="CLOUD_TARGET_RESERVATION_LOST",
             )
+        self._raise_brush_cloud_attempt_failure(account_ref)
+        if reservation_token:
+            self._confirm_brush_cloud_writable(account_ref)
+        # No fallback/re-entry is allowed after *any* game preflight mutation.
+        attempt["gameWorkStarted"] = True
         try:
             executed = self._run_brush_execute_game_workflow(
                 execution, execute_body, context
             )
         except OperationKnownFailureError as error:
+            error.details.setdefault("sourceRowIndex", source_row_index)
+            error.details.setdefault("generalTroops", general_troops)
+            error.details.setdefault("selectedLevels", list(rule.get("levels") or []))
             if reservation_token:
                 next_status = (
                     "missing"
@@ -12869,9 +13553,6 @@ class CoreFacade:
                     strict=False,
                 )
             if error.code == "BRUSH_DISPATCH_REJECTED":
-                error.details.setdefault("sourceRowIndex", source_row_index)
-                error.details.setdefault("generalTroops", general_troops)
-                error.details.setdefault("selectedLevels", list(rule.get("levels") or []))
                 # The game has just said this bandit is gone.  Candidates are
                 # always taken nearest-first from the cache, so without writing
                 # that fact back the very same corpse is re-selected on every
@@ -12909,14 +13590,33 @@ class CoreFacade:
             )
         completed_at = int(self._ports.clock.now_millis())
         if skip_heal_once:
-            brush_state.pop("skipHealOnce", None)
-            brush_state.pop("skipHealReason", None)
+            remaining_skips = {
+                key: value for key, value in scoped_skip_heal.items()
+                if key not in selected_general_keys
+            }
+            if remaining_skips:
+                brush_state["skipHealForGenerals"] = remaining_skips
+            else:
+                brush_state.pop("skipHealForGenerals", None)
+                brush_state.pop("skipHealOnce", None)
+                brush_state.pop("skipHealReason", None)
             brush_state["lastSkippedHealAtMillis"] = completed_at
+        counted_state = self._public_json_object(
+            self._account_public_state(account_ref).get("residentAutomationStateJson")
+        ).get("brush", {}) if result.get("dispatchCounted") else {}
         brush_state.update({
             "cursor": (cursor + 1) % len(rules),
-            "usedCount": int(brush_state.get("usedCount") or 0) + 1,
+            "dayKey": counted_state.get("dayKey", brush_state.get("dayKey")),
+            "usedCount": (
+                int(counted_state["usedCount"]) if "usedCount" in counted_state
+                else int(brush_state.get("usedCount") or 0) + 1
+            ),
             "nextWakeAtMillis": completed_at
-            + int(schedule["postDispatchPollMillis"]),
+            + (
+                int(schedule.get("interFormationDispatchMillis", 1_000))
+                if self._brush_has_independent_rule(account_ref)
+                else int(schedule["postDispatchPollMillis"])
+            ),
             "lastState": "dispatched",
             "lastBattleId": result.get("successBattleId"),
             "lastMessage": str(
@@ -12987,7 +13687,7 @@ class CoreFacade:
             state["mine"] = mine_state
             self._save_resident_automation_state(account_ref, state)
             return {
-                "feature": "mine",
+                "feature": "mine", "mapMode": "LOCAL_ONLY",
                 "state": "capacity-full",
                 "success": True,
                 "message": mine_state["lastMessage"],
@@ -13013,184 +13713,10 @@ class CoreFacade:
             },
             context,
         )
-        cloud_mode = self._cloud_presence_mode(account_ref)
-        if str(cloud_mode.get("mode") or "") == "CLOUD_UNAVAILABLE":
-            raise OperationKnownFailureError(
-                "共享地图连接暂不可用，本轮打矿已安全延后",
-                code="CLOUD_SHARED_DATA_UNAVAILABLE",
-            )
-        cloud_shared = str(cloud_mode.get("mode") or "") == "CLOUD_SHARED"
         execution.publish_progress(5, {"phase": "resident-mine-search"})
-        cloud_targets: list[Dict[str, Any]] = []
-        if cloud_shared:
-            cloud_targets = [
-                target
-                for target in self._cloud_replica_targets(
-                    account_ref,
-                    "mine",
-                    view=self._cloud_map_view(account_ref, search_body),
-                )
-                if mine_target_matches(
-                    target,
-                    resource_types=list(search_body.get("resourceTypes") or []),
-                    levels=list(search_body.get("levels") or []),
-                    only_empty=bool(search_body.get("onlyEmpty")),
-                    only_defended=bool(search_body.get("onlyDefended")),
-                    exact_x=(
-                        int(search_body["startX"])
-                        if str(search_body["scope"]) == "定点" else None
-                    ),
-                    exact_y=(
-                        int(search_body["startY"])
-                        if str(search_body["scope"]) == "定点" else None
-                    ),
-                )
-            ]
-            cloud_targets.sort(key=lambda target: (
-                (int(target.get("x") or 0) - int(search_body["startX"])) ** 2
-                + (int(target.get("y") or 0) - int(search_body["startY"])) ** 2,
-                -int(target.get("level") or 0),
-                int(target.get("y") or 0),
-                int(target.get("x") or 0),
-                int(target.get("id") or 0),
-            ))
-        if cloud_targets:
-            searched = {
-                "ok": True,
-                "targets": cloud_targets,
-                "mines": cloud_targets,
-                "count": len(cloud_targets),
-                "cloudSharedMap": True,
-            }
-        elif cloud_shared:
-            if str(search_body["scope"]) == "定点":
-                all_coordinates = [(
-                    int(search_body["startX"]), int(search_body["startY"])
-                )]
-            else:
-                all_coordinates = brush_scan_coordinates(
-                    int(search_body["startX"]),
-                    int(search_body["startY"]),
-                    int(search_body["scanLimit"]),
-                )
-            sharded_space = self._cloud_shard_scan_space(
-                account_ref, all_coordinates
-            )
-            scan_sharded = sharded_space is not None
-            if scan_sharded:
-                scan_space = list(sharded_space)
-            else:
-                # 旧 Worker（心跳没有 onlineActorIds）：保留 v1 扫描租约，
-                # 扫描空间是完整坐标列表。
-                scan_space = all_coordinates
-            scan_key = f"row:{cursor % len(rows)}"
-            scan_fingerprint = hashlib.sha256(
-                self._json(search_body).encode("utf-8")
-            ).hexdigest()
-            cloud_scan_cursors = {
-                str(key): dict(value)
-                for key, value in dict(
-                    mine_state.get("cloudScanCursors") or {}
-                ).items()
-                if isinstance(value, dict)
-            }
-            cursor_state = dict(cloud_scan_cursors.get(scan_key) or {})
-            try:
-                scan_offset = int(cursor_state.get("nextScanOffset") or 0)
-            except (TypeError, ValueError):
-                scan_offset = 0
-            if (
-                str(cursor_state.get("fingerprint") or "") != scan_fingerprint
-                or not 0 <= scan_offset < len(scan_space)
-            ):
-                scan_offset = 0
-            proposed = scan_space[scan_offset:scan_offset + 20]
-            if scan_sharded:
-                # v2：按心跳在线名单确定性分片，不再占用云端扫描租约。
-                claim_tokens: Dict[tuple[int, int], str] = {}
-                claimed_coordinates = list(proposed)
-            else:
-                # 旧 Worker：v1 扫描租约决定本轮实际可扫的坐标。
-                claims = self._cloud_claim_map_scans(
-                    account_ref, "mine", proposed
-                )
-                claim_tokens = {
-                    (int(value["x"]), int(value["y"])): str(value["leaseToken"])
-                    for value in claims
-                }
-                claimed_coordinates = [
-                    coordinate for coordinate in proposed
-                    if coordinate in claim_tokens
-                ]
-            cloud_search_body = {
-                **search_body,
-                "_scanCoordinatesOverride": [
-                    list(value) for value in claimed_coordinates
-                ],
-                "includeScanObservationTargets": True,
-            }
-            try:
-                if claimed_coordinates:
-                    searched = self._run_mine_search_game_workflow(
-                        execution, cloud_search_body, context
-                    )
-                    scan_results = [
-                        dict(value)
-                        for value in searched.get("scanResults") or []
-                        if isinstance(value, dict)
-                    ]
-                    self._cloud_publish_map_observations(
-                        account_ref, "mine", scan_results, claim_tokens
-                    )
-                    scanned_coordinates = {
-                        (int(value["scanCoord"][0]), int(value["scanCoord"][1]))
-                        for value in scan_results
-                        if isinstance(value.get("scanCoord"), (list, tuple))
-                        and len(value["scanCoord"]) >= 2
-                    }
-                else:
-                    searched = {"ok": True, "targets": [], "mines": []}
-                    scanned_coordinates = set()
-            except Exception:
-                if claim_tokens:
-                    self._cloud_release_map_scans(
-                        account_ref, "mine", list(claim_tokens.values())
-                    )
-                raise
-            if claim_tokens:
-                self._cloud_release_map_scans(
-                    account_ref,
-                    "mine",
-                    [
-                        token for coordinate, token in claim_tokens.items()
-                        if coordinate not in scanned_coordinates
-                    ],
-                )
-            advanced = len(proposed)
-            next_offset = scan_offset + advanced
-            wrapped = next_offset >= len(scan_space)
-            cloud_scan_cursors[scan_key] = {
-                "fingerprint": scan_fingerprint,
-                "nextScanOffset": 0 if wrapped else next_offset,
-                "lastScanOffset": scan_offset,
-                "scannedCount": len(scanned_coordinates),
-                "scanWrapped": wrapped,
-                "updatedAtMillis": int(self._ports.clock.now_millis()),
-            }
-            mine_state["cloudScanCursors"] = cloud_scan_cursors
-            state["mine"] = mine_state
-            self._save_resident_automation_state(account_ref, state)
-            searched["cloudSharedMap"] = True
-        else:
-            # One actor keeps the complete existing local mine-search path.
-            searched = self._run_mine_search_game_workflow(
-                execution, search_body, context
-            )
-        targets = [
-            dict(item)
-            for item in searched.get("targets") or []
-            if isinstance(item, dict)
-        ]
+        searched = self._run_local_mine_search(execution, search_body, context)
+        targets = [dict(item) for item in searched.get("targets") or []
+                   if isinstance(item, dict)]
         now_millis = int(self._ports.clock.now_millis())
         if not targets:
             mine_state.update({
@@ -13203,7 +13729,7 @@ class CoreFacade:
             state["mine"] = mine_state
             self._save_resident_automation_state(account_ref, state)
             return {
-                "feature": "mine",
+                "feature": "mine", "mapMode": "LOCAL_ONLY",
                 "state": "no-targets",
                 "success": True,
                 "message": mine_state["lastMessage"],
@@ -13211,135 +13737,24 @@ class CoreFacade:
             }
         common = dict(configs.get("common") or {})
         selected_target = dict(targets[0])
-        reservation_token = ""
-        if cloud_shared:
-            for candidate in targets:
-                token = self._cloud_reserve_map_target(
-                    account_ref, "mine", candidate
-                )
-                if token:
-                    selected_target = dict(candidate)
-                    reservation_token = token
-                    selected_target["_cloudReservationToken"] = token
-                    selected_target["_cloudMapKind"] = "mine"
-                    break
-            if not reservation_token:
-                mine_state.update({
-                    "cursor": (cursor + 1) % len(rows),
-                    "nextWakeAtMillis": now_millis
-                    + int(schedule["targetUnavailableRetryMillis"]),
-                    "lastState": "no-targets",
-                    "lastMessage": "匹配矿点本轮均未能领取（被同区服账号占用或云端记录同步中），稍后重试",
-                })
-                state["mine"] = mine_state
-                self._save_resident_automation_state(account_ref, state)
-                return {
-                    "feature": "mine",
-                    "state": "no-targets",
-                    "success": True,
-                    "message": mine_state["lastMessage"],
-                    "nextWakeAtMillis": mine_state["nextWakeAtMillis"],
-                }
-        try:
-            execute_body = self.mine_execute_operation_payload(
-                {
-                    "accountRef": account_ref,
-                    "confirm": "mine",
-                    "generalIds": list(row.get("generalIds") or []),
-                    "target": selected_target,
-                    "sourceRowIndex": self._configured_row_index(
-                        row, cursor, rows
-                    ),
-                    "maxMarchMinutes": int(
-                        settings.get("maxMarchMinutes") or 45
-                    ),
-                    "fullLoyalty": bool(settings.get("fullLoyalty", True)),
-                    "speedEnabled": bool(settings.get("speed", False)),
-                    "withdrawDefense": bool(
-                        self._behavior_contract["mine"]["withdraw"].get(
-                            "afterGarrisonRequired", True
-                        )
-                    ),
-                    "hostSettings": {
-                        "formations": list(configs.get("formations") or []),
-                        "config": common,
-                    },
-                },
-                context,
-            )
-        except Exception as error:
-            if reservation_token:
-                self._cloud_update_map_target_status(
-                    account_ref,
-                    "mine",
-                    selected_target,
-                    reservation_token,
-                    "available",
-                    str(error),
-                    strict=False,
-                )
-            raise
-        if reservation_token and not self._cloud_update_map_target_status(
-            account_ref,
-            "mine",
-            selected_target,
-            reservation_token,
-            "dispatching",
-            "mine preflight starting",
-        ):
-            raise OperationKnownFailureError(
-                "共享矿点预占已失效，本轮未发送游戏请求",
-                code="CLOUD_TARGET_RESERVATION_LOST",
-            )
-        try:
-            executed = self._run_mine_execute_game_workflow(
-                execution, execute_body, context
-            )
-        except OperationKnownFailureError as error:
-            if reservation_token:
-                next_status = (
-                    "missing"
-                    if error.code == "MINE_PREVIEW_TARGET_MISMATCH"
-                    else "rejected"
-                    if error.code in {
-                        "MINE_PLAYER_OCCUPIED", "MINE_DISPATCH_REJECTED",
-                        "MINE_TARGET_INVALID",
-                    }
-                    else "available"
-                )
-                self._cloud_update_map_target_status(
-                    account_ref,
-                    "mine",
-                    selected_target,
-                    reservation_token,
-                    next_status,
-                    str(error),
-                    strict=False,
-                )
-            raise
-        except Exception as error:
-            if reservation_token:
-                self._cloud_update_map_target_status(
-                    account_ref,
-                    "mine",
-                    selected_target,
-                    reservation_token,
-                    "uncertain",
-                    str(error),
-                    strict=False,
-                )
-            raise
+        execute_body = self.mine_execute_operation_payload(
+            {
+                "accountRef": account_ref,
+                "confirm": "mine",
+                "generalIds": list(row.get("generalIds") or []),
+                "target": selected_target,
+                "sourceRowIndex": self._configured_row_index(row, cursor, rows),
+                "maxMarchMinutes": int(settings.get("maxMarchMinutes") or 45),
+                "fullLoyalty": bool(settings.get("fullLoyalty", True)),
+                "speedEnabled": bool(settings.get("speed", False)),
+                "withdrawDefense": bool(self._behavior_contract["mine"]["withdraw"].get(
+                    "afterGarrisonRequired", True)),
+                "hostSettings": {"formations": list(configs.get("formations") or []),
+                                 "config": common},
+            }, context,
+        )
+        executed = self._run_local_mine_execute(execution, execute_body, context)
         result = dict(executed.get("result") or {})
-        if reservation_token:
-            self._cloud_update_map_target_status(
-                account_ref,
-                "mine",
-                selected_target,
-                reservation_token,
-                "dispatched",
-                str(result.get("message") or "dispatch accepted"),
-                strict=False,
-            )
         completed_at = int(self._ports.clock.now_millis())
         mine_state.update({
             "cursor": (cursor + 1) % len(rows),
@@ -13352,7 +13767,7 @@ class CoreFacade:
         state["mine"] = mine_state
         self._save_resident_automation_state(account_ref, state)
         return {
-            "feature": "mine",
+            "feature": "mine", "mapMode": "LOCAL_ONLY",
             "state": "dispatched",
             "success": True,
             "dispatchAccepted": True,
@@ -14174,6 +14589,11 @@ class CoreFacade:
         returns ``blocked`` again, and the pair repeats twice a second while
         holding the account lane.  Both callers now read the answer from here,
         so a fourth feature with a nested boundary is added once.
+
+        背包整理 stays in :data:`NESTED_SEND_BOUNDARY_FEATURES` and answers
+        "never": its send boundary is real, but it is one no human ever needs
+        to adjudicate, and listing it keeps the coarse ``bool(pending)``
+        fallback from treating any bag ledger as a block.
         """
 
         if not pending:
@@ -14183,9 +14603,14 @@ class CoreFacade:
         if feature == "domestic":
             return bool(self._domestic_blocking_steps(pending))
         if feature == "inventory":
-            return str(pending.get("actionState") or "") in {
-                "sending", "uncertain", "accepted", "rejected",
-            }
+            # A bag ledger settles itself in every state: the receipt or the
+            # bag confirms it, the window expires and it closes on what is
+            # known (``_settle_unverifiable_inventory_action``).  Nothing in
+            # it needs a human, so a stale ``requiresAttention`` written by an
+            # older build must not keep the feature out of the lane - that is
+            # exactly how one replenishing 山贼头巾 stack froze 背包整理 for a
+            # day and starved every equipment discard queued behind it.
+            return False
         return False
 
     def _general_maintenance_blocking_steps(
@@ -14244,7 +14669,13 @@ class CoreFacade:
                 "skipped": "already-completed",
                 "message": str(previous.get("message") or "已完成"),
             }
-        if previous_state == "rejected":
+        if previous_state == "rejected" and not (
+            section == "healByFief"
+            and is_heal_resource_failure(
+                str(previous.get("code") or ""),
+                str(previous.get("message") or ""),
+            )
+        ):
             # The server already answered this one, so there is nothing to
             # replay and nothing in doubt.  Report it and let the rest of the
             # round finish: a run that can never complete keeps its pending
@@ -14256,6 +14687,9 @@ class CoreFacade:
                 "message": str(previous.get("message") or "服务器已明确拒绝"),
                 "code": str(previous.get("code") or ""),
             }
+        # A resource refusal can be retried from fresh balances after the
+        # feature's deadline. Skipping it as "round completed" would clear a
+        # live resource warning without ever confirming recovery.
         if previous_state in {"sending", "uncertain", "accepted"}:
             raise OperationKnownFailureError(
                 f"将领维护步骤 {section}/{step_key} 曾越过发送边界，"
@@ -15853,7 +16287,7 @@ class CoreFacade:
         self,
         account_ref: str,
         pending: Dict[str, Any],
-        inventory: Dict[str, Any],
+        inventory: Optional[Dict[str, Any]],
         observation: Dict[str, Any],
         *,
         recovered: bool,
@@ -15861,41 +16295,84 @@ class CoreFacade:
         now_millis = int(self._ports.clock.now_millis())
         action = dict(pending.get("action") or {})
         consumed = max(0, int(observation.get("consumedCount") or 0))
+        # ``verified`` is absent on an ordinary observation: the count moved,
+        # which is proof.  Only a receipt-settled ledger says False, and that
+        # closes its target for the sweep so a server that answers 成功
+        # without acting costs one send per target, not the whole cycle.
+        verified = observation.get("verified", True) is not False
+        action_key = str(pending.get("actionKey") or "") or (
+            f"{pending.get('cycleId') or 'legacy'}:"
+            f"{int(pending.get('cycleActionCount') or 0)}:"
+            f"{int(pending.get('createdAtMillis') or 0)}"
+        )
         public = self._account_public_state(account_ref)
         state = self._public_json_object(
             public.get("residentAutomationStateJson")
         )
         feature_state = dict(state.get("inventory") or {})
+        already_counted = (
+            dict(feature_state.get("lastAction") or {}).get("actionKey") == action_key
+        )
         action_count = max(
             int(feature_state.get("cycleActionCount") or 0),
             int(pending.get("cycleActionCount") or 0),
-        ) + 1
+        ) + (0 if already_counted else 1)
         opened_count = max(
             int(feature_state.get("cycleOpenedCount") or 0),
             int(pending.get("cycleOpenedCount") or 0),
         )
-        if str(action.get("kind") or "") == "open":
+        if str(action.get("kind") or "") == "open" and not already_counted:
             opened_count += consumed
         message = (
             f"{action.get('itemName') or '物品'}"
             f"{' 已开启' if action.get('kind') == 'open' else ' 已丢弃'}"
             f" x{consumed}"
         )
-        if recovered:
+        if not verified:
+            message += "（服务器已确认；背包同时有新掉落，数量未能核对）"
+        elif recovered:
             message += "（通过刷新背包安全恢复）"
+        result = {
+            "feature": "inventory",
+            "state": "completed",
+            "success": True,
+            "message": message,
+            "action": action,
+            "actionKey": action_key,
+            "consumedCount": consumed,
+            "recovered": bool(recovered),
+            "verified": verified,
+        }
+        if pending.get("batchKey"):
+            result["batchKey"] = str(pending["batchKey"])
+            result["cycleId"] = str(pending.get("cycleId") or "")
+        # Save the fact before clearing the pending action.  Recovery and the
+        # outer tick use the same durable identity, so neither can double-log.
+        record = self._append_resident_success_record(account_ref, result)
+        if record is not None:
+            result["successRecord"] = record
         last_action = {
             "completedAtMillis": now_millis,
+            "actionKey": action_key,
             "action": action,
             "observation": observation,
             "receipt": pending.get("receipt") or {},
             "recovered": bool(recovered),
             "message": message,
         }
+        excluded = list(feature_state.get("cycleExcludedActions") or [])
+        if not verified:
+            identity = inventory_action_identity(action)
+            if identity not in excluded:
+                excluded.append(identity)
         feature_state.update({
             "configHash": str(pending.get("configHash") or ""),
             "cycleId": str(pending.get("cycleId") or ""),
             "cycleActionCount": action_count,
             "cycleOpenedCount": opened_count,
+            "cycleExcludedActions": excluded,
+            "continuationPending": True,
+            "cycleFinished": False,
             "lastState": "completed",
             "lastMessage": message,
             "lastAction": last_action,
@@ -15909,19 +16386,104 @@ class CoreFacade:
         self._update_account_public_state(
             account_ref,
             {
-                **self._inventory_public_state_updates(inventory),
+                **(
+                    self._inventory_public_state_updates(inventory)
+                    if inventory is not None else {}
+                ),
                 "inventoryPendingActionJson": "{}",
                 "inventoryLastActionJson": self._json(last_action),
                 "residentAutomationStateJson": self._json(state),
             },
         )
         return {
+            **result,
+            "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
+        }
+
+    def _settle_unverifiable_inventory_action(
+        self,
+        account_ref: str,
+        pending: Dict[str, Any],
+        inventory: Optional[Dict[str, Any]],
+        observation: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Close a ledger the bag could not prove, once its window has passed.
+
+        See :func:`settle_unverifiable_inventory_action` for why this never
+        asks for a human.  A server receipt settles as a completed action
+        whose count is the server's claim; anything weaker releases the ledger
+        without a record.  Both exclude the target for the rest of the sweep,
+        and both leave the feature runnable so the equipment queued behind a
+        replenishing item stack is reached in the same sweep.
+        """
+
+        now_millis = int(self._ports.clock.now_millis())
+        settlement = settle_unverifiable_inventory_action(pending, observation)
+        if settlement["applied"]:
+            return self._complete_automatic_inventory_action(
+                account_ref,
+                pending,
+                inventory,
+                settlement,
+                recovered=False,
+            )
+        action = dict(pending.get("action") or {})
+        public = self._account_public_state(account_ref)
+        state = self._public_json_object(
+            public.get("residentAutomationStateJson")
+        )
+        feature_state = dict(state.get("inventory") or {})
+        identity = inventory_action_identity(action)
+        excluded = list(feature_state.get("cycleExcludedActions") or [])
+        if identity not in excluded:
+            excluded.append(identity)
+        feature_state.update({
+            "cycleExcludedActions": excluded,
+            "cycleActionCount": max(
+                int(feature_state.get("cycleActionCount") or 0),
+                int(pending.get("cycleActionCount") or 0),
+            ) + 1,
+            "continuationPending": True,
+            "cycleFinished": False,
+            "lastState": "retry",
+            "nextWakeAtMillis": now_millis + int(
+                self._behavior_contract["scheduler"]["inventoryActionDelayMillis"]
+            ),
+        })
+        state["inventory"] = feature_state
+        name = str(action.get("itemName") or identity)
+        message = (
+            f"{name} 的丢弃回执为成功，但装备仍在宝库中；本轮不再处理该件"
+            if settlement["resolution"] == "receipt-contradicted"
+            else f"{name} 的背包动作未收到回执，刷新也未见变化；本轮不再处理该项，下轮重新规划"
+        )
+        archived = {
+            **pending,
+            "requiresAttention": False,
+            "resolvedAtMillis": now_millis,
+            "recoveryResolution": settlement["resolution"],
+            "lastObservation": dict(observation or {}),
+        }
+        archived.pop("blockedAtMillis", None)
+        self._update_account_public_state(
+            account_ref,
+            {
+                **(
+                    self._inventory_public_state_updates(inventory)
+                    if inventory is not None else {}
+                ),
+                "inventoryPendingActionJson": "{}",
+                "inventoryLastUnverifiedActionJson": self._json(archived),
+                "residentAutomationStateJson": self._json(state),
+            },
+        )
+        return {
             "feature": "inventory",
-            "state": "completed",
-            "success": True,
+            "state": "retry",
+            "success": False,
+            "requiresAttention": False,
+            "ledgerReleasedUnverified": True,
             "message": message,
-            "action": action,
-            "consumedCount": consumed,
             "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
         }
 
@@ -15931,6 +16493,8 @@ class CoreFacade:
         account_ref: str,
         pending: Dict[str, Any],
         context: Dict[str, Any],
+        *,
+        accepted_inventory: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         now_millis = int(self._ports.clock.now_millis())
         action_state = str(pending.get("actionState") or "")
@@ -15951,6 +16515,31 @@ class CoreFacade:
                 ),
             }
         if action_state == "rejected":
+            # A definitive refusal is not an unknown send. Skip this target
+            # for the sweep, not the rest of the bag for an hour.
+            public = self._account_public_state(account_ref)
+            state = self._public_json_object(
+                public.get("residentAutomationStateJson")
+            )
+            feature_state = dict(state.get("inventory") or {})
+            rejected_key = inventory_action_identity(pending.get("action") or {})
+            skipped = list(feature_state.get("cycleExcludedActions") or [])
+            if rejected_key not in skipped:
+                skipped.append(rejected_key)
+                feature_state["cycleActionCount"] = max(
+                    int(feature_state.get("cycleActionCount") or 0),
+                    int(pending.get("cycleActionCount") or 0),
+                ) + 1
+            feature_state.update({
+                "cycleExcludedActions": skipped,
+                "continuationPending": True,
+                "cycleFinished": False,
+                "lastState": "retry",
+                "nextWakeAtMillis": now_millis + int(
+                    self._behavior_contract["scheduler"]["inventoryActionDelayMillis"]
+                ),
+            })
+            state["inventory"] = feature_state
             archived = {
                 **pending,
                 "requiresAttention": False,
@@ -15962,6 +16551,7 @@ class CoreFacade:
                 {
                     "inventoryPendingActionJson": "{}",
                     "inventoryLastRejectedActionJson": self._json(archived),
+                    "residentAutomationStateJson": self._json(state),
                 },
             )
             return {
@@ -15969,6 +16559,7 @@ class CoreFacade:
                 "state": "retry",
                 "success": False,
                 "requiresAttention": False,
+                "definitiveRejected": True,
                 "errorCode": str(
                     pending.get("errorCode")
                     or "INVENTORY_ACTION_REJECTED"
@@ -15976,11 +16567,7 @@ class CoreFacade:
                 "message": str(
                     pending.get("error") or "背包动作已被服务器拒绝"
                 ),
-                "nextWakeAtMillis": now_millis + int(
-                    self._behavior_contract["scheduler"][
-                        "inventoryPollMillis"
-                    ]
-                ),
+                "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
             }
         retry_millis = max(
             1_000,
@@ -15990,18 +16577,10 @@ class CoreFacade:
                 ]
             ),
         )
-        # Once the verification deadline has elapsed, another read is still
-        # safe but it must not monopolize the account lane.  Keep retrying the
-        # read-only observation on the inventory cadence while allowing brush,
-        # dungeon and the other independent features to run in between.
-        inventory_poll_millis = max(
-            retry_millis,
-            int(
-                self._behavior_contract["scheduler"].get(
-                    "inventoryPollMillis", retry_millis
-                )
-            ),
-        )
+        # The verification window is the time the bag gets to *confirm* the
+        # send.  Past it, the ledger settles on what is known (see
+        # ``_settle_unverifiable_inventory_action``); it is never held open
+        # for a human, because no bag mutation is unsafe to plan again.
         deadline = int(
             pending.get("verificationDeadlineMillis")
             or now_millis
@@ -16015,43 +16594,43 @@ class CoreFacade:
             75, {"phase": "inventory-action-verification"}
         )
         try:
-            inventory = self._fresh_inventory_state(
-                account_ref,
-                {
-                    **context,
-                    "operationId": execution.operation_id,
-                    "readOnly": True,
-                },
-                phase="shared-core/inventory/automatic/verify",
-            )
+            # Only the caller that just received this success may reuse its
+            # complete 0x8103 bag. Recovery after a restart always reads again;
+            # an old persisted receipt is not a fresh observation.
+            if (
+                action_state == "accepted"
+                and accepted_inventory is not None
+                and automatic_inventory_snapshot_is_complete(accepted_inventory)
+            ):
+                inventory = accepted_inventory
+            else:
+                inventory = self._fresh_inventory_state(
+                    account_ref,
+                    {
+                        **context,
+                        "operationId": execution.operation_id,
+                        "readOnly": True,
+                    },
+                    phase="shared-core/inventory/automatic/verify",
+                )
+            if not automatic_inventory_snapshot_is_complete(inventory):
+                raise ValueError("背包快照不完整，继续等待完整背包核对")
         except Exception as error:
-            blocked = now_millis >= deadline
-            next_poll_at = now_millis + (
-                inventory_poll_millis if blocked else retry_millis
-            )
+            if now_millis >= deadline:
+                return self._settle_unverifiable_inventory_action(
+                    account_ref, pending, None, None
+                )
+            next_poll_at = now_millis + retry_millis
             pending.update({
                 "lastVerificationAtMillis": now_millis,
                 "lastVerificationError": str(error),
                 "verificationDeadlineMillis": deadline,
                 "nextPollAtMillis": next_poll_at,
             })
-            if blocked:
-                pending["requiresAttention"] = True
-                pending.setdefault("blockedAtMillis", now_millis)
-            else:
-                pending.pop("requiresAttention", None)
+            pending.pop("requiresAttention", None)
             self._save_automation_pending_record(
                 account_ref, "inventoryPendingActionJson", pending
             )
-            if blocked:
-                return {
-                    "feature": "inventory",
-                    "state": "blocked",
-                    "success": False,
-                    "requiresAttention": True,
-                    "message": "背包动作越过发送边界后始终无法刷新核对，禁止自动重发",
-                    "nextWakeAtMillis": next_poll_at,
-                }
             return {
                 "feature": "inventory",
                 "state": "verifying",
@@ -16069,36 +16648,21 @@ class CoreFacade:
                 observation,
                 recovered=action_state != "accepted",
             )
-        blocked = now_millis >= deadline
-        next_poll_at = now_millis + (
-            inventory_poll_millis if blocked else retry_millis
-        )
+        if now_millis >= deadline:
+            return self._settle_unverifiable_inventory_action(
+                account_ref, pending, inventory, observation
+            )
+        next_poll_at = now_millis + retry_millis
         pending.update({
             "lastVerificationAtMillis": now_millis,
             "lastObservation": observation,
             "verificationDeadlineMillis": deadline,
             "nextPollAtMillis": next_poll_at,
         })
-        if blocked:
-            pending["requiresAttention"] = True
-            pending.setdefault("blockedAtMillis", now_millis)
-        else:
-            pending.pop("requiresAttention", None)
+        pending.pop("requiresAttention", None)
         self._save_automation_pending_record(
             account_ref, "inventoryPendingActionJson", pending
         )
-        if blocked:
-            return {
-                "feature": "inventory",
-                "state": "blocked",
-                "success": False,
-                "requiresAttention": True,
-                "message": (
-                    "背包动作已越过发送边界，但刷新后物品数量"
-                    "未变；已保留账本并禁止自动重发"
-                ),
-                "nextWakeAtMillis": next_poll_at,
-            }
         return {
             "feature": "inventory",
             "state": "verifying",
@@ -16114,6 +16678,122 @@ class CoreFacade:
         configs: Dict[str, Any],
         state: Dict[str, Any],
         context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Drain a bounded slice, with a durable ledger for every single send."""
+
+        scheduler = self._behavior_contract["scheduler"]
+        limit = max(
+            1, min(20, int(scheduler.get("inventoryMaxActionsPerTick", 5)))
+        )
+        budget = max(
+            1, min(10_000, int(scheduler.get("inventoryTickBudgetMillis", 5_000)))
+        )
+        started_at = int(self._ports.clock.now_millis())
+        completed: list[Dict[str, Any]] = []
+        snapshot = None
+        result: Dict[str, Any] = {}
+        for index in range(limit):
+            if index and int(self._ports.clock.now_millis()) - started_at >= budget:
+                break
+            execution.raise_if_cancelled()
+            if index:
+                public = self._account_public_state(account_ref)
+                configs = self._public_json_object(
+                    public.get("residentAutomationConfigJson")
+                )
+                state = self._public_json_object(
+                    public.get("residentAutomationStateJson")
+                )
+            result = self._run_configured_inventory_step(
+                execution, account_ref, configs, state, context,
+                inventory_snapshot=snapshot,
+                action_key=(
+                    str(execution.operation_id)
+                    if index == 0
+                    else f"{execution.operation_id}:inventory:{index}"
+                ),
+                batch_key=str(execution.operation_id),
+            )
+            if result.get("state") == "completed":
+                completed.append(dict(result))
+                action = dict(result.get("action") or {})
+                if int(result.get("consumedCount") or 0) < int(
+                    action.get("requestedCount") or 0
+                ):
+                    # A partial application gets a fresh read on another turn.
+                    break
+                if result.get("verified") is False:
+                    # Settled on the receipt: the bag never confirmed it, so
+                    # nothing in hand is a verified picture of the treasury.
+                    snapshot = None
+                    continue
+                # Completion wrote the fully verified bag atomically with
+                # clearing the ledger. Reuse it only inside this account turn.
+                snapshot = self._inventory_view_from_public_state(
+                    self._account_public_state(account_ref)
+                )
+            elif result.get("definitiveRejected") or result.get(
+                "ledgerReleasedUnverified"
+            ):
+                snapshot = None
+            else:
+                break
+
+        if completed:
+            # Individual facts were already saved before each pending ledger
+            # was cleared. This is only a user-facing summary, not another
+            # success record or a second count of the same equipment.
+            groups: Dict[str, int] = {}
+            for entry in completed:
+                action = dict(entry.get("action") or {})
+                name = str(action.get("itemName") or "物品")
+                if action.get("kind") == "discard-equipment":
+                    name = (
+                        f"{action.get('qualityName') or ''}"
+                        f"{int(action.get('level') or 0)}级{name}"
+                    )
+                verb = "开启" if action.get("kind") == "open" else "丢弃"
+                label = f"{verb}{name}"
+                if entry.get("verified") is False:
+                    label += "（服务器确认，数量未核对）"
+                groups[label] = groups.get(label, 0) + int(
+                    entry.get("consumedCount") or 0
+                )
+            batch = {
+                "batchKey": str(execution.operation_id),
+                "actionCount": len(completed),
+                "groups": groups,
+                "completedAtMillis": int(self._ports.clock.now_millis()),
+            }
+            if len(completed) > 1:
+                summary = "背包本批已确认：" + "，".join(
+                    f"{name} ×{count}" for name, count in groups.items()
+                )
+                if result.get("state") != "completed":
+                    summary += f"；{result.get('message') or ''}"
+                result["message"] = summary
+            result["inventoryBatch"] = batch
+            public = self._account_public_state(account_ref)
+            state = self._public_json_object(
+                public.get("residentAutomationStateJson")
+            )
+            feature_state = dict(state.get("inventory") or {})
+            feature_state["lastBatch"] = batch
+            state["inventory"] = feature_state
+            self._save_resident_automation_state(account_ref, state)
+        return result
+
+    def _run_configured_inventory_step(
+        self,
+        execution: OperationExecutionContext,
+        account_ref: str,
+        configs: Dict[str, Any],
+        state: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        inventory_snapshot: Optional[Dict[str, Any]] = None,
+        action_key: str = "",
+        batch_key: str = "",
     ) -> Dict[str, Any]:
         pending = self._automation_pending_record(
             account_ref, "inventoryPendingActionJson"
@@ -16142,15 +16822,17 @@ class CoreFacade:
             state["inventory"] = feature_state
             self._save_resident_automation_state(account_ref, state)
         execution.publish_progress(10, {"phase": "inventory-planning"})
-        inventory = self._fresh_inventory_state(
-            account_ref,
-            {
-                **context,
-                "operationId": execution.operation_id,
-                "readOnly": True,
-            },
-            phase="shared-core/inventory/automatic/plan",
-        )
+        inventory = inventory_snapshot
+        if inventory is None:
+            inventory = self._fresh_inventory_state(
+                account_ref,
+                {
+                    **context,
+                    "operationId": execution.operation_id,
+                    "readOnly": True,
+                },
+                phase="shared-core/inventory/automatic/plan",
+            )
         try:
             planned = plan_next_automatic_inventory_action(
                 inventory,
@@ -16161,7 +16843,27 @@ class CoreFacade:
                 action_count=int(
                     feature_state.get("cycleActionCount") or 0
                 ),
+                excluded_actions=feature_state.get("cycleExcludedActions") or [],
             )
+            # New loot can replenish the first stack between two slices.
+            # Do not keep choosing that stack ahead of every equipment
+            # instance: after an item discard, give eligible equipment a turn.
+            previous_action = dict(
+                dict(feature_state.get("lastAction") or {}).get("action") or {}
+            )
+            if (
+                dict(planned.get("action") or {}).get("kind") == "discard-item"
+                and previous_action.get("kind") == "discard-item"
+            ):
+                equipment_plan = plan_next_automatic_inventory_action(
+                    {**inventory, "items": []},
+                    policy,
+                    opened_count=int(feature_state.get("cycleOpenedCount") or 0),
+                    action_count=int(feature_state.get("cycleActionCount") or 0),
+                    excluded_actions=feature_state.get("cycleExcludedActions") or [],
+                )
+                if equipment_plan.get("action"):
+                    planned = equipment_plan
         except (TypeError, ValueError) as error:
             raise OperationKnownFailureError(
                 str(error),
@@ -16169,9 +16871,21 @@ class CoreFacade:
             ) from error
         action = planned.get("action")
         if not isinstance(action, dict):
+            # Fifty actions is a segment boundary, not permission to leave
+            # the remaining equipment for an hour. Continue cleanup after a
+            # yield, but carry the open-item budget and rejected targets until
+            # the whole sweep finishes.
+            cleanup_remaining = False
+            if planned.get("reason") == "action-limit":
+                cleanup_remaining = bool(plan_next_automatic_inventory_action(
+                    inventory,
+                    policy,
+                    opened_count=max(1, int(policy.get("maxOpenPerCycle") or 50)),
+                    excluded_actions=feature_state.get("cycleExcludedActions") or [],
+                ).get("action"))
             poll = int(
                 self._behavior_contract["scheduler"][
-                    "inventoryPollMillis"
+                    "inventoryActionDelayMillis" if cleanup_remaining else "inventoryPollMillis"
                 ]
             )
             feature_state.update({
@@ -16184,9 +16898,21 @@ class CoreFacade:
                 ),
                 "cycleId": f"inventory:{now_millis + poll}",
                 "cycleActionCount": 0,
-                "cycleOpenedCount": 0,
+                "cycleOpenedCount": (
+                    int(feature_state.get("cycleOpenedCount") or 0)
+                    if cleanup_remaining else 0
+                ),
+                "cycleExcludedActions": (
+                    list(feature_state.get("cycleExcludedActions") or [])
+                    if cleanup_remaining else []
+                ),
+                "continuationPending": cleanup_remaining,
+                "cycleFinished": not cleanup_remaining,
                 "lastState": "waiting",
-                "lastMessage": str(planned.get("message") or ""),
+                "lastMessage": (
+                    "背包本段处理达到上限，短暂让出调度后继续清理剩余装备和物品"
+                    if cleanup_remaining else str(planned.get("message") or "")
+                ),
                 "nextWakeAtMillis": now_millis + poll,
             })
             state["inventory"] = feature_state
@@ -16205,6 +16931,8 @@ class CoreFacade:
         )
         pending = {
             "schemaVersion": 1,
+            "actionKey": action_key or str(execution.operation_id),
+            "batchKey": batch_key,
             "cycleId": str(feature_state.get("cycleId") or ""),
             "cycleActionCount": int(
                 feature_state.get("cycleActionCount") or 0
@@ -16249,6 +16977,10 @@ class CoreFacade:
                 self._save_automation_pending_record(
                     account_ref, "inventoryPendingActionJson", pending
                 )
+                if error.code == "INVENTORY_ACTION_REJECTED":
+                    return self._run_automatic_inventory_pending_recovery(
+                        execution, account_ref, pending, context
+                    )
             else:
                 self._update_account_public_state(
                     account_ref, {"inventoryPendingActionJson": "{}"}
@@ -16293,7 +17025,8 @@ class CoreFacade:
             account_ref, "inventoryPendingActionJson", pending
         )
         return self._run_automatic_inventory_pending_recovery(
-            execution, account_ref, pending, context
+            execution, account_ref, pending, context,
+            accepted_inventory=dict(receipt.get("receipt") or {}).get("inventory"),
         )
 
     def _enqueue_alarm_events(
@@ -16634,9 +17367,102 @@ class CoreFacade:
         )
         feature_state = dict(state.get(feature) or {})
         context_value = dict(resident_context or {})
+        dependency_wait = dict(feature_state.get("dependencyWait") or {})
+        if feature == "mine" and dependency_wait.get("dependency") == "cloud-map":
+            dependency_wait = {}
+            feature_state.pop("dependencyWait", None)
+        if feature == "mine":
+            feature_state["mapMode"] = "LOCAL_ONLY"
+        if feature == "brush" and not from_pending and (
+            result.get("mapMode") == "LOCAL_FALLBACK" or result.get("cloudBrushMapEnabled") is False
+        ):
+            # Local dispatch no longer depends on the cloud. This is an
+            # explicit routing decision, NOT proof the cloud recovered.
+            dependency_wait = {}
+            feature_state.pop("dependencyWait", None)
+        if feature == "brush" and result.get("mapMode"):
+            feature_state["mapMode"] = result["mapMode"]
+            feature_state["cloudNextProbeAtMillis"] = int(result.get("cloudNextProbeAtMillis") or 0)
+        incoming_wait = result.get("dependencyWait")
+        if isinstance(incoming_wait, dict):
+            dependency_wait = dict(incoming_wait)
+            feature_state["dependencyWait"] = dependency_wait
+        elif dependency_wait and not from_pending:
+            with self._cloud_mode_lock:
+                recovered_at = self._cloud_successes.get(
+                    (str(account_ref), str(dependency_wait.get("path") or "")), 0
+                )
+                presence = dict(self._cloud_modes.get(str(account_ref)) or {})
+            if not presence:
+                presence = self._public_json_object(public.get("cloudMapPresenceJson"))
+            confirmed_local = (
+                presence.get("mode") == "LOCAL_ONLY"
+                and presence.get("configured") is True
+                and not presence.get("heartbeatUnavailable")
+                and int(presence.get("checkedAtMillis") or 0)
+                >= int(dependency_wait.get("failureAtMillis") or 1)
+            )
+            if (
+                recovered_at >= int(dependency_wait.get("failureAtMillis") or 1)
+                or confirmed_local
+            ):
+                # A fresh server verdict that sharing is no longer required
+                # also resolves the dependency. An offline local fallback
+                # does not; nor does an old verdict from before the failure.
+                dependency_wait = {}
+                feature_state.pop("dependencyWait", None)
+        brush_lane_result = feature == "brush" and (
+            from_pending or (
+                bool(result.get("brushRecoveryKey"))
+                and str(result["brushRecoveryKey"]) in self._brush_recovery_records(account_ref)
+            )
+        )
+        if brush_lane_result and dependency_wait:
+            # A sibling's return says nothing about the shared dispatch
+            # dependency. Neither its deadline nor its success can clear this.
+            feature_state.update({
+                "lastRecoveryState": str(result.get("state") or ""),
+                "lastRecoveryMessage": str(result.get("message") or ""),
+                "lastServedAtMillis": int(self._ports.clock.now_millis()),
+            })
+            state[feature] = feature_state
+            self._save_resident_automation_state(account_ref, state)
+            result["dispatchDependencyWait"] = dict(dependency_wait)
+            return dict(result)
+        if (
+            brush_lane_result
+            and self._brush_has_independent_rule(account_ref)
+        ):
+            # A return/error belongs to its expedition, not the dispatch
+            # clock of its idle siblings. In particular, an older return must
+            # not rewind the round-robin cursor after later teams dispatched.
+            now = int(self._ports.clock.now_millis())
+            spacing = int(self._behavior_contract["brushYellow"]["schedule"].get(
+                "interFormationDispatchMillis", 1_000
+            ))
+            previous_wake = feature_state.get("nextWakeAtMillis")
+            feature_state.update({
+                "lastRecoveryState": str(result.get("state") or ""),
+                "lastRecoveryMessage": str(result.get("message") or ""),
+                "lastServedAtMillis": now,
+                "nextWakeAtMillis": min(
+                    int(previous_wake) if previous_wake is not None else now + spacing,
+                    now + spacing,
+                ),
+            })
+            for key in ("requiresAttention", "blockedAtMillis", "resourceWait"):
+                feature_state.pop(key, None)
+            if feature_state.get("lastState") in RESIDENT_BLOCKED_STATES | {
+                "waiting", "waiting-resources", "uncertain"
+            }:
+                feature_state["lastState"] = "running"
+                feature_state["lastMessage"] = "其他空闲刷黄编队继续独立调度"
+            state[feature] = feature_state
+            self._save_resident_automation_state(account_ref, state)
+            return dict(result)
         if context_value.get("feature") == feature and (
             bool(result.get("dispatchAccepted")) or from_pending
-        ):
+        ) and not (feature == "brush" and from_pending):
             try:
                 feature_state["cursor"] = max(
                     0, int(context_value["nextCursor"])
@@ -16681,6 +17507,12 @@ class CoreFacade:
             feature_state["requiresAttention"] = True
         else:
             feature_state.pop("requiresAttention", None)
+        if isinstance(result.get("resourceWait"), dict):
+            feature_state["resourceWait"] = dict(result["resourceWait"])
+        else:
+            # A new assessment replaced the resource failure. Notices read
+            # this durable state, so successful recovery clears them as well.
+            feature_state.pop("resourceWait", None)
         if result.get("errorCode"):
             feature_state["lastErrorCode"] = str(result["errorCode"])
         elif bool(result.get("success")) and not bool(
@@ -16800,6 +17632,17 @@ class CoreFacade:
             feature_state["lastBattleId"] = (
                 result.get("battleId") or result.get("successBattleId")
             )
+        if dependency_wait:
+            feature_state.update({
+                "lastState": "waiting-dependency",
+                "lastErrorCode": str(dependency_wait.get("errorCode") or ""),
+                "lastMessage": str(dependency_wait.get("message") or ""),
+                "nextWakeAtMillis": max(
+                    int(feature_state.get("nextWakeAtMillis") or 0),
+                    int(dependency_wait["retryAtMillis"]),
+                ),
+                "dependencyWait": dependency_wait,
+            })
         state[feature] = feature_state
         self._save_resident_automation_state(account_ref, state)
         return dict(result)
@@ -16978,6 +17821,14 @@ class CoreFacade:
         feature_state["lastServedAtMillis"] = now_millis
         state[feature] = feature_state
         self._save_resident_automation_state(account_ref, state)
+        brush_records_before = (
+            set(self._brush_recovery_records(account_ref)) if feature == "brush" else set()
+        )
+
+        def owned_brush_pending() -> Dict[str, Any]:
+            pending = self._automation_pending_record(account_ref, BRUSH_ACTIVE_FIELD)
+            return pending if pending and brush_record_key(pending) not in brush_records_before else {}
+
         try:
             if feature == "mine":
                 return self._run_configured_mine_tick(
@@ -17027,6 +17878,15 @@ class CoreFacade:
                 f"共享常驻调度返回未知功能：{feature}",
                 code="SHARED_RESIDENT_FEATURE_INVALID",
             )
+        except OperationUncertainError as error:
+            self._record_resident_uncertain_failure(
+                account_ref, str(feature), error,
+                brush_recovery_key=(
+                    brush_record_key(owned_brush_pending())
+                    if feature == "brush" and owned_brush_pending() else ""
+                ),
+            )
+            raise
         except OperationKnownFailureError as error:
             # A resident feature may spend a long time on read-only scanning
             # before the final request is rejected (for example, a bandit
@@ -17052,6 +17912,45 @@ class CoreFacade:
             pending = self._automation_pending_record(
                 account_ref, pending_field
             ) if pending_field else {}
+            if feature == "brush":
+                # The selected slot may still belong to yesterday's/another
+                # team's accepted battle. Only a record created by THIS
+                # configured attempt can classify its error as a sent mutation.
+                pending = owned_brush_pending()
+            if (
+                error.details.get("dependency") == "cloud-map"
+                or error.code == "CLOUD_SHARED_DATA_UNAVAILABLE"
+            ):
+                current_state = self._public_json_object(
+                    self._account_public_state(account_ref).get("residentAutomationStateJson")
+                )
+                previous_wait = dict(
+                    (current_state.get(str(feature)) or {}).get("dependencyWait") or {}
+                )
+                attempts = min(4, int(previous_wait.get("attempts") or 0) + 1)
+                delay = min(120_000, 15_000 * (2 ** (attempts - 1)))
+                retry_at = max(
+                    retry_base_millis + delay,
+                    int(error.details.get("retryAtMillis") or 0),
+                )
+                wait = {
+                    "dependency": "cloud-map",
+                    "path": str(error.details.get("dependencyPath") or "/v1/presence/heartbeat"),
+                    "sinceMillis": int(previous_wait.get("sinceMillis") or retry_base_millis),
+                    "failureAtMillis": retry_base_millis,
+                    "retryAtMillis": retry_at,
+                    "attempts": attempts,
+                    "errorCode": error.code,
+                    "message": str(error),
+                }
+                result = {
+                    "feature": feature, "state": "waiting-dependency",
+                    "success": False, "requiresAttention": False,
+                    "errorCode": error.code, "message": str(error),
+                    "nextWakeAtMillis": retry_at, "dependencyWait": wait,
+                }
+                self._apply_resident_result_state(account_ref, result)
+                return result
             if str(feature) == "ministry":
                 # 收菜和礼部委派的待决账本各自落在独立字段；任一存在都说明
                 # 有越过发送边界的请求尚未确认，不能只看待种的账本。
@@ -17065,6 +17964,16 @@ class CoreFacade:
                     )
                 )
             feature_state = dict(state.get(str(feature)) or {})
+            resource_result = self._defer_resident_resource_failure(
+                account_ref, str(feature), error, pending_field, pending
+            )
+            if resource_result is not None:
+                if feature == "brush" and error.details.get("mapMode"):
+                    resource_result["mapMode"] = error.details["mapMode"]
+                if feature == "brush" and pending:
+                    resource_result["brushRecoveryKey"] = brush_record_key(pending)
+                self._apply_resident_result_state(account_ref, resource_result)
+                return resource_result
             pending_requires_attention = bool(pending)
             if pending and str(feature) in NESTED_SEND_BOUNDARY_FEATURES:
                 # These three know precisely which of their own steps is
@@ -17175,6 +18084,17 @@ class CoreFacade:
                 retry_hint = 0
             if retry_hint > retry_base_millis + delay:
                 delay = retry_hint - retry_base_millis
+            if (
+                feature == "brush" and bool(error_details.get("formationPaused"))
+                and self._brush_has_independent_rule(
+                    account_ref, paused_by=error_details
+                )
+            ):
+                # The failed team's durable per-general cooldown remains
+                # unchanged. Its half-hour deadline is not its siblings'.
+                delay = int(self._behavior_contract["brushYellow"]["schedule"].get(
+                    "interFormationDispatchMillis", 1_000
+                ))
             high_level_troop_rejected = (
                 feature == "brush"
                 and error.code == "BRUSH_DISPATCH_REJECTED"
@@ -17227,6 +18147,10 @@ class CoreFacade:
                 "message": user_message,
                 "nextWakeAtMillis": feature_state["nextWakeAtMillis"],
             }
+            if feature == "brush" and error_details.get("mapMode"):
+                result["mapMode"] = error_details["mapMode"]
+            if feature == "brush" and pending:
+                result["brushRecoveryKey"] = brush_record_key(pending)
             if "sourceRowIndex" in error_details:
                 result["sourceRowIndex"] = error_details["sourceRowIndex"]
             if "generalTroops" in error_details:
@@ -17244,7 +18168,48 @@ class CoreFacade:
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Run the highest-priority persisted recovery for one account."""
-
+        try:
+            self._require_membership()
+        except OperationKnownFailureError as error:
+            # Preserve every game ledger and all configuration. No login retry
+            # can reclaim a revoked MEMBER session; only explicit member login.
+            cleanup: Dict[str, Any] = {}
+            pending = self._automation_pending_record(account_ref, "minePendingGarrisonJson")
+            if (pending.get("dispatchSendState") == "accepted" and int(pending.get("battleId") or 0) > 0
+                    and pending.get("withdrawDefense") and not pending.get("requiresAttention")
+                    and int(pending.get("nextPollAtMillis") or 0) <= int(self._ports.clock.now_millis())):
+                self._member_cleanup.mine = (str(account_ref), int(pending["battleId"]))
+                try:
+                    cleanup = self._run_mine_garrison_game_workflow(execution, account_ref, pending, context)
+                except Exception:
+                    pass  # Original pending record remains the recovery authority.
+                finally:
+                    self._member_cleanup.mine = None
+            public = self._account_public_state(account_ref)
+            if public.get("membershipPauseCode") != error.code:
+                self._update_account_public_state(account_ref, {"membershipPauseCode": error.code})
+                self._write_user_log(account_ref, f"会员授权暂停：{error}；游戏账号、设置和未结账本已保留")
+            return {"feature": "membership", "state": "membership-paused", "success": False,
+                    "requiresAttention": False, "errorCode": error.code, "message": str(error),
+                    "safeCleanup": cleanup,
+                    "nextWakeAtMillis": int(self._ports.clock.now_millis()) + 60_000}
+        if self._account_public_state(account_ref).get("membershipPauseCode"):
+            self._update_account_public_state(account_ref, {"membershipPauseCode": ""})
+            self._write_user_log(account_ref, "会员授权已恢复，按原配置继续运行")
+        # Restored live sessions need a new config read on each process start,
+        # even when no login/password exchange was necessary.
+        runtime_config = self.refresh_cloud_runtime_config(account_ref)
+        if runtime_config.get("cloudBrushMapEnabled") is False:
+            public = self._account_public_state(account_ref)
+            policy_state = self._public_json_object(public.get("residentAutomationStateJson"))
+            brush_state = dict(policy_state.get("brush") or {})
+            if (brush_state.get("dependencyWait") or {}).get("dependency") == "cloud-map":
+                brush_state.pop("dependencyWait", None)
+                if brush_state.get("lastState") == "waiting-dependency":
+                    brush_state.update(lastState="ready", nextWakeAtMillis=int(self._ports.clock.now_millis()),
+                                       lastErrorCode="", lastMessage="云端刷黄地图已关闭，使用手机本地地图")
+                policy_state["brush"] = brush_state
+                self._save_resident_automation_state(account_ref, policy_state)
         raw_allowed = context.get("allowedFeatures")
         allowed = (
             {
@@ -17351,7 +18316,9 @@ class CoreFacade:
                 for key in FORMAL_SEND_STATE_KEYS
             ) and not self._pending_nested_send_unsettled(feature, value)
 
-        def pending_ready(value: Dict[str, Any], feature: str) -> bool:
+        def pending_ready(
+            value: Dict[str, Any], feature: str, *, isolate_feature: bool = True
+        ) -> bool:
             if not value or feature not in allowed:
                 return False
             if context.get("configuredExecutionAllowed", True) is False:
@@ -17376,8 +18343,9 @@ class CoreFacade:
                 bool(value.get("requiresAttention"))
                 and not stale_attention_can_be_rechecked
             ) or isolated_until > now_millis:
-                isolated_pending_features.add(feature)
-                if bool(value.get("requiresAttention")):
+                if isolate_feature:
+                    isolated_pending_features.add(feature)
+                if isolate_feature and bool(value.get("requiresAttention")):
                     isolated_attention_features.add(feature)
                 remember_pending_deadline(isolated_until)
                 return False
@@ -17402,12 +18370,48 @@ class CoreFacade:
                 # _run_configured_* would re-enter its pending recovery on
                 # every account tick.  Mark it explicitly so the configured
                 # candidate set is filtered for exactly the same interval.
-                isolated_pending_features.add(feature)
-                if bool(value.get("requiresAttention")):
+                if isolate_feature:
+                    isolated_pending_features.add(feature)
+                if isolate_feature and bool(value.get("requiresAttention")):
                     isolated_attention_features.add(feature)
                 remember_pending_deadline(next_poll_at)
                 return False
             return True
+
+        brush_ledger_error = ""
+
+        def brush_records_for_scheduling() -> Dict[str, Dict[str, Any]]:
+            nonlocal brush_ledger_error
+            try:
+                return self._brush_recovery_records(account_ref)
+            except OperationKnownFailureError as error:
+                brush_ledger_error = str(error)
+                isolated_pending_features.add("brush")
+                isolated_attention_features.add("brush")
+                return {}
+
+        def select_brush_pending() -> Dict[str, Any]:
+            if "brush" not in allowed:
+                return {}
+            records = brush_records_for_scheduling()
+            ready = [
+                (key, record) for key, record in records.items()
+                if pending_ready(record, "brush", isolate_feature=False)
+            ]
+            if records and not self._brush_has_independent_rule(account_ref):
+                isolated_pending_features.add("brush")
+                if any(bool(record.get("requiresAttention")) for record in records.values()):
+                    isolated_attention_features.add("brush")
+            if not ready:
+                return {}
+            # An old/far-away/uncertain formation cannot pin the queue on
+            # itself. Each record has its own observation/retry deadline.
+            key, _record = min(ready, key=lambda item: (
+                int(item[1].get("nextPollAtMillis") or 0),
+                int(item[1].get("createdAtMillis") or 0),
+                item[0],
+            ))
+            return self._activate_brush_recovery_record(account_ref, key)
 
         def pending_ledger_field(feature: str) -> str:
             field = pending_fields.get(feature)
@@ -17442,7 +18446,14 @@ class CoreFacade:
             pending_before[feature] = deepcopy(pending)
             try:
                 return action()
-            except OperationUncertainError:
+            except OperationUncertainError as error:
+                # An unknown result belongs to this feature, not the account
+                # which happened to host it. Preserve the uncertainty while
+                # allowing unrelated features to run on the next tick.
+                self._record_resident_uncertain_failure(
+                    account_ref, feature, error,
+                    brush_recovery_key=brush_record_key(pending) if feature == "brush" else "",
+                )
                 # The recovery probe itself could not observe state (a parse
                 # or transport failure).  The ledger's mutation is still
                 # unresolved, but probing is read-only, so there is no reason
@@ -17460,6 +18471,7 @@ class CoreFacade:
                     else {}
                 )
                 if current:
+                    current.pop("resourceWait", None)
                     self._save_automation_pending_record(
                         account_ref,
                         field,
@@ -17474,6 +18486,15 @@ class CoreFacade:
                 raise
             except OperationKnownFailureError as error:
                 now_millis = int(self._ports.clock.now_millis())
+                field = pending_ledger_field(feature)
+                current = self._automation_pending_record(
+                    account_ref, field
+                ) if field else {}
+                resource_result = self._defer_resident_resource_failure(
+                    account_ref, feature, error, field, current or pending
+                )
+                if resource_result is not None:
+                    return resource_result
                 retryable = error.code in {
                     "BRUSH_RECOVERY_HEAL_RECONCILE_MISSING",
                     "BRUSH_RECOVERY_HEAL_RECONCILE_REJECTED",
@@ -17521,7 +18542,7 @@ class CoreFacade:
                 if retryable:
                     updated["isolatedUntilMillis"] = retry_at
                 else:
-                    updated["isolatedAtMillis"] = now_millis
+                    updated.setdefault("isolatedAtMillis", now_millis)
                     updated.pop("isolatedUntilMillis", None)
                 if field:
                     self._save_automation_pending_record(
@@ -17604,11 +18625,8 @@ class CoreFacade:
                     ),
                 )
             else:
-                brush_pending = self._automation_pending_record(
-                    account_ref,
-                    "brushPendingRecoveryJson",
-                )
-                if pending_ready(brush_pending, "brush"):
+                brush_pending = select_brush_pending()
+                if brush_pending:
                     selected_pending_feature = "brush"
                     resident_context = dict(
                         brush_pending.get("residentContext") or {}
@@ -18091,6 +19109,19 @@ class CoreFacade:
                 public.get("residentAutomationStateJson")
             )
             started, active_keys = self._resident_started_and_keys(public)
+            brush_records = brush_records_for_scheduling() if "brush" in allowed else {}
+            if "brush" in allowed and brush_records:
+                for record in brush_records.values():
+                    if pending_ready(record, "brush", isolate_feature=False):
+                        pending_wake_deadlines["brush"] = int(self._ports.clock.now_millis())
+                if self._brush_has_independent_rule(account_ref):
+                    isolated_pending_features.discard("brush")
+                    isolated_attention_features.discard("brush")
+                else:
+                    isolated_pending_features.add("brush")
+                result["brushPendingFormationCount"] = len(brush_records)
+            if brush_ledger_error:
+                result["brushLedgerError"] = brush_ledger_error
             raw_allowed = context.get("allowedFeatures")
             if isinstance(raw_allowed, list):
                 allowed = {
@@ -18119,7 +19150,10 @@ class CoreFacade:
             # a side effect of a brush or mine round.  Only accounts that
             # actually use the shared map pay for it, and a failure here can
             # never affect the tick: the mode simply stays whatever it was.
-            if active_keys & {"brushYellow", "mine"}:
+            if (
+                "brushYellow" in active_keys
+                and not self._brush_cloud_fallback(account_ref).get("active")
+            ):
                 try:
                     self._cloud_presence_mode(account_ref)
                 except Exception:
@@ -20151,6 +21185,7 @@ class CoreFacade:
         require_role_level: int | None = None,
         require_full_loyalty: bool = False,
         restore_saved_formation: bool = True,
+        brush_recovery_key: str = "",
     ) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
         raw_ids = body.get("generalIds")
         if not isinstance(raw_ids, list):
@@ -20178,6 +21213,9 @@ class CoreFacade:
                 f"{action_name}编队最多选择{maximum}名将领",
                 code="EXPEDITION_GENERALS_OVER_LIMIT",
             )
+        self._check_brush_general_reservations(
+            account_ref, ids, own_key=brush_recovery_key
+        )
         # A formation whose general was found unable to march - out of
         # stamina with nothing to top it up, or short of the troops its saved
         # 配兵 asks for - is paused as a whole.  Decide that from the ledger,
@@ -20979,29 +22017,44 @@ class CoreFacade:
             bytes.fromhex(state_hex),
             "shared-core/0x1016/0x8004",
         )
-        try:
-            current_copper = max(0, int(role_state.get("copper") or 0))
-            current_food = max(0, int(role_state.get("food") or 0))
-        except (TypeError, ValueError):
-            current_copper = 0
-            current_food = 0
+
+        def balance(key: str) -> Optional[int]:
+            try:
+                value = int(role_state[key])
+                return value if value >= 0 and not role_state.get("parseError") else None
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+
+        current_copper = balance("copper")
+        current_food = balance("food")
+
+        def require_exchange_balances() -> None:
+            # Missing data is not a zero balance, and zero is not permission
+            # to spend. Only a fresh, parsed resource snapshot permits exchange.
+            if current_copper is None or current_food is None:
+                raise OperationKnownFailureError(
+                    "治疗粮食转铜前未能确认铜钱或粮食余额，本次不兑换，稍后重新查询",
+                    code="TROOP_HEAL_RESOURCE_STATE_UNAVAILABLE",
+                    details={"roleState": role_state},
+                )
+
         copper_check: Dict[str, Any] = {
             "enabled": bool(body.get("foodToCopper")),
             "exchanged": False,
             "copper": current_copper,
             "food": current_food,
         }
-        prior_mutation = False
         if bool(body.get("foodToCopper")):
+            require_exchange_balances()
             floor = int(body.get("copperFloorWan") or 1) * 10_000
             copper_check["floor"] = floor
             if current_copper < floor:
                 deficit = floor - current_copper
                 copper_amount = max(3_000, ((deficit + 2_999) // 3_000) * 3_000)
                 food_amount = copper_amount // 3_000 * 10_000
-                if 0 < current_food < food_amount:
+                if current_food < food_amount:
                     raise OperationKnownFailureError(
-                        "治疗伤兵前铜钱低于保底，且粮食不足以完成转换",
+                        "治疗伤兵前铜钱低于保底；粮食转铜未执行，粮食储备不足",
                         code="TROOP_HEAL_COPPER_FLOOR_FOOD_SHORTAGE",
                         details={
                             "copper": current_copper,
@@ -21017,43 +22070,65 @@ class CoreFacade:
                     context,
                     reason="copper-floor",
                 )
-                prior_mutation = True
                 copper_check.update({
                     "exchanged": True,
                     "foodAmount": food_amount,
                     "copperAmount": copper_amount,
                     "exchange": exchange,
                 })
-                current_copper = int(exchange.get("copper") or current_copper)
-                current_food = int(exchange.get("food") or current_food)
+                # A success-only receipt may omit balances. Account for the
+                # confirmed exchange instead of reusing the pre-exchange food.
+                current_copper = int(exchange.get(
+                    "copper", current_copper + copper_amount
+                ))
+                current_food = int(exchange.get(
+                    "food", current_food - food_amount
+                ))
 
         pre_info, heal = self._run_heal_attempt(
             execution,
             account_ref,
             plan,
             context,
-            prior_mutation=prior_mutation,
         )
         recovery: Optional[Dict[str, Any]] = None
-        if not bool(heal.get("success")) and "铜钱不足" in str(
-            heal.get("message") or ""
-        ):
-            food_amount = 100_000
-            copper_amount = 30_000
-            if 0 < current_food < food_amount:
-                raise OperationKnownFailureError(
-                    "治疗伤兵铜钱不足；固定恢复需要100000粮食，"
-                    f"当前只有{current_food}",
-                    code="TROOP_HEAL_RECOVERY_FOOD_SHORTAGE",
-                    details={"healReceipt": heal, "currentFood": current_food},
-                )
-            exchange = self._run_heal_resource_exchange(
-                execution,
-                account_ref,
-                food_amount,
-                context,
-                reason="heal-copper-recovery",
+        if not bool(heal.get("success")) and heal.get("status") == -1:
+            require_exchange_balances()
+            # A fixed 30,000 copper recovery can never heal a larger quoted
+            # wound bill. Cover the observed deficit, then retry healing once.
+            required_copper = max(
+                int(pre_info.get("copperCost") or 0),
+                int(copper_check.get("floor") or 0),
             )
+            food_amount = copper_recovery_food_amount(
+                current_copper, required_copper
+            )
+            copper_amount = food_amount * 3 // 10
+            if current_food < food_amount:
+                raise OperationKnownFailureError(
+                    f"治疗伤兵铜钱不足；粮食转铜需要{food_amount}粮食，"
+                    f"当前只有{current_food}，本次未兑换",
+                    code="TROOP_HEAL_RECOVERY_FOOD_SHORTAGE",
+                    details={
+                        "healReceipt": heal,
+                        "currentFood": current_food,
+                        "requiredFood": food_amount,
+                    },
+                )
+            try:
+                exchange = self._run_heal_resource_exchange(
+                    execution,
+                    account_ref,
+                    food_amount,
+                    context,
+                    reason="heal-copper-recovery",
+                )
+            except OperationKnownFailureError as error:
+                raise OperationKnownFailureError(
+                    f"治疗铜钱不足，粮食转铜失败：{error}",
+                    code=error.code,
+                    details={**error.details, "healReceipt": heal},
+                ) from error
             recovery = {
                 "attempted": True,
                 "foodAmount": food_amount,
@@ -21066,12 +22141,18 @@ class CoreFacade:
                 account_ref,
                 plan,
                 context,
-                prior_mutation=True,
             )
         if not bool(heal.get("success")):
+            shortage = heal.get("status") == -1
+            message = str(heal.get("message") or "服务器未确认治疗成功")
+            if recovery is not None:
+                message = (
+                    f"已尝试粮食转铜（{food_amount}粮食兑换{copper_amount}铜钱），"
+                    f"重试治疗仍失败：{message}"
+                )
             raise OperationKnownFailureError(
-                str(heal.get("message") or "服务器未确认治疗成功"),
-                code="TROOP_HEAL_REJECTED",
+                message,
+                code="TROOP_HEAL_COPPER_SHORTAGE" if shortage else "TROOP_HEAL_REJECTED",
                 details={
                     "plan": plan,
                     "preInfo": pre_info,
@@ -21083,7 +22164,7 @@ class CoreFacade:
         message = str(heal.get("message") or "治疗成功")
         if recovery is not None:
             message = (
-                "治疗铜钱不足，已固定兑换100000粮食后重试成功"
+                f"治疗铜钱不足，已兑换{food_amount}粮食后重试成功"
             )
         return {
             "ok": True,
@@ -21110,10 +22191,12 @@ class CoreFacade:
         reason: str,
     ) -> Dict[str, Any]:
         execution.raise_if_cancelled()
+        exchange_key = uuid4().hex
         execution.mark_request_sent({
             "transport": "android-raw-game-command",
             "feature": "troop-heal-resource-exchange",
             "reason": reason,
+            "exchangeKey": exchange_key,
             "opcode": "0x1152",
             "foodAmount": int(food_amount),
             "expectedCopper": int(food_amount) * 3 // 10,
@@ -21143,9 +22226,23 @@ class CoreFacade:
                 code="TROOP_HEAL_RESOURCE_EXCHANGE_REJECTED",
                 details={"receipt": parsed},
             )
+        # The exchange is already a confirmed fact even if the subsequent
+        # building/heal action fails, so record it at this receipt boundary.
+        self._append_success_record(
+            account_ref,
+            food_to_copper_success_record(
+                parsed,
+                food_amount=int(food_amount),
+                exchange_key=exchange_key,
+                operation_id=execution.operation_id,
+                reason=reason,
+                now_millis=int(self._ports.clock.now_millis()),
+            ),
+        )
         return {
             **parsed,
             "direction": "food-to-copper",
+            "exchangeKey": exchange_key,
             "foodAmount": int(food_amount),
             "expectedCopper": int(food_amount) * 3 // 10,
         }
@@ -21156,8 +22253,6 @@ class CoreFacade:
         account_ref: str,
         plan: Dict[str, Any],
         context: Dict[str, Any],
-        *,
-        prior_mutation: bool,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         pre_payload = bytes.fromhex(str(plan["preInfoPayloadHex"]))
         heal_payload = bytes.fromhex(str(plan["healPayloadHex"]))
@@ -21168,13 +22263,13 @@ class CoreFacade:
             pre_payload,
             "shared-core/troops/heal/pre-info",
             {**context, "operationId": execution.operation_id},
-            mutation_sent=prior_mutation,
+            mutation_sent=False,
         )
         pre_response = self._game_packet(pre_fact, 0x8231)
         if pre_response is None:
             message = "治疗预估未收到 0x8231 回执"
-            if prior_mutation:
-                raise OperationUncertainError(message)
+            # A confirmed earlier exchange does not make this read-only
+            # failure an unknown mutation. Its own success receipt is durable.
             raise OperationKnownFailureError(
                 message,
                 code="TROOP_HEAL_PREINFO_MISSING",
@@ -21280,6 +22375,8 @@ class CoreFacade:
         ) -> Dict[str, Any]:
             body = dict(persisted.get("body") or {})
             context = dict(persisted.get("requestContext") or {})
+            if path not in {"/api/accounts/start", "/api/accounts/add"}:
+                self._require_membership()
             return handler(body, context, execution)
 
         self._operations.register_runner(
@@ -21419,6 +22516,11 @@ class CoreFacade:
                 and context.get("operatorReconcileFeatures")
             ),
             defer_until_ready=True,
+            result_retention_key=(
+                f"android-resident:{normalized_ref}"
+                if context.get("source") == "android-resident-scheduler"
+                else None
+            ),
         )
 
     def submit_automation_recovery_tick_json(
@@ -22290,8 +23392,22 @@ class CoreFacade:
         else:
             operation = self._operations.status(operation_id)
         if operation is None:
-            return {"ok": False, "error": "operation not found"}
+            return {
+                "ok": False,
+                "error": "operation not found",
+                "errorCode": "OPERATION_NOT_FOUND",
+            }
         return {"ok": True, "operation": operation}
+
+    def acknowledge_resident_operation_json(
+        self, account_ref: str, operation_id: str
+    ) -> str:
+        acknowledged = self._operations.acknowledge_result(
+            operation_id,
+            account_ref=str(account_ref),
+            retention_key=f"android-resident:{account_ref}",
+        )
+        return self._json({"ok": True, "acknowledged": acknowledged})
 
     def operation_status_json(
         self,
@@ -23095,6 +24211,8 @@ class CoreFacade:
                 feature_state["nextWakeAtMillis"] = int(
                     self._ports.clock.now_millis()
                 )
+                feature_state["continuationPending"] = True
+                feature_state["cycleFinished"] = False
                 feature_state["lastMessage"] = (
                     f"{feature_state.get('lastMessage') or ''}"
                     "（背包又有新物品，提前重新检查）"
@@ -23564,6 +24682,7 @@ class CoreFacade:
         *,
         mutation_sent: bool,
     ) -> Dict[str, Any]:
+        self._require_game_membership(account_ref, int(opcode), bytes(payload), context)
         if (
             self._ports.raw_http is not None
             and self._ports.session_secrets is not None
@@ -23794,6 +24913,8 @@ class CoreFacade:
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Send one exact multi-command game packet through the byte host."""
+        for opcode, payload in commands:
+            self._require_game_membership(account_ref, int(opcode), bytes(payload), context)
 
         normalized_commands = [
             (int(opcode), bytes(payload))
@@ -24065,7 +25186,9 @@ class CoreFacade:
             payload,
             "shared-core/0x1104/0x8104",
         )
-        parse_error = str(inventory.get("parseError") or "").strip()
+        parse_error = str(
+            inventory.get("parseError") or inventory.get("equipmentParseError") or ""
+        ).strip()
         if parse_error:
             raise OperationKnownFailureError(
                 f"背包 0x8104 解析失败：{parse_error}",
@@ -24372,6 +25495,237 @@ class CoreFacade:
             daemon=True,
         ).start()
 
+    def _cached_cloud_runtime_config(self, account_ref: str) -> Dict[str, Any]:
+        account = self._accounts.get(str(account_ref)) or {}
+        public = (account.get("session") or {}).get("publicState") or {}
+        return self._public_json_object(public.get("cloudRuntimeConfigJson"))
+
+    def _accept_cloud_runtime_config(self, account_ref: str, raw: Any) -> Dict[str, Any]:
+        if not isinstance(raw, dict) or raw.get("schemaVersion") != 1 or type(raw.get("cloudBrushMapEnabled")) is not bool:
+            raise ValueError("云端运行配置格式无效")
+        revision = raw.get("revision")
+        if type(revision) is not int or revision < 0:
+            raise ValueError("云端配置版本无效")
+        previous = self._cached_cloud_runtime_config(account_ref)
+        if revision < int(previous.get("revision") or 0):
+            raise ValueError("拒绝过期的云端配置")
+        value = {"schemaVersion": 1, "cloudBrushMapEnabled": raw["cloudBrushMapEnabled"],
+                 "revision": revision, "updatedAtMillis": int(raw.get("updatedAtMillis") or 0),
+                 "fetchedAtMillis": int(self._ports.clock.now_millis()), "source": "cloud"}
+        self._update_account_public_state(str(account_ref), {"cloudRuntimeConfigJson": self._json(value)})
+        # A new enable decision deserves an immediate probe, not yesterday's
+        # quota cooldown. This changes no pending expedition or map outbox.
+        if value["cloudBrushMapEnabled"] and previous.get("cloudBrushMapEnabled") is False:
+            fallback = self._brush_cloud_fallback(account_ref)
+            if fallback:
+                fallback["nextProbeAtMillis"] = 0
+                self._update_account_public_state(account_ref, {"brushCloudFallbackJson": self._json(fallback)})
+        return value
+
+    def refresh_cloud_runtime_config(self, account_ref: str, *, force: bool = False) -> Dict[str, Any]:
+        """One bounded read per account start; never block local play on config I/O."""
+        account_ref = str(account_ref)
+        if self._accounts.get(account_ref) is None:
+            return {"schemaVersion": 1, "cloudBrushMapEnabled": False, "source": "local-default"}
+        with self._cloud_mode_lock:
+            lock = self._cloud_config_locks.setdefault(account_ref, threading.RLock())
+        with lock:
+            if not force and account_ref in self._cloud_config_loaded:
+                return self._cached_cloud_runtime_config(account_ref)
+            previous = self._cached_cloud_runtime_config(account_ref)
+            now = int(self._ports.clock.now_millis())
+            try:
+                port = self._ports.cloud_shared_data
+                if port is None or not port.configured():
+                    raise ValueError("共享云端数据未配置")
+                response = port.exchange({"method": "POST", "path": "/v1/client/config", "body": {}})
+                if not 200 <= int(response.get("status") or 0) < 300 or response.get("body", {}).get("ok") is not True:
+                    raise ValueError("云端运行配置读取失败")
+                result = self._accept_cloud_runtime_config(account_ref, response["body"].get("config"))
+            except Exception:
+                result = {**previous, "schemaVersion": 1,
+                          "cloudBrushMapEnabled": previous.get("cloudBrushMapEnabled") is True,
+                          "source": "cached" if "revision" in previous else "local-default",
+                          "lastAttemptAtMillis": now, "lastFetchSucceeded": False}
+                self._update_account_public_state(account_ref, {"cloudRuntimeConfigJson": self._json(result)})
+            self._cloud_config_loaded.add(account_ref)
+            return result
+
+    def _cloud_brush_map_enabled(self, account_ref: str) -> bool:
+        return self.refresh_cloud_runtime_config(str(account_ref)).get("cloudBrushMapEnabled") is True
+
+    def _brush_cloud_fallback(self, account_ref: str) -> Dict[str, Any]:
+        account = self._accounts.get(str(account_ref))
+        if account is None:
+            return {}
+        public = (account.get("session") or {}).get("publicState") or {}
+        value = self._public_json_object(
+            public.get("brushCloudFallbackJson")
+        )
+        scope = list(self._brush_map_scope(account))
+        return value if value.get("scope") == scope else {}
+
+    def _brush_cloud_attempt(self, account_ref: str) -> Dict[str, Any]:
+        attempt = getattr(self._brush_cloud_work, "attempt", None)
+        return attempt if attempt and attempt.get("accountRef") == str(account_ref) else {}
+
+    def _log_brush_map_route(self, account_ref: str, level: str, message: str) -> None:
+        try:
+            self._ports.logs.write({
+                "level": level, "source": "cloud-shared-data",
+                "accountRef": str(account_ref), "message": message,
+            })
+        except Exception:
+            pass  # A report must not prevent local dispatch or invalidate a receipt.
+
+    def _record_brush_cloud_failure(
+        self, account_ref: str, error: OperationKnownFailureError
+    ) -> None:
+        """Persist routing, not a pretend LOCAL_ONLY presence verdict."""
+        now = int(self._ports.clock.now_millis())
+        previous = self._brush_cloud_fallback(account_ref)
+        interval = 300_000 if error.code == "CLOUD_D1_DAILY_LIMIT" else 60_000
+        retry_at = int(error.details.get("retryAtMillis") or 0)
+        next_probe = now + interval
+        if retry_at > now:
+            next_probe = min(next_probe, retry_at)
+        value = {
+            "scope": list(self._brush_map_scope(self._accounts.get(str(account_ref)) or {})),
+            "active": True,
+            "sinceMillis": int(previous.get("sinceMillis") or now) if previous.get("active") else now,
+            "failureAtMillis": now,
+            "failureCode": str(error.code),
+            "failurePath": str(error.details.get("dependencyPath") or "/v1/presence/heartbeat"),
+            "reason": (
+                "云端地图今日额度耗尽" if error.code == "CLOUD_D1_DAILY_LIMIT"
+                else "云端地图暂不可用"
+            ),
+            "nextProbeAtMillis": next_probe,
+            "probeIntervalMillis": interval,
+        }
+        self._update_account_public_state(account_ref, {
+            "brushCloudFallbackJson": self._json(value),
+        })
+        attempt = self._brush_cloud_attempt(account_ref)
+        if attempt:
+            attempt["failure"] = error
+        if not previous.get("active"):
+            self._log_brush_map_route(
+                account_ref, "warn",
+                f"{value['reason']}，刷黄改用本地山贼地图；云端探测限频，不等待云端恢复",
+            )
+
+    def _raise_brush_cloud_attempt_failure(self, account_ref: str) -> None:
+        attempt = self._brush_cloud_attempt(account_ref)
+        if attempt.get("mode") == "CLOUD_SHARED" and attempt.get("failure") is not None:
+            raise attempt["failure"]
+
+    def _confirm_brush_cloud_writable(self, account_ref: str) -> None:
+        """Only reserve + dispatching acknowledgements prove coordination works."""
+        value = self._brush_cloud_fallback(account_ref)
+        if not value.get("active"):
+            return
+        value.update({
+            "active": False,
+            "recoveredAtMillis": int(self._ports.clock.now_millis()),
+            "recoveryEvidence": "reserve-and-dispatching",
+        })
+        self._update_account_public_state(account_ref, {
+            "brushCloudFallbackJson": self._json(value),
+        })
+        self._log_brush_map_route(
+            account_ref, "info", "云端预占及出征占用均确认成功，刷黄恢复共享协调"
+        )
+
+    def _run_brush_with_map_route(
+        self, account_ref: str,
+        run: Callable[[str, Dict[str, Any]], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """At most one read-only retry locally; never replay a game mutation."""
+        previous_attempt = getattr(self._brush_cloud_work, "attempt", None)
+        attempt: Dict[str, Any] = {
+            "accountRef": str(account_ref), "mode": "LOCAL_ONLY",
+            "gameWorkStarted": False, "failure": None,
+        }
+        self._brush_cloud_work.attempt = attempt
+        try:
+            fallback = self._brush_cloud_fallback(account_ref)
+            now = int(self._ports.clock.now_millis())
+            if not self._cloud_brush_map_enabled(account_ref):
+                mode = "LOCAL_ONLY"
+            elif fallback.get("active") and now < int(fallback.get("nextProbeAtMillis") or 0):
+                mode = "LOCAL_FALLBACK"
+            else:
+                if fallback.get("active"):
+                    # Reserve a probe slot even if this probe has no candidate
+                    # or encounters normal competition. Do not probe per team.
+                    fallback["nextProbeAtMillis"] = now + int(
+                        fallback.get("probeIntervalMillis") or 60_000
+                    )
+                    self._update_account_public_state(account_ref, {
+                        "brushCloudFallbackJson": self._json(fallback),
+                    })
+                presence = (
+                    self._cloud_presence_mode(account_ref, force=True)
+                    if fallback.get("active") else self._cloud_presence_mode(account_ref)
+                )
+                mode = str(presence.get("mode") or "LOCAL_ONLY")
+                if mode == "CLOUD_UNAVAILABLE" or presence.get("heartbeatUnavailable"):
+                    error = OperationKnownFailureError(
+                        "云端心跳不可用，刷黄使用本地地图",
+                        code=str(presence.get("errorCode") or "CLOUD_SHARED_DATA_UNAVAILABLE"),
+                        details={
+                            **self._cloud_dependency_failure_details(
+                                account_ref, "/v1/presence/heartbeat", presence
+                            ),
+                            "retryAtMillis": int(presence.get("retryAtMillis") or 0),
+                        },
+                    )
+                    self._record_brush_cloud_failure(account_ref, error)
+                    mode = "LOCAL_FALLBACK"
+            attempt.update(mode=mode, failure=None)
+            for _ in range(2):
+                try:
+                    result = run(mode, attempt)
+                    if not attempt["gameWorkStarted"]:
+                        self._raise_brush_cloud_attempt_failure(account_ref)
+                except OperationKnownFailureError as error:
+                    if (
+                        mode == "CLOUD_SHARED" and not attempt["gameWorkStarted"]
+                        and (
+                            error.details.get("dependency") == "cloud-map"
+                            or error.code in {"CLOUD_SHARED_MODE_CHANGED", "CLOUD_BRUSH_MAP_DISABLED"}
+                        )
+                    ):
+                        if error.code in {"CLOUD_SHARED_MODE_CHANGED", "CLOUD_BRUSH_MAP_DISABLED"}:
+                            mode = "LOCAL_ONLY"
+                        else:
+                            if attempt.get("failure") is not error:
+                                self._record_brush_cloud_failure(account_ref, error)
+                            mode = "LOCAL_FALLBACK"
+                        attempt.update(mode=mode, failure=None)
+                        continue
+                    if mode == "LOCAL_FALLBACK":
+                        error.details["mapMode"] = mode
+                    raise
+                routed = {**result, "mapMode": mode}
+                if not self._cloud_brush_map_enabled(account_ref):
+                    routed.update(cloudSharedMap=False, cloudBrushMapEnabled=False, cloudNextProbeAtMillis=0)
+                    routed["mapPolicySource"] = self._cached_cloud_runtime_config(account_ref).get("source")
+                if mode == "LOCAL_FALLBACK":
+                    fallback = self._brush_cloud_fallback(account_ref)
+                    routed.update({
+                        "cloudSharedMap": False,
+                        "cloudNextProbeAtMillis": int(fallback.get("nextProbeAtMillis") or 0),
+                        "mapFallbackReason": str(fallback.get("reason") or "云端暂不可用"),
+                    })
+                    if "message" in result:
+                        routed["message"] = "云端不可用，使用本地地图继续刷黄；" + str(result["message"])
+                return routed
+            raise AssertionError("brush map routing exceeded its single fallback")
+        finally:
+            self._brush_cloud_work.attempt = previous_attempt
+
     def _cloud_identity_gap(self, account_ref: str) -> str:
         """Name the single missing fact, so the report is actionable."""
 
@@ -24412,6 +25766,14 @@ class CoreFacade:
         with self._cloud_mode_lock:
             previous = dict(self._cloud_modes.get(str(account_ref)) or {})
             self._cloud_modes[str(account_ref)] = normalized
+        identity = self._cloud_shared_identity(account_ref)
+        if identity is not None:
+            # A process restart is not evidence that same-server peers left.
+            self._update_account_public_state(account_ref, {
+                "cloudMapPresenceJson": self._json({
+                    **normalized, "serverKey": identity["serverKey"],
+                }),
+            })
         # This decision sets how a same-server account finds its targets, yet
         # it lived only in memory and was never reported.  Two accounts on one
         # server rediscovered the identical map from zero - one held 218 cached
@@ -24452,6 +25814,9 @@ class CoreFacade:
         """Heartbeat is the sole cloud call made while a server has one actor."""
 
         now_millis = int(self._ports.clock.now_millis())
+        if not self._cloud_brush_map_enabled(account_ref):
+            return {"mode": "LOCAL_ONLY", "cloudBrushMapEnabled": False,
+                    "checkedAtMillis": now_millis, "onlineAccountCount": 0}
         identity = self._cloud_shared_identity(account_ref)
         if identity is None:
             # This returned without recording anything, so "the host has no
@@ -24465,6 +25830,12 @@ class CoreFacade:
             })
         with self._cloud_mode_lock:
             previous = dict(self._cloud_modes.get(str(account_ref)) or {})
+        if not previous:
+            stored = self._public_json_object(
+                self._account_public_state(account_ref).get("cloudMapPresenceJson")
+            )
+            if stored.get("serverKey") == identity["serverKey"]:
+                previous = stored
         if (
             not force
             and previous
@@ -24472,6 +25843,8 @@ class CoreFacade:
             < CLOUD_PRESENCE_RENEW_MILLIS
         ):
             return previous
+        failure_code = ""
+        failure_retry_at = 0
         try:
             status, payload = self._cloud_shared_exchange(
                 account_ref,
@@ -24482,10 +25855,19 @@ class CoreFacade:
             if status != 200 or payload.get("ok") is not True or mode not in {
                 "LOCAL_ONLY", "CLOUD_SHARED",
             }:
+                failure_code = str(payload.get("code") or "")
+                failure_retry_at = int(payload.get("retryAtMillis") or 0)
                 raise RuntimeError(
                     str(payload.get("error") or f"HTTP {status}")
                 )
+            if isinstance(payload.get("config"), dict):
+                config = self._accept_cloud_runtime_config(account_ref, payload["config"])
+                if config["cloudBrushMapEnabled"] is False:
+                    return {"mode": "LOCAL_ONLY", "cloudBrushMapEnabled": False,
+                            "checkedAtMillis": now_millis, "onlineAccountCount": 0}
             online = max(0, int(payload.get("onlineAccountCount") or 0))
+            with self._cloud_mode_lock:
+                self._cloud_successes[(str(account_ref), "/v1/presence/heartbeat")] = now_millis
             # Presence is a statement about *recency*, so one reading of "one
             # actor" is not proof the peer left - it may simply be mid-battle
             # and a moment late renewing.  Hold shared mode for a grace window
@@ -24494,15 +25876,17 @@ class CoreFacade:
             # brush round each time it flipped.  A peer that really is gone is
             # still corrected: the Worker answers a map query with 409 and the
             # mode drops immediately.
-            if mode == "LOCAL_ONLY" and str(
-                previous.get("mode") or ""
-            ) == "CLOUD_SHARED":
+            if mode == "LOCAL_ONLY" and (
+                str(previous.get("mode") or "") == "CLOUD_SHARED"
+                or previous.get("previouslyShared") is True
+            ):
                 last_shared = int(previous.get("sharedSeenAtMillis") or 0)
                 if last_shared > 0 and (
                     now_millis - last_shared < CLOUD_PRESENCE_GRACE_MILLIS
                 ):
                     return self._remember_cloud_mode(account_ref, {
-                        **previous,
+                        **{key: value for key, value in previous.items()
+                           if key not in {"error", "heartbeatUnavailable", "previouslyShared"}},
                         "mode": "CLOUD_SHARED",
                         "onlineAccountCount": online,
                         "sharedHeldByGrace": True,
@@ -24531,18 +25915,28 @@ class CoreFacade:
                 "accountRef": str(account_ref),
                 "message": f"共享云端数据心跳失败：{error}",
             })
-            if str(previous.get("mode") or "") == "CLOUD_SHARED":
+            with self._cloud_mode_lock:
+                self._cloud_successes.pop((str(account_ref), "/v1/presence/heartbeat"), None)
+            if (
+                str(previous.get("mode") or "") in {"CLOUD_SHARED", "CLOUD_UNAVAILABLE"}
+                or previous.get("previouslyShared") is True
+            ):
                 return self._remember_cloud_mode(account_ref, {
+                    **previous,
                     "mode": "CLOUD_UNAVAILABLE",
                     "configured": True,
                     "previouslyShared": True,
                     "error": str(error),
+                    "errorCode": failure_code,
+                    "retryAtMillis": failure_retry_at,
                 })
             return self._remember_cloud_mode(account_ref, {
                 "mode": "LOCAL_ONLY",
                 "configured": True,
                 "onlineAccountCount": 1,
                 "heartbeatUnavailable": True,
+                "errorCode": failure_code,
+                "retryAtMillis": failure_retry_at,
             })
 
     def cloud_presence_heartbeat(self, account_ref: str) -> Dict[str, Any]:
@@ -24559,17 +25953,23 @@ class CoreFacade:
         Hosts used to maintain their own background bandit/mine scanners.  The
         scanners are still required for exact one-account compatibility, but
         they must never race the cloud lease/reservation workflow.  Keeping
-        this decision in the shared core also preserves the outage rule: once
-        an account has observed ``CLOUD_SHARED``, a cloud failure pauses map
-        work instead of silently falling back to local target selection.
+        Bandit fallback is separate from presence and from the mine policy.
         """
 
         presence = self._cloud_presence_mode(str(account_ref))
         mode = str(presence.get("mode") or "LOCAL_ONLY")
+        bandit_mode = (
+            "LOCAL_FALLBACK"
+            if self._brush_cloud_fallback(account_ref).get("active")
+            or mode == "CLOUD_UNAVAILABLE" or presence.get("heartbeatUnavailable")
+            else mode
+        )
         return {
             **presence,
             "mode": mode,
             "legacyLocalMapPrefetchAllowed": mode == "LOCAL_ONLY",
+            "banditMapMode": bandit_mode,
+            "legacyLocalBanditMapPrefetchAllowed": bandit_mode != "CLOUD_SHARED",
         }
 
     def cloud_prepare_host_target_dispatch(
@@ -24590,11 +25990,25 @@ class CoreFacade:
         normalized_kind = str(map_kind or "").strip().lower()
         if normalized_kind not in {"bandit", "mine"}:
             raise ValueError("共享地图目标类型无效")
+        if normalized_kind == "bandit":
+            return self._run_brush_with_map_route(
+                str(account_ref),
+                lambda mode, _attempt: self._prepare_host_map_target(
+                    str(account_ref), normalized_kind, target, mode
+                ),
+            )
         mode = self._cloud_map_action_mode(
             str(account_ref),
             "目标出征",
         )
+        return self._prepare_host_map_target(str(account_ref), normalized_kind, target, mode)
+
+    def _prepare_host_map_target(
+        self, account_ref: str, normalized_kind: str, target: Dict[str, Any], mode: str
+    ) -> Dict[str, Any]:
         if mode != "CLOUD_SHARED":
+            if normalized_kind == "bandit":
+                self._require_local_brush_target(target, mode)
             return {
                 "mode": mode,
                 "reserved": False,
@@ -24628,6 +26042,8 @@ class CoreFacade:
                 "reservationToken": "",
                 "reason": "目标预占在出征前已失效",
             }
+        if normalized_kind == "bandit":
+            self._confirm_brush_cloud_writable(account_ref)
         return {
             "mode": mode,
             "reserved": True,
@@ -24668,6 +26084,9 @@ class CoreFacade:
         """Keep game heartbeats non-blocking even if Cloudflare is degraded."""
 
         normalized_ref = str(account_ref)
+        _started, active_keys = self._resident_started_and_keys(self._account_public_state(normalized_ref))
+        if "mine" in active_keys and "brushYellow" not in active_keys:
+            return
         if self._cloud_shared_identity(normalized_ref) is None:
             return
         with self._cloud_mode_lock:
@@ -24691,25 +26110,79 @@ class CoreFacade:
     def cloud_presence_heartbeat_json(self, account_ref: str) -> str:
         return self._json(self.cloud_presence_heartbeat(account_ref))
 
+    def _cloud_dependency_failure_details(
+        self, account_ref: str, path: str,
+        presence: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        with self._cloud_mode_lock:
+            self._cloud_successes.pop((str(account_ref), str(path)), None)
+        result: Dict[str, Any] = {
+            "dependency": "cloud-map", "dependencyPath": str(path),
+        }
+        if presence is not None:
+            result["retryAtMillis"] = (
+                int(presence.get("checkedAtMillis") or 0) + CLOUD_PRESENCE_RENEW_MILLIS
+            )
+        return result
+
     def _cloud_map_exchange(
         self,
         account_ref: str,
         path: str,
         body: Dict[str, Any],
     ) -> Dict[str, Any]:
+        bandit = body.get("mapKind") == "bandit"
+        if bandit:
+            if not self._cloud_brush_map_enabled(account_ref):
+                raise OperationKnownFailureError("云端刷黄地图已关闭，使用手机本地地图",
+                                                  code="CLOUD_BRUSH_MAP_DISABLED")
+            self._raise_brush_cloud_attempt_failure(account_ref)
+            attempt = self._brush_cloud_attempt(account_ref)
+            if (
+                self._brush_cloud_fallback(account_ref).get("active")
+                and attempt.get("mode") != "CLOUD_SHARED"
+            ):
+                raise OperationKnownFailureError(
+                    "刷黄正在使用本地地图，云端探测尚未到期",
+                    code="CLOUD_SHARED_DATA_UNAVAILABLE",
+                    details={"dependency": "cloud-map", "dependencyPath": path, "circuitOpen": True},
+                )
+
+        def failure(message: str, code: str, details: Dict[str, Any]) -> OperationKnownFailureError:
+            error = OperationKnownFailureError(message, code=code, details=details)
+            if bandit and details.get("dependency") == "cloud-map":
+                self._record_brush_cloud_failure(account_ref, error)
+            elif bandit and code in {"CLOUD_SHARED_MODE_CHANGED", "CLOUD_BRUSH_MAP_DISABLED"}:
+                attempt = self._brush_cloud_attempt(account_ref)
+                if attempt:
+                    attempt["failure"] = error
+            return error
+
         try:
             status, payload = self._cloud_shared_exchange(
                 account_ref, path, body
             )
         except Exception as error:
-            raise OperationKnownFailureError(
+            raise failure(
                 f"共享地图暂时不可用：{error}",
-                code="CLOUD_SHARED_DATA_UNAVAILABLE",
+                "CLOUD_SHARED_DATA_UNAVAILABLE",
+                self._cloud_dependency_failure_details(account_ref, path),
             ) from error
         code = str(payload.get("code") or "")
-        if status == 409 and code in {
-            "SHARED_MODE_INACTIVE", "PRESENCE_REQUIRED",
-        }:
+        if status == 409 and code == "CLOUD_BRUSH_MAP_DISABLED":
+            config = payload.get("config")
+            if isinstance(config, dict) and config.get("cloudBrushMapEnabled") is False:
+                self._accept_cloud_runtime_config(account_ref, config)
+            raise failure("管理员已关闭云端刷黄地图，使用手机本地地图", code, {})
+        if status == 409 and code == "PRESENCE_REQUIRED":
+            # Our heartbeat lease is missing, not proof that peers left.
+            # Brush may use its explicit fallback; mine still fails closed.
+            raise failure(
+                "共享地图要求续约在线状态",
+                "CLOUD_SHARED_DATA_UNAVAILABLE",
+                self._cloud_dependency_failure_details(account_ref, path),
+            )
+        if status == 409 and code == "SHARED_MODE_INACTIVE":
             self._remember_cloud_mode(account_ref, {
                 "mode": "LOCAL_ONLY",
                 "configured": True,
@@ -24717,15 +26190,25 @@ class CoreFacade:
                     payload.get("onlineAccountCount") or 1
                 ),
             })
-            raise OperationKnownFailureError(
+            raise failure(
                 "共享地图在线人数发生变化，本轮已安全延后",
-                code="CLOUD_SHARED_MODE_CHANGED",
+                "CLOUD_SHARED_MODE_CHANGED", {},
             )
         if not 200 <= status < 300 or payload.get("ok") is False:
-            raise OperationKnownFailureError(
+            raise failure(
                 str(payload.get("error") or f"共享地图 HTTP {status}"),
-                code=code or "CLOUD_SHARED_DATA_REJECTED",
+                code or "CLOUD_SHARED_DATA_REJECTED",
+                (
+                    {
+                        **self._cloud_dependency_failure_details(account_ref, path),
+                        "retryAtMillis": int(payload.get("retryAtMillis") or 0),
+                    }
+                    if status >= 500 or status in {401, 403, 408, 429}
+                    else {}
+                ),
             )
+        with self._cloud_mode_lock:
+            self._cloud_successes[(str(account_ref), str(path))] = int(self._ports.clock.now_millis())
         return payload
 
     @staticmethod
@@ -24901,6 +26384,8 @@ class CoreFacade:
         with self._cloud_mode_lock:
             replica = self._cloud_map_replicas.get(replica_key)
         if replica is not None:
+            if normalized_kind == "bandit":
+                self._protect_brush_replica_consumed(account_ref, replica)
             return replica
         data_directory: Optional[Path] = None
         port = self._ports.data_directory
@@ -24943,7 +26428,17 @@ class CoreFacade:
             existing = self._cloud_map_replicas.setdefault(
                 replica_key, replica
             )
+        if normalized_kind == "bandit":
+            self._protect_brush_replica_consumed(account_ref, existing)
         return existing
+
+    def _protect_brush_replica_consumed(
+        self, account_ref: str, replica: CloudMapReplicaStore
+    ) -> None:
+        _occupied, consumed = self._same_device_brush_targets(account_ref)
+        replica.record_consumed_targets({
+            f"{int(target_id):016x}": seen_at for target_id, seen_at in consumed.items()
+        })
 
     def _cloud_map_view(
         self,
@@ -25031,14 +26526,22 @@ class CoreFacade:
                     int(view["centerY"]),
                     int(view["radius"]),
                 )
-            if replica.ensure_fresh():
+            fresh = replica.ensure_fresh()
+            if map_kind == "bandit":
+                # Replica reads deliberately tolerate transport errors. The
+                # brush router must see those soft failures before dispatch.
+                self._raise_brush_cloud_attempt_failure(account_ref)
+            if fresh:
                 result: list[Dict[str, Any]] = []
                 for row in replica.candidate_targets():
                     target = self._cloud_target_from_row(map_kind, row)
                     if target is not None:
                         result.append(target)
                 return dedupe_targets(result)
-        return self._cloud_query_map_targets(account_ref, map_kind)
+        return [
+            target for target in self._cloud_query_map_targets(account_ref, map_kind)
+            if replica is None or replica.candidate_eligible(self._cloud_target_id(target))
+        ]
 
     def _cloud_shard_scan_space(
         self,
@@ -25138,6 +26641,8 @@ class CoreFacade:
         map_kind: str,
         scan_results: list[Dict[str, Any]],
         lease_tokens: Dict[tuple[int, int], str],
+        *,
+        queue_only: bool = False,
     ) -> None:
         """Publish scan observations; v2 走副本比对 + 事件上报，失败回退 v1。
 
@@ -25148,13 +26653,34 @@ class CoreFacade:
         中"新核心 + 旧 Worker"也能工作。
         """
 
+        if map_kind == "bandit" and not self._cloud_brush_map_enabled(account_ref):
+            return  # The game scan already saved local observations; no upload queue.
         replica = self._cloud_map_replica(account_ref, map_kind)
-        if replica is None or not replica.full_sync_done:
+        if map_kind == "bandit":
+            attempt = self._brush_cloud_attempt(account_ref)
+            queue_only = queue_only or (
+                bool(self._brush_cloud_fallback(account_ref).get("active"))
+                and (
+                    attempt.get("mode") != "CLOUD_SHARED"
+                    or attempt.get("failure") is not None
+                )
+            )
+        if replica is None:
+            if queue_only:
+                return
+            self._cloud_publish_map_observations_legacy(
+                account_ref, map_kind, scan_results, lease_tokens
+            )
+            return
+        if not replica.full_sync_done and not queue_only:
             self._cloud_publish_map_observations_legacy(
                 account_ref, map_kind, scan_results, lease_tokens
             )
             return
         now_millis = int(self._ports.clock.now_millis())
+        protected_target_ids = {
+            f"{value:016x}" for value in self._same_device_brush_targets(account_ref)[0]
+        } if map_kind == "bandit" else set()
         for result in scan_results:
             coord = result.get("scanCoord")
             if not isinstance(coord, (list, tuple)) or len(coord) < 2:
@@ -25167,8 +26693,14 @@ class CoreFacade:
                 target = self._cloud_target_observation(map_kind, value)
                 if target is not None:
                     targets.append(target)
-            replica.apply_scan_observation(x, y, targets, now_millis)
-        replica.flush_uploads()
+            replica.apply_scan_observation(
+                x, y, targets, now_millis,
+                protected_target_ids=protected_target_ids,
+            )
+        if not queue_only:
+            replica.flush_uploads()
+            if map_kind == "bandit":
+                self._raise_brush_cloud_attempt_failure(account_ref)
 
     def _cloud_publish_map_observations_legacy(
         self,
@@ -25212,36 +26744,57 @@ class CoreFacade:
         target_id = self._cloud_target_id(target)
         if not target_id:
             return None
+        replica = self._cloud_map_replica(account_ref, map_kind)
+        if replica is not None and not replica.candidate_eligible(target_id):
+            return None
         payload = self._cloud_map_exchange(
             account_ref,
             "/v1/maps/targets/reserve",
             {"mapKind": str(map_kind), "targetId": target_id},
         )
         if payload.get("reserved") is not True:
-            if str(payload.get("reason") or "") == "unknown-target":
-                # The cloud has no row for a target the replica believes in -
-                # the legacy orphan sweep used to hard-delete v2 uploads, and
-                # a hard delete leaves no tombstone for the changes feed.
-                # The replica is then the only copy of that truth, so
-                # re-publish it; without this the phantom fails every
-                # reservation until its local TTL, and the account never
-                # rescans because candidates exist.
-                replica = self._cloud_map_replica(account_ref, map_kind)
+            reason = str(payload.get("reason") or "unavailable")
+            if replica is not None:
+                replica.defer_candidate(
+                    target_id, reason,
+                    retry_at_millis=max(
+                        int(payload.get("leaseUntilMillis") or 0),
+                        int(payload.get("retryAfterMillis") or 0),
+                    ),
+                )
+            if reason == "unknown-target":
+                # Preserve and repair the old observation, but do not let it
+                # suppress new scans while publication remains unconfirmed.
                 if replica is not None and replica.requeue_upload(target_id):
-                    replica.flush_uploads()
+                    uploaded = replica.flush_uploads()
+                    if map_kind == "bandit":
+                        self._raise_brush_cloud_attempt_failure(account_ref)
+                    acknowledged = uploaded and not replica.upload_pending(target_id)
                     self._ports.logs.write({
-                        "level": "info",
+                        "level": "info" if acknowledged else "warn",
                         "source": "cloud-shared-data",
                         "accountRef": str(account_ref),
                         "mapKind": str(map_kind),
                         "message": (
                             f"云端缺少目标 {target_id} 的记录，"
-                            "已从本地副本重新上报"
+                            + (
+                                "已从本地副本成功补报"
+                                if acknowledged
+                                else "已加入补报队列，尚未上报成功，稍后重试"
+                            )
                         ),
                     })
             return None
         token = str(payload.get("reservationToken") or "").strip()
-        return token or None
+        if not token:
+            raise OperationKnownFailureError(
+                "共享地图预占回执缺少令牌，未发送游戏请求",
+                code="CLOUD_SHARED_DATA_UNAVAILABLE",
+                details=self._cloud_dependency_failure_details(
+                    account_ref, "/v1/maps/targets/reserve"
+                ),
+            )
+        return token
 
     def _cloud_update_map_target_status(
         self,
@@ -25258,6 +26811,12 @@ class CoreFacade:
         token = str(reservation_token or "").strip()
         if not target_id or not token:
             return False
+        if status in {"dispatched", "missing"}:
+            # The local game outcome is already definitive even if the cloud
+            # status write fails. Do not resurrect it from an old cloud row.
+            replica = self._cloud_map_replica(account_ref, map_kind)
+            if replica is not None:
+                replica.defer_candidate(target_id, status)
         try:
             payload = self._cloud_map_exchange(
                 account_ref,
@@ -25289,14 +26848,15 @@ class CoreFacade:
         account_ref: str,
         action_name: str,
     ) -> str:
-        mode = str(
-            self._cloud_presence_mode(str(account_ref)).get("mode")
-            or "LOCAL_ONLY"
-        )
+        presence = self._cloud_presence_mode(str(account_ref))
+        mode = str(presence.get("mode") or "LOCAL_ONLY")
         if mode == "CLOUD_UNAVAILABLE":
             raise OperationKnownFailureError(
                 f"共享地图连接暂不可用，本次{action_name}已安全延后",
                 code="CLOUD_SHARED_DATA_UNAVAILABLE",
+                details=self._cloud_dependency_failure_details(
+                    account_ref, "/v1/presence/heartbeat", presence
+                ),
             )
         return mode
 
@@ -25473,11 +27033,17 @@ class CoreFacade:
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
         account_ref = str(body["accountRef"])
-        if self._cloud_map_action_mode(account_ref, "找黄") != "CLOUD_SHARED":
-            return self._run_brush_search_game_workflow(
-                execution, body, context
-            )
+        return self._run_brush_with_map_route(
+            account_ref, lambda mode, _attempt: self._run_routed_brush_search(
+                execution, body, context, mode
+            ),
+        )
 
+    def _run_routed_brush_search(
+        self, execution: OperationExecutionContext, body: Dict[str, Any],
+        context: Dict[str, Any], mode: str,
+    ) -> Dict[str, Any]:
+        account_ref = str(body["accountRef"])
         def matches(target: Dict[str, Any]) -> bool:
             return (
                 target_matches_search_filter(
@@ -25494,6 +27060,29 @@ class CoreFacade:
                     <= int(body["maxDistance"])
                 )
             )
+
+        if mode != "CLOUD_SHARED":
+            coordinates = brush_scan_coordinates(int(body["startX"]), int(body["startY"]), int(body["scanLimit"]))
+            occupied, consumed = self._same_device_brush_targets(account_ref)
+            cached = [t for t in self._local_brush_targets(
+                account_ref=account_ref, kind="BANDIT", coordinates=coordinates,
+                fingerprint=f"{body['startX']},{body['startY']}|{'HUANG_JIN' if body['targetKind'] == '黄巾' else 'SHAN_ZEI'}",
+                ttl_millis=self._local_map_ttl("bandit"))
+                if matches(t) and int(t["id"]) not in occupied and str(t["id"]) not in consumed]
+            if cached:
+                cached.sort(key=lambda t: (int(t["x"]) - int(body["startX"])) ** 2
+                                          + (int(t["y"]) - int(body["startY"])) ** 2)
+                return {"ok": True, "targets": cached, "points": cached, "count": len(cached),
+                        "updatedAt": int(self._ports.clock.now_millis())}
+            searched = self._run_brush_search_game_workflow(
+                execution, {**body, "includeScanObservationTargets": True}
+                if mode == "LOCAL_FALLBACK" else body, context)
+            if mode == "LOCAL_FALLBACK":
+                self._cloud_publish_map_observations(account_ref, "bandit",
+                    list(searched.get("scanResults") or []), {}, queue_only=True)
+            occupied, _consumed = self._same_device_brush_targets(account_ref)
+            targets = [t for t in searched.get("targets") or [] if int(t["id"]) not in occupied]
+            return {**searched, "targets": targets, "points": targets, "count": len(targets)}
 
         targets = [
             target
@@ -25558,90 +27147,8 @@ class CoreFacade:
         body: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        account_ref = str(body["accountRef"])
-        if self._cloud_map_action_mode(account_ref, "找矿") != "CLOUD_SHARED":
-            return self._run_mine_search_game_workflow(
-                execution, body, context
-            )
-
-        def matches(target: Dict[str, Any]) -> bool:
-            return mine_target_matches(
-                target,
-                resource_types=list(body.get("resourceTypes") or []),
-                levels=list(body.get("levels") or []),
-                only_empty=bool(body.get("onlyEmpty")),
-                only_defended=bool(body.get("onlyDefended")),
-                exact_x=(
-                    int(body["startX"])
-                    if str(body["scope"]) == "定点" else None
-                ),
-                exact_y=(
-                    int(body["startY"])
-                    if str(body["scope"]) == "定点" else None
-                ),
-            )
-
-        targets = [
-            target
-            for target in self._cloud_replica_targets(
-                account_ref,
-                "mine",
-                view=self._cloud_map_view(account_ref, body),
-            )
-            if matches(target)
-        ]
-        scan: Dict[str, Any] = {}
-        if not targets:
-            coordinates = (
-                [(int(body["startX"]), int(body["startY"]))]
-                if str(body["scope"]) == "定点"
-                else brush_scan_coordinates(
-                    int(body["startX"]),
-                    int(body["startY"]),
-                    int(body["scanLimit"]),
-                )
-            )
-            scan = self._run_cloud_manual_scan_batch(
-                execution,
-                body,
-                context,
-                map_kind="mine",
-                coordinates=coordinates,
-                raw_workflow=self._run_mine_search_game_workflow,
-            )
-            targets = [
-                target
-                for target in self._cloud_replica_targets(
-                    account_ref,
-                    "mine",
-                    view=self._cloud_map_view(account_ref, body),
-                )
-                if matches(target)
-            ]
-        targets.sort(key=lambda target: (
-            (int(target.get("x") or 0) - int(body["startX"])) ** 2
-            + (int(target.get("y") or 0) - int(body["startY"])) ** 2,
-            -int(target.get("level") or 0),
-            int(target.get("y") or 0),
-            int(target.get("x") or 0),
-        ))
-        return {
-            "ok": True,
-            "targets": targets,
-            "mines": targets,
-            "count": len(targets),
-            "updatedAt": int(self._ports.clock.now_millis()),
-            "cloudSharedMap": True,
-            **{
-                key: scan[key]
-                for key in (
-                    "scanOffset", "scanLimit", "scanBatchSize",
-                    "scannedCount", "nextScanOffset", "scanWrapped",
-                    "scannedCoordinates", "scanResults",
-                )
-                if key in scan
-            },
-        }
+        # Compatibility entry point; mine never contacts cloud coordination.
+        return self._run_local_mine_search(execution, body, context)
 
     def _run_cloud_coordinated_target_execute_game_workflow(
         self,
@@ -25655,9 +27162,16 @@ class CoreFacade:
             [OperationExecutionContext, Dict[str, Any], Dict[str, Any]],
             Dict[str, Any],
         ],
+        map_mode: Optional[str] = None,
+        attempt: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         account_ref = str(body["accountRef"])
-        if self._cloud_map_action_mode(account_ref, action_name) != "CLOUD_SHARED":
+        mode = map_mode or self._cloud_map_action_mode(account_ref, action_name)
+        if mode != "CLOUD_SHARED":
+            if map_kind == "bandit":
+                self._require_local_brush_target(dict(body["target"]), mode)
+            if attempt is not None:
+                attempt["gameWorkStarted"] = True
             return raw_workflow(execution, body, context)
         target = dict(body["target"])
         reservation_token = self._cloud_reserve_map_target(
@@ -25680,6 +27194,11 @@ class CoreFacade:
                 f"共享{action_name}目标预占已失效，未发送游戏请求",
                 code="CLOUD_TARGET_RESERVATION_LOST",
             )
+        if map_kind == "bandit":
+            self._raise_brush_cloud_attempt_failure(account_ref)
+            self._confirm_brush_cloud_writable(account_ref)
+        if attempt is not None:
+            attempt["gameWorkStarted"] = True
         try:
             result = raw_workflow(execution, body, context)
         except OperationKnownFailureError as error:
@@ -25735,19 +27254,29 @@ class CoreFacade:
         )
         return {**result, "cloudSharedMap": True}
 
+    @staticmethod
+    def _require_local_brush_target(target: Dict[str, Any], mode: str) -> None:
+        if mode in {"LOCAL_ONLY", "LOCAL_FALLBACK"} and (
+            target.get("fromCloudSharedMap") or target.get("fromSharedMap")
+        ) and not target.get("fromLocalSnapshot"):
+            raise OperationKnownFailureError(
+                "云端不可用，请从本地山贼地图重新选择目标",
+                code="BRUSH_LOCAL_TARGET_REQUIRED",
+            )
+
     def _run_cloud_coordinated_brush_execute_game_workflow(
         self,
         execution: OperationExecutionContext,
         body: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return self._run_cloud_coordinated_target_execute_game_workflow(
-            execution,
-            body,
-            context,
-            map_kind="bandit",
-            action_name="刷黄出征",
-            raw_workflow=self._run_brush_execute_game_workflow,
+        return self._run_brush_with_map_route(
+            str(body["accountRef"]),
+            lambda mode, attempt: self._run_cloud_coordinated_target_execute_game_workflow(
+                execution, body, context, map_kind="bandit",
+                action_name="刷黄出征", raw_workflow=self._run_brush_execute_game_workflow,
+                map_mode=mode, attempt=attempt,
+            ),
         )
 
     def _run_cloud_coordinated_mine_execute_game_workflow(
@@ -25756,14 +27285,8 @@ class CoreFacade:
         body: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return self._run_cloud_coordinated_target_execute_game_workflow(
-            execution,
-            body,
-            context,
-            map_kind="mine",
-            action_name="打矿出征",
-            raw_workflow=self._run_mine_execute_game_workflow,
-        )
+        # Compatibility entry point; mine never contacts cloud coordination.
+        return self._run_local_mine_execute(execution, body, context)
 
     def _invalidate_map_snapshot_target(
         self,
@@ -25781,8 +27304,6 @@ class CoreFacade:
 
         port = self._ports.map_snapshots
         invalidate = getattr(port, "invalidate", None) if port is not None else None
-        if invalidate is None:
-            return False
         try:
             target_id = int(target.get("id") or target.get("targetId") or 0)
         except (TypeError, ValueError):
@@ -25790,6 +27311,10 @@ class CoreFacade:
         if target_id <= 0:
             return False
         try:
+            if hasattr(self, "_local_maps"):
+                self._local_map_store(account_ref, str(kind).lower()).invalidate(target_id)
+            if invalidate is None:
+                return hasattr(self, "_local_maps")
             invalidate(
                 str(account_ref),
                 str(kind),
@@ -26020,6 +27545,29 @@ class CoreFacade:
             })
             return f"地图快照保存失败：{error}"
         return ""
+
+    def _require_game_membership(self, account_ref: str, opcode: int, payload: bytes, context: Dict[str, Any]) -> None:
+        cleanup = getattr(self._member_cleanup, "mine", None)
+        if cleanup and cleanup[0] == str(account_ref):
+            if context.get("readOnly") is True and opcode in {0x0004, 0x1600}:
+                return
+            if opcode == 0x1526 and payload == build_recall_payload(cleanup[1]):
+                return
+        self._require_membership()
+
+    def _require_membership(self, *, force: bool = False) -> Dict[str, Any]:
+        port = self._ports.membership
+        if port is None:
+            return {"required": False, "allowed": True}
+        try:
+            value = dict(port.check(force=force))
+        except Exception as error:
+            raise OperationKnownFailureError("暂时无法验证会员授权，自动任务暂停；游戏数据已保留",
+                                              code="MEMBER_NETWORK_UNAVAILABLE") from error
+        if value.get("allowed") is not True:
+            raise OperationKnownFailureError(str(value.get("message") or "会员授权不可用，自动任务已暂停"),
+                code=str(value.get("code") or "MEMBER_LOGIN_REQUIRED"), details={"dependency": "membership"})
+        return value
 
     def _require_live_account_for_host_operation(
         self,

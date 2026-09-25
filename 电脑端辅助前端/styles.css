@@ -5157,6 +5157,30 @@ body.mobile-local-mode .container-phone-wrap > .phone-stage {
 body.mobile-local-mode .app-title {
   display: none;
 }
+/* Home on the phone is exclusively membership; desktop keeps its settings viewer. */
+body.mobile-local-mode #homePage > .home-settings-toolbar,
+body.mobile-local-mode #homeSettingsContent {
+  display: none;
+}
+body.mobile-local-mode #homePage {
+  height: calc(100vh - 170px);
+}
+body.mobile-local-mode .app-shell {
+  padding-bottom: 170px;
+}
+/* The 2400px desktop canvas may exceed the real WebView viewport. Keep all
+ * three phone destinations above the native gesture area, at every scroll. */
+body.mobile-local-mode .bottom-nav {
+  position: fixed;
+  height: 170px;
+  padding-top: 20px;
+  justify-content: space-around;
+  gap: 0;
+  z-index: 30;
+}
+body.mobile-local-mode .home-indicator {
+  display: none;
+}
 body.mobile-local-mode .container-panel:not(:first-child) {
   display: none !important;
 }

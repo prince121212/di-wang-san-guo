@@ -380,6 +380,7 @@ class VolunteeredInventorySyncTests(unittest.TestCase):
         self._chest_reply()
         state = json.loads(self._public()["residentAutomationStateJson"])
         self.assertEqual(state["inventory"]["nextWakeAtMillis"], self.clock.value)
+        self.assertTrue(state["inventory"]["continuationPending"])
         self.assertIn("背包又有新物品", state["inventory"]["lastMessage"])
 
     def test_a_bag_that_did_not_grow_keeps_the_sleep(self) -> None:

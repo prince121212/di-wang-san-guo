@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -75,6 +77,73 @@ class ImportantNoticeTests(unittest.TestCase):
         for name, value in self.originals.items():
             setattr(SERVER, name, value)
         self.tempdir.cleanup()
+
+    def test_durable_resource_notice_survives_logs_and_dismissal_survives_retries(self):
+        from dwpm_core.recovery_policy import resource_wait_result
+
+        result = resource_wait_result(
+            "brush", "TROOP_HEAL_RESOURCE_EXCHANGE_REJECTED", "粮食转铜失败",
+            now_millis=1000,
+        )
+        feature_state = {"lastState": result["state"], "resourceWait": result["resourceWait"]}
+        public = {"residentAutomationStateJson": json.dumps({"brush": feature_state})}
+        sess = SERVER.SESSIONS["s1"]
+        with patch.object(SERVER, "shared_account_public_state_snapshot", return_value=public):
+            # Even if a legacy runtime/log copy exists, show just the current
+            # durable condition; no success/failure log is needed to read it.
+            SERVER.sync_shared_resident_feature_notice("s1", "brush", result)
+            notices = SERVER.current_important_notices(sess)
+            self.assertEqual(len(notices), 1)
+            self.assertEqual(notices[0]["key"], "resource:brushYellow:1000")
+            self.assertEqual(notices[0]["title"], "刷黄等待资源")
+            self.assertIn("其他任务继续运行", notices[0]["message"])
+            self.assertTrue(SERVER.dismiss_important_notice(sess, notices[0]["key"]))
+
+            retried = resource_wait_result(
+                "brush", "TROOP_HEAL_COPPER_SHORTAGE", "兑换后铜钱仍不足",
+                now_millis=61_000, previous=feature_state,
+            )
+            public["residentAutomationStateJson"] = json.dumps({"brush": {
+                "lastState": retried["state"], "resourceWait": retried["resourceWait"],
+            }})
+            SERVER.sync_shared_resident_feature_notice("s1", "brush", retried)
+            self.assertEqual(SERVER.current_important_notices(sess), [])
+
+            SERVER.sync_shared_resident_feature_notice("s1", "brush", {
+                "state": "completed", "success": True,
+            })
+            public["residentAutomationStateJson"] = "{}"
+            self.assertEqual(SERVER.current_important_notices(sess), [])
+
+            # A genuinely new resource failure is not hidden by an older
+            # dismissed episode.
+            new = resource_wait_result(
+                "brush", "TROOP_HEAL_COPPER_SHORTAGE", "再次铜钱不足",
+                now_millis=500_000,
+            )
+            public["residentAutomationStateJson"] = json.dumps({"brush": {
+                "lastState": new["state"], "resourceWait": new["resourceWait"],
+            }})
+            self.assertEqual(
+                SERVER.current_important_notices(sess)[0]["key"],
+                "resource:brushYellow:500000",
+            )
+
+    def test_unknown_outcome_replaces_instead_of_hiding_its_resource_warning(self):
+        public = {"residentAutomationStateJson": json.dumps({
+            "brush": {"lastState": "uncertain", "resourceWait": {
+                "sinceMillis": 1000, "message": "旧资源失败",
+            }},
+        })}
+        with patch.object(SERVER, "shared_account_public_state_snapshot", return_value=public):
+            SERVER.sync_shared_resident_feature_notice("s1", "brush", {
+                "state": "uncertain", "message": "粮食转铜回执未知，禁止重发",
+            })
+            notices = SERVER.current_important_notices(SERVER.SESSIONS["s1"])
+            self.assertEqual(len(notices), 1)
+            self.assertEqual(notices[0]["key"], "task:brushYellow")
+            self.assertEqual(notices[0]["severity"], "error")
+            self.assertIn("禁止重发", notices[0]["message"])
 
     def test_brush_error_creates_notice_and_restart_resolves_it(self) -> None:
         task = {

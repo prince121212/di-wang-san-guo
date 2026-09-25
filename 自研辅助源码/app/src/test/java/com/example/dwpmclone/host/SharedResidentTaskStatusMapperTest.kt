@@ -50,6 +50,12 @@ class SharedResidentTaskStatusMapperTest {
             SharedResidentTaskStatusMapper.stateFor(result("brush", "retry")),
         )
         assertEquals(
+            TaskRuntimeState.RETRYING,
+            SharedResidentTaskStatusMapper.stateFor(
+                result("brush", "waiting-resources", nextWakeAtMillis = 60_000L)
+            ),
+        )
+        assertEquals(
             TaskRuntimeState.RUNNING,
             SharedResidentTaskStatusMapper.stateFor(result("brush", "fighting")),
         )
@@ -57,6 +63,16 @@ class SharedResidentTaskStatusMapperTest {
             TaskRuntimeState.SLEEPING,
             SharedResidentTaskStatusMapper.stateFor(
                 result("brush", "waiting", nextWakeAtMillis = 123L)
+            ),
+        )
+    }
+
+    @Test
+    fun cloudDependencyWaitIsRetryingNotAnUncertainFormationError() {
+        assertEquals(
+            TaskRuntimeState.RETRYING,
+            SharedResidentTaskStatusMapper.stateFor(
+                result("brush", "waiting-dependency", nextWakeAtMillis = 120_000L)
             ),
         )
     }
@@ -78,4 +94,3 @@ class SharedResidentTaskStatusMapperTest {
         requestSent = false,
     )
 }
-

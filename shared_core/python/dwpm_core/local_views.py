@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, Optional
 
+from .features.brush_lanes import brush_recovery_records
 
 SYSTEM_LOG_DEFAULT_LIMIT = 500
 ACCOUNT_LOG_DEFAULT_LIMIT = 100
@@ -363,9 +364,86 @@ def project_success_records(body: Any) -> Dict[str, Any]:
         "accountKey": str(request.get("accountKey") or account_ref),
         "limit": limit,
         "category": category,
-        "entries": success_record_visible_window(unique_records, limit),
+        "entries": success_record_visible_window(
+            _group_inventory_cycle_records(unique_records), limit
+        ),
         "maxLines": SUCCESS_RECORD_MAX_LINES,
     }
+
+
+def _group_inventory_cycle_records(
+    records: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    """Group confirmed pieces for display only; never rewrite the audit ledger.
+
+    Equipment instances cannot share a discard request. A sweep can still be
+    shown honestly as "普通1级短剑 ×5", with all five action/instance IDs in its
+    detail. Older records lacking a cycle identity are never guessed together.
+    """
+
+    output: list[Dict[str, Any]] = []
+    groups: Dict[tuple, list[Dict[str, Any]]] = {}
+    for record in records:
+        detail = record.get("detail")
+        detail = detail if isinstance(detail, dict) else {}
+        action = detail.get("action")
+        action = action if isinstance(action, dict) else {}
+        cycle_id = str(detail.get("cycleId") or "")
+        action_key = str(detail.get("actionKey") or "")
+        if not (
+            detail.get("feature") == "inventory"
+            and detail.get("state") == "completed"
+            and action.get("kind") in {"open", "discard-item", "discard-equipment"}
+            and cycle_id and action_key
+            and _positive_int(detail.get("consumedCount")) is not None
+            # "逐件确认" must stay true of every piece in a merged row.
+            and detail.get("verified") is not False
+        ):
+            output.append(record)
+            continue
+        key = (
+            record.get("sessionId"), cycle_id, action.get("kind"),
+            action.get("itemName"), action.get("itemId"),
+            action.get("level"), action.get("quality"),
+        )
+        if key not in groups:
+            groups[key] = []
+            output.append(record)
+        groups[key].append(record)
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        newest = rows[0]
+        index = next(i for i, row in enumerate(output) if row is newest)
+        combined = deepcopy(newest)
+        details = [deepcopy(row["detail"]) for row in rows]
+        count = sum(int(detail["consumedCount"]) for detail in details)
+        detail = combined["detail"]
+        detail["consumedCount"] = count
+        detail["actionCount"] = len(details)
+        detail["actions"] = [
+            {
+                "actionKey": entry["actionKey"],
+                "action": entry["action"],
+                "consumedCount": entry["consumedCount"],
+                "recovered": bool(entry.get("recovered")),
+            }
+            for entry in details
+        ]
+        # Do not label the aggregate with the newest piece's single-instance
+        # action identity. Individual evidence remains available in actions.
+        detail.pop("actionKey", None)
+        detail.pop("action", None)
+        detail["recovered"] = any(entry.get("recovered") for entry in details)
+        combined["dedupeKey"] = (
+            f"inventory:cycle-group:{details[0]['cycleId']}:{details[0]['actionKey']}"
+        )
+        combined["message"] = re.sub(
+            r" ×\d+.*$", f" ×{count}（同轮记录合并，逐件确认）",
+            str(newest.get("message") or ""),
+        )
+        output[index] = combined
+    return output
 
 
 def resident_success_record(
@@ -473,6 +551,65 @@ def resident_success_record(
                 "state": state,
                 "planKey": plan_key,
                 "action": deepcopy(action),
+            },
+        )
+
+    if feature == "inventory" and state == "completed":
+        action = result.get("action")
+        action = action if isinstance(action, dict) else {}
+        kind = str(action.get("kind") or "")
+        category = {
+            "open": "开箱",
+            "discard-item": "丢弃物品",
+            "discard-equipment": "丢弃装备",
+        }.get(kind)
+        consumed = _positive_int(result.get("consumedCount"))
+        action_key = str(result.get("actionKey") or "").strip()
+        # An accepted request alone is not proof of actual consumption.  The
+        # inventory workflow supplies this count only after a fresh bag read.
+        if not category or consumed is None or not action_key:
+            return None
+        name = str(
+            action.get("itemName") or action.get("itemId")
+            or action.get("instanceId") or "物品"
+        )
+        if kind == "discard-equipment":
+            level = _nonnegative_int(action.get("level"))
+            name = (
+                str(action.get("qualityName") or "")
+                + (f"{level}级" if level is not None else "")
+                + name
+            )
+        verb = "已开启" if kind == "open" else "已丢弃"
+        message = f"{name} {verb} ×{consumed}"
+        # ``verified`` False is the server's claim, settled without the bag
+        # ever confirming it (the stack was being replenished while it was
+        # read).  Say so, rather than dressing it as an observed count.
+        verified = result.get("verified") is not False
+        if not verified:
+            message += "（服务器已确认，背包数量未能核对）"
+        elif result.get("recovered"):
+            message += "（通过刷新背包确认）"
+        return _resident_success_record(
+            timestamp=timestamp,
+            category=category,
+            message=message,
+            dedupe_key=f"inventory:action:{action_key}",
+            detail={
+                "feature": "inventory",
+                "state": state,
+                "actionKey": action_key,
+                "action": deepcopy(action),
+                "consumedCount": consumed,
+                "verified": verified,
+                "recovered": bool(result.get("recovered")),
+                **(
+                    {
+                        "batchKey": str(result["batchKey"]),
+                        "cycleId": str(result.get("cycleId") or ""),
+                    }
+                    if result.get("batchKey") else {}
+                ),
             },
         )
 
@@ -590,6 +727,41 @@ def resident_success_record(
             },
         )
     return None
+
+
+def food_to_copper_success_record(
+    receipt: Any,
+    *,
+    food_amount: int,
+    exchange_key: str,
+    operation_id: str,
+    reason: str,
+    now_millis: int,
+) -> Optional[Dict[str, Any]]:
+    """Record a confirmed exchange independently of the task that needed it."""
+
+    if not isinstance(receipt, dict) or not bool(receipt.get("success")):
+        return None
+    food = _positive_int(food_amount)
+    if food is None or not exchange_key:
+        return None
+    copper = food * 3 // 10
+    return _resident_success_record(
+        timestamp=max(0, int(now_millis)),
+        category="转铜",
+        message=f"{food}粮换{copper}铜",
+        # A single maintenance operation can heal multiple fiefs, each needing
+        # the same exchange.  Deduplicate by request, not by reason or amount.
+        dedupe_key=f"food-to-copper:{exchange_key}",
+        detail={
+            "feature": "food-to-copper",
+            "foodAmount": food,
+            "copperAmount": copper,
+            "exchangeKey": str(exchange_key),
+            "reason": str(reason),
+            "operationId": str(operation_id),
+        },
+    )
 
 
 def general_energy_success_record(
@@ -840,12 +1012,17 @@ def resident_success_records_from_public_state(
     last_brush = _json_object_value(
         public_state.get("brushLastRecoveryJson")
     )
-    pending_brush = _json_object_value(
-        public_state.get("brushPendingRecoveryJson")
-    )
     brush_facts = [last_brush]
-    if str(pending_brush.get("sendState") or "") == "accepted":
-        brush_facts.append(pending_brush)
+    try:
+        pending_brush_records = brush_recovery_records(public_state).values()
+    except (ValueError, TypeError):
+        # A corrupt queue stops dispatch in the core; it must not erase the
+        # already committed success history from a read-only record page.
+        pending_brush_records = []
+    brush_facts.extend(
+        fact for fact in pending_brush_records
+        if str(fact.get("sendState") or "") == "accepted"
+    )
     for fact in brush_facts:
         battle_id = _positive_int(fact.get("battleId"))
         if battle_id is None:

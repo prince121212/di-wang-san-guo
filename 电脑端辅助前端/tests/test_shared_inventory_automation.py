@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import sys
 import tempfile
@@ -99,7 +100,8 @@ class SharedInventoryPlanningTests(unittest.TestCase):
                 "maxOpenPerCycle": 50,
             },
         )
-        self.assertIsNone(without_key["action"])
+        self.assertEqual(without_key["action"]["kind"], "discard-item")
+        self.assertEqual(without_key["action"]["requestedCount"], 70)
 
         batch = plan_next_automatic_inventory_action(
             inventory(item(53, "实木宝箱", 70)),
@@ -110,6 +112,37 @@ class SharedInventoryPlanningTests(unittest.TestCase):
             },
         )
         self.assertEqual(batch["action"]["requestedCount"], 50)
+
+    def test_keyed_boxes_open_first_then_discard_only_the_unopenable_remainder(self):
+        policy = {"autoOpenEnabled": True, "autoOpenItemNames": ["青铜宝箱"],
+                  "cleanInventory": True, "discardItemNames": ["青铜宝箱"]}
+        first = plan_next_automatic_inventory_action(
+            inventory(item(58, "青铜宝箱", 317), item(59, "青铜钥匙", 3)), policy)
+        self.assertEqual(first["action"]["kind"], "open")
+        self.assertEqual(first["action"]["requestedCount"], 3)
+        after = inventory(item(58, "青铜宝箱", 314))
+        second = plan_next_automatic_inventory_action(after, policy, opened_count=3, action_count=1)
+        self.assertEqual(second["action"]["kind"], "discard-item")
+        self.assertEqual(second["action"]["requestedCount"], 314)
+        self.assertIsNone(plan_next_automatic_inventory_action(
+            after, {**policy, "discardItemNames": []})["action"])
+        self.assertIsNone(plan_next_automatic_inventory_action(
+            after, {**policy, "cleanInventory": False})["action"])
+
+    def test_open_limit_or_rejection_never_discards_boxes_with_remaining_keys(self):
+        policy = {"autoOpenEnabled": True, "autoOpenItemNames": ["青铜宝箱"],
+                  "cleanInventory": True, "discardItemNames": ["青铜宝箱"]}
+        bag = inventory(item(58, "青铜宝箱", 317), item(59, "青铜钥匙", 100))
+        self.assertIsNone(plan_next_automatic_inventory_action(bag, policy, opened_count=50)["action"])
+        self.assertIsNone(plan_next_automatic_inventory_action(bag, policy, excluded_actions=["open:58"])["action"])
+        self.assertIsNone(plan_next_automatic_inventory_action(
+            inventory(item(58, "青铜宝箱", 317)), policy, excluded_actions=["open:58"])["action"])
+
+    def test_keyless_open_items_remain_protected_when_open_budget_is_exhausted(self):
+        policy = {"autoOpenEnabled": True, "autoOpenItemNames": ["实木宝箱"],
+                  "cleanInventory": True, "discardItemNames": ["实木宝箱"]}
+        self.assertIsNone(plan_next_automatic_inventory_action(
+            inventory(item(53, "实木宝箱", 70)), policy, opened_count=50)["action"])
 
     def test_opening_precedes_discard_and_planner_returns_one_action(self) -> None:
         planned = plan_next_automatic_inventory_action(
@@ -464,6 +497,19 @@ class SharedInventoryFacadeTests(unittest.TestCase):
             self.assertEqual(public["inventoryPendingActionJson"], "{}")
             last = json.loads(public["inventoryLastActionJson"])
             self.assertEqual(last["observation"]["consumedCount"], 2)
+            self.assertEqual(last["actionKey"], execution.operation_id)
+            record = result["successRecord"]
+            self.assertEqual(record["category"], "开箱")
+            self.assertEqual(record["message"], "50两银票 已开启 ×2")
+            records = json.loads(public["successRecordsJson"])
+            self.assertEqual(records, [record])
+            self.assertIsNone(facade._append_resident_success_record("404", result))
+            page = facade.dispatch(
+                "GET", "/api/success-records", {"accountRef": "404"}
+            )
+            self.assertEqual(page.status, 200)
+            self.assertEqual(len(page.body["entries"]), 1)
+            self.assertEqual(page.body["entries"][0]["category"], "开箱")
         finally:
             facade.close()
             directory.cleanup()
@@ -517,6 +563,13 @@ class SharedInventoryFacadeTests(unittest.TestCase):
                     self.assertEqual(
                         self._public(facade)["inventoryPendingActionJson"],
                         "{}",
+                    )
+                    records = json.loads(self._public(facade)["successRecordsJson"])
+                    self.assertEqual(len(records), 1)
+                    self.assertEqual(records[0]["category"], "开箱")
+                    self.assertEqual(records[0]["detail"]["consumedCount"], 1)
+                    self.assertIsNone(
+                        facade._append_resident_success_record("404", result)
                     )
                 finally:
                     facade.close()
@@ -593,26 +646,178 @@ class SharedInventoryFacadeTests(unittest.TestCase):
             self.assertEqual(verifying["state"], "verifying")
             self.assertFalse(verifying.get("requiresAttention", False))
 
+            # No receipt and no observed change: nothing is provable, and
+            # nothing is unsafe to plan again.  The ledger is released, the
+            # target sits out this sweep, no record claims a consumption.
             clock.value += 60_001
             timed_out = facade._run_automation_recovery_tick(  # noqa: SLF001
                 FakeExecution(), "404", {"allowedFeatures": ["inventory"]}
             )
-            self.assertEqual(timed_out["state"], "blocked")
-            self.assertTrue(timed_out["requiresAttention"])
-            self.assertNotEqual(
-                self._public(facade)["inventoryPendingActionJson"], "{}"
+            self.assertEqual(timed_out["state"], "retry")
+            self.assertFalse(timed_out["requiresAttention"])
+            self.assertTrue(timed_out["ledgerReleasedUnverified"])
+            public = self._public(facade)
+            self.assertEqual(public["inventoryPendingActionJson"], "{}")
+            unverified = json.loads(public["inventoryLastUnverifiedActionJson"])
+            self.assertEqual(unverified["recoveryResolution"], "no-receipt")
+            self.assertFalse(unverified["requiresAttention"])
+            feature_state = json.loads(
+                public["residentAutomationStateJson"]
+            )["inventory"]
+            self.assertEqual(feature_state["cycleExcludedActions"], ["open:95"])
+            self.assertNotIn("requiresAttention", feature_state)
+            self.assertEqual(
+                json.loads(public.get("successRecordsJson") or "[]"), []
             )
         finally:
             facade.close()
             directory.cleanup()
 
-    def test_expired_uncertain_inventory_yields_lane_to_other_residents(self) -> None:
-        """An unresolved inventory read must not starve brush or dungeon.
+    def test_accepted_receipt_settles_a_replenishing_stack_without_a_human(self) -> None:
+        """The live 1608601 shape: 45 sent, 成功 answered, 90 read afterwards.
 
-        The discard request crossed the send boundary, so replaying it is
-        forbidden.  That safety fact is feature-scoped, however: a read-only
-        verification can be retried on its own cadence while unrelated
-        resident work continues to use the account lane.
+        A count can confirm a discard but never refute one while 刷黄 keeps
+        dropping the same item, so the window closes on the server's answer:
+        recorded as its claim, flagged unverified, target excluded for the
+        sweep, feature still runnable.
+        """
+
+        facade, clock, directory = self._facade()
+        try:
+            pending = {
+                "schemaVersion": 1,
+                "actionKey": "op_live_45",
+                "cycleId": "inventory:fixture",
+                "cycleActionCount": 0,
+                "cycleOpenedCount": 0,
+                "configHash": "fixture",
+                "actionState": "accepted",
+                "receipt": {"message": "丢弃成功！"},
+                "verificationDeadlineMillis": clock.value - 1,
+                "action": {
+                    "kind": "discard-item",
+                    "itemId": 4,
+                    "itemName": "山贼头巾",
+                    "requestedCount": 45,
+                    "beforeItemCount": 45,
+                },
+            }
+            facade._update_account_public_state(  # noqa: SLF001
+                "404",
+                {"inventoryPendingActionJson": json.dumps(pending)},
+            )
+            facade._fresh_inventory_state = types.MethodType(  # noqa: SLF001
+                lambda _self, *_args, **_kwargs: inventory(item(4, "山贼头巾", 90)),
+                facade,
+            )
+            facade._execute_host_game_command = types.MethodType(  # noqa: SLF001
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AssertionError("settlement must not replay the discard")
+                ),
+                facade,
+            )
+            result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                FakeExecution(), "404", {"allowedFeatures": ["inventory"]}
+            )
+            self.assertEqual(result["state"], "completed")
+            self.assertFalse(result["verified"])
+            self.assertFalse(result.get("requiresAttention", False))
+            self.assertEqual(result["consumedCount"], 45)
+            self.assertIn("数量未能核对", result["message"])
+            public = self._public(facade)
+            self.assertEqual(public["inventoryPendingActionJson"], "{}")
+            feature_state = json.loads(
+                public["residentAutomationStateJson"]
+            )["inventory"]
+            self.assertEqual(
+                feature_state["cycleExcludedActions"], ["discard-item:4"]
+            )
+            self.assertTrue(feature_state["continuationPending"])
+            records = json.loads(public["successRecordsJson"])
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["category"], "丢弃物品")
+            self.assertIn("服务器已确认，背包数量未能核对", records[0]["message"])
+            self.assertFalse(records[0]["detail"]["verified"])
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_ledger_frozen_by_an_older_build_self_heals_on_upgrade(self) -> None:
+        """The on-disk shape V105 left behind: requiresAttention on both the
+        ledger and the feature state, deadline and poll instant long past.
+        No human ever adjudicated it, and after this build none has to."""
+
+        facade, clock, directory = self._facade()
+        try:
+            now = clock.value
+            facade._update_account_public_state(  # noqa: SLF001
+                "404",
+                {
+                    "savedTasksStarted": "true",
+                    "activeResidentTaskKeys": "inventory",
+                    "residentAutomationConfigJson": json.dumps({
+                        "schemaVersion": 2,
+                        "inventory": {"enabled": True, "cleanInventory": True},
+                    }),
+                    "residentAutomationStateJson": json.dumps({
+                        "inventory": {
+                            "lastState": "blocked",
+                            "requiresAttention": True,
+                            "blockedAtMillis": now - 86_400_000,
+                            "nextWakeAtMillis": now - 3_600_000,
+                            "cycleId": "inventory:old",
+                            "cycleActionCount": 0,
+                        },
+                    }),
+                    "inventoryPendingActionJson": json.dumps({
+                        "schemaVersion": 1,
+                        "actionKey": "op_old",
+                        "cycleId": "inventory:old",
+                        "actionState": "accepted",
+                        "requiresAttention": True,
+                        "blockedAtMillis": now - 86_400_000,
+                        "verificationDeadlineMillis": now - 86_400_000,
+                        "nextPollAtMillis": now - 82_800_000,
+                        "receipt": {"message": "丢弃成功！"},
+                        "action": {
+                            "kind": "discard-item",
+                            "itemId": 4,
+                            "itemName": "山贼头巾",
+                            "requestedCount": 45,
+                            "beforeItemCount": 45,
+                        },
+                    }),
+                },
+            )
+            facade._fresh_inventory_state = types.MethodType(  # noqa: SLF001
+                lambda _self, *_args, **_kwargs: inventory(item(4, "山贼头巾", 2141)),
+                facade,
+            )
+            result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                FakeExecution(), "404", {"allowedFeatures": ["inventory"]}
+            )
+            self.assertEqual(result["feature"], "inventory")
+            self.assertEqual(result["state"], "completed")
+            self.assertNotIn("inventory", result.get("isolatedAttentionFeatures", []))
+            public = self._public(facade)
+            self.assertEqual(public["inventoryPendingActionJson"], "{}")
+            feature_state = json.loads(
+                public["residentAutomationStateJson"]
+            )["inventory"]
+            self.assertNotIn("requiresAttention", feature_state)
+            self.assertNotIn("blockedAtMillis", feature_state)
+            self.assertEqual(feature_state["lastState"], "completed")
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_expired_uncertain_inventory_yields_lane_to_other_residents(self) -> None:
+        """An unresolvable inventory ledger must not starve brush or dungeon.
+
+        The discard crossed the send boundary and the bag cannot be read.
+        Once its window has passed the ledger is released without a record -
+        planning again is safe for a bag - and the feature goes back to
+        competing on ordinary terms, with no attention badge and no isolation.
         """
 
         facade, clock, directory = self._facade()
@@ -707,25 +912,37 @@ class SharedInventoryFacadeTests(unittest.TestCase):
                 {"allowedFeatures": ["brush", "dungeon", "inventory"]},
             )
             self.assertEqual(first["feature"], "inventory")
-            self.assertEqual(first["state"], "blocked")
-            # The account remains immediately wakeable for due residents even
-            # though the inventory result itself needs attention.
-            self.assertEqual(first["nextWakeAtMillis"], now)
+            self.assertEqual(first["state"], "retry")
+            self.assertFalse(first.get("requiresAttention", False))
+            self.assertTrue(first["ledgerReleasedUnverified"])
+            self.assertEqual(
+                self._public(facade)["inventoryPendingActionJson"], "{}"
+            )
+            self.assertEqual(
+                json.loads(self._public(facade).get("successRecordsJson") or "[]"),
+                [],
+            )
 
-            second = facade._run_automation_recovery_tick(  # noqa: SLF001
-                FakeExecution(),
-                "404",
-                {"allowedFeatures": ["brush", "dungeon", "inventory"]},
-            )
-            self.assertIn(second["feature"], {"brush", "dungeon"})
-            self.assertIn("inventory", second["isolatedPendingFeatures"])
-            self.assertIn("inventory", second["isolatedAttentionFeatures"])
+            # The bag is still unreadable, so the next inventory turn is an
+            # ordinary known failure with a retry deadline - brush and dungeon
+            # keep their turns and nothing is isolated for attention.
+            served: set[str] = set()
+            for _ in range(4):
+                result = facade._run_automation_recovery_tick(  # noqa: SLF001
+                    FakeExecution(),
+                    "404",
+                    {"allowedFeatures": ["brush", "dungeon", "inventory"]},
+                )
+                served.add(result["feature"])
+                self.assertNotIn("inventory", result.get("isolatedAttentionFeatures", []))
+                self.assertFalse(result.get("requiresAttention", False))
+                clock.value += 1_000
+            self.assertTrue({"brush", "dungeon"} & served)
             self.assertTrue(selected)
-            self.assertNotIn("inventory", selected[-1][1])
-            pending = json.loads(
-                self._public(facade)["inventoryPendingActionJson"]
-            )
-            self.assertGreater(pending["nextPollAtMillis"], now)
+            feature_state = json.loads(
+                self._public(facade)["residentAutomationStateJson"]
+            )["inventory"]
+            self.assertNotIn("requiresAttention", feature_state)
         finally:
             facade.close()
             directory.cleanup()
@@ -773,6 +990,35 @@ class DesktopInventoryCutoverSourceTests(unittest.TestCase):
         )[1].split("class ", 1)[0]
         self.assertIn("start_auto_inventory(sess, cfg)", settings_route)
         self.assertNotIn("target=auto_open_inventory_items", settings_route)
+
+    def test_desktop_does_not_duplicate_shared_inventory_records(self) -> None:
+        # Execute the actual desktop completion branch without starting a host
+        # or sending game commands. Other features retain their existing path.
+        tree = ast.parse(self.source)
+        branch = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) == (
+                "feature in {'ministry', 'general', 'domestic', 'inventory', "
+                "'captives'} and state == 'completed'"
+            )
+        )
+        code = compile(ast.Module(body=branch.body, type_ignores=[]), "<completion>", "exec")
+        for feature, expected_count in (("inventory", 0), ("captives", 1)):
+            with self.subTest(feature=feature):
+                records = []
+                task = {"cycle": 0}
+                exec(code, {
+                    "feature": feature,
+                    "state": "completed",
+                    "result_task": task,
+                    "sid": "404",
+                    "message": "成功",
+                    "result": {},
+                    "record_success_action": lambda *args, **kwargs: records.append(args),
+                })
+                self.assertEqual(len(records), expected_count)
+                self.assertEqual(task["cycle"], 1)
 
 
 if __name__ == "__main__":

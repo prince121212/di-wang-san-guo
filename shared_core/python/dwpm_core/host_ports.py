@@ -298,6 +298,17 @@ class HostedRawHttpPort:
         }
 
 
+class HostedMembershipPort:
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+
+    def check(self, force: bool = False) -> Mapping[str, object]:
+        value = json.loads(str(self._bridge.checkMembership(bool(force))))
+        if not isinstance(value, dict):
+            raise RuntimeError("会员授权宿主响应无效")
+        return value
+
+
 class HostedCloudSharedDataPort:
     """Keeps the Worker URL/token in Android while returning JSON facts."""
 
@@ -362,6 +373,7 @@ class HostedAccountRuntimePort:
 
 def platform_ports_from_host_bridge(bridge: Any) -> PlatformPorts:
     return PlatformPorts(
+        membership=HostedMembershipPort(bridge) if hasattr(bridge, "checkMembership") else None,
         credentials=HostedCredentialPort(bridge),
         session_secrets=HostedSessionSecretPort(bridge),
         data_directory=HostedDataDirectoryPort(bridge),

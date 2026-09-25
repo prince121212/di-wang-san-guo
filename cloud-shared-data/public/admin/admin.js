@@ -12,6 +12,9 @@ const state = {
   refreshTimer: null,
   toastTimer: null,
   expandedPlatforms: new Set(),
+  platformExpansionInitialized: false,
+  runtimeConfig: null,
+  configSaving: false,
 };
 
 const STATUS_LABELS = {
@@ -125,10 +128,14 @@ async function showDashboard(username) {
   byId("adminName").textContent = username || "管理员";
   byId("loginView").hidden = true;
   byId("dashboardView").hidden = false;
-  await loadOverview({ selectFirst: true });
+  window.dispatchEvent(new Event("dwpm-admin-ready"));
+  await Promise.allSettled([loadRuntimeConfig(), loadOverview({ selectFirst: true })]);
   clearInterval(state.refreshTimer);
   state.refreshTimer = setInterval(() => {
-    if (!document.hidden) loadOverview({ quiet: true }).catch(() => {});
+    if (!document.hidden) {
+      loadOverview({ quiet: true }).catch(() => {});
+      if (!state.configSaving) loadRuntimeConfig().catch(() => {});
+    }
   }, 30000);
 }
 
@@ -162,7 +169,59 @@ async function logout() {
   try { await api("/admin/api/logout", { method: "POST", body: "{}" }); } catch { /* clear locally */ }
   state.overview = null;
   state.mapData = null;
+  state.runtimeConfig = null;
   showLogin();
+}
+
+function renderRuntimeConfig() {
+  const config = state.runtimeConfig;
+  const button = byId("cloudBrushMapToggle");
+  button.disabled = !config || state.configSaving;
+  if (!config) return;
+  button.setAttribute("aria-checked", String(config.cloudBrushMapEnabled));
+  button.textContent = state.configSaving ? "正在保存…"
+    : config.cloudBrushMapEnabled ? "关闭云端刷黄地图" : "开启云端刷黄地图";
+  byId("cloudBrushMapStatus").textContent = config.cloudBrushMapEnabled
+    ? "已开启 · 云端优先，不可用时本地兜底" : "已关闭 · 手机本地刷黄、存储山贼地图";
+  byId("cloudBrushMapUpdated").textContent = `配置版本 ${config.revision} · ${config.updatedAtMillis ? fmtTime(config.updatedAtMillis) : "默认配置"}`;
+}
+
+async function loadRuntimeConfig() {
+  try {
+    const result = await api("/admin/api/runtime-config");
+    if (!state.configSaving) {
+      state.runtimeConfig = result.config;
+      renderRuntimeConfig();
+    }
+  } catch (error) {
+    byId("cloudBrushMapStatus").textContent = `配置读取失败：${error.message}，请点击页面刷新重试。`;
+    if (!state.runtimeConfig) byId("cloudBrushMapToggle").textContent = "暂不可用";
+    throw error;
+  }
+}
+
+async function toggleCloudBrushMap() {
+  if (!state.runtimeConfig || state.configSaving) return;
+  const enabled = !state.runtimeConfig.cloudBrushMapEnabled;
+  if (!window.confirm(enabled
+    ? "开启云端刷黄地图？APP 下次启动账号时读取配置，恢复云端优先策略。"
+    : "关闭云端刷黄地图？APP 将使用手机本地地图；已有出征不受影响。")) return;
+  state.configSaving = true;
+  renderRuntimeConfig();
+  try {
+    const result = await api("/admin/api/runtime-config", {
+      method: "POST", headers: { "x-admin-intent": "runtime-config" },
+      body: JSON.stringify({ cloudBrushMapEnabled: enabled, expectedRevision: state.runtimeConfig.revision }),
+    });
+    state.runtimeConfig = result.config;
+    showToast(enabled ? "已开启云端刷黄地图，下次启动账号时生效" : "已关闭云端刷黄地图，APP 将使用本地地图");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.configSaving = false;
+    renderRuntimeConfig();
+    await loadRuntimeConfig().catch(() => {});
+  }
 }
 
 function renderKpis(totals = {}) {
@@ -186,9 +245,12 @@ function renderServers() {
   const groups = [...grouped.values()].sort((left, right) =>
     left.name.localeCompare(right.name, "zh-CN")
   );
-  if (!state.expandedPlatforms.size && groups.length) {
+  // An empty set can mean the user deliberately collapsed every platform.
+  // Default expansion belongs to first load, not each render/auto-refresh.
+  if (!state.platformExpansionInitialized && groups.length) {
     const selectedPlatform = selectedServer()?.platformKey;
     state.expandedPlatforms.add(String(selectedPlatform || groups[0].key));
+    state.platformExpansionInitialized = true;
   }
   byId("serverCountPill").textContent = `${groups.length} 个平台 · ${servers.length} 个区服`;
   byId("serverEmpty").hidden = servers.length > 0;
@@ -679,6 +741,8 @@ function bindEvents() {
   });
   byId("logoutButton").addEventListener("click", logout);
   byId("refreshButton").addEventListener("click", refreshAll);
+  byId("refreshButton").addEventListener("click", () => loadRuntimeConfig().catch(() => {}));
+  byId("cloudBrushMapToggle").addEventListener("click", toggleCloudBrushMap);
   byId("serverSelect").addEventListener("change", event => selectServer(event.target.value));
   document.querySelectorAll(".map-tab").forEach(button => button.addEventListener("click", () => switchMapKind(button.dataset.mapKind)));
   byId("filterToggle").addEventListener("click", event => {

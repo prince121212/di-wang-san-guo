@@ -59,7 +59,8 @@ internal object SharedResidentTaskStatusMapper {
             result.skipped -> TaskRuntimeState.SLEEPING
             state in featureErrorStates || result.requiresAttention ->
                 TaskRuntimeState.ERROR
-            state in setOf("retry", "failed") -> TaskRuntimeState.RETRYING
+            state in setOf("retry", "failed", "waiting-resources", "waiting-dependency") ->
+                TaskRuntimeState.RETRYING
             state in setOf("dispatched", "fighting", "running") ->
                 TaskRuntimeState.RUNNING
             result.nextWakeAtMillis != null -> TaskRuntimeState.SLEEPING

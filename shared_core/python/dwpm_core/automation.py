@@ -19,6 +19,10 @@ BLOCKED_RETRY_MILLIS = 5 * 60 * 1000
 
 #: A due candidate unselected for this long jumps the priority queue once.
 STARVATION_THRESHOLD_MILLIS = 10 * 60 * 1000
+# A bounded slice of an unfinished sweep is not a new periodic job.  Giving it
+# the normal ten-minute aging interval made five swords take fifty minutes.
+# It still yields between slices; military work keeps its normal priority.
+CONTINUATION_STARVATION_MILLIS = 10_000
 
 #: How far past its own deadline a candidate must fall before the scheduler
 #: reports it as stalled.  This is a health signal, never a scheduling input:
@@ -70,6 +74,8 @@ NARRATED_STATES = {
     # preflight happened to follow a sent heal; the honest line names the
     # general, the shortfall and what would end the pause.
     "formation-paused": "{label}已暂停：{reason}",
+    "waiting-resources": "{label}等待资源：{reason}",
+    "waiting-dependency": "{label}等待共享地图：{reason}",
     # Crossing BRUSH_FILTER_ADVICE_MIN_SCANNED_COORDS without a match is a
     # conclusion drawn from accumulated evidence, not one scan's sample, so it
     # is announced at once and is not in SAMPLED_STATES.  The reason carries
@@ -261,6 +267,16 @@ def _add_resident_candidate(
         "dueAtMillis": due,
         "priority": int(priority or 0),
         "lastServedAtMillis": int(state.get("lastServedAtMillis") or 0),
+        "continuationPending": bool(state.get(
+            "continuationPending",
+            # V99 persisted the unfinished cycle but not a continuation flag.
+            # Upgrading must not leave that existing backlog waiting ten minutes.
+            feature == "inventory"
+            and str(state.get("lastState") or "") == "completed"
+            and int(state.get("cycleActionCount") or 0) > 0,
+        ))
+        and str(state.get("lastState") or "") in {"completed", "retry", "waiting"}
+        and not bool(state.get("requiresAttention")),
     })
 
 
@@ -509,6 +525,15 @@ def resident_due_decision(
         brush_state.update({"dayKey": day_key, "usedCount": 0})
     updated["brush"] = brush_state
     updated["mine"] = dict(updated.get("mine") or {})
+    # Mine coordination is now device-local. Retire only the obsolete cloud
+    # dependency, never an uncertain expedition or resource/formation wait.
+    mine_wait = updated["mine"].get("dependencyWait") or {}
+    if mine_wait.get("dependency") == "cloud-map":
+        updated["mine"].pop("dependencyWait", None)
+        if updated["mine"].get("lastState") == "waiting-dependency":
+            updated["mine"].update({"lastState": "ready", "nextWakeAtMillis": now,
+                                    "lastErrorCode": "", "lastMessage": "打矿使用本机共享地图"})
+    updated["mine"]["mapMode"] = "LOCAL_ONLY"
     updated["raid"] = dict(updated.get("raid") or {})
     updated["lossless"] = dict(updated.get("lossless") or {})
     dungeon_state = dict(updated.get("dungeon") or {})
@@ -737,7 +762,11 @@ def resident_due_decision(
             # Treating 0 as "starved" is also safe on a fresh install, where
             # every candidate is starved and plain priority decides again.
             row["starved"] = (
-                served <= 0 or now - served >= STARVATION_THRESHOLD_MILLIS
+                served <= 0 or now - served >= (
+                    CONTINUATION_STARVATION_MILLIS
+                    if row.get("continuationPending")
+                    else STARVATION_THRESHOLD_MILLIS
+                )
             )
         selected = max(
             due,

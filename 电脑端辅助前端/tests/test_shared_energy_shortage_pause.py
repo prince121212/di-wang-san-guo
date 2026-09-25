@@ -673,6 +673,9 @@ class StaleBrushTargetTests(unittest.TestCase):
 
     def _run_cloud_rejection(self, message: str) -> list[str]:
         statuses: list[str] = []
+        self.facade._update_account_public_state("202", {"cloudRuntimeConfigJson": json.dumps({
+            "schemaVersion": 1, "cloudBrushMapEnabled": True, "revision": 0,
+        })})
         self.facade._cloud_presence_mode = types.MethodType(  # noqa: SLF001
             lambda _self, _account_ref, **_kw: {"mode": "CLOUD_SHARED"},
             self.facade,

@@ -58,6 +58,7 @@ class SharedResidentAutomationAdapter(
     /** Status read that may block until the operation settles; see [runOnce]. */
     private val settleStatus: (String, Long) -> JSONObject = { id, _ -> status(id) },
     private val settleBudgetMillis: Long = SETTLE_BUDGET_MILLIS,
+    private val acknowledge: (Long, String) -> Unit = { _, _ -> },
 ) {
     constructor(core: SharedPythonCoreHost) : this(
         configure = core::configureResidentAutomation,
@@ -67,6 +68,9 @@ class SharedResidentAutomationAdapter(
         status = core::operationStatus,
         operationStore = AndroidResidentOperationStore(core.applicationContext),
         settleStatus = core::operationStatus,
+        acknowledge = { accountId, operationId ->
+            core.acknowledgeResidentOperation(accountId.toString(), operationId)
+        },
     )
 
     /**
@@ -121,10 +125,10 @@ class SharedResidentAutomationAdapter(
             if (operationId.isNullOrBlank()) {
                 return retry(accountId, null, "共享常驻 tick 未返回 operationId")
             }
-            operationStore.putOperation(accountId, operationId!!, durableTickKey)
+            operationStore.putOperation(accountId, operationId, durableTickKey)
         }
 
-        val id = operationId!!
+        val id = operationId
         val envelope = runCatching {
             if (resumed) status(id) else settleStatus(id, settleBudgetMillis)
         }.getOrElse { error ->
@@ -143,17 +147,41 @@ class SharedResidentAutomationAdapter(
             )
         }
         val operation = envelope.optJSONObject("operation")
-            ?: return SharedResidentTickResult(
+        if (operation == null) {
+            val confirmedMissing = !envelope.optBoolean("ok", true) && (
+                envelope.optString("errorCode") == "OPERATION_NOT_FOUND" ||
+                    envelope.optString("error") == "operation not found"
+                )
+            if (confirmedMissing) {
+                // This is a scheduler hand-over pointer, not the business
+                // send ledger. A new recovery tick observes the latter; it
+                // never resubmits the vanished operation or clears its sends.
+                operationStore.clear(accountId)
+                return SharedResidentTickResult(
+                    accountId = accountId,
+                    operationId = id,
+                    feature = null,
+                    dailyKey = null,
+                    state = "recovery-scheduled",
+                    message = "调度结果记录缺失，已安排按业务账本核对恢复；不会重发旧动作",
+                    nextWakeAtMillis = nowMillis() + RETRY_MILLIS,
+                    requiresAttention = false,
+                    requestSent = false,
+                )
+            }
+            // A malformed/error response is not proof that the record is gone.
+            return SharedResidentTickResult(
                 accountId = accountId,
                 operationId = id,
                 feature = null,
                 dailyKey = null,
-                state = "missing",
-                message = "共享常驻 operation 已丢失；不会自动重发，请人工确认",
-                nextWakeAtMillis = null,
-                requiresAttention = true,
+                state = "status-unavailable",
+                message = "共享常驻状态响应不完整，保留任务引用并稍后重查",
+                nextWakeAtMillis = nowMillis() + RETRY_MILLIS,
+                requiresAttention = false,
                 requestSent = false,
             )
+        }
         val operationStatus = operation.optString("status").trim().uppercase()
         val requestSent = operation.optBoolean("requestSent", false)
         when (operationStatus) {
@@ -184,6 +212,11 @@ class SharedResidentAutomationAdapter(
                 // UNCERTAIN); the next explicit tick will reconcile the durable
                 // pending record and will never replay the old mutation blindly.
                 operationStore.clear(accountId)
+                // Ordering matters: a process death after acknowledgement
+                // must not leave a pointer to a result the core may prune.
+                // If ack fails, the next submission by this consumer releases
+                // the retained result without blocking productive work.
+                runCatching { acknowledge(accountId, id) }
                 return result
             }
             else -> {
@@ -192,10 +225,10 @@ class SharedResidentAutomationAdapter(
                     operationId = id,
                     feature = null,
                     dailyKey = null,
-                    state = "invalid",
-                    message = "共享常驻 operation 状态无效：$operationStatus",
-                    nextWakeAtMillis = null,
-                    requiresAttention = true,
+                    state = "status-unavailable",
+                    message = "共享常驻 operation 状态无效，保留引用稍后重查：$operationStatus",
+                    nextWakeAtMillis = nowMillis() + RETRY_MILLIS,
+                    requiresAttention = false,
                     requestSent = requestSent,
                 )
             }
@@ -245,64 +278,14 @@ class SharedResidentAutomationAdapter(
             }
             val operation = envelope.optJSONObject("operation")
                 ?: return retry(accountId, operationId, "共享常驻 operation 不存在")
-            val operationStatus = operation.optString("status")
-            val requestSent = operation.optBoolean("requestSent", false)
+            val operationStatus = operation.optString("status").trim().uppercase()
             when (operationStatus) {
                 "QUEUED", "RUNNING" -> pause(pollIntervalMillis.coerceAtLeast(1L))
-                "SUCCEEDED" -> {
-                    val result = operation.optJSONObject("result") ?: JSONObject()
-                    return SharedResidentTickResult(
-                        accountId = accountId,
-                        operationId = operationId,
-                        feature = optionalString(result, "feature"),
-                        dailyKey = optionalString(result, "dailyKey"),
-                        state = result.optString("state", "idle"),
-                        message = result.optString("message").ifBlank {
-                            "共享常驻 tick 已完成"
-                        },
-                        nextWakeAtMillis = result.optLong("nextWakeAtMillis").takeIf {
-                            result.has("nextWakeAtMillis") && !result.isNull("nextWakeAtMillis")
-                        },
-                        taskNextWakeAtMillis = result.optLong("taskNextWakeAtMillis").takeIf {
-                            result.has("taskNextWakeAtMillis") && !result.isNull("taskNextWakeAtMillis")
-                        },
-                        requiresAttention = result.optBoolean("requiresAttention", false) &&
-                    optionalString(result, "feature").isNullOrBlank(),
-                        requestSent = requestSent,
-                        skipped = result.optBoolean("skipped", false),
-                        skipReason = optionalString(result, "skipReason"),
-                        statusText = optionalString(result, "statusText"),
-                        cycleKey = result.optLong("cycleKey").takeIf {
-                            result.has("cycleKey") && !result.isNull("cycleKey")
-                        },
-                        isolatedAttentionFeatures = result.optJSONArray("isolatedAttentionFeatures")?.let { rows ->
-                            (0 until rows.length()).joinToString("|") { rows.optString(it) }
-                                .takeIf { it.isNotBlank() }
-                        },
-                    )
-                }
-                "FAILED", "UNCERTAIN", "CANCELLED" -> {
-                    val error = operation.optJSONObject("error") ?: JSONObject()
-                    val errorDetails = error.optJSONObject("details") ?: JSONObject()
-                    val progressDetails = operation.optJSONObject("progressDetails") ?: JSONObject()
-                    val failureFeature = optionalString(errorDetails, "feature")
-                        ?: featureForPhase(progressDetails.optString("phase"))
-                    val failureDailyKey = optionalString(errorDetails, "dailyKey")
-                        ?: optionalString(progressDetails, "dailyKey")
-                    val attention = accountNeedsAttention(operationStatus, requestSent, failureFeature)
-                    return SharedResidentTickResult(
-                        accountId = accountId,
-                        operationId = operationId,
-                        feature = failureFeature,
-                        dailyKey = failureDailyKey,
-                        state = operationStatus.lowercase(),
-                        message = error.optString("message").ifBlank {
-                            "共享常驻 operation 结束：$operationStatus"
-                        },
-                        nextWakeAtMillis = if (attention) null else nowMillis() + RETRY_MILLIS,
-                        requiresAttention = attention,
-                        requestSent = requestSent,
-                    )
+                "SUCCEEDED", "FAILED", "UNCERTAIN", "CANCELLED" -> {
+                    val result = terminalResult(accountId, operationId, operation, operationStatus)
+                    // The compatibility caller keeps no persistent pointer.
+                    runCatching { acknowledge(accountId, operationId) }
+                    return result
                 }
                 else -> return retry(
                     accountId,

@@ -84,6 +84,16 @@ class LocalAssistantApiController(
 
     fun handle(request: AssistantApiRequest): AssistantApiResponse = runCatching {
         val route = request.path.substringBefore('?')
+        if (route.startsWith("/api/member/")) {
+            val action = route.removePrefix("/api/member/")
+            if ((request.method == "GET" && action in setOf("status", "payment-catalog")) ||
+                (request.method == "POST" && action in setOf("check", "send-code", "register", "login", "reset-password", "logout", "payment-create", "payment-status", "payment-open", "payment-store-open"))) {
+                val value = com.example.dwpmclone.host.MembershipClient.get(appContext)
+                    .handle(action, request.body ?: JSONObject())
+                return@runCatching AssistantApiResponse(request.id, if (value.optBoolean("ok")) 200 else 400, value)
+            }
+            return@runCatching failure(request, 404, "会员接口不存在")
+        }
         if ((request.method == "GET" &&
                 route in setOf("/api/military/intel", "/api/state/refresh", "/api/heartbeat")) ||
             (request.method == "POST" &&
@@ -1757,8 +1767,17 @@ class LocalAssistantApiController(
         accountId: Long,
         statuses: List<com.example.dwpmclone.domain.scheduler.TaskRuntimeStatus>
     ): JSONArray = JSONArray().apply {
+        // Read the durable condition, not a rolling log window: a resource
+        // wait must survive restart and remain dismissible across retries.
+        val resources = ResourceWaitNoticeProjection.from(
+            runCatching {
+                sharedPythonCore.residentResourceNotices(accountId.toString())
+            }.getOrDefault(JSONObject()),
+        ) { key -> dismissedNotices.contains(accountId, key) }
+        resources.visible.forEach(::put)
         statuses.filterNot {
-            LocalTaskPresentation.isRetiredRuntimeType(it.type)
+            LocalTaskPresentation.isRetiredRuntimeType(it.type) ||
+                LocalTaskPresentation.spec(it.type).key in resources.features
         }.filter {
             it.state in setOf(
                 TaskRuntimeState.STOPPED,
@@ -1791,7 +1810,8 @@ class LocalAssistantApiController(
         // which the core keeps stable for an episode, so dismissing it sticks
         // and a matched target (message changes) clears it by itself.
         statuses.filterNot {
-            LocalTaskPresentation.isRetiredRuntimeType(it.type)
+            LocalTaskPresentation.isRetiredRuntimeType(it.type) ||
+                LocalTaskPresentation.spec(it.type).key in resources.features
         }.filter {
             it.message.contains("【建议】")
         }.forEach { status ->
@@ -1813,7 +1833,7 @@ class LocalAssistantApiController(
             }
         }
         accountConnectionNotice(accountId)?.let(::put)
-        logDerivedNotices(accountId, statuses).forEach(::put)
+        logDerivedNotices(accountId, statuses, resources.features).forEach(::put)
     }
 
     private fun accountConnectionNotice(accountId: Long): JSONObject? {
@@ -1848,6 +1868,7 @@ class LocalAssistantApiController(
     private fun logDerivedNotices(
         accountId: Long,
         statuses: List<com.example.dwpmclone.domain.scheduler.TaskRuntimeStatus>,
+        authoritativeFeatures: Set<String> = emptySet(),
     ): List<JSONObject> {
         val active = linkedMapOf<String, Pair<LocalTaskPresentationSpec, TaskLogEntry>>()
         logs.recent(200)
@@ -1872,7 +1893,9 @@ class LocalAssistantApiController(
             .map { LocalTaskPresentation.spec(it.type).key }
             .toSet()
         return active.values
-            .filterNot { (spec, _) -> spec.key in terminalKeys }
+            .filterNot { (spec, _) ->
+                spec.key in terminalKeys || spec.key in authoritativeFeatures
+            }
             .sortedByDescending { (_, entry) -> entry.timeMillis }
             .mapNotNull { (spec, entry) ->
                 val key = "log:${spec.key}:${entry.timeMillis}"

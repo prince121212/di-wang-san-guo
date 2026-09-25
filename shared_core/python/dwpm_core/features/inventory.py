@@ -236,17 +236,64 @@ def equipment_is_safe_to_discard(
     return True, ""
 
 
+def inventory_action_identity(action: Mapping[str, Any]) -> str:
+    """Identify a target, not its current stack size or its display name."""
+
+    kind = str(action.get("kind") or "")
+    identifier = (
+        action.get("instanceId")
+        if kind == "discard-equipment"
+        else action.get("itemId")
+    )
+    return f"{kind}:{int(identifier or 0)}"
+
+
+def automatic_inventory_snapshot_is_complete(inventory: Mapping[str, Any]) -> bool:
+    """A missing row proves removal only in a completely decoded bag."""
+
+    if not isinstance(inventory, Mapping):
+        return False
+    if (
+        inventory.get("parseError")
+        or inventory.get("equipmentParseError")
+        or inventory.get("layout") == "legacy-scan-fallback"
+    ):
+        return False
+    for rows_key, count_keys in (
+        ("items", ("itemCount", "parsedItemCount")),
+        ("equipment", ("equipmentCount", "declaredEquipmentCount")),
+    ):
+        rows = inventory.get(rows_key)
+        if not isinstance(rows, list) or any(
+            not isinstance(row, Mapping) for row in rows
+        ):
+            return False
+        for key in count_keys:
+            if inventory.get(key) is not None:
+                try:
+                    if int(inventory[key]) != len(rows):
+                        return False
+                except (TypeError, ValueError):
+                    return False
+    return True
+
+
 def plan_next_automatic_inventory_action(
     inventory: Mapping[str, Any],
     policy: Mapping[str, Any],
     *,
     opened_count: int = 0,
     action_count: int = 0,
+    excluded_actions: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """Select at most one deterministic, fail-closed inventory mutation."""
 
     if inventory.get("parseError"):
         raise ValueError(f"背包解析失败：{inventory['parseError']}")
+    if inventory.get("equipmentParseError"):
+        raise ValueError(f"装备解析失败：{inventory['equipmentParseError']}")
+    if inventory.get("layout") == "legacy-scan-fallback":
+        raise ValueError("背包布局未经完整验证，已禁止自动整理")
     items = [
         dict(row)
         for row in inventory.get("items") or []
@@ -296,6 +343,7 @@ def plan_next_automatic_inventory_action(
             if str(row.get("name") or "") == name
         )
 
+    excluded = set(excluded_actions)
     auto_names = [
         name
         for name in normalized_names(policy.get("autoOpenItemNames"))
@@ -314,6 +362,8 @@ def plan_next_automatic_inventory_action(
             if row is None:
                 continue
             item_id = int(row.get("itemId") or row.get("id") or 0)
+            if f"open:{item_id}" in excluded:
+                continue
             available = item_count(item_id)
             required_key = AUTO_OPEN_KEY_REQUIREMENTS.get(name)
             key_count = name_count(required_key) if required_key else available
@@ -338,11 +388,22 @@ def plan_next_automatic_inventory_action(
     if bool(policy.get("cleanInventory")) and discard_names:
         for row in items:
             name = str(row.get("name") or "")
-            # Opening takes precedence. A selected box without its key is
-            # preserved instead of falling through to discard.
-            if name not in discard_names or name in auto_names:
+            if name not in discard_names:
                 continue
             item_id = int(row.get("itemId") or row.get("id") or 0)
+            # Explicit discard is the fallback for keyed boxes only after
+            # their keys are exhausted in the verified snapshot. A cycle
+            # limit or rejected opening is not evidence of missing keys.
+            if name in auto_names:
+                required_key = AUTO_OPEN_KEY_REQUIREMENTS.get(name)
+                if (
+                    not required_key
+                    or name_count(required_key) > 0
+                    or f"open:{item_id}" in excluded
+                ):
+                    continue
+            if f"discard-item:{item_id}" in excluded:
+                continue
             available = item_count(item_id)
             if item_id <= 0 or available <= 0:
                 continue
@@ -406,6 +467,8 @@ def plan_next_automatic_inventory_action(
             if not allowed:
                 continue
             instance_id = int(row.get("instanceId") or row.get("id") or 0)
+            if f"discard-equipment:{instance_id}" in excluded:
+                continue
             return {
                 "action": {
                     "kind": "discard-equipment",
@@ -433,6 +496,8 @@ def observe_automatic_inventory_action(
 ) -> Dict[str, Any]:
     """Prove whether one ledgered inventory mutation changed fresh state."""
 
+    if not automatic_inventory_snapshot_is_complete(inventory):
+        raise ValueError("背包快照不完整，不能确认物品已消耗或装备已丢弃")
     kind = str(action.get("kind") or "")
     if kind == "discard-equipment":
         instance_id = int(action.get("instanceId") or 0)
@@ -461,6 +526,61 @@ def observe_automatic_inventory_action(
             consumed,
             max(0, int(action.get("requestedCount") or consumed)),
         ),
+        "currentCount": current,
+    }
+
+
+def settle_unverifiable_inventory_action(
+    pending: Mapping[str, Any],
+    observation: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Close a ledger whose bag reads could not prove the mutation.
+
+    The stack count is evidence that can confirm a discard but never refute
+    one: 山贼头巾 keeps arriving from 刷黄 while the read runs, so 45 sent and
+    90 seen afterwards is exactly what a successful discard looks like on a
+    farming account.  Holding the ledger open "for a human" therefore proves
+    nothing and costs everything - the sweep stops, equipment behind the item
+    is never reached, and nobody is told what to adjudicate.
+
+    That hold exists to stop a mutation being *replayed* while its effect is
+    unknown, which matters for an army and not for a bag: every inventory
+    policy is a target state ("none of this item", "all of these boxes
+    opened", "this instance gone") re-derived from a fresh read, so the worst
+    a replay can do is ask for the same target again.  What must stay bounded
+    is a server that answers 成功 and does nothing; the caller excludes the
+    target for the rest of the sweep, which limits that to one send per
+    target per sweep and lets the sweep move on.
+
+    ``accepted`` means the server answered success to this exact request and
+    is the strongest evidence available; the stack count is reported as the
+    server's claim and marked unverified.  An equipment instance still present
+    contradicts that claim outright, and a ledger with no receipt has no
+    claim to report, so neither counts anything.
+    """
+
+    action = dict(pending.get("action") or {})
+    kind = str(action.get("kind") or "")
+    state = str(pending.get("actionState") or "")
+    observed = dict(observation or {})
+    requested = max(0, int(action.get("requestedCount") or 0))
+    current = observed.get("currentCount")
+    accepted = state == "accepted"
+    if accepted and kind in {"open", "discard-item"}:
+        return {
+            "resolution": "applied-by-receipt",
+            "applied": True,
+            "verified": False,
+            "consumedCount": requested,
+            "currentCount": current,
+        }
+    return {
+        "resolution": (
+            "receipt-contradicted" if accepted else "no-receipt"
+        ),
+        "applied": False,
+        "verified": False,
+        "consumedCount": 0,
         "currentCount": current,
     }
 
@@ -711,7 +831,10 @@ def parse_8104_inventory(
 
     table_offset = 18
     table_length = item_count * 12
-    if item_count > 0 and table_offset + table_length <= len(payload):
+    # A sweep may remove the last item stack while equipment remains, or
+    # empty the bag entirely. Zero stacks is still this exact table layout;
+    # scanning the following equipment bytes as items invents phantom loot.
+    if table_offset + table_length + 2 <= len(payload):
         fixed_rows = []
         fixed_valid = True
         # Each row is u16 id, u16 count, then a per-stack long the original

@@ -1,12 +1,17 @@
 import {
-  applyGone,
-  applyUpserts,
+  applyMapEvents,
   cleanup,
   observeRegions,
   sharedMode,
   targetTtlMillis,
 } from "./database";
 import { handleAdminRequest } from "./admin";
+import { runtimeConfig } from "./runtime-config";
+import { handleEmailProbeRequest } from "./email-verification-probe";
+import { handleMemberRequest } from "./members";
+import { handlePaymentRequest } from "./payments";
+import { validCloudToken } from "./member-crypto";
+export { RuntimeConfigStore } from "./runtime-config";
 import { platformDisplayName } from "./platforms";
 import type { Env, RequestIdentity, SharedMode } from "./types";
 import {
@@ -49,10 +54,14 @@ async function body(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
-function authorize(request: Request, env: Env): void {
-  const expected = String(env.CLIENT_API_TOKEN ?? "").trim();
+async function authorize(request: Request, env: Env): Promise<void> {
   const actual = request.headers.get("authorization") ?? "";
-  if (!expected || actual !== `Bearer ${expected}`) {
+  // Additive client-key rotation: never invalidate existing installed apps
+  // when provisioning a runtime-only key for a newly built APK.
+  const accepted = [env.CLIENT_API_TOKEN, env.CLIENT_API_TOKEN_V2]
+    .map(value => String(value ?? "").trim()).filter(Boolean);
+  if (!accepted.some(token => actual === `Bearer ${token}`)
+    && !(actual.startsWith("Bearer ") && await validCloudToken(env,actual.slice(7)))) {
     throw new RequestError("未授权", 401, "UNAUTHORIZED");
   }
 }
@@ -100,6 +109,11 @@ async function heartbeat(request: Request, env: Env, now: number): Promise<Respo
   const { platformKey, serverKey, serverScope, actorId } = common(input);
   const server = objectValue(input.server ?? {}, "区服信息");
   const settings = policy(env);
+  const config = await runtimeConfig(env);
+  if (!config.cloudBrushMapEnabled) {
+    return json({ ok: true, mode: "LOCAL_ONLY", onlineAccountCount: 0,
+      threshold: settings.threshold, serverTimeMillis: now, onlineActorIds: [], config });
+  }
   const areaId = optionalText(server.areaId, 80);
   const areaName = optionalText(server.areaName, 160);
   const gameHttp = publicHttpUrl(server.gameHttp);
@@ -443,9 +457,11 @@ async function targetChanges(request: Request, env: Env, now: number): Promise<R
   const conditions = [
     "server_key=?",
     "map_kind=?",
-    "(changed_at > ? OR (changed_at = ? AND target_id > ?))",
+    // Match the composite index's range, not just its server/map prefix.
+    // The equivalent OR predicate made an empty poll scan the whole map.
+    "(changed_at, target_id) > (?, ?)",
   ];
-  const bindings: unknown[] = [serverScope, mapKind, since.changedAt, since.changedAt, since.targetId];
+  const bindings: unknown[] = [serverScope, mapKind, since.changedAt, since.targetId];
   if (view) {
     conditions.push("x BETWEEN ? AND ?", "y BETWEEN ? AND ?");
     bindings.push(view.minX, view.maxX, view.minY, view.maxY);
@@ -544,13 +560,14 @@ async function observations(request: Request, env: Env, now: number): Promise<Re
   const hasUpserts = input.upserts != null;
   const hasGone = input.gone != null;
   if (hasUpserts || hasGone) {
-    // v2: clients diff locally and only send real changes, so each row is
-    // written immediately - the legacy 5-minute sighting throttle does not
-    // apply here, and no region/link bookkeeping happens at all.
+    // v2: validate the whole batch before one atomic commit. Client-side
+    // diffing does not imply exactly-once delivery, so the database also
+    // suppresses identical replays without delaying real field changes.
     const upserts = hasUpserts ? upsertObservations(input.upserts, mapKind) : [];
     const gone = hasGone ? goneTargetIds(input.gone) : [];
-    await applyUpserts(env.DB, serverScope, mapKind, upserts, now);
-    const goneCount = await applyGone(env.DB, serverScope, mapKind, gone, now);
+    const goneCount = await applyMapEvents(
+      env.DB, serverScope, mapKind, upserts, gone, now,
+    );
     return json({
       ok: true,
       ...mode,
@@ -662,13 +679,34 @@ async function targetStatus(request: Request, env: Env, now: number): Promise<Re
 
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const payment = await handlePaymentRequest(request, env);
+  if (payment) return payment;
+  const member = await handleMemberRequest(request, env);
+  if (member) return member;
+  const emailProbe = await handleEmailProbeRequest(request, env);
+  if (emailProbe) return emailProbe;
   const admin = await handleAdminRequest(request, env);
   if (admin) return admin;
   if (request.method === "GET" && url.pathname === "/health") {
     return json({ ok: true, service: "dwpm-cloud-shared-data", schemaVersion: 1 });
   }
-  authorize(request, env);
   const now = Date.now();
+  // This global, non-sensitive read-only switch grants no membership or admin authority.
+  // New APKs do not need a long-lived shared credential just to read it.
+  if (request.method === "POST" && url.pathname === "/v1/client/config") {
+    return json({ ok: true, config: await runtimeConfig(env) });
+  }
+  await authorize(request, env);
+  // Stop old clients as well, before any D1 read/write. A blocked mutation is
+  // explicitly rejected, never acknowledged as an uploaded observation.
+  if (request.method === "POST" && url.pathname.startsWith("/v1/maps/")) {
+    const input = await body(request.clone() as Request);
+    if (input.mapKind === "bandit") {
+      const config = await runtimeConfig(env);
+      if (!config.cloudBrushMapEnabled) return json({ ok: false, code: "CLOUD_BRUSH_MAP_DISABLED",
+        error: "管理员已关闭云端刷黄地图，请使用手机本地地图", mode: "LOCAL_ONLY", config }, 409);
+    }
+  }
   if (request.method === "POST" && url.pathname === "/v1/presence/heartbeat") {
     return heartbeat(request, env, now);
   }
@@ -717,6 +755,21 @@ export default {
         return json({ ok: false, code: error.code, error: error.message }, error.status);
       }
       console.error(error);
+      const limit = d1DailyLimit(error);
+      if (limit) {
+        const now = Date.now();
+        const resetAtMillis = (Math.floor(now / 86_400_000) + 1) * 86_400_000;
+        const response = json({
+          ok: false,
+          code: "CLOUD_D1_DAILY_LIMIT",
+          error: `共享地图数据库今日免费${limit === "write" ? "写入" : "读取"}额度已耗尽，`
+            + "免费额度于 UTC 00:00（北京时间08:00）重置；共享派遣暂不可用",
+          limit,
+          retryAtMillis: resetAtMillis,
+        }, 503);
+        response.headers.set("retry-after", String(Math.ceil((resetAtMillis - now) / 1_000)));
+        return response;
+      }
       return json({ ok: false, code: "INTERNAL_ERROR", error: "共享云端数据服务异常" }, 500);
     }
   },
@@ -724,3 +777,14 @@ export default {
     await cleanup(env.DB, Number(controller.scheduledTime || Date.now()), policy(env));
   },
 };
+
+function d1DailyLimit(error: unknown): "read" | "write" | null {
+  // D1 may wrap the useful message in Error.cause. Never classify unrelated
+  // SQL failures as quota errors or expose raw SQL/credentials to clients.
+  for (let depth = 0; depth < 5 && error instanceof Error; depth++) {
+    const match = /exceeded D1's free tier daily row (read|write) limit/i.exec(error.message);
+    if (match) return match[1].toLowerCase() as "read" | "write";
+    error = error.cause;
+  }
+  return null;
+}

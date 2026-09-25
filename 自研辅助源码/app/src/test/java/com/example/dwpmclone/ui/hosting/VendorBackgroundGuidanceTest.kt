@@ -99,12 +99,12 @@ class VendorBackgroundGuidanceTest {
 
     @Test
     fun stepsNameTheAppAsTheUserSeesItInSettings() {
-        // The manifest label is 自研服务; steps that named the package instead
+        // The manifest label is 帝三资料库; steps that named the package instead
         // would send the user looking for something that is not in the list.
         val guidance = VendorBackgroundGuidance.forManufacturer("Xiaomi")
 
-        assertTrue(guidance.autostartSteps.any { it.contains("自研服务") })
-        assertTrue(guidance.batterySteps.any { it.contains("自研服务") })
+        assertTrue(guidance.autostartSteps.any { it.contains(com.example.dwpmclone.BuildConfig.APP_NAME) })
+        assertTrue(guidance.batterySteps.any { it.contains(com.example.dwpmclone.BuildConfig.APP_NAME) })
     }
 
     @Test

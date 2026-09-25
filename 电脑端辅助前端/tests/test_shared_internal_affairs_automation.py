@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import sys
 import tempfile
 import types
@@ -457,22 +458,23 @@ class SharedInternalAffairsAutomationTests(unittest.TestCase):
         self._install_snapshot(self._snapshot(copper=0, food=1_000_000))
         exchanges = 0
 
-        def exchange(_self, execution, _account_ref, food_amount, _context, **_kwargs):
+        def command(_self, _account_ref, opcode, payload, _phase, _context, *, mutation_sent):
             nonlocal exchanges
             exchanges += 1
-            execution.mark_request_sent({
-                "feature": "fixture-exchange",
-                "foodAmount": food_amount,
-            })
-            return {"success": True, "message": "兑换成功"}
+            self.assertEqual(opcode, 0x1152)
+            self.assertTrue(mutation_sent)
+            return {"packets": [{
+                "opcode": 0x8152,
+                "payload": b"\x00" + struct.pack(">qq", 102_000, 660_000),
+            }]}
 
         def fail_before_send(*_args, **_kwargs):
             raise OperationKnownFailureError(
                 "动作前读取失败", code="FIXTURE_BEFORE_SEND"
             )
 
-        self.facade._run_heal_resource_exchange = types.MethodType(  # noqa: SLF001
-            exchange, self.facade
+        self.facade._execute_host_game_command = types.MethodType(  # noqa: SLF001
+            command, self.facade
         )
         self.facade._run_domestic_action_game_workflow = fail_before_send  # noqa: SLF001
         first = self.facade._run_automation_recovery_tick(  # noqa: SLF001
@@ -480,6 +482,9 @@ class SharedInternalAffairsAutomationTests(unittest.TestCase):
         )
         self.assertEqual(first["state"], "retry")
         self.assertEqual(exchanges, 1)
+        records = json.loads(self._public()["successRecordsJson"])
+        self.assertEqual([row["category"] for row in records], ["转铜"])
+        self.assertEqual(records[0]["message"], "340000粮换102000铜")
 
         self.facade.close()
         self.facade = self._open_facade()
@@ -506,6 +511,8 @@ class SharedInternalAffairsAutomationTests(unittest.TestCase):
 
         self.assertEqual(resumed["state"], "completed")
         self.assertEqual(actions, 1)
+        records = json.loads(self._public()["successRecordsJson"])
+        self.assertEqual([row["category"] for row in records], ["转铜", "内政"])
 
     def test_completed_exchange_with_insufficient_observation_does_not_replay_or_act(self) -> None:
         self._configure(self._habits(food_to_copper=True))

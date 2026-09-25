@@ -280,6 +280,12 @@ class SharedPythonCoreHost private constructor(context: Context) :
     fun operationStatus(operationId: String): JSONObject =
         callJson("operation_status_json", operationId)
 
+    fun acknowledgeResidentOperation(accountRef: String, operationId: String): JSONObject =
+        callJson("acknowledge_resident_operation_json", accountRef, operationId)
+
+    fun residentResourceNotices(accountRef: String): JSONObject =
+        callJson("resident_resource_notices_json", accountRef)
+
     /**
      * Read one operation, letting Python block until it settles or [waitMillis]
      * elapses.  Only callers that already hold a wake lock should use this: it

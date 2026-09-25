@@ -7,16 +7,25 @@
     "node": ">=22.0.0"
   },
   "scripts": {
+    "sandbox:pay": "node scripts/alipay-sandbox.mjs",
+    "sandbox:check": "node scripts/alipay-sandbox.mjs --verify-config",
     "check": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:ui",
+    "test:ui": "node --test test-ui/*.test.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.20.0",
     "@cloudflare/workers-types": "5.20260811.1",
+    "@types/node": "22.20.4",
     "typescript": "5.9.2",
     "vitest": "4.1.10",
     "wrangler": "4.117.0"
+  },
+  "overrides": { "urllib": "4.9.1", "undici": "7.29.0" },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "alipay-sdk": "4.14.0"
   }
 }

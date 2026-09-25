@@ -78,6 +78,12 @@ class FakeCloudPort:
         return True
 
     def exchange(self, request):
+        # Config traffic is separate from the map-coordination calls asserted
+        # by these tests. Dedicated config tests record every request.
+        if request["path"] == "/v1/client/config":
+            return {"status": 200, "body": {"ok": True, "config": {
+                "schemaVersion": 1, "cloudBrushMapEnabled": True, "revision": 0,
+            }}}
         if self.fail:
             raise OSError("fixture cloud unavailable")
         value = copy.deepcopy(dict(request))
@@ -113,7 +119,7 @@ class FakeCloudPort:
             }}
         if path == "/v1/maps/targets/sync":
             if not self.v2:
-                raise AssertionError("unexpected cloud path: /v1/maps/targets/sync")
+                return {"status": 404, "body": {"ok": False, "error": "HTTP 404"}}
             return {"status": 200, "body": {
                 "ok": True,
                 "targets": copy.deepcopy(self.sync_targets),
@@ -121,7 +127,7 @@ class FakeCloudPort:
             }}
         if path == "/v1/maps/targets/changes":
             if not self.v2:
-                raise AssertionError("unexpected cloud path: /v1/maps/targets/changes")
+                return {"status": 404, "body": {"ok": False, "error": "HTTP 404"}}
             return {"status": 200, "body": {
                 "ok": True,
                 "targets": [],
@@ -468,6 +474,11 @@ class CloudSharedMapCoreTests(unittest.TestCase):
         facade._ports = dataclasses.replace(  # noqa: SLF001
             facade._ports, map_snapshots=port  # noqa: SLF001
         )
+        facade._observe_local_map("303", "bandit", (12, 12), [{
+            "id": 0x5678, "kind": "山贼", "level": 1, "x": 10, "y": 10,
+            "composition": {"foot": 0, "bow": 5, "cavalry": 0, "chariot": 0, "source": "8540-units"},
+            "compositionCode": "0500", "dropCategories": ["资源"],
+        }])
         def accepted(_self, _execution, body, _context):
             return {"result": {
                 "success": True,
@@ -483,10 +494,10 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             accepted, facade
         )
         try:
-            facade._run_configured_brush_tick(  # noqa: SLF001
+            result = facade._run_configured_brush_tick(  # noqa: SLF001
                 FakeExecution(), "303", config, state, {}
             )
-            self.assertEqual(port.load_calls, 1)
+            self.assertEqual(result["target"]["id"], 0x5678)
             # No peer, so no reservation round trip is attempted.
             self.assertNotIn(
                 "/v1/maps/targets/reserve",
@@ -1021,7 +1032,7 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             facade.close()
             directory.cleanup()
 
-    def test_previous_cloud_mode_fails_closed_during_outage(self) -> None:
+    def test_outage_falls_back_for_brush_but_keeps_mine_fail_closed(self) -> None:
         cloud = FakeCloudPort("CLOUD_SHARED")
         facade, clock, directory, config, state = self._facade(cloud)
         scans = 0
@@ -1045,15 +1056,61 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             self.assertFalse(
                 outage_policy["legacyLocalMapPrefetchAllowed"]
             )
-            with self.assertRaises(OperationKnownFailureError) as raised:
-                facade._run_configured_brush_tick(  # noqa: SLF001
-                    FakeExecution(), "303", config, state, {}
-                )
-            self.assertEqual(
-                raised.exception.code,
-                "CLOUD_SHARED_DATA_UNAVAILABLE",
+            self.assertTrue(outage_policy["legacyLocalBanditMapPrefetchAllowed"])
+            result = facade._run_configured_brush_tick(
+                FakeExecution(), "303", config, state, {}
             )
-            self.assertEqual(scans, 0)
+            self.assertEqual(result["mapMode"], "LOCAL_FALLBACK")
+            self.assertEqual(scans, 1)
+            self.assertEqual(facade._cloud_presence_mode("303")["mode"], "CLOUD_UNAVAILABLE")
+            with self.assertRaises(OperationKnownFailureError):
+                facade._cloud_map_action_mode("303", "找矿")
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_repeated_heartbeat_failures_cannot_forget_previously_shared_mode(self):
+        cloud = FakeCloudPort("CLOUD_SHARED")
+        facade, clock, directory, _config, _state = self._facade(cloud)
+        try:
+            self.assertEqual(facade.cloud_presence_heartbeat("303")["mode"], "CLOUD_SHARED")
+            cloud.fail = True
+            for _ in range(4):
+                clock.value += CLOUD_PRESENCE_RENEW_MILLIS + 1
+                result = facade.cloud_map_coordination_policy("303")
+                self.assertEqual(result["mode"], "CLOUD_UNAVAILABLE")
+                self.assertFalse(result["legacyLocalMapPrefetchAllowed"])
+            # Reload the real account store with no in-memory mode history.
+            path = str(Path(directory.name) / "operations.json")
+            facade.close()
+            facade = CoreFacade(
+                shared_root=ROOT / "shared_core", operation_store_path=path,
+                ports=PlatformPorts(clock=clock, cloud_shared_data=cloud),
+            )
+            clock.value += CLOUD_PRESENCE_RENEW_MILLIS + 1
+            self.assertEqual(facade.cloud_presence_heartbeat("303")["mode"], "CLOUD_UNAVAILABLE")
+            cloud.fail = False
+            cloud.mode = "LOCAL_ONLY"
+            clock.value += CLOUD_PRESENCE_GRACE_MILLIS + 1
+            self.assertEqual(facade.cloud_presence_heartbeat("303")["mode"], "LOCAL_ONLY")
+        finally:
+            facade.close()
+            directory.cleanup()
+
+    def test_missing_own_presence_does_not_mean_peers_left(self):
+        cloud = FakeCloudPort("CLOUD_SHARED")
+        facade, _clock, directory, _config, _state = self._facade(cloud)
+        try:
+            self.assertEqual(facade.cloud_presence_heartbeat("303")["mode"], "CLOUD_SHARED")
+            facade._cloud_shared_exchange = lambda *_a, **_kw: (
+                409, {"ok": False, "code": "PRESENCE_REQUIRED"}
+            )
+            with self.assertRaises(OperationKnownFailureError) as raised:
+                facade._cloud_map_exchange("303", "/v1/maps/targets/reserve", {})
+            self.assertEqual(raised.exception.code, "CLOUD_SHARED_DATA_UNAVAILABLE")
+            policy = facade.cloud_map_coordination_policy("303")
+            self.assertEqual(policy["mode"], "CLOUD_SHARED")
+            self.assertFalse(policy["legacyLocalMapPrefetchAllowed"])
         finally:
             facade.close()
             directory.cleanup()
@@ -1080,67 +1137,32 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             self.assertEqual(calls, 1)
             self.assertEqual(
                 [call["path"] for call in cloud.calls],
-                ["/v1/presence/heartbeat"],
+                [],
             )
         finally:
             facade.close()
             directory.cleanup()
 
-    def test_cloud_mine_target_is_reused_and_reserved_without_scan(self) -> None:
+    def test_mine_ignores_cloud_targets_even_when_cloud_sharing_is_available(self) -> None:
         cloud = FakeCloudPort("CLOUD_SHARED")
-        cloud.targets = [{
-            "targetId": "0000000000005678",
-            "x": 10,
-            "y": 10,
-            "type": "银矿",
-            "level": 1,
-            "data": {
-                "kind": "银矿",
-                "typeCode": 4,
-                "businessId": 4,
-                "playerOccupied": False,
-                "defenderCount": 0,
-            },
-        }]
+        cloud.targets = [{"targetId": "0000000000005678", "x": 10, "y": 10,
+                          "type": "银矿", "level": 1}]
         facade, _clock, directory, _config, _state = self._facade(cloud)
         config, state = self._configure_mine(facade)
-
-        def forbidden_scan(*_args, **_kwargs):
-            raise AssertionError("cloud mine target should avoid a game-map scan")
-
-        def accepted(_self, _execution, body, _context):
-            return {"result": {
-                "success": True,
-                "successBattleId": 9100,
-                "message": "fixture mine accepted",
-                "target": dict(body["target"]),
-            }}
-
-        facade._run_mine_search_game_workflow = forbidden_scan  # noqa: SLF001
-        facade._run_mine_execute_game_workflow = types.MethodType(  # noqa: SLF001
-            accepted, facade
-        )
+        calls = []
+        def local_scan(_execution, body, _context):
+            calls.append(body)
+            return {"targets": [{"id": 88, "kind": "银矿", "level": 1,
+                                 "x": 10, "y": 10, "playerOccupied": False}]}
+        facade._run_mine_search_game_workflow = local_scan
+        facade._run_mine_execute_game_workflow = lambda _e, body, _c: {"result": {
+            "success": True, "successBattleId": 9100, "target": body["target"]}}
         try:
-            result = facade._run_configured_mine_tick(  # noqa: SLF001
-                FakeExecution(), "303", config, state, {}
-            )
+            result = facade._run_configured_mine_tick(FakeExecution(), "303", config, state, {})
             self.assertEqual(result["state"], "dispatched")
-            paths = [call["path"] for call in cloud.calls]
-            # 同刷黄：v2 副本先探测 sync，本 fixture 是旧 Worker，降级 v1。
-            self.assertEqual(paths, [
-                "/v1/presence/heartbeat",
-                "/v1/maps/targets/sync",
-                "/v1/maps/targets/query",
-                "/v1/maps/targets/reserve",
-                "/v1/maps/targets/status",
-                "/v1/maps/targets/status",
-            ])
-            statuses = [
-                call["body"]["status"]
-                for call in cloud.calls
-                if call["path"] == "/v1/maps/targets/status"
-            ]
-            self.assertEqual(statuses, ["dispatching", "dispatched"])
+            self.assertEqual(result["target"]["id"], 88)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(cloud.calls, [])
         finally:
             facade.close()
             directory.cleanup()
@@ -1227,13 +1249,12 @@ class CloudSharedMapCoreTests(unittest.TestCase):
                 [call["path"] for call in cloud.calls],
                 [
                     "/v1/presence/heartbeat",
-                    # 旧 Worker：每次取目标都先探测 sync、失败后降级 v1 查询
-                    # （降级只对本轮有效，下轮仍按规格重试 v2）。
+                    # sync 瞬时失败后降级 v1 查询；退避到期才再探测，
+                    # 不能在同一个手动扫描里重复打失败的端点。
                     "/v1/maps/targets/sync",
                     "/v1/maps/targets/query",
                     "/v1/maps/scans/claim",
                     "/v1/maps/observations",
-                    "/v1/maps/targets/sync",
                     "/v1/maps/targets/query",
                 ],
             )
@@ -1313,7 +1334,7 @@ class CloudSharedMapCoreTests(unittest.TestCase):
             self.assertEqual(calls, 1)
             self.assertEqual(
                 [call["path"] for call in cloud.calls],
-                ["/v1/presence/heartbeat"],
+                [],
             )
         finally:
             facade.close()

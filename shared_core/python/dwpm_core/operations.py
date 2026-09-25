@@ -52,9 +52,9 @@ PRUNABLE_STATES = frozenset((SUCCEEDED, CANCELLED))
 #: Unbounded retention was not caution - it is what made the process look
 #: exactly like the runaway it had become.
 #:
-#: The bound is generous next to every real consumer: the host polls an
-#: operation only until it settles, success-record backfill reads a few hundred,
-#: and idempotency keys are unique per tick.
+#: This bounds historical, unretained results. A suspended consumer can miss
+#: any fixed-size window while another account runs, so resident results are
+#: separately retained until consumption, not merely until completion.
 MAX_RETAINED_CLOSED_OPERATIONS = 300
 
 #: Largest result field kept once an operation is definitively closed.
@@ -77,8 +77,8 @@ MAX_RETAINED_RESULT_FIELD_BYTES = 4096
 #: A result is working notes only *after* everyone has had a chance to read it.
 #: Compacting at the moment of closing is too early: the caller reads the
 #: outcome immediately afterwards, and the desktop 副本/无损 ticks failed with
-#: "未返回业务结果" the first time this ran. The host polls within seconds, so
-#: this window is minutes of headroom.
+#: "未返回业务结果" the first time this ran. Retained resident results are
+#: excluded from compaction altogether until the host consumes them.
 UNCOMPACTED_CLOSED_OPERATIONS = 50
 
 OperationRunner = Callable[["OperationExecutionContext", Dict[str, Any]], Dict[str, Any]]
@@ -271,6 +271,7 @@ class DurableOperationStore:
         payload: Optional[Dict[str, Any]] = None,
         coalesce_active: bool = False,
         defer_until_ready: bool = False,
+        result_retention_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         account = self._normalized_text(account_ref, "account ref", 200)
         normalized_type = str(operation_type or "").strip().lower()
@@ -279,6 +280,10 @@ class DurableOperationStore:
         normalized_kind = self._normalized_text(kind, "operation kind", 160)
         key = self._normalized_text(idempotency_key, "idempotency key", 200)
         normalized_payload = self._json_object(payload or {}, "operation payload")
+        retention_key = (
+            self._normalized_text(result_retention_key, "result retention key", 200)
+            if result_retention_key is not None else None
+        )
         with self._condition:
             if coalesce_active:
                 active = self._find_active_equivalent_locked(
@@ -288,6 +293,7 @@ class DurableOperationStore:
                     normalized_payload,
                 )
                 if active is not None:
+                    self._retain_result_locked(active, retention_key)
                     return self._submission_view(active, deduplicated=True)
             existing = self._find_idempotent_locked(
                 account,
@@ -302,6 +308,7 @@ class DurableOperationStore:
                     raise ValueError(
                         "idempotency key was already used with different input"
                     )
+                self._retain_result_locked(existing, retention_key)
                 return self._submission_view(existing, deduplicated=True)
 
             submitted_at = self._now_millis()
@@ -332,6 +339,19 @@ class DurableOperationStore:
                 "recoveryPending": bool(defer_until_ready),
                 "hostReadyObserved": False,
             }
+            if retention_key is not None:
+                # A new operation from this same serial consumer supersedes
+                # its closed results. This also repairs a crash between local
+                # pointer removal and the best-effort acknowledgement.
+                for previous in self._records.values():
+                    if (
+                        previous.get("accountRef") == account
+                        and previous.get("resultRetentionKey") == retention_key
+                        and previous.get("status") in TERMINAL_STATES
+                    ):
+                        previous["resultRetained"] = False
+                record["resultRetentionKey"] = retention_key
+                record["resultRetained"] = True
             self._records[operation_id] = record
             self._persist_locked()
             self._ensure_lane_locked(account)
@@ -339,6 +359,44 @@ class DurableOperationStore:
             submission = self._submission_view(record, deduplicated=False)
         self._emit("operation.accepted", record)
         return submission
+
+    def _retain_result_locked(
+        self, record: Dict[str, Any], retention_key: Optional[str]
+    ) -> None:
+        if retention_key is None or (
+            record.get("resultRetentionKey") == retention_key
+            and record.get("resultRetained")
+        ):
+            return
+        existing = record.get("resultRetentionKey")
+        if existing is not None and existing != retention_key:
+            raise ValueError("operation result already belongs to another consumer")
+        record["resultRetentionKey"] = retention_key
+        record["resultRetained"] = True
+        self._persist_locked()
+
+    def acknowledge_result(
+        self, operation_id: str, *, account_ref: str, retention_key: str
+    ) -> bool:
+        """Release a closed result only after its consumer removed its pointer.
+
+        This is not business reconciliation. UNCERTAIN/FAILED records remain
+        protected by their existing retention policy even after acknowledgement.
+        """
+
+        with self._condition:
+            record = self._records.get(str(operation_id))
+            if (
+                record is None
+                or record.get("accountRef") != str(account_ref)
+                or record.get("resultRetentionKey") != str(retention_key)
+                or record.get("status") not in TERMINAL_STATES
+            ):
+                return False
+            if record.get("resultRetained"):
+                record["resultRetained"] = False
+                self._persist_locked()
+            return True
 
     def _find_active_equivalent_locked(
         self,
@@ -1177,6 +1235,7 @@ class DurableOperationStore:
             (int(record.get("updatedAtMillis") or 0), operation_id)
             for operation_id, record in self._records.items()
             if str(record.get("status") or "") in PRUNABLE_STATES
+            and not bool(record.get("resultRetained"))
         ]
         closed.sort()
         # Newest first are left whole; only what has aged past the read window

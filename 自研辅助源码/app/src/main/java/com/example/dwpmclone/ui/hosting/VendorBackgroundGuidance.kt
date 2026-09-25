@@ -1,5 +1,7 @@
 package com.example.dwpmclone.ui.hosting
 
+import com.example.dwpmclone.BuildConfig
+
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -42,7 +44,7 @@ data class VendorBackgroundGuidance(
 
     companion object {
         const val PATH_CAVEAT = "以下路径随系统版本略有差异，按最接近的菜单名查找即可"
-        private const val APP = "自研服务"
+        private const val APP = BuildConfig.APP_NAME
 
         /** Applies to every ROM, including AOSP. */
         private val SHARED_EXTRA_STEPS = listOf(

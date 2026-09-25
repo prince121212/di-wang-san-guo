@@ -80,6 +80,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dwpm_core import CoreFacade
+from dwpm_core.automation import FEATURE_LABELS as SHARED_FEATURE_LABELS
+from dwpm_core.recovery_policy import resource_wait_notices as shared_resource_wait_notices
+from dwpm_core.features.brush_lanes import (
+    BRUSH_WAITING_FIELD,
+    brush_lane_notices as shared_brush_lane_notices,
+    brush_recovery_records as shared_brush_recovery_records,
+)
 from dwpm_core.host_ports import HostGameCommandError
 from dwpm_core.reference import (
     GUIDE_ARTICLE_SPECS,
@@ -11884,6 +11891,7 @@ def _shared_resident_pending(session_id: str) -> bool:
             "minePendingGarrisonJson",
             "losslessPendingBattleJson",
             "brushPendingRecoveryJson",
+            BRUSH_WAITING_FIELD,
             "raidPendingReturnJson",
             "dungeonPendingRunJson",
             "generalMaintenancePendingJson",
@@ -11913,6 +11921,7 @@ def _shared_resident_pending_features(
         ("minePendingGarrisonJson", "mine"),
         ("losslessPendingBattleJson", "lossless"),
         ("brushPendingRecoveryJson", "brush"),
+        (BRUSH_WAITING_FIELD, "brush"),
         ("raidPendingReturnJson", "raid"),
         ("dungeonPendingRunJson", "dungeon"),
         ("generalMaintenancePendingJson", "general"),
@@ -12162,6 +12171,20 @@ def reconcile_uncertain_expeditions(
                 operator_reconcile_features=[str(spec["core"])],
             )
             state = str(result.get("state") or "")
+            if feature == "brushYellow":
+                account = json.loads(
+                    SHARED_PYTHON_CORE.account_record_json(sid)
+                ).get("account") or {}
+                public = ((account.get("session") or {}).get("publicState") or {})
+                remaining = shared_brush_recovery_records(public)
+                if remaining:
+                    # One maintenance tick adjudicates one battle. Never
+                    # declare the feature clear just because the selected
+                    # legacy slot emptied while other team ledgers remain.
+                    raise RuntimeError(
+                        f"刷黄还有{len(remaining)}个编队账本未结清；"
+                        f"本轮结果：{result.get('message') or state}。保持暂停，可继续逐队核对"
+                    )
             if state != "reconciled":
                 account = json.loads(
                     SHARED_PYTHON_CORE.account_record_json(sid)
@@ -31613,13 +31636,40 @@ def current_important_notices(sess: dict[str, Any]) -> list[dict[str, Any]]:
     account_key = account_storage_key(sess=sess)
     sync_recent_important_notices_from_logs(account_key)
     notices = database_read_active_important_notices(account_key)
+    public = shared_account_public_state_snapshot(sess)
+    resource_notices = shared_resource_wait_notices(
+        _shared_public_json_object(
+            public,
+            "residentAutomationStateJson",
+        ),
+        SHARED_FEATURE_LABELS,
+    ) + shared_brush_lane_notices(public)
+    # Canonical current failures outrank old task/log copies, including after
+    # dismissal. Retrying changes the deadline, not the identity of an episode.
+    resource_task_keys = {
+        f"task:{notice['feature']}" for notice in resource_notices
+    }
+    notices = [
+        notice for notice in notices
+        if notice.get("key") not in resource_task_keys
+    ]
+    for notice in resource_notices:
+        dismissed = database_read_important_notice_record(account_key, notice["key"])
+        if dismissed and not dismissed.get("active") and dismissed.get("source") == "user-dismiss":
+            continue
+        notices.append({
+            **notice,
+            "id": notice["key"],
+            "source": "shared-resources",
+            "active": True,
+        })
     # Hide and resolve records produced by the old fallback routing bug.  This
     # also repairs accounts that were already running before the code fix; no
     # separate manual database cleanup is required after the new server code
     # is deployed.
     filtered_notices: list[dict[str, Any]] = []
     for notice in notices:
-        if _shared_result_notice_is_misattributed(notice):
+        if notice.get("source") != "shared-resources" and _shared_result_notice_is_misattributed(notice):
             database_resolve_important_notice(
                 account_key,
                 str(notice.get("key") or ""),
@@ -31739,7 +31789,7 @@ def current_important_notices(sess: dict[str, Any]) -> list[dict[str, Any]]:
     for notice in notices:
         notice_key = str(notice.get("key") or notice.get("id") or "")
         notice["message"] = str(notice.get("message") or "")[:800]
-        notice["advice"] = (
+        notice["advice"] = notice.get("advice") or (
             "无需手动重启；系统已跳过本轮任务并继续执行其他任务，"
             "5分钟后会自动重新检查体力和活血丹。"
             if notice_key in {"task:dungeon", "task:lossless"}
@@ -34078,7 +34128,16 @@ def sync_shared_resident_feature_notice(
     account_key = account_storage_key(session_id=str(session_id or ""))
     if normalized == "brush":
         main_notice_key = "task:brushYellow"
-        if bool(result.get("requiresAttention")) or state in {
+        if state == "waiting-resources":
+            database_upsert_important_notice(
+                account_key,
+                main_notice_key,
+                severity="warning",
+                title="刷黄等待资源",
+                message=message or "刷黄资源暂时不足，其他任务继续运行",
+                source="automation",
+            )
+        elif bool(result.get("requiresAttention")) or state in {
             "blocked", "uncertain", "timeout",
         }:
             database_upsert_important_notice(
@@ -34354,23 +34413,26 @@ def auto_brush_worker(task_id: str) -> None:
                     result_task["cycle"] = (
                         int(result_task.get("cycle") or 0) + 1
                     )
-                record_success_action(
-                    sid,
-                    {
-                        "ministry": "六部",
-                        "general": "将领维护",
-                        "domestic": "自动内政",
-                        "inventory": "背包整理",
-                        "captives": "俘虏营",
-                    }[feature],
-                    message,
-                    detail={
-                        "feature": feature,
-                        "state": state,
-                        "action": result.get("action") or {},
-                        "consumedCount": result.get("consumedCount"),
-                    },
-                )
+                # Shared inventory now persists its own per-action political
+                # record.  The records route already reads that store on both
+                # hosts; a desktop-only "背包整理" row would duplicate it.
+                if feature != "inventory":
+                    record_success_action(
+                        sid,
+                        {
+                            "ministry": "六部",
+                            "general": "将领维护",
+                            "domestic": "自动内政",
+                            "captives": "俘虏营",
+                        }[feature],
+                        message,
+                        detail={
+                            "feature": feature,
+                            "state": state,
+                            "action": result.get("action") or {},
+                            "consumedCount": result.get("consumedCount"),
+                        },
+                    )
             elif result.get("dispatchAccepted"):
                 if result_task is not None:
                     result_task["cycle"] = (

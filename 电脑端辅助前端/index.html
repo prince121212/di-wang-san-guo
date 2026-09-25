@@ -11,7 +11,8 @@
        back out.  A non-zoomable viewport pins min=max=fit, so neither happens. -->
   <meta id="viewportMeta" name="viewport" content="width=1080, user-scalable=no" />
   <title>帝王三国电脑端辅助</title>
-  <link rel="stylesheet" href="./styles.css?v=V0.0.19" />
+  <link rel="stylesheet" href="./styles.css?v=V0.0.111" />
+  <link rel="stylesheet" href="./membership.css?v=V0.0.111" />
 </head>
 <body>
   <div class="desktop-toolbar" id="desktopToolbar">
@@ -44,8 +45,8 @@
             <section id="assistantPage">
               <section class="account-card">
                 <div class="account-line">
-                  <span class="open-count">1开</span>
-                  <span class="expire-label">到期时间2026-07-08 03:59:04</span>
+                  <span class="open-count">游戏账号未添加</span>
+                  <span class="expire-label">正在检查会员</span>
                   <button class="renew-btn">续期</button>
                   <span class="mobile-app-version" id="mobileAppVersion" hidden></span>
                   <button class="refresh-btn" title="刷新">⟳</button>
@@ -410,6 +411,7 @@
             </section>
 
             <section id="homePage" class="page-hidden home-page">
+              <div id="homeMembershipSlot"></div>
               <div class="home-settings-toolbar">
                 <label for="homeAccountSelect">账号</label>
                 <select id="homeAccountSelect" class="design-select">
@@ -424,8 +426,8 @@
           </main>
 
           <footer class="bottom-nav">
-            <div class="bottom-item active" data-page="助手"><span class="icon">⌂</span><span>助手</span></div>
             <div class="bottom-item" data-page="其他"><span class="icon">▦</span><span>攻略</span></div>
+            <div class="bottom-item active" data-page="助手"><span class="icon">⌂</span><span>助手</span></div>
             <div class="bottom-item" data-page="Home"><span class="icon">⌂</span><span>Home</span></div>
             <div class="home-indicator"></div>
           </footer>
@@ -653,6 +655,8 @@
   </main>
 
   <script src="./assistant-api.js?v=V0.0.19"></script>
-  <script src="./app.js?v=V0.0.19"></script>
+  <script src="./membership-view.js?v=V0.0.111"></script>
+  <script src="./app.js?v=V0.0.113"></script>
+  <script src="./membership.js?v=V0.0.114"></script>
 </body>
 </html>

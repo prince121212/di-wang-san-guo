@@ -241,5 +241,123 @@ class ResultCompactionTests(unittest.TestCase):
         self.assertGreaterEqual(MAX_RETAINED_RESULT_FIELD_BYTES, 550 * 4)
 
 
+class ResidentResultHandoverTests(unittest.TestCase):
+    """Closing an operation is not proof that its Android consumer read it."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "operations.json"
+        self.store = self._open()
+
+    def _open(self):
+        store = DurableOperationStore(self.path)
+        # Deliberately drive the lane transitions below. No network or timing
+        # race is needed to exercise submit/dedup/ack/persist/prune.
+        store._ensure_lane_locked = lambda _account: None
+        return store
+
+    def tearDown(self):
+        self.store.close()
+        self.directory.cleanup()
+
+    def _submit(self, account="176", key="tick", *, consumer=None, coalesce=False):
+        return self.store.submit_network(
+            account_ref=account, operation_type="query",
+            kind="automation:recovery-tick:v1", idempotency_key=key,
+            payload={"accountRef": account}, coalesce_active=coalesce,
+            result_retention_key=consumer or f"android-resident:{account}",
+        )["operationId"]
+
+    def _finish(self, operation_id, *, status=SUCCEEDED):
+        with self.store._condition:
+            self.store._records[operation_id].update(
+                status=status, updatedAtMillis=1,
+                result={"feature": "dungeon", "state": "fighting", "large": "x" * 20_000},
+            )
+            self.store._persist_locked()
+
+    def _flood_other_account(self):
+        with self.store._condition:
+            for index in range(MAX_RETAINED_CLOSED_OPERATIONS + 50):
+                self.store._records[f"flood-{index}"] = {
+                    "operationId": f"flood-{index}", "accountRef": "202",
+                    "status": SUCCEEDED, "updatedAtMillis": 100 + index,
+                }
+            self.store._persist_locked()
+
+    def test_unconsumed_result_survives_other_account_flood_and_process_restart(self):
+        operation_id = self._submit()
+        self._finish(operation_id)
+        self._flood_other_account()
+        self.assertIn("large", self.store.status(operation_id)["result"])
+        self.store.close()
+        self.store = self._open()
+        self.assertTrue(self.store.status(operation_id)["resultRetained"])
+        self.assertIn("large", self.store.status(operation_id)["result"])
+        self.assertEqual(len(self.store.list_operations()), MAX_RETAINED_CLOSED_OPERATIONS + 1)
+
+    def test_only_correct_consumer_can_acknowledge_a_terminal_result(self):
+        operation_id = self._submit()
+        self.assertFalse(self.store.acknowledge_result(
+            operation_id, account_ref="176", retention_key="android-resident:176",
+        ))
+        self._finish(operation_id)
+        for account, consumer in (("202", "android-resident:176"), ("176", "other")):
+            self.assertFalse(self.store.acknowledge_result(
+                operation_id, account_ref=account, retention_key=consumer,
+            ))
+            self.assertTrue(self.store.status(operation_id)["resultRetained"])
+        for _ in range(2):
+            self.assertTrue(self.store.acknowledge_result(
+                operation_id, account_ref="176", retention_key="android-resident:176",
+            ))
+        self.assertFalse(self.store.status(operation_id)["resultRetained"])
+        self._flood_other_account()
+        self.assertIsNone(self.store.status(operation_id))
+
+    def test_acknowledgement_never_removes_unknown_send_evidence(self):
+        operation_id = self._submit()
+        self._finish(operation_id, status=UNCERTAIN)
+        self.assertTrue(self.store.acknowledge_result(
+            operation_id, account_ref="176", retention_key="android-resident:176",
+        ))
+        self._flood_other_account()
+        self.assertEqual(self.store.status(operation_id)["status"], UNCERTAIN)
+        self.assertIn("large", self.store.status(operation_id)["result"])
+
+    def test_submission_after_lost_ack_releases_only_same_consumer_old_result(self):
+        old = self._submit()
+        other = self._submit("202", "other")
+        self._finish(old)
+        self._finish(other)
+        new = self._submit("176", "new-tick")
+        self.assertFalse(self.store.status(old)["resultRetained"])
+        self.assertTrue(self.store.status(new)["resultRetained"])
+        self.assertTrue(self.store.status(other)["resultRetained"])
+
+    def test_response_loss_deduplicates_and_keeps_result_pinned(self):
+        first = self._submit()
+        self._finish(first)
+        self.assertEqual(self._submit(), first)
+        self.assertTrue(self.store.status(first)["resultRetained"])
+        self._flood_other_account()
+        self.assertIsNotNone(self.store.status(first))
+
+    def test_coalesced_active_result_is_pinned_and_cannot_change_owner(self):
+        first = self._submit(coalesce=True)
+        self.assertEqual(self._submit(key="another-key", coalesce=True), first)
+        with self.assertRaises(ValueError):
+            self._submit(consumer="different-consumer")
+        self.assertTrue(self.store.status(first)["resultRetained"])
+
+    def test_lost_acks_cannot_accumulate_unbounded_pins(self):
+        for index in range(30):
+            operation_id = self._submit(key=f"tick-{index}")
+            self._finish(operation_id)
+        retained = [r for r in self.store.list_operations() if r.get("resultRetained")]
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0]["operationId"], operation_id)
+
+
 if __name__ == "__main__":
     unittest.main()

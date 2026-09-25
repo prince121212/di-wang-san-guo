@@ -8,6 +8,7 @@ plugins {
 }
 
 val generatedAssistantAssets = layout.buildDirectory.dir("generated/assistantWebAssets")
+val appName = "帝三资料库"
 val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.isFile }
         ?.inputStream()?.use { load(it) }
@@ -33,6 +34,8 @@ fun cloudSetting(name: String): String {
     return when (name) {
         "DWPM_CLOUD_SHARED_DATA_URL" -> "https://dwpm-data.292828.xyz"
         "DWPM_CLOUD_SHARED_DATA_TOKEN" -> macosCloudRuntimeToken()
+        "DWPM_MEMBER_LEASE_PUBLIC_KEY" -> rootProject.file("../cloud-shared-data/member-lease-public-key.txt")
+            .takeIf { it.isFile }?.readText()?.trim().orEmpty()
         else -> ""
     }
 }
@@ -102,7 +105,7 @@ val generateSharedPythonBundle by tasks.registering {
 
 val syncAssistantWebAssets by tasks.registering(Sync::class) {
     from(rootProject.file("../电脑端辅助前端")) {
-        include("index.html", "app.js", "styles.css", "assistant-api.js")
+        include("index.html", "app.js", "styles.css", "assistant-api.js", "membership-view.js", "membership.js", "membership.css")
         into("assistant")
     }
     from(rootProject.file("../shared_core")) {
@@ -124,8 +127,11 @@ android {
         applicationId = "com.example.dwpmclone"
         minSdk = 24
         targetSdk = 36
-        versionCode = 97
-        versionName = "V0.0.97"
+        versionCode = 114
+        versionName = "V0.0.114"
+        resValue("string", "app_name", appName)
+        buildConfigField("String", "MEMBER_LEASE_PUBLIC_KEY", buildConfigString(cloudSetting("DWPM_MEMBER_LEASE_PUBLIC_KEY")))
+        buildConfigField("String", "APP_NAME", buildConfigString(appName))
         buildConfigField(
             "String",
             "CLOUD_SHARED_DATA_URL",
@@ -134,11 +140,43 @@ android {
         buildConfigField(
             "String",
             "CLOUD_SHARED_DATA_TOKEN",
-            buildConfigString(cloudSetting("DWPM_CLOUD_SHARED_DATA_TOKEN"))
+            buildConfigString("") // New clients use member-scoped, short-lived data credentials.
         )
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
+    }
+
+    signingConfigs {
+        val path = System.getenv("DWPM_RELEASE_KEYSTORE").orEmpty()
+        val password = System.getenv("DWPM_RELEASE_STORE_PASSWORD").orEmpty()
+        if (path.isNotBlank() && password.isNotBlank()) {
+            create("commercial") {
+                storeFile = file(path)
+                storePassword = password
+                keyAlias = "dwpm-release"
+                keyPassword = password
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfigs.findByName("commercial")?.let { signingConfig = it }
+        }
+        create("membertest") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".membertest"
+            versionNameSuffix = "-membertest"
+            resValue("string", "app_name", "帝三资料库·验收")
+            matchingFallbacks += listOf("debug")
+        }
+    }
+    sourceSets.getByName("membertest") {
+        java.srcDir("src/debug/java")
+        manifest.srcFile("src/debug/AndroidManifest.xml")
     }
 
     compileOptions {
@@ -155,6 +193,18 @@ android {
 
 tasks.named("preBuild").configure {
     dependsOn(syncAssistantWebAssets, generateSharedPythonBundle)
+}
+
+tasks.matching { it.name == "packageRelease" }.configureEach {
+    doFirst {
+        check(!System.getenv("DWPM_RELEASE_KEYSTORE").isNullOrBlank() &&
+            !System.getenv("DWPM_RELEASE_STORE_PASSWORD").isNullOrBlank()) {
+            "正式APK必须提供发布签名环境，禁止生成无签名商业包"
+        }
+        check(cloudSetting("DWPM_MEMBER_LEASE_PUBLIC_KEY").isNotBlank()) {
+            "正式APK缺少会员授权验签公钥"
+        }
+    }
 }
 
 tasks.configureEach {
@@ -181,6 +231,7 @@ chaquopy {
 
 
 dependencies {
+    implementation("com.alipay.sdk:alipaysdk-android:15.8.42")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

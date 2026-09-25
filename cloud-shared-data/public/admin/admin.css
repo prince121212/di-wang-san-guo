@@ -332,3 +332,16 @@ button { color: inherit; }
   .page-heading h2 { font-size: 23px; }
   .map-scroll { height: 420px; }
 }
+:root { --runtime-config-gap: 24px; }
+.runtime-config-panel { display: flex; align-items: center; justify-content: space-between; gap: var(--runtime-config-gap); padding: 24px; margin-bottom: 24px; }
+.runtime-config-panel h3 { margin: 0 0 10px; }
+.runtime-config-panel p { margin: 6px 0; }
+.runtime-config-hint { max-width: 760px; color: #64748b; line-height: 1.7; font-size: 13px; }
+.runtime-config-panel small { color: #64748b; }
+.runtime-config-panel button { flex-shrink: 0; width: auto; padding: 12px 20px; }
+@media (max-width: 700px) { .runtime-config-panel { align-items: stretch; flex-direction: column; } }
+.member-panel { margin-bottom: 24px; }
+.member-controls { margin: 16px 20px; }
+.member-controls input,.member-controls select { max-width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; margin: 4px; }
+.member-controls button { margin: 4px; }
+#memberAudit { max-height: 250px; overflow: auto; font-size: 12px; line-height: 1.8; }

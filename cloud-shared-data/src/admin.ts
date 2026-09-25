@@ -1,12 +1,12 @@
 import type { Env, MapKind } from "./types";
 import { policy, RequestError } from "./validation";
 import { platformDisplayName } from "./platforms";
+import { runtimeConfig, updateRuntimeConfig } from "./runtime-config";
+import { handleMemberAdmin } from "./members";
+import { handlePaymentAdmin } from "./payments";
 
 const ADMIN_COOKIE = "__Host-dwpm_admin";
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
-const LOGIN_WINDOW_MILLIS = 15 * 60 * 1000;
-const LOGIN_LOCK_MILLIS = 10 * 60 * 1000;
-const MAX_LOGIN_FAILURES = 5;
 const BANDIT_TTL_MILLIS = 30 * 60 * 1000;
 const MINE_TTL_MILLIS = 3 * 60 * 60 * 1000;
 
@@ -51,7 +51,7 @@ async function adminAsset(request: Request, env: Env): Promise<Response> {
   const assetPath = pathname === "/admin/"
     ? "/admin/index.html"
     : pathname;
-  if (!["/admin/index.html", "/admin/admin.css", "/admin/admin.js"].includes(assetPath)) {
+  if (!["/admin/index.html", "/admin/admin.css", "/admin/admin.js", "/admin/members.js", "/admin/payments.js"].includes(assetPath)) {
     throw new RequestError("页面不存在", 404, "NOT_FOUND");
   }
   const url = new URL(request.url);
@@ -192,43 +192,18 @@ async function login(request: Request, env: Env, now: number): Promise<Response>
   const username = String(input.username ?? "").trim().slice(0, 120);
   const password = String(input.password ?? "").slice(0, 240);
   const clientKey = await loginClientKey(request);
-  const attempt = await env.DB.prepare(
-    `SELECT failure_count,first_failure_at,locked_until
-     FROM admin_login_attempts WHERE client_key=?`,
-  ).bind(clientKey).first<{
-    failure_count: number;
-    first_failure_at: number;
-    locked_until: number;
-  }>();
-  if (Number(attempt?.locked_until ?? 0) > now) {
-    return json({
-      ok: false,
-      code: "LOGIN_RATE_LIMITED",
-      error: "登录失败次数过多，请10分钟后再试",
-      retryAfterMillis: Number(attempt?.locked_until) - now,
-    }, 429);
-  }
   const valid = constantTimeEqual(username, configuredUsername)
     && constantTimeEqual(password, configuredPassword);
-  if (!valid) {
-    const withinWindow = now - Number(attempt?.first_failure_at ?? 0) <= LOGIN_WINDOW_MILLIS;
-    const failures = withinWindow ? Number(attempt?.failure_count ?? 0) + 1 : 1;
-    const firstFailureAt = withinWindow ? Number(attempt?.first_failure_at ?? now) : now;
-    const lockedUntil = failures >= MAX_LOGIN_FAILURES ? now + LOGIN_LOCK_MILLIS : 0;
-    await env.DB.prepare(
-      `INSERT INTO admin_login_attempts(
-         client_key,failure_count,first_failure_at,locked_until,last_attempt_at
-       ) VALUES(?,?,?,?,?)
-       ON CONFLICT(client_key) DO UPDATE SET
-         failure_count=excluded.failure_count,
-         first_failure_at=excluded.first_failure_at,
-         locked_until=excluded.locked_until,
-         last_attempt_at=excluded.last_attempt_at`,
-    ).bind(clientKey, failures, firstFailureAt, lockedUntil, now).run();
-    return json({ ok: false, code: "INVALID_CREDENTIALS", error: "账号或密码错误" }, 401);
-  }
-  await env.DB.prepare("DELETE FROM admin_login_attempts WHERE client_key=?")
-    .bind(clientKey).run();
+  // The switch is an outage control: logging in must not spend depleted D1
+  // map writes either. Preserve the same five-attempt/ten-minute lock policy.
+  const limitResponse = await env.RUNTIME_CONFIG.getByName(`admin-login:${clientKey}`).fetch(
+    "https://config.internal/login-attempt", { method: "POST", body: JSON.stringify({ valid }) },
+  );
+  if (!limitResponse.ok) throw new RequestError("登录保护暂不可用", 503, "ADMIN_UNAVAILABLE");
+  const limit = await limitResponse.json<{ limited: boolean; retryAfterMillis: number }>();
+  if (limit.limited) return json({ ok: false, code: "LOGIN_RATE_LIMITED",
+    error: "登录失败次数过多，请10分钟后再试", retryAfterMillis: limit.retryAfterMillis }, 429);
+  if (!valid) return json({ ok: false, code: "INVALID_CREDENTIALS", error: "账号或密码错误" }, 401);
   const session = await issueSession(configuredUsername, env, now);
   return json(
     { ok: true, username: configuredUsername, expiresInSeconds: SESSION_MAX_AGE_SECONDS },
@@ -548,6 +523,16 @@ export async function handleAdminRequest(
   if (path.startsWith("/admin/api/")) {
     const username = await authenticatedUsername(request, env, now);
     if (!username) return json({ ok: false, code: "ADMIN_UNAUTHORIZED", error: "请先登录" }, 401);
+    const payment = await handlePaymentAdmin(request, env, username);
+    if (payment) return payment;
+    const member = await handleMemberAdmin(request, env, username);
+    if (member) return member;
+    if (request.method === "GET" && path === "/admin/api/runtime-config") {
+      return json({ ok: true, config: await runtimeConfig(env) });
+    }
+    if (request.method === "POST" && path === "/admin/api/runtime-config") {
+      return json({ ok: true, config: await updateRuntimeConfig(request, env) });
+    }
     if (request.method === "GET" && path === "/admin/api/overview") return overview(env, now);
     if (request.method === "GET" && path === "/admin/api/map") return mapData(request, env, now);
     throw new RequestError("管理员接口不存在", 404, "NOT_FOUND");

@@ -11,6 +11,176 @@ import org.junit.Test
 
 class SharedResidentAutomationAdapterTest {
     @Test
+    fun confirmedMissingPointerSchedulesFreshRecoveryInsteadOfReadingForever() {
+        for (missing in listOf(
+            JSONObject().put("ok", false).put("errorCode", "OPERATION_NOT_FOUND"),
+            JSONObject().put("ok", false).put("error", "operation not found"),
+        )) {
+            val store = InMemoryResidentOperationStore().apply {
+                putOperation(176, "pruned-result", "old-tick")
+                putOperation(202, "other-account", "other-tick")
+            }
+            val submittedKeys = mutableListOf<String>()
+            val readIds = mutableListOf<String>()
+            val adapter = SharedResidentAutomationAdapter(
+                configure = { _, _ -> JSONObject().put("ok", true) },
+                submit = { _, key, _ ->
+                    submittedKeys += key
+                    JSONObject().put("operationId", "fresh-recovery")
+                },
+                status = { id ->
+                    readIds += id
+                    if (id == "pruned-result") missing else JSONObject().put(
+                        "operation", JSONObject().put("status", "RUNNING")
+                    )
+                },
+                operationStore = store,
+                nowMillis = { 1000L },
+            )
+
+            val first = adapter.runOnce(176, JSONObject(), "ignored-while-resuming")
+            assertEquals("recovery-scheduled", first.state)
+            assertEquals(1000L + SharedResidentAutomationAdapter.RETRY_MILLIS, first.nextWakeAtMillis)
+            assertFalse(first.requiresAttention)
+            assertFalse(first.requestSent)
+            assertNull(store.get(176))
+            assertEquals("other-account", store.get(202)?.operationId)
+            assertTrue(submittedKeys.isEmpty())
+
+            adapter.runOnce(176, JSONObject(), "new-recovery-tick")
+            assertEquals(listOf("new-recovery-tick"), submittedKeys)
+            assertEquals(listOf("pruned-result", "fresh-recovery"), readIds)
+        }
+    }
+
+    @Test
+    fun ambiguousOrMalformedStatusKeepsPointerAndRetriesOnlyTheRead() {
+        for (envelope in listOf(
+            JSONObject(),
+            JSONObject().put("ok", false).put("error", "temporary I/O failure"),
+            JSONObject().put("ok", true).put("errorCode", "OPERATION_NOT_FOUND"),
+            JSONObject().put("operation", JSONObject()),
+            JSONObject().put("operation", JSONObject().put("status", "UNKNOWN")),
+        )) {
+            val store = InMemoryResidentOperationStore().apply {
+                putOperation(176, "keep-this", "keep-tick")
+            }
+            var reads = 0
+            val adapter = SharedResidentAutomationAdapter(
+                configure = { _, _ -> JSONObject() },
+                submit = { _, _, _ -> error("must not resubmit") },
+                status = { reads++; envelope },
+                operationStore = store,
+                nowMillis = { 1000L },
+                acknowledge = { _, _ -> error("must not acknowledge") },
+            )
+            repeat(2) {
+                val result = adapter.runOnce(176, JSONObject(), "unused")
+                assertEquals("status-unavailable", result.state)
+                assertFalse(result.requiresAttention)
+                assertEquals(1000L + SharedResidentAutomationAdapter.RETRY_MILLIS, result.nextWakeAtMillis)
+                assertEquals("keep-this", store.get(176)?.operationId)
+            }
+            assertEquals(2, reads)
+        }
+    }
+
+    @Test
+    fun statusTimeoutIsNotProofThatAnOperationDisappeared() {
+        val store = InMemoryResidentOperationStore().apply {
+            putOperation(176, "keep-this", "keep-tick")
+        }
+        val adapter = SharedResidentAutomationAdapter(
+            configure = { _, _ -> JSONObject() },
+            submit = { _, _, _ -> error("must not submit") },
+            status = { error("read timeout") },
+            operationStore = store,
+        )
+        assertEquals("status-unavailable", adapter.runOnce(176, JSONObject(), "new").state)
+        assertEquals("keep-this", store.get(176)?.operationId)
+    }
+
+    @Test
+    fun terminalResultIsAcknowledgedOnlyAfterDurablePointerRemoval() {
+        for (terminal in listOf("SUCCEEDED", "FAILED", "UNCERTAIN", "CANCELLED")) {
+            val store = InMemoryResidentOperationStore().apply {
+                putOperation(202, "closed-result", "closed-tick")
+            }
+            val acknowledgements = mutableListOf<String>()
+            val adapter = SharedResidentAutomationAdapter(
+                configure = { _, _ -> JSONObject() },
+                submit = { _, _, _ -> error("must not submit") },
+                status = {
+                    JSONObject().put("operation", JSONObject()
+                        .put("status", terminal)
+                        .put("error", JSONObject().put("details", JSONObject().put("feature", "brushYellow")))
+                        .put("result", JSONObject().put("feature", "brushYellow").put("state", "waiting-resources")))
+                },
+                operationStore = store,
+                acknowledge = { account, id ->
+                    assertEquals(202L, account)
+                    assertNull(store.get(account))
+                    acknowledgements += id
+                },
+            )
+            val result = adapter.runOnce(202, JSONObject(), "unused")
+            assertFalse(result.requiresAttention)
+            assertNull(store.get(202))
+            assertEquals(listOf("closed-result"), acknowledgements)
+        }
+    }
+
+    @Test
+    fun failedAcknowledgementDoesNotResurrectPointerOrBlockNextTick() {
+        val store = InMemoryResidentOperationStore()
+        var submissions = 0
+        val adapter = SharedResidentAutomationAdapter(
+            configure = { _, _ -> JSONObject() },
+            submit = { _, _, _ ->
+                submissions++
+                JSONObject().put("operationId", "op-$submissions")
+            },
+            status = {
+                JSONObject().put("operation", JSONObject()
+                    .put("status", "SUCCEEDED")
+                    .put("result", JSONObject().put("state", "idle")))
+            },
+            operationStore = store,
+            acknowledge = { _, _ -> error("lost acknowledgement") },
+        )
+        repeat(2) {
+            assertEquals("idle", adapter.runOnce(202, JSONObject(), "tick-$it").state)
+            assertNull(store.get(202))
+        }
+        assertEquals(2, submissions)
+    }
+
+    @Test
+    fun failureToPersistPointerRemovalMustNotReleaseCoreResult() {
+        val delegate = InMemoryResidentOperationStore().apply {
+            putOperation(202, "keep-result", "old-tick")
+        }
+        val store = object : ResidentOperationStore by delegate {
+            override fun clear(accountId: Long) = error("storage unavailable")
+        }
+        var acknowledged = false
+        val adapter = SharedResidentAutomationAdapter(
+            configure = { _, _ -> JSONObject() },
+            submit = { _, _, _ -> error("must not submit") },
+            status = {
+                JSONObject().put("operation", JSONObject()
+                    .put("status", "SUCCEEDED").put("result", JSONObject()))
+            },
+            operationStore = store,
+            acknowledge = { _, _ -> acknowledged = true },
+        )
+        val failed = runCatching { adapter.runOnce(202, JSONObject(), "unused") }
+        assertTrue(failed.isFailure)
+        assertFalse(acknowledged)
+        assertEquals("keep-result", store.get(202)?.operationId)
+    }
+
+    @Test
     fun oneShotAdapterDoesNotSpinWhileOperationIsRunning() {
         var submissions = 0
         var statusReads = 0
