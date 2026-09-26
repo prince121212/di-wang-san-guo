@@ -84,3 +84,4 @@ dist/
 .cache/
 cloud-shared-data/.dev.vars
 cloud-shared-data/.wrangler/
+official-site/.wrangler/

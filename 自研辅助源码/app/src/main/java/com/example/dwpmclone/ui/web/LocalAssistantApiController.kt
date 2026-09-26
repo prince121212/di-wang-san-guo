@@ -40,6 +40,7 @@ import com.example.dwpmclone.domain.protocol.UserFacingTextLocalizer
 import com.example.dwpmclone.domain.scheduler.ResidentTaskActivationPolicy
 import com.example.dwpmclone.domain.scheduler.SchedulerTaskOrdering
 import com.example.dwpmclone.domain.scheduler.TaskRuntimeState
+import com.example.dwpmclone.host.AppUpdateChecker
 import com.example.dwpmclone.host.ConfigBackupAccount
 import com.example.dwpmclone.host.ConfigBackupCodec
 import com.example.dwpmclone.host.ConfigBackupImporter
@@ -147,6 +148,8 @@ class LocalAssistantApiController(
         }
         localOperations.tryHandle(request)?.let { return@runCatching it }
         when (request.method to route) {
+            "GET" to "/api/app/update" -> appUpdate(request)
+            "POST" to "/api/app/update-open" -> appUpdateJson(request, AppUpdateChecker.get(appContext).openDownload())
             "GET" to "/api/health" -> sharedCoreHealth(request)
             "GET" to "/api/core/operations" -> sharedCoreOperations(request)
             "GET" to "/api/core/operations/status" -> sharedCoreOperationStatus(request)
@@ -696,6 +699,16 @@ class LocalAssistantApiController(
 
     private fun configTransferFailure(message: String): JSONObject =
         JSONObject().put("ok", false).put("error", message)
+
+    /** `?check=1` asks the official site (cached ten minutes, `force=1` bypasses); otherwise local state only. */
+    private fun appUpdate(request: AssistantApiRequest): AssistantApiResponse {
+        val params = query(request.path)
+        val checker = AppUpdateChecker.get(appContext)
+        return appUpdateJson(request, if (params["check"] == "1") checker.check(force = params["force"] == "1") else checker.status())
+    }
+
+    private fun appUpdateJson(request: AssistantApiRequest, value: JSONObject): AssistantApiResponse =
+        AssistantApiResponse(request.id, if (value.optBoolean("ok")) 200 else 400, value)
 
     private fun startAccount(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)

@@ -33,6 +33,7 @@
     <section class="member-card member-support"><h3>开通与续期</h3><div class="member-plans"><span>月卡 <b>30天</b></span><span>季卡 <b>90天</b></span><span>年卡 <b>365天</b></span></div>
       <button id="memberStoreOpen" type="button" class="member-primary">查看会员套餐与支付宝付款</button>
       <p class="member-copy">月卡 ¥9.90 · 季卡 ¥25.90 · 年卡 ¥49.90。选择套餐后确认付款，不自动续费；也可联系管理员开通。</p></section>
+    <div id="memberUpdateSlot"></div>
     <p class="member-footer">游戏账号与配置保存在本机<br>退出会员不会删除你的游戏数据</p>`;
   // Keep the form inside Home so other pages retain their original layout.
   mount.append(panel);

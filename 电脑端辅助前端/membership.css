@@ -47,6 +47,11 @@
 #membershipPanel .member-support .member-copy { margin-bottom: 0; }
 #membershipPanel .member-transfer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 #memberTransferFeedback { white-space: pre-wrap; margin-bottom: 0; }
+#appUpdateBadge { padding: 4px 16px; border-radius: 30px; background: #ffe3cd; color: #8a3c16; font-size: 24px; white-space: nowrap; }
+#appUpdateNotes { margin: 0 0 20px; padding-left: 36px; color: #465970; font-size: 27px; }
+#appUpdateCheck { width: 100%; margin-top: 16px; }
+#appUpdateFeedback { white-space: pre-wrap; margin-bottom: 0; }
+body.mobile-local-mode .bottom-item.has-update span:last-child::after { content: " •"; color: #e0633a; }
 #membershipPanel .member-footer { text-align: center; font-size: 25px; line-height: 1.8; color: #8090a2; padding: 8px 12px; }
 body.mobile-local-mode .expire-label[data-tone="active"] { color: #b7efcf; }
 body.mobile-local-mode .expire-label[data-tone="pending"] { color: #f3d99e; }

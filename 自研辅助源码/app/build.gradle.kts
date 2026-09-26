@@ -33,6 +33,7 @@ fun cloudSetting(name: String): String {
     if (!configured.isNullOrBlank()) return configured.trim()
     return when (name) {
         "DWPM_CLOUD_SHARED_DATA_URL" -> "https://dwpm-data.292828.xyz"
+        "DWPM_OFFICIAL_SITE_URL" -> "https://dwsg.292828.xyz"
         "DWPM_CLOUD_SHARED_DATA_TOKEN" -> macosCloudRuntimeToken()
         "DWPM_MEMBER_LEASE_PUBLIC_KEY" -> rootProject.file("../cloud-shared-data/member-lease-public-key.txt")
             .takeIf { it.isFile }?.readText()?.trim().orEmpty()
@@ -105,7 +106,8 @@ val generateSharedPythonBundle by tasks.registering {
 
 val syncAssistantWebAssets by tasks.registering(Sync::class) {
     from(rootProject.file("../电脑端辅助前端")) {
-        include("index.html", "app.js", "styles.css", "assistant-api.js", "membership-view.js", "membership.js", "membership.css")
+        include("index.html", "app.js", "styles.css", "assistant-api.js", "membership-view.js", "membership.js", "membership.css",
+            "app-update.js")
         into("assistant")
     }
     from(rootProject.file("../shared_core")) {
@@ -127,8 +129,8 @@ android {
         applicationId = "com.example.dwpmclone"
         minSdk = 24
         targetSdk = 36
-        versionCode = 119
-        versionName = "V0.0.119"
+        versionCode = 120
+        versionName = "V0.0.120"
         resValue("string", "app_name", appName)
         buildConfigField("String", "MEMBER_LEASE_PUBLIC_KEY", buildConfigString(cloudSetting("DWPM_MEMBER_LEASE_PUBLIC_KEY")))
         buildConfigField("String", "APP_NAME", buildConfigString(appName))
@@ -136,6 +138,11 @@ android {
             "String",
             "CLOUD_SHARED_DATA_URL",
             buildConfigString(cloudSetting("DWPM_CLOUD_SHARED_DATA_URL"))
+        )
+        buildConfigField(
+            "String",
+            "OFFICIAL_SITE_URL",
+            buildConfigString(cloudSetting("DWPM_OFFICIAL_SITE_URL"))
         )
         buildConfigField(
             "String",

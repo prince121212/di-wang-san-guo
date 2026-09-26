@@ -1,0 +1,24 @@
+{
+  "name": "dwpm-official-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "publish-release": "node scripts/publish-release.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.0",
+    "@cloudflare/workers-types": "5.20260811.1",
+    "@types/node": "22.20.4",
+    "typescript": "5.9.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.117.0"
+  }
+}

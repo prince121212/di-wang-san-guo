@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dwpm-official-site",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  // workers.dev is unreachable from mainland China; it is kept only for previews.
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "dwsg.292828.xyz", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/app/*", "/download/*"]
+  },
+  // Release APKs and the version manifests live in R2: published without redeploying the site,
+  // and without the 25 MiB per-file limit of static assets.
+  "r2_buckets": [
+    { "binding": "RELEASES", "bucket_name": "dwpm-app-releases" }
+  ],
+  "observability": { "enabled": true }
+}
