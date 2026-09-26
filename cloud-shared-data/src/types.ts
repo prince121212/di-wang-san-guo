@@ -26,6 +26,9 @@ export interface Env {
   ALIPAY_SELLER_ID?: string;
   ALIPAY_ORIGIN?: string;
   ALIPAY_PLAN_PRICES?: string;
+  ALIPAY_ACCEPTANCE_MEMBER_ID?: string;
+  ALIPAY_ACCEPTANCE_PURCHASE_ID?: string;
+  ALIPAY_ACCEPTANCE_UNTIL?: string;
   SHARED_ACCOUNT_THRESHOLD?: string;
   PRESENCE_TTL_MILLIS?: string;
   SCAN_FRESH_MILLIS?: string;

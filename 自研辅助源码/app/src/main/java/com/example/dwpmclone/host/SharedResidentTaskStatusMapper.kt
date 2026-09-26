@@ -29,6 +29,7 @@ internal object SharedResidentTaskStatusMapper {
     fun typeFor(feature: String?, dailyKey: String? = null): TaskType? {
         return when (feature?.trim()) {
             "brush", "brushYellow" -> TaskType.SHUA_HUANG
+            "banditPrefetch" -> TaskType.BANDIT_PREFETCH
             "mine" -> TaskType.AUTO_MINING
             "raid" -> TaskType.AUTO_LOOT
             "lossless" -> TaskType.LOSSLESS

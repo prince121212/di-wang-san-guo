@@ -1,7 +1,7 @@
 import type {Env} from "./types";
 import {RequestError} from "./validation";
 import {readSession,verifyDeviceProof,sha} from "./member-crypto";
-import {amount,PAYMENT_PLANS,paymentConfig,notifyParams,verifyNotification,appPayEnabled} from "./alipay-payment";
+import {amount,PAYMENT_PLANS,paymentConfig,notifyParams,verifyNotification,appPayEnabled,acceptanceOpen} from "./alipay-payment";
 import {orderId,orderStub,resultPage,validOrderId} from "./payment-orders";
 
 function json(value:unknown,status=200){return Response.json(value,{status,headers:{"cache-control":"no-store"}});}
@@ -28,7 +28,7 @@ export async function handlePaymentRequest(request:Request,env:Env):Promise<Resp
   if(path==="/v1/payments/alipay/notify"){
     try{
       if(request.method!=="POST")return new Response("fail",{status:405});
-      const c=paymentConfig(env),params=await notifyParams(request);
+      const c=paymentConfig(env,"settlement"),params=await notifyParams(request);
       if(!verifyNotification(c,params)||!validOrderId(params.out_trade_no)||!params.notify_id)throw new RequestError("无效通知");
       const r=await orderCall(env,params.out_trade_no,"notify",{params});await r.text();
       return new Response("success",{headers:{"content-type":"text/plain;charset=utf-8"}});
@@ -48,7 +48,7 @@ export async function handlePaymentRequest(request:Request,env:Env):Promise<Resp
   }
   if(!["/v1/member/payment-create","/v1/member/payment-status","/v1/member/payment-app-order"].includes(path))return null;
   if(request.method!=="POST")throw new RequestError("支付请求方法无效",405);
-  const c=paymentConfig(env);
+  const c=paymentConfig(env,"settlement");
   const proof=await verifyDeviceProof(path,await input(request));
   const claims=await readSession(env,proof.data.sessionToken);
   if(claims.deviceId!==proof.deviceId)throw new RequestError("付款账号不属于本机",401);
@@ -61,8 +61,11 @@ export async function handlePaymentRequest(request:Request,env:Env):Promise<Resp
   if(Object.keys(proof.data).some(k=>!allowedKeys.includes(k)))throw new RequestError("不允许客户端指定支付金额或会员时长");
   if(path.endsWith("payment-create")){
     const channel=proof.data.channel??"web";
+    const acceptance=acceptanceOpen(env)&&claims.memberId===env.ALIPAY_ACCEPTANCE_MEMBER_ID
+      &&proof.data.purchaseId===env.ALIPAY_ACCEPTANCE_PURCHASE_ID&&proof.data.plan==="month"&&channel==="app";
+    if(!acceptance)paymentConfig(env); // Public orders stay behind the original launch gate.
     if(!["web","app"].includes(channel))throw new RequestError("支付渠道无效");
-    if(channel==="app"&&!appPayEnabled(env))throw new RequestError("APP支付尚未开放",503,"PAYMENT_APP_DISABLED");
+    if(channel==="app"&&!acceptance&&!appPayEnabled(env))throw new RequestError("APP支付尚未开放",503,"PAYMENT_APP_DISABLED");
     if(!Object.hasOwn(PAYMENT_PLANS,proof.data.plan)||!/^[a-f0-9-]{36}$/i.test(proof.data.purchaseId||""))throw new RequestError("购买请求无效");
     const limit=await env.RUNTIME_CONFIG.getByName("member-limit:payment-create:"+await sha(claims.memberId)).fetch("https://member.internal/member-limit",{
       method:"POST",body:JSON.stringify({max:20,window:3600000})});

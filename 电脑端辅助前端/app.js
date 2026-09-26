@@ -143,7 +143,7 @@ const appState = {
   formationOptions: { clearOtherGenerals: false },
   savedFormationRules: [],
   brushSettings: {
-    enabled: true, startHour: 0, startX: 0, startY: 0, scanLimit: 80, targetKind: "山贼", level: 1, generalId: "",
+    enabled: true, startHour: 0, startX: 0, startY: 0, scanLimit: 160, targetKind: "山贼", level: 1, generalId: "",
     reconnectDelayMinutes: 5,
     compositionCode: "0500", maxFoot: 0, maxBow: 5, maxCavalry: 0, maxChariot: 0, requireFoot: false,
     drops: [...defaultBrushDrops], drop: defaultBrushDrops[0],
@@ -1140,7 +1140,7 @@ function enforceSingleDungeonEnabled(preferred = null, scope = document) {
 
 function defaultBrushSettings() {
   return {
-    enabled: true, startHour: 0, startX: 0, startY: 0, scanLimit: 80, targetKind: "山贼", level: 1, generalId: "",
+    enabled: true, startHour: 0, startX: 0, startY: 0, scanLimit: 160, targetKind: "山贼", level: 1, generalId: "",
     reconnectDelayMinutes: 5,
     compositionCode: "0500", maxFoot: 0, maxBow: 5, maxCavalry: 0, maxChariot: 0, requireFoot: false,
     drops: [...defaultBrushDrops], drop: defaultBrushDrops[0],
@@ -2241,7 +2241,7 @@ function saveBrushDom() {
   b.startHour = Number(document.getElementById("brushStartHour")?.value || 0);
   b.startX = Number(document.getElementById("shStartX")?.value || 0);
   b.startY = Number(document.getElementById("shStartY")?.value || 0);
-  b.scanLimit = Number(document.getElementById("shScanLimit")?.value || 80);
+  b.scanLimit = Number(document.getElementById("shScanLimit")?.value || 160);
   b.targetKind = document.getElementById("shTargetKind")?.value || "山贼";
   const rows = Array.from(document.querySelectorAll("tr.brush-rule-row"));
   const existingRows = brushRowsForDesign();
@@ -2655,7 +2655,7 @@ function buildAutoConfig({ settingsOnly = false } = {}) {
     dailyTasks: { ...(b.dailyTasks || {}) },
     generalVisitGeneralIds: normalizeGeneralVisitIds(b.generalVisitGeneralIds),
     brush: {
-      startX: Number(b.startX || 0), startY: Number(b.startY || 0), scanLimit: Number(b.scanLimit || 80),
+      startX: Number(b.startX || 0), startY: Number(b.startY || 0), scanLimit: Number(b.scanLimit || 160) === 80 ? 160 : Number(b.scanLimit || 160),
       targetKind: b.targetKind || "山贼",
       levels: normalizeBrushLevels(b.levels, b.level),
       level: normalizeBrushLevels(b.levels, b.level)[0],
@@ -2692,7 +2692,7 @@ function renderShuaHuang() {
         </tr>`).join("") : `<tr><td colspan="6" class="empty-rule-cell">暂无刷黄编队，请点击“添加编队”新增空白编队</td></tr>`;
   return h`<div class="panel-box form-grid shua-panel prototype-shua">
     <input id="shTargetKind" type="hidden" value="${escAttr(b.targetKind || "山贼")}"/>
-    <input id="shScanLimit" type="hidden" value="${escAttr(b.scanLimit || 80)}"/>
+    <input id="shScanLimit" type="hidden" value="${escAttr(Number(b.scanLimit || 160) === 80 ? 160 : b.scanLimit || 160)}"/>
     <input id="dailyLimit" type="hidden" value="${escAttr(b.dailyLimit || 500)}"/>
     <input id="cycleDelaySec" type="hidden" value="${escAttr(b.cycleDelaySec || 10)}"/>
     <input id="returnWaitSec" type="hidden" value="${escAttr(b.returnWaitSec || 0)}"/>
@@ -4148,7 +4148,7 @@ function backgroundPermissionPresentation(item) {
     return { label: "已完成", className: "granted", actionLabel: "查看设置" };
   }
   if (item?.granted === false) {
-    return { label: item.required ? "必须开启" : "建议开启", className: "missing", actionLabel: "去开启" };
+    return { label: "建议开启", className: "missing", actionLabel: "去设置" };
   }
   return {
     label: "需手动确认",
@@ -4172,17 +4172,17 @@ async function renderBackgroundPermissionGuide({ silent = false } = {}) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.error || "后台权限状态读取失败");
     const items = Array.isArray(data.items) ? data.items : [];
-    const blockingCount = Array.isArray(data.blockingIssues) ? data.blockingIssues.length : 0;
-    overall.textContent = data.reliableHostingReady ? "基础权限已满足" : `还有 ${blockingCount} 项必要权限`;
+    const warningCount = Array.isArray(data.warningIssues) ? data.warningIssues.length : items.filter(item=>item.granted===false).length;
+    overall.textContent = data.reliableHostingReady ? "后台运行建议已满足" : `有 ${warningCount} 项建议未开启，仍可启动`;
     overall.className = `guide-status ${data.reliableHostingReady ? "permission-status-ready" : "permission-status-warning"}`;
     const manualText = data.manualReviewRequired
       ? `${data.vendorFamily || data.manufacturer || "当前厂商"} 的后台策略和自启动没有公开可靠的查询接口，还需按下方指引人工确认。`
       : "标准 Android 后台能力已按当前状态检测；精确闹钟属于准时性增强项，未授权时系统可能延迟唤醒，但仍会通过持久化状态恢复。";
-    summary.textContent = `${data.manufacturer || "Android"} ${data.model || ""} · Android ${data.sdkInt || "-"}。${manualText}`;
+    summary.textContent = `${data.manufacturer || "Android"} ${data.model || ""} · Android ${data.sdkInt || "-"}。未开启这些设置也可启动账号和任务；切到后台或锁屏后可能被系统暂停网络或停止应用。${manualText}`;
     if (entryStatus) {
       entryStatus.textContent = data.reliableHostingReady
         ? (data.manualReviewRequired ? `基础权限已满足，请确认${data.vendorFamily || "厂商"}后台策略与自启动` : "后台运行基础权限已满足")
-        : `还有 ${blockingCount} 项必要权限未开启`;
+        : `还有 ${warningCount} 项后台运行建议未开启，不影响启动账号`;
     }
     list.innerHTML = items.map(item => {
       const presentation = backgroundPermissionPresentation(item);
@@ -5083,11 +5083,35 @@ async function selectAccount(sessionId) {
   render();
 }
 
+function accountStartNotice(status) {
+  if (status === "online") return { message: "账号启动成功", type: "success" };
+  if (status === "checking") return { message: "账号正在检测", type: "info" };
+  if (status === "stopped") return { message: "账号尚未开启，请查看运行日志", type: "info" };
+  if (status === "offline") return { message: "账号已掉线，请查看运行日志", type: "error" };
+  return { message: "启动结果待确认，请刷新状态或查看日志", type: "info" };
+}
+
+async function warnAboutMobileHostingPermissions() {
+  if (!isMobileLocal) return;
+  try {
+    const response = await fetch("/api/background/permissions", { cache: "no-store" });
+    const state = await response.json();
+    if (!response.ok || !state.ok) throw new Error("permission check unavailable");
+    if (state.reliableHostingReady) return;
+    appendLog("后台运行提醒：权限尚未完善，仍可启动账号；切到后台或锁屏后，系统可能暂停网络或停止应用。可在攻略-后台运行设置中按需开启。");
+    showToast("正在继续启动；后台或锁屏运行可能受系统限制", "info", 4000);
+  } catch {
+    appendLog("暂时无法读取后台设置，不影响启动账号；后台运行稳定性尚未确认。");
+  }
+}
+
 async function startSelectedAccount() {
   try {
     if (!appState.sessionId) throw new Error("请先添加并选择账号");
     const acc = selectedAccount();
     if (!confirm(`确认启动当前账号？\n${accountLabel(acc)}`)) return;
+    // Advisory only: neither denial nor an unavailable check delays/blocks login.
+    void warnAboutMobileHostingPermissions();
     const oldSessionId = appState.sessionId;
     appendLog(`正在启动账号：${accountLabel(selectedAccount())}；现在才执行真实登录并开启保活...`);
     const data = await apiPost("/api/accounts/start", { sessionId: oldSessionId });
@@ -5106,11 +5130,8 @@ async function startSelectedAccount() {
     saveCurrentContainerSelection(startedAccount);
     notifyAccountsChanged("start");
     const startStatus = startedAccount?.status || data.status;
-    const startAccepted = startStatus === "online" || startStatus === "checking";
-    showToast(
-      startStatus === "online" ? "账号启动成功" : (startStatus === "checking" ? "账号正在检测" : "账号疑似掉线"),
-      startAccepted ? "success" : "error",
-    );
+    const notice = accountStartNotice(startStatus);
+    showToast(notice.message, notice.type);
     appendLog(`账号状态：${startedAccount?.statusText || accountStatusText(startStatus)}；${startedAccount?.lastHeartbeat?.message || data.message || ""}`);
     if (startedAccount?.session) {
       const rs = startedAccount.session.roleState || {};
@@ -5328,7 +5349,7 @@ function getBrushForm() {
     sessionId: appState.sessionId,
     startX: Number(b.startX || 0),
     startY: Number(b.startY || 0),
-    scanLimit: Number(b.scanLimit || 80),
+    scanLimit: Number(b.scanLimit || 160) === 80 ? 160 : Number(b.scanLimit || 160),
     targetKind: b.targetKind || "山贼",
     levels: normalizeBrushLevels(b.levels, b.level),
     level: normalizeBrushLevels(b.levels, b.level)[0],
@@ -6721,17 +6742,7 @@ async function startSavedTasks() {
   } catch (error) {
     if (button) button.disabled = false;
     appendLog("开始执行任务失败：" + error.message);
-    if (
-      isMobileLocal &&
-      /后台托管|通知权限|忽略电池优化|后台运行限制|解除系统后台/.test(
-        String(error.message || "")
-      )
-    ) {
-      openNativeGuideView("background-settings", renderBackgroundPermissionGuide);
-      showToast("请先完成后台运行权限设置", "error", 3600);
-    } else {
-      showToast("开始执行任务失败", "error");
-    }
+    showToast(error.message || "开始执行任务失败，请查看日志", "error", 3600);
   }
 }
 

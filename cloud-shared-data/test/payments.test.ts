@@ -5,7 +5,7 @@ import worker from "../src/index";
 import type {Env} from "../src/types";
 import {b64,sha,sessionToken} from "../src/member-crypto";
 import {cents,paymentConfig,verifyNotification,appPayEnabled} from "../src/alipay-payment";
-import {orderStub} from "../src/payment-orders";
+import {orderStub,orderId,handlePaymentStorage} from "../src/payment-orders";
 import {handleMemberStorage} from "../src/members";
 
 const E=env as unknown as Env;const enc=new TextEncoder();
@@ -63,6 +63,86 @@ it("disabled production catalog stays publicly readable without weakening protec
   const protectedResponse=await worker.fetch(new Request("https://worker.test/admin/api/payments/query",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({orderId:"DWP"+"a".repeat(32)})}),disabled);
   expect(protectedResponse.status).toBe(401);await protectedResponse.text();
+});
+
+it("one-cent acceptance is limited to a single member/order and leaves public sales closed",async()=>{
+  const purchaseId=crypto.randomUUID();
+  const a={...E,ALIPAY_MODE:"production",ALIPAY_ENABLED:"false",ALIPAY_APP_PAY_ENABLED:"false",ALIPAY_LIVE_APPROVED:"false",
+    ALIPAY_PLAN_PRICES:JSON.stringify({month:"9.90",quarter:"25.90",year:"49.90"}),
+    ALIPAY_ACCEPTANCE_MEMBER_ID:memberId,ALIPAY_ACCEPTANCE_PURCHASE_ID:purchaseId,ALIPAY_ACCEPTANCE_UNTIL:String(Date.now()+600000)};
+  expect(()=>paymentConfig(a)).toThrow();
+  const config=paymentConfig(a,"settlement"),id=await orderId(config,memberId,purchaseId);
+  const call=(action:string,data:Record<string,unknown>,runtime=a)=>runInDurableObject(orderStub(E,id),async(_i,s)=>{
+    const r=await handlePaymentStorage(new Request("https://payment.internal/payment/"+action,{method:"POST",body:JSON.stringify(data)}),runtime,s.storage);
+    return r.json<any>();
+  });
+  const created=await call("create",{id,memberId,plan:"month",channel:"app"});
+  expect(created.order.totalAmount).toBe("0.01");expect(created.order.days).toBe(0);expect(created.order.acceptance).toBe(true);
+  expect((await call("create",{id,memberId,plan:"month",channel:"app"})).order.id).toBe(id);
+  await expect(call("create",{id,memberId,plan:"year",channel:"app"})).rejects.toThrow();
+  await expect(call("create",{id,memberId,plan:"month",channel:"web"})).rejects.toThrow();
+  await expect(call("create",{id,memberId:await sha("wrong"),plan:"month",channel:"app"})).rejects.toThrow();
+  await expect(call("app",{memberId:"wrong"})).rejects.toThrow();
+  const sdk=await call("app",{memberId}),params=new URLSearchParams(sdk.orderStr),biz=JSON.parse(params.get("biz_content")!);
+  expect(biz.total_amount).toBe("0.01");expect(biz.product_code).toBe("QUICK_MSECURITY_PAY");
+  expect(biz.subject).toContain("不开通会员");expect(params.get("notify_url")).toBe(a.ALIPAY_ORIGIN+"/v1/payments/alipay/notify");
+  // Expiry stops new SDK invocations, but verified late settlement still works.
+  const expired={...a,ALIPAY_ACCEPTANCE_UNTIL:String(Date.now()-1)};
+  await expect(call("app",{memberId},expired)).rejects.toThrow();
+  await expect(call("notify",{params:{...fields(id),total_amount:"9.90"}},expired)).rejects.toThrow();
+  const notification=await signNotification(fields(id));
+  expect(verifyNotification(config,notification)).toBe(true);
+  await call("notify",{params:notification},expired);
+  await call("notify",{params:notification},expired);
+  const paid=await call("status",{memberId},expired);
+  expect(paid.order.status).toBe("PAID");expect(paid.order.membershipApplied).toBe(false);
+  const state=await runInDurableObject(E.RUNTIME_CONFIG.getByName("member-v1:"+memberId),async(_i,s)=>s.storage.get<any>("state"));
+  expect(state.member.expiresAt).toBe(0);
+  expect((await getOrder(id)).events.filter((e:any)=>e.notifyId===notification.notify_id)).toHaveLength(1);
+  const catalog=await worker.fetch(new Request("https://worker.test/v1/payments/catalog"),a);
+  expect((await catalog.json<any>()).enabled).toBe(false);
+});
+
+it("acceptance cannot be armed with invalid identity or unbounded expiry",async()=>{
+  const base={...E,ALIPAY_MODE:"production",ALIPAY_ENABLED:"false",ALIPAY_LIVE_APPROVED:"false"};
+  expect(()=>paymentConfig(base,"settlement")).toThrow();
+  const a={...base,ALIPAY_ACCEPTANCE_MEMBER_ID:memberId,ALIPAY_ACCEPTANCE_PURCHASE_ID:crypto.randomUUID(),ALIPAY_ACCEPTANCE_UNTIL:String(Date.now()+7200000)};
+  const id=await orderId(paymentConfig(a,"settlement"),memberId,a.ALIPAY_ACCEPTANCE_PURCHASE_ID);
+  await expect(runInDurableObject(orderStub(E,id),async(_i,s)=>handlePaymentStorage(new Request("https://payment.internal/payment/create",{
+    method:"POST",body:JSON.stringify({id,memberId,plan:"month",channel:"app"})}),a,s.storage))).rejects.toThrow();
+});
+
+it("normal-price production orders grant exact membership once after verified settlement",async()=>{
+  const production={...E,ALIPAY_MODE:"production",ALIPAY_ENABLED:"true",ALIPAY_APP_PAY_ENABLED:"true",ALIPAY_LIVE_APPROVED:"true",
+    ALIPAY_ACCEPTANCE_UNTIL:"1",ALIPAY_PLAN_PRICES:JSON.stringify({month:"9.90",quarter:"25.90",year:"49.90"})};
+  // Run the actual member storage handler with the same production environment;
+  // isolate storage in test DOs, never call any real payment gateway.
+  const runtime={...production,RUNTIME_CONFIG:{getByName:(name:string)=>({fetch:async(url:string,init:RequestInit)=>
+    runInDurableObject(E.RUNTIME_CONFIG.getByName(name),async(_i,s)=>handleMemberStorage(new Request(url,init),production,s.storage))})}} as unknown as Env;
+  let expiry=0;
+  for(const [plan,price,days] of [["month","9.90",30],["quarter","25.90",90],["year","49.90",365]] as const){
+    const id=await orderId(paymentConfig(runtime),memberId,crypto.randomUUID());
+    const call=(action:string,data:Record<string,unknown>)=>runInDurableObject(orderStub(E,id),async(_i,s)=>{
+      const r=await handlePaymentStorage(new Request("https://payment.internal/payment/"+action,{method:"POST",body:JSON.stringify(data)}),runtime,s.storage);
+      return r.json<any>();
+    });
+    const created=await call("create",{id,memberId,plan,channel:"app"});
+    expect(created.order.totalAmount).toBe(price);expect(created.order.days).toBe(days);expect(created.order.acceptance).toBe(false);
+    const before=Date.now();
+    const params=await signNotification({...fields(id),total_amount:price});
+    expect(verifyNotification(paymentConfig(runtime),params)).toBe(true);
+    await call("notify",{params});
+    const member=async()=>runInDurableObject(E.RUNTIME_CONFIG.getByName("member-v1:"+memberId),async(_i,s)=>(await s.storage.get<any>("state")).member);
+    const granted=(await member()).expiresAt;
+    expect(granted).toBeGreaterThanOrEqual(Math.max(expiry,before)+days*86400000);
+    expect(granted).toBeLessThanOrEqual(Math.max(expiry,Date.now())+days*86400000);
+    await call("notify",{params});expect((await member()).expiresAt).toBe(granted);
+    const result=await call("status",{memberId});expect(result.order.membershipApplied).toBe(true);
+    expiry=granted;
+  }
+  const r=await worker.fetch(new Request("https://worker.test/v1/payments/catalog"),runtime);
+  const catalog=await r.json<any>();expect(catalog.enabled).toBe(true);
+  expect(catalog.plans.map((p:any)=>p.totalAmount)).toEqual(["9.90","25.90","49.90"]);
 });
 
 it("prices are fixed-point, server-selected and disabled when unconfigured",async()=>{

@@ -36,13 +36,13 @@
     "crons": ["*/30 * * * *"]
   },
   "vars": {
-    // Prepared production application; closed until credentials and acceptance are complete.
+    // Owner authorized launch after confirming receipt of the real one-cent test.
     "ALIPAY_MODE": "production",
     "ALIPAY_APP_ID": "2021007102687318",
     "ALIPAY_ORIGIN": "https://dwpm-data.292828.xyz",
-    "ALIPAY_ENABLED": "false",
-    "ALIPAY_APP_PAY_ENABLED": "false",
-    "ALIPAY_LIVE_APPROVED": "false",
+    "ALIPAY_ENABLED": "true",
+    "ALIPAY_APP_PAY_ENABLED": "true",
+    "ALIPAY_LIVE_APPROVED": "true",
     // Owner-approved prices; this does NOT enable payments or production approval.
     "ALIPAY_PLAN_PRICES": "{\"month\":\"9.90\",\"quarter\":\"25.90\",\"year\":\"49.90\"}",
     "SHARED_ACCOUNT_THRESHOLD": "2",

@@ -19,10 +19,22 @@ export function cents(value: unknown): number {
   return result;
 }
 export function amount(value:number):string { return `${Math.floor(value/100)}.${String(value%100).padStart(2,"0")}`; }
-export function paymentConfig(env:Env):PaymentConfig {
-  if (env.ALIPAY_ENABLED!=="true" || !["sandbox","production"].includes(env.ALIPAY_MODE||"")) throw new RequestError("在线支付暂未开放，请联系管理员开通",503,"PAYMENT_DISABLED");
+export function acceptanceConfigured(env:Env):boolean {
+  return env.ALIPAY_MODE==="production" && /^[a-f0-9]{64}$/.test(env.ALIPAY_ACCEPTANCE_MEMBER_ID||"")
+    && /^[a-f0-9-]{36}$/i.test(env.ALIPAY_ACCEPTANCE_PURCHASE_ID||"")
+    && Number.isSafeInteger(Number(env.ALIPAY_ACCEPTANCE_UNTIL)) && Number(env.ALIPAY_ACCEPTANCE_UNTIL)>0;
+}
+export function acceptanceOpen(env:Env):boolean {
+  const left=Number(env.ALIPAY_ACCEPTANCE_UNTIL)-Date.now();
+  return acceptanceConfigured(env)&&left>0&&left<=3600000;
+}
+export function paymentConfig(env:Env,purpose:"public"|"settlement"="public"):PaymentConfig {
+  // Settlement may process the ONE operator-configured acceptance order while
+  // public sales remain disabled. This never skips signatures/business checks.
+  const acceptance=purpose==="settlement"&&acceptanceConfigured(env);
+  if ((!acceptance&&env.ALIPAY_ENABLED!=="true") || !["sandbox","production"].includes(env.ALIPAY_MODE||"")) throw new RequestError("在线支付暂未开放，请联系管理员开通",503,"PAYMENT_DISABLED");
   const mode=env.ALIPAY_MODE as PaymentConfig["mode"];
-  if (mode==="production" && env.ALIPAY_LIVE_APPROVED!=="true") throw new RequestError("正式收款尚未验收",503,"PAYMENT_DISABLED");
+  if (!acceptance && mode==="production" && env.ALIPAY_LIVE_APPROVED!=="true") throw new RequestError("正式收款尚未验收",503,"PAYMENT_DISABLED");
   if (!env.ALIPAY_APP_ID || !env.ALIPAY_PRIVATE_KEY || !env.ALIPAY_PUBLIC_KEY || !env.ALIPAY_SELLER_ID || !env.ALIPAY_ORIGIN) throw new RequestError("支付配置不完整",503,"PAYMENT_NOT_CONFIGURED");
   const url=new URL(env.ALIPAY_ORIGIN);
   if (url.origin!==env.ALIPAY_ORIGIN || url.username || url.password || (url.protocol!=="https:" && !(mode==="sandbox" && url.protocol==="http:" && ["127.0.0.1","localhost"].includes(url.hostname)))) throw new RequestError("支付回跳地址无效",503);

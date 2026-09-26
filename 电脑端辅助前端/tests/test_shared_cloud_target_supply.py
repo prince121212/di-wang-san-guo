@@ -188,25 +188,25 @@ class CloudTargetScanSupplyTests(unittest.TestCase):
                 cloud = fixtures.FakeV2CloudPort(count, index)
                 helper, facade, directory, config, state = self.fixture(cloud)
                 requests = helper._record_map_requests(facade)
-                coordinates = brush_scan_coordinates(91, 26, 80)
+                coordinates = brush_scan_coordinates(91, 26, 160)
                 primary = coordinates[index::count]
                 expected = primary + [c for c in coordinates if c not in set(primary)]
                 try:
-                    for tick in range(16):
+                    for tick in range(32):
                         before = len(requests)
                         result = facade._run_configured_brush_tick(
                             fixtures.FakeExecution(), "303", config, state, {}
                         )
                         self.assertEqual(requests[before:], expected[tick * 5:(tick + 1) * 5])
                         self.assertEqual(result["scannedCount"], 5)
-                        self.assertEqual(result["scanLimit"], 80)
-                        self.assertEqual(result["scanWrapped"], tick == 15)
+                        self.assertEqual(result["scanLimit"], 160)
+                        self.assertEqual(result["scanWrapped"], tick == 31)
                         public = json.loads(facade.account_record_json("303"))[
                             "account"
                         ]["session"]["publicState"]
                         state = json.loads(public["residentAutomationStateJson"])
                     self.assertEqual(requests, expected)
-                    self.assertEqual(len(set(requests)), 80)
+                    self.assertEqual(len(set(requests)), 160)
                     self.assertNotIn(
                         "/v1/maps/targets/reserve",
                         [call["path"] for call in cloud.calls],
@@ -222,7 +222,7 @@ class CloudTargetScanSupplyTests(unittest.TestCase):
             "maxFoot": 5, "maxBow": 5, "maxCavalry": 5, "maxChariot": 5,
             "requireFoot": False,
         }
-        requests = helper._record_map_requests(facade, target_at=42)
+        requests = helper._record_map_requests(facade, target_at=82)
         dispatched = []
 
         def accept(_self, _execution, body, _context):
@@ -236,14 +236,14 @@ class CloudTargetScanSupplyTests(unittest.TestCase):
 
         facade._run_brush_execute_game_workflow = types.MethodType(accept, facade)
         try:
-            for _ in range(9):
+            for _ in range(17):
                 result = facade._run_configured_brush_tick(
                     fixtures.FakeExecution(), "303", config, state, {}
                 )
-            coordinates = brush_scan_coordinates(91, 26, 80)
+            coordinates = brush_scan_coordinates(91, 26, 160)
             self.assertEqual(requests, coordinates[1::2] + coordinates[::2][:2])
             self.assertEqual(result["state"], "dispatched")
-            self.assertEqual(result["nextScanOffset"], 42)
+            self.assertEqual(result["nextScanOffset"], 82)
             self.assertEqual(len(dispatched), 1)
             self.assertIn("/v1/maps/targets/reserve", [call["path"] for call in cloud.calls])
         finally:
@@ -282,15 +282,15 @@ class CloudTargetScanSupplyTests(unittest.TestCase):
             )
             cursor = state["brush"]["scanCursorsByRule"][first["scanRuleKey"]]
             cursor.pop("scanOrderKey")
-            cursor["nextScanOffset"] = 39
+            cursor["nextScanOffset"] = 79
             requests.clear()
             second = facade._run_configured_brush_tick(
                 fixtures.FakeExecution(), "303", config, state, {}
             )
-            coords = brush_scan_coordinates(91, 26, 80)
+            coords = brush_scan_coordinates(91, 26, 160)
             self.assertEqual(requests, coords[1::2][-1:] + coords[::2][:4])
-            self.assertEqual(second["scanOffset"], 39)
-            self.assertEqual(second["nextScanOffset"], 44)
+            self.assertEqual(second["scanOffset"], 79)
+            self.assertEqual(second["nextScanOffset"], 84)
             self.assertEqual(second["catchUpScannedCount"], 4)
             self.assertFalse(second["scanWrapped"])
         finally:

@@ -45,6 +45,8 @@
 #membershipPanel .member-plans span { padding: 14px 10px; text-align: center; font-size: 27px; background: #f4f7fb; border: 1px solid #e6ecf3; border-radius: 14px; color: #65768b; }
 #membershipPanel .member-plans b { display: block; font-size: 31px; color: #314d6c; }
 #membershipPanel .member-support .member-copy { margin-bottom: 0; }
+#membershipPanel .member-transfer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+#memberTransferFeedback { white-space: pre-wrap; margin-bottom: 0; }
 #membershipPanel .member-footer { text-align: center; font-size: 25px; line-height: 1.8; color: #8090a2; padding: 8px 12px; }
 body.mobile-local-mode .expire-label[data-tone="active"] { color: #b7efcf; }
 body.mobile-local-mode .expire-label[data-tone="pending"] { color: #f3d99e; }

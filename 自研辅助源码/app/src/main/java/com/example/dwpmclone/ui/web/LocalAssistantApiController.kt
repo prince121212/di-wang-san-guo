@@ -2,6 +2,8 @@ package com.example.dwpmclone.ui.web
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.os.Build
+import com.example.dwpmclone.BuildConfig
 import com.example.dwpmclone.data.account.AccountLoginState
 import com.example.dwpmclone.data.account.AccountStateEvents
 import com.example.dwpmclone.data.account.AccountTransitionDetails
@@ -38,6 +40,12 @@ import com.example.dwpmclone.domain.protocol.UserFacingTextLocalizer
 import com.example.dwpmclone.domain.scheduler.ResidentTaskActivationPolicy
 import com.example.dwpmclone.domain.scheduler.SchedulerTaskOrdering
 import com.example.dwpmclone.domain.scheduler.TaskRuntimeState
+import com.example.dwpmclone.host.ConfigBackupAccount
+import com.example.dwpmclone.host.ConfigBackupCodec
+import com.example.dwpmclone.host.ConfigBackupImporter
+import com.example.dwpmclone.host.ConfigImportTarget
+import com.example.dwpmclone.host.MembershipClient
+import com.example.dwpmclone.host.ResolvedImportAccount
 import com.example.dwpmclone.host.SharedPythonCoreHost
 import com.example.dwpmclone.service.AssistantForegroundService
 import com.example.dwpmclone.ui.hosting.BackgroundHostingPermissionState
@@ -86,10 +94,22 @@ class LocalAssistantApiController(
         val route = request.path.substringBefore('?')
         if (route.startsWith("/api/member/")) {
             val action = route.removePrefix("/api/member/")
+            if (com.example.dwpmclone.BuildConfig.DEBUG && request.method == "POST" && action == "payment-acceptance-create") {
+                val value = com.example.dwpmclone.host.MembershipClient.get(appContext).handle(action, request.body ?: JSONObject())
+                return@runCatching AssistantApiResponse(request.id, if (value.optBoolean("ok")) 200 else 400, value)
+            }
             if ((request.method == "GET" && action in setOf("status", "payment-catalog")) ||
                 (request.method == "POST" && action in setOf("check", "send-code", "register", "login", "reset-password", "logout", "payment-create", "payment-status", "payment-open", "payment-store-open"))) {
                 val value = com.example.dwpmclone.host.MembershipClient.get(appContext)
                     .handle(action, request.body ?: JSONObject())
+                return@runCatching AssistantApiResponse(request.id, if (value.optBoolean("ok")) 200 else 400, value)
+            }
+            if (request.method == "POST" && action in setOf("config-export", "config-import")) {
+                val body = request.body ?: JSONObject()
+                val value = runCatching { if (action == "config-export") configExport(body) else configImport(body) }
+                    .getOrElse { error ->
+                        JSONObject().put("ok", false).put("error", error.message ?: "配置导出导入失败，请稍后重试")
+                    }
                 return@runCatching AssistantApiResponse(request.id, if (value.optBoolean("ok")) 200 else 400, value)
             }
             return@runCatching failure(request, 404, "会员接口不存在")
@@ -487,31 +507,7 @@ class LocalAssistantApiController(
         credentialVault.savePassword(accountId, password)
         if (accounts.get(accountId) == null) {
             runCatching {
-                accounts.upsert(
-                    GameAccount(
-                        id = accountId,
-                        displayName = record.optString("displayName").ifBlank { null },
-                        username = record.getString("username"),
-                        serverName = record.getString("serverName"),
-                        serverId = record.optString("serverId").ifBlank { null },
-                        gameVersion = runCatching {
-                            GameVersion.valueOf(record.getString("gameVersion"))
-                        }.getOrDefault(GameVersion.OTHER),
-                        channel = runCatching {
-                            Channel.valueOf(record.getString("channel"))
-                        }.getOrDefault(Channel.UNKNOWN),
-                        session = null,
-                        enabled = false,
-                        monarchName = null,
-                        nation = null,
-                        loginState = AccountLoginState.STOPPED,
-                        gameAuthSignEvidence = null,
-                        platform = record.getString("platform"),
-                        platformKey = record.getString("platformKey"),
-                        serial = record.optString("serial", "0"),
-                        serverQuery = record.getString("serverQuery")
-                    )
-                )
+                accounts.upsert(draftAccount(record))
             }.onFailure {
                 credentialVault.delete(accountId)
             }.getOrThrow()
@@ -534,11 +530,179 @@ class LocalAssistantApiController(
         )
     }
 
+    /** Stopped local account built from the shared core's credential-free add draft. */
+    private fun draftAccount(record: JSONObject): GameAccount = GameAccount(
+        id = record.getString("accountRef").toLong(),
+        displayName = record.optString("displayName").ifBlank { null },
+        username = record.getString("username"),
+        serverName = record.getString("serverName"),
+        serverId = record.optString("serverId").ifBlank { null },
+        gameVersion = runCatching {
+            GameVersion.valueOf(record.getString("gameVersion"))
+        }.getOrDefault(GameVersion.OTHER),
+        channel = runCatching {
+            Channel.valueOf(record.getString("channel"))
+        }.getOrDefault(Channel.UNKNOWN),
+        session = null,
+        enabled = false,
+        monarchName = null,
+        nation = null,
+        loginState = AccountLoginState.STOPPED,
+        gameAuthSignEvidence = null,
+        platform = record.getString("platform"),
+        platformKey = record.getString("platformKey"),
+        serial = record.optString("serial", "0"),
+        serverQuery = record.getString("serverQuery")
+    )
+
+    /** Manual 换手机 export of every local game account, its settings and its sealed password. */
+    private fun configExport(body: JSONObject): JSONObject {
+        val password = body.optString("password")
+        if (password.isEmpty()) return configTransferFailure("请输入会员密码，用来加密游戏密码")
+        val membership = MembershipClient.get(appContext)
+        val memberId = membership.memberId() ?: return configTransferFailure("请先登录会员账号")
+        val local = accounts.listPublicAccounts()
+        if (local.isEmpty()) return configTransferFailure("本机还没有游戏账号，无需导出")
+        val stored = configs.exportAll().optJSONObject("configs") ?: JSONObject()
+        val exported = local.map { account ->
+            val prefix = "${account.id}::"
+            val features = linkedMapOf<String, JSONObject>()
+            stored.keys().forEach { key ->
+                if (key.startsWith(prefix)) stored.optJSONObject(key)?.let { features[key.removePrefix(prefix)] = it }
+            }
+            ConfigBackupAccount(
+                platformKey = account.platformKey,
+                platform = account.platform,
+                username = account.username,
+                serverName = account.serverName,
+                serverQuery = account.serverQuery,
+                serverId = account.serverId,
+                serial = account.serial,
+                displayName = account.displayName,
+                configs = features,
+            )
+        }
+        // An unreadable Keystore entry exports that account without its password instead of failing.
+        val passwords = local.map { runCatching { credentialVault.loadPassword(it.id) }.getOrNull() }
+        val document = ConfigBackupCodec().encode(
+            exported, passwords, memberId, password, "${Build.MANUFACTURER} ${Build.MODEL}",
+            BuildConfig.VERSION_NAME, System.currentTimeMillis()
+        )
+        val uploaded = membership.configBackupPut(password, document)
+        if (!uploaded.optBoolean("ok")) return uploaded
+        return JSONObject()
+            .put("ok", true)
+            .put("accountCount", exported.size)
+            .put("passwordCount", passwords.count { it != null })
+            .put("configCount", exported.sumOf { it.configs.size })
+            .put("backupInfo", uploaded.optJSONObject("backupInfo") ?: JSONObject())
+    }
+
+    /**
+     * Two-step import: `confirm=false` only previews the cloud export; `confirm=true` applies it.
+     * Accounts stay stopped, so nothing logs into the game until the user starts them.
+     */
+    private fun configImport(body: JSONObject): JSONObject {
+        val password = body.optString("password")
+        if (password.isEmpty()) return configTransferFailure("请输入会员密码，用来解开导出时加密的游戏密码")
+        val membership = MembershipClient.get(appContext)
+        val memberId = membership.memberId() ?: return configTransferFailure("请先登录会员账号")
+        val running = accounts.listPublicAccounts().filter { it.enabled }
+        if (running.isNotEmpty()) {
+            return configTransferFailure(
+                "请先在“助手”页停止所有游戏账号（${running.joinToString("、") { "${it.username}@${it.serverQuery}" }}），再导入配置"
+            )
+        }
+        val fetched = membership.configBackupGet(password)
+        if (!fetched.optBoolean("ok")) return fetched
+        val codec = ConfigBackupCodec()
+        val backup = codec.decode(fetched.getString("backup"))
+        // The server has just verified this member password, so a failed unseal means the export
+        // was made before a member password reset/change rather than a typo.
+        val passwords = codec.openPasswords(backup, memberId, password)
+        val target = configImportTarget()
+        if (!body.optBoolean("confirm")) {
+            val info = fetched.optJSONObject("backupInfo") ?: JSONObject()
+            return JSONObject()
+                .put("ok", true)
+                .put("preview", true)
+                .put("exportedAt", info.optLong("exportedAt", backup.exportedAt))
+                .put("deviceName", info.optString("deviceName").ifBlank { backup.deviceName })
+                .put("passwordsReadable", passwords != null)
+                .put("accounts", JSONArray().apply {
+                    backup.accounts.forEach { account ->
+                        val resolved = target.resolve(account)
+                        put(JSONObject()
+                            .put("label", account.label)
+                            .put("supported", resolved != null)
+                            .put("existing", resolved?.exists == true)
+                            .put("configCount", account.configs.size))
+                    }
+                })
+        }
+        if (passwords == null && !body.optBoolean("allowWithoutPasswords")) {
+            return configTransferFailure("云端配置是用旧的会员密码导出的，游戏密码无法解开")
+                .put("code", "CONFIG_BACKUP_PASSWORDS_LOCKED")
+        }
+        val summary = ConfigBackupImporter.apply(backup, passwords, target)
+        return JSONObject()
+            .put("ok", true)
+            .put("added", JSONArray(summary.added))
+            .put("merged", JSONArray(summary.merged))
+            .put("skipped", JSONArray(summary.skipped))
+            .put("passwordsRestored", summary.passwordsRestored)
+            .put("passwordsMissing", JSONArray(summary.passwordsMissing))
+            .put("configsRestored", summary.configsRestored)
+    }
+
+    private fun configImportTarget(): ConfigImportTarget = object : ConfigImportTarget {
+        override fun resolve(account: ConfigBackupAccount): ResolvedImportAccount? {
+            val prepared = sharedPythonCore.prepareAccountAdd(
+                JSONObject()
+                    .put("username", account.username)
+                    .put("serverQuery", account.serverQuery)
+                    .put("platform", account.platformKey)
+                    .put("serial", account.serial)
+                    .put("passwordPresent", true)
+                    .put("supportedPlatformKeys", JSONArray().put("sglm").put("downjoy"))
+            )
+            if (!prepared.optBoolean("ok", false)) return null
+            val record = prepared.getJSONObject("plan").getJSONObject("record")
+            val accountId = record.getString("accountRef").toLongOrNull()?.takeIf { it > 0L } ?: return null
+            return ResolvedImportAccount(accountId, accounts.getPublic(accountId) != null, record)
+        }
+
+        override fun hasPassword(accountId: Long): Boolean = credentialVault.hasPassword(accountId)
+
+        override fun savePassword(accountId: Long, password: String) =
+            credentialVault.savePassword(accountId, password)
+
+        override fun create(resolved: ResolvedImportAccount, account: ConfigBackupAccount, password: String?) {
+            if (password != null) credentialVault.savePassword(resolved.accountId, password)
+            runCatching {
+                val draft = draftAccount(resolved.draft)
+                accounts.upsert(draft.copy(
+                    displayName = account.displayName ?: draft.displayName,
+                    serverId = account.serverId ?: draft.serverId,
+                ))
+            }.onFailure {
+                if (password != null) credentialVault.delete(resolved.accountId)
+            }.getOrThrow()
+        }
+
+        override fun saveConfig(accountId: Long, featureId: String, config: JSONObject) =
+            configs.saveFeatureConfig(accountId, featureId, config)
+    }
+
+    private fun configTransferFailure(message: String): JSONObject =
+        JSONObject().put("ok", false).put("error", message)
+
     private fun startAccount(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)
         if (!credentialVault.hasPassword(account.id)) {
-            return failure(request, 409, "该账号没有可用于自动重登的 Keystore 凭据，请删除后重新添加")
+            return failure(request, 409, "该账号尚未保存本机登录凭据，请点“修改”重新输入游戏密码；保留原账号和区服，不要删除账号")
         }
+        runCatching { onHostingStarted() } // Optional warning, never requests or blocks permissions.
         val dispatched = sharedPythonCore.dispatch(
             "POST",
             "/api/accounts/start",
@@ -640,24 +804,6 @@ class LocalAssistantApiController(
 
     private fun startSavedTasks(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)
-        val backgroundPermissions = BackgroundHostingPermissionState.read(appContext)
-        if (!backgroundPermissions.reliableHostingReady) {
-            runCatching { onHostingStarted() }
-            return AssistantApiResponse(
-                request.id,
-                428,
-                backgroundPermissions.toJson()
-                    .put("ok", false)
-                    .put("code", "BACKGROUND_PERMISSION_REQUIRED")
-                    .put(
-                        "error",
-                        backgroundPermissions.blockingIssueMessage(
-                            prefix = "为了保证息屏后任务不中断"
-                        ) ?: "为了保证息屏后任务不中断，请完成后台运行设置；" +
-                            "可在攻略-后台运行设置中查看",
-                    ),
-            )
-        }
         val savedTasksStarted = account.session?.channelExtra
             ?.get("savedTasksStarted")
             .equals("true", ignoreCase = true)

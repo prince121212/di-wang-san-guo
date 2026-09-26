@@ -2,6 +2,7 @@ package com.example.dwpmclone.ui.hosting
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,34 +10,44 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.widget.Toast
 
-/** Starts only normal Android permission/settings flows after an explicit hosting action. */
+/** Advises on background reliability; system prompts open only on a settings click. */
 class BackgroundHostingPermissionCoordinator(
     private val activity: Activity,
     /** Records which settings page opened, so a dead vendor deep link is visible. */
     private val outcomeSink: (String) -> Unit = {},
 ) {
+    private var startWarningShown = false
+    fun showOnboardingIfNeeded() {
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            val prefs = activity.getSharedPreferences("dwpm_permission_onboarding", Activity.MODE_PRIVATE)
+            val state = BackgroundHostingPermissionState.read(activity)
+            if (!HostingPermissionOnboardingPolicy.shouldExplain(prefs.getBoolean("explained_optional_v2", false), state.reliableHostingReady)) return@runOnUiThread
+            prefs.edit().putBoolean("explained_optional_v2", true).apply()
+            AlertDialog.Builder(activity).setTitle("后台运行建议（可跳过）")
+                .setMessage(HostingPermissionOnboardingPolicy.EXPLANATION)
+                .setPositiveButton("查看并设置") { _, _ -> open("guide") }
+                .setNegativeButton("暂不设置，继续使用") { _, _ -> }.show()
+        }
+    }
+
     fun requestForStartedHosting() {
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-            if (
-                Build.VERSION.SDK_INT >= 33 &&
-                activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                activity.requestPermissions(
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    REQUEST_NOTIFICATION_PERMISSION
-                )
-            } else {
-                requestBatteryOptimizationExemption()
+            val warning = BackgroundHostingPermissionState.read(activity).backgroundRiskMessage()
+            if (warning != null && !startWarningShown) {
+                startWarningShown = true
+                Toast.makeText(activity, warning, Toast.LENGTH_LONG).show()
             }
         }
     }
 
     fun onRequestPermissionsResult(requestCode: Int): Boolean {
         if (requestCode != REQUEST_NOTIFICATION_PERMISSION) return false
-        requestBatteryOptimizationExemption()
+        // Do not chain an unrelated system prompt after a refusal. The guide
+        // refreshes on return and each permission needs its own explicit click.
         return true
     }
 
@@ -45,7 +56,9 @@ class BackgroundHostingPermissionCoordinator(
         val normalized = action.trim()
         if (normalized !in SUPPORTED_ACTIONS) return false
         activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             when (normalized) {
+                "guide" -> activity.startActivity(Intent(activity, HostingPermissionGuideActivity::class.java))
                 "notification" -> openNotificationSettings()
                 "battery-optimization" -> requestBatteryOptimizationExemption()
                 "exact-alarm" -> openExactAlarmSettings()
@@ -65,14 +78,12 @@ class BackgroundHostingPermissionCoordinator(
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val power = activity.getSystemService(PowerManager::class.java) ?: return
         if (power.isIgnoringBatteryOptimizations(activity.packageName)) return
-        runCatching {
-            activity.startActivity(
-                Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:${activity.packageName}")
-                )
-            )
-        }
+        val opened = launchFirst(
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${activity.packageName}")),
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            appDetailsIntent(),
+        )
+        reportOutcome("battery-optimization", opened)
     }
 
     private fun openNotificationSettings() {
@@ -81,6 +92,14 @@ class BackgroundHostingPermissionCoordinator(
             activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            val prefs = activity.getSharedPreferences("dwpm_permission_onboarding", Activity.MODE_PRIVATE)
+            if (prefs.getBoolean("notification_requested", false) &&
+                !activity.shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                launchFirst(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName), appDetailsIntent())
+                return
+            }
+            prefs.edit().putBoolean("notification_requested", true).apply()
             activity.requestPermissions(
                 arrayOf(Manifest.permission.POST_NOTIFICATIONS),
                 REQUEST_NOTIFICATION_PERMISSION,
@@ -247,6 +266,7 @@ class BackgroundHostingPermissionCoordinator(
     private companion object {
         const val REQUEST_NOTIFICATION_PERMISSION = 7_301
         val SUPPORTED_ACTIONS = setOf(
+            "guide",
             "notification",
             "battery-optimization",
             "exact-alarm",

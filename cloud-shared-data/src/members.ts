@@ -1,10 +1,19 @@
 import type { Env } from "./types";
 import { RequestError } from "./validation";
 import { b64, cloudToken, emailValue, equal, LEASE_MILLIS, mac, MemberSession, passwordHash, passwordMatches,
-  passwordValue, PasswordRecord, randomId, readSession, sessionToken, sha, signLease, verifyDeviceProof } from "./member-crypto";
+  passwordValue, PasswordRecord, randomId, readSession, sessionToken, sha, signLease, unb64, verifyDeviceProof } from "./member-crypto";
 
+const encoder = new TextEncoder();
 const PLANS: Record<string, number> = { month: 30, quarter: 90, year: 365 };
 const DAY = 86_400_000;
+const CONFIG_BACKUP_ACTIONS = ["config-backup-put", "config-backup-get"];
+const SESSION_ACTIONS = ["renew", "logout", ...CONFIG_BACKUP_ACTIONS];
+const CONFIG_BACKUP_MAX_BYTES = 512 * 1024;
+/** Latest manual export only. The client seals game passwords with the member password; the
+ * whole document is additionally encrypted at rest with a per-member key derived from the
+ * Worker secret, so a storage dump alone reveals neither accounts nor settings. */
+interface StoredConfigBackup { exportedAt: number; deviceName: string; accountCount: number; bytes: number;
+  iv: string; ciphertext: string }
 interface Otp { id: string; purpose: string; digest: string; createdAt: number; expiresAt: number;
   attempts: number; used: boolean; delivery: string; requestId: string }
 interface Member {
@@ -34,13 +43,46 @@ function audit(state: State, kind: string, details: Record<string, unknown> = {}
   state.audit.push({ id: crypto.randomUUID(), at: Date.now(), kind, ...details });
   state.audit = state.audit.slice(-200);
 }
-async function body(request: Request): Promise<Record<string, any>> {
-  if (Number(request.headers.get("content-length") || 0) > 16000) throw new RequestError("请求过大", 413);
+async function body(request: Request, max = 16000): Promise<Record<string, any>> {
+  if (Number(request.headers.get("content-length") || 0) > max) throw new RequestError("请求过大", 413);
   const raw = await request.text();
-  if (raw.length > 16000) throw new RequestError("请求过大", 413);
+  if (raw.length > max) throw new RequestError("请求过大", 413);
   try { const value = JSON.parse(raw); if (value && typeof value === "object" && !Array.isArray(value)) return value; }
   catch { /* generic error; never log input */ }
   throw new RequestError("请求格式无效");
+}
+/** The signed payload carries only the SHA-256; the document itself travels beside it. */
+async function configBackupSummary(backup: unknown, digest: unknown): Promise<{ accountCount: number; bytes: number }> {
+  if (typeof backup !== "string" || !backup) throw new RequestError("配置备份格式无效");
+  const bytes = encoder.encode(backup).byteLength;
+  if (bytes > CONFIG_BACKUP_MAX_BYTES) throw new RequestError("配置内容过大，无法导出", 413, "CONFIG_BACKUP_TOO_LARGE");
+  if (typeof digest !== "string" || !equal(digest.toLowerCase(), await sha(backup))) {
+    throw new RequestError("配置备份校验失败，请重新导出");
+  }
+  let value: any;
+  try { value = JSON.parse(backup); } catch { throw new RequestError("配置备份格式无效"); }
+  const accounts = value?.accounts;
+  if (!value || typeof value !== "object" || value.format !== "dwpm-config-backup" || value.version !== 1
+    || !Array.isArray(accounts) || accounts.length < 1 || accounts.length > 50
+    || !value.secrets || typeof value.secrets !== "object") throw new RequestError("配置备份格式无效");
+  return { accountCount: accounts.length, bytes };
+}
+async function configBackupKey(env: Env, memberId: string): Promise<CryptoKey> {
+  const secret = await crypto.subtle.importKey("raw", encoder.encode(String(env.MEMBER_AUTH_SECRET)),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const raw = await crypto.subtle.sign("HMAC", secret, encoder.encode("config-backup-at-rest-v1\0" + memberId));
+  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+async function sealConfigBackup(env: Env, memberId: string, backup: string) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: encoder.encode(memberId) },
+    await configBackupKey(env, memberId), encoder.encode(backup));
+  return { iv: b64(iv), ciphertext: b64(ciphertext) };
+}
+async function openConfigBackup(env: Env, memberId: string, stored: StoredConfigBackup): Promise<string> {
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(stored.iv), additionalData: encoder.encode(memberId) },
+    await configBackupKey(env, memberId), unb64(stored.ciphertext));
+  return new TextDecoder().decode(plain);
 }
 function memberStub(env: Env, id: string) { return env.RUNTIME_CONFIG.getByName("member-v1:" + id); }
 async function memberId(email: string) { return sha("dwpm-member-v1:" + email); }
@@ -70,16 +112,17 @@ export async function handleMemberRequest(request: Request, env: Env): Promise<R
         registrationEnabled: true, publicKey: env.MEMBER_LEASE_PUBLIC_KEY, maxGameAccounts: 2 });
     }
     const action = path.slice("/v1/member/".length);
-    if (request.method !== "POST" || !["send-code", "register", "login", "reset-password", "renew", "logout"].includes(action)) {
+    if (request.method !== "POST" || !["send-code", "register", "login", "reset-password", ...SESSION_ACTIONS].includes(action)) {
       return error("NOT_FOUND", "会员接口不存在", 404);
     }
-    if (!["renew", "logout"].includes(action)) {
+    if (!SESSION_ACTIONS.includes(action)) {
       const ip = await sha(request.headers.get("cf-connecting-ip") || "unknown");
       if (!await limit(env, `${action}:${ip}`, action === "send-code" ? 10 : 60, 60 * 60_000)) {
         return error("MEMBER_RATE_LIMITED", "操作过于频繁，请稍后再试", 429);
       }
     }
-    const input = await body(request);
+    // JSON escaping can double the size of the embedded backup document.
+    const input = await body(request, action === "config-backup-put" ? 2 * CONFIG_BACKUP_MAX_BYTES + 16000 : 16000);
     if (action === "send-code") {
       const email = emailValue(input.email);
       if (!["register", "reset-password"].includes(input.purpose) || typeof input.requestId !== "string"
@@ -92,17 +135,27 @@ export async function handleMemberRequest(request: Request, env: Env): Promise<R
     const data = proof.data;
     let claims: MemberSession | undefined;
     let id: string;
-    if (["renew", "logout"].includes(action)) {
+    let backup: Record<string, unknown> = {};
+    if (SESSION_ACTIONS.includes(action)) {
       claims = await readSession(env, data.sessionToken);
       if (claims.deviceId !== proof.deviceId) return error("MEMBER_DEVICE_INVALID", "登录凭证不属于本机，请重新登录", 401);
       id = claims.memberId;
+      if (CONFIG_BACKUP_ACTIONS.includes(action)) {
+        data.password = passwordValue(data.password);
+        if (action === "config-backup-put") {
+          backup = { backup: input.backup, backupSummary: await configBackupSummary(input.backup, data.backupSha256) };
+        }
+        if (!await limit(env, `config-backup:${id}`, 30, 60 * 60_000)) {
+          return error("MEMBER_RATE_LIMITED", "操作过于频繁，请稍后再试", 429);
+        }
+      }
     } else {
       data.email = emailValue(data.email);
       data.password = passwordValue(data.password);
       id = await memberId(data.email);
     }
     return memberStub(env, id).fetch(`https://member.internal/member/${action}`, {
-      method: "POST", body: JSON.stringify({ data, claims, id, deviceId: proof.deviceId }),
+      method: "POST", body: JSON.stringify({ data, claims, id, deviceId: proof.deviceId, ...backup }),
     });
   } catch (e) {
     if (e instanceof RequestError) return error(e.code, e.message, e.status);
@@ -278,6 +331,36 @@ export async function handleMemberStorage(request: Request, env: Env, storage: D
       m.sessionEndReason === "admin" ? "管理员已撤销本机登录，请重新登录" : input.deviceId === m.deviceId
         ? "会员账号已在本机重新登录，旧会话已失效，请重新登录" : "会员账号已在其他手机登录，本机自动任务已暂停",
       409, { otherLoginAtMillis: m.loginAt, otherDeviceName: m.deviceName, sameDevice: input.deviceId === m.deviceId });
+  }
+  if (CONFIG_BACKUP_ACTIONS.includes(action)) {
+    // Holding a session is not enough: the export/import dialog re-proves the member password,
+    // which also tells the phone that a failed unseal means an older password, not a typo.
+    if (state.lockedUntil > now) return error("MEMBER_LOGIN_LOCKED", "尝试次数过多，请15分钟后重试", 429);
+    if (!await passwordMatches(env, data.password, m.password)) {
+      state.failures++; if (state.failures >= 5) { state.lockedUntil = now + 15 * 60_000; state.failures = 0; }
+      audit(state, action + "-rejected"); await save();
+      return error("MEMBER_PASSWORD_INVALID", "会员密码不正确", 401);
+    }
+    state.failures = 0; state.lockedUntil = 0;
+    if (action === "config-backup-get") {
+      const stored = await storage.get<StoredConfigBackup>("config-backup");
+      audit(state, action, { found: Boolean(stored) }); await save();
+      if (!stored) return error("CONFIG_BACKUP_NOT_FOUND", "云端还没有导出的配置，请先在原手机上点“导出配置”", 404);
+      const { iv: _iv, ciphertext: _ciphertext, ...info } = stored;
+      let backup: string;
+      try { backup = await openConfigBackup(env, m.id, stored); }
+      catch { return error("CONFIG_BACKUP_UNREADABLE", "云端配置无法读取，请在原手机上重新导出", 409); }
+      return response({ ok: true, backup, backupInfo: info });
+    }
+    const info = { exportedAt: now, deviceName: m.deviceName, accountCount: input.backupSummary.accountCount,
+      bytes: input.backupSummary.bytes };
+    const sealed = await sealConfigBackup(env, m.id, input.backup);
+    audit(state, action, { accountCount: info.accountCount, bytes: info.bytes });
+    await storage.transaction(async tx => {
+      await tx.put("state", state);
+      await tx.put("config-backup", { ...info, ...sealed } satisfies StoredConfigBackup);
+    });
+    return response({ ok: true, backupInfo: info });
   }
   if (action === "logout") {
     m.sessionId = ""; m.sessionEndReason = "logout"; audit(state, "logout"); await save(); await indexMember(env, m);

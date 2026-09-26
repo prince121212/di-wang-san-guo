@@ -211,3 +211,102 @@ describe("member authority and account lifecycle", () => {
     expect(result.status).toBe(200);
   });
 });
+
+function configBackup(accounts = 2, filler = "") {
+  return JSON.stringify({ format: "dwpm-config-backup", version: 1, exportedAt: Date.now(), deviceName: "手机A",
+    accounts: Array.from({ length: accounts }, (_, i) => ({
+      identity: { platformKey: "sglm", username: "game-user-" + i, serverQuery: "周年服351区" },
+      configs: { brush: { values: { enabled: true, note: filler } } },
+    })),
+    secrets: { algorithm: "PBKDF2-HMAC-SHA256/AES-256-GCM", iterations: 1000, salt: "00", iv: "00", ciphertext: "00" } });
+}
+async function exportConfig(sessionToken: string, backup: string, keys = deviceA, password = "test-password-123", digest?: string) {
+  const signedPayload = await proof("config-backup-put", { sessionToken, password, backupSha256: digest ?? await sha(backup) }, keys);
+  return request("/v1/member/config-backup-put", { ...signedPayload, backup });
+}
+async function importConfig(sessionToken: string, keys = deviceA, password = "test-password-123") {
+  return signed("config-backup-get", { sessionToken, password }, keys);
+}
+async function storedConfigBackup() {
+  const id = await sha("dwpm-member-v1:" + email);
+  return runInDurableObject(env.RUNTIME_CONFIG.getByName("member-v1:" + id), async (_i, s) => s.storage.get<any>("config-backup"));
+}
+
+describe("manual config export and import", () => {
+  it("the new phone imports the export after taking over; the old phone can no longer read it", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    const backup = configBackup();
+    const exported = await exportConfig(a.sessionToken, backup);
+    expect(exported.status).toBe(200);
+    expect(exported.body.backupInfo).toMatchObject({ accountCount: 2, deviceName: "手机A" });
+    expect((await importConfig(a.sessionToken)).body.backup).toBe(backup);
+
+    const b = (await login(deviceB)).body;
+    expect((await importConfig(a.sessionToken)).body.code).toBe("MEMBER_SESSION_REPLACED");
+    const imported = await importConfig(b.sessionToken, deviceB);
+    expect(imported.status).toBe(200);
+    expect(imported.body.backup).toBe(backup);
+    expect(imported.body.backupInfo).toMatchObject({ accountCount: 2, deviceName: "手机A" });
+    expect(imported.body.backupInfo).not.toHaveProperty("ciphertext");
+  });
+  it("stores the document encrypted at rest, never as readable accounts or settings", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    expect((await exportConfig(a.sessionToken, configBackup())).status).toBe(200);
+    const stored = await storedConfigBackup();
+    expect(stored).not.toHaveProperty("backup");
+    expect(JSON.stringify(stored)).not.toContain("game-user-0");
+    expect(JSON.stringify(stored)).not.toContain("周年服351区");
+  });
+  it("a wrong member password neither reveals nor replaces the export", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    const original = configBackup(1);
+    expect((await exportConfig(a.sessionToken, original)).status).toBe(200);
+    const replace = await exportConfig(a.sessionToken, configBackup(2), deviceA, "incorrect-password");
+    expect(replace.status).toBe(401); expect(replace.body.code).toBe("MEMBER_PASSWORD_INVALID");
+    const read = await importConfig(a.sessionToken, deviceA, "incorrect-password");
+    expect(read.status).toBe(401); expect(read.body).not.toHaveProperty("backup");
+    expect((await importConfig(a.sessionToken)).body.backup).toBe(original);
+  });
+  it("wrong export passwords share the login lockout", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    for (let i = 0; i < 5; i++) expect((await importConfig(a.sessionToken, deviceA, "incorrect-password")).status).toBe(401);
+    expect((await importConfig(a.sessionToken)).body.code).toBe("MEMBER_LOGIN_LOCKED");
+    expect((await login(deviceB)).body.code).toBe("MEMBER_LOGIN_LOCKED");
+  });
+  it("rejects tampered, malformed and oversized exports before storing anything", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    const backup = configBackup();
+    expect((await exportConfig(a.sessionToken, backup, deviceA, "test-password-123", await sha(backup + "x"))).status).toBe(400);
+    const wrongFormat = JSON.stringify({ ...JSON.parse(backup), format: "something-else" });
+    expect((await exportConfig(a.sessionToken, wrongFormat)).status).toBe(400);
+    const oversized = await exportConfig(a.sessionToken, configBackup(1, "x".repeat(520 * 1024)));
+    expect(oversized.status).toBe(413); expect(oversized.body.code).toBe("CONFIG_BACKUP_TOO_LARGE");
+    const missing = await importConfig(a.sessionToken);
+    expect(missing.status).toBe(404); expect(missing.body.code).toBe("CONFIG_BACKUP_NOT_FOUND");
+    expect(await storedConfigBackup()).toBeUndefined();
+  });
+  it("an unreadable stored export asks for a fresh export instead of failing silently", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    expect((await exportConfig(a.sessionToken, configBackup())).status).toBe(200);
+    const id = await sha("dwpm-member-v1:" + email);
+    await runInDurableObject(env.RUNTIME_CONFIG.getByName("member-v1:" + id), async (_i, s) => {
+      const stored = await s.storage.get<any>("config-backup");
+      stored.ciphertext = b64(new Uint8Array(64));
+      await s.storage.put("config-backup", stored);
+    });
+    const read = await importConfig(a.sessionToken);
+    expect(read.status).toBe(409); expect(read.body.code).toBe("CONFIG_BACKUP_UNREADABLE");
+  });
+  it("a copied session token on another phone cannot export or import", async () => {
+    await register(); await admin();
+    const a = (await login()).body;
+    expect((await exportConfig(a.sessionToken, configBackup(), deviceB)).body.code).toBe("MEMBER_DEVICE_INVALID");
+    expect((await importConfig(a.sessionToken, deviceB)).body.code).toBe("MEMBER_DEVICE_INVALID");
+  });
+});

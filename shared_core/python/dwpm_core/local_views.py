@@ -78,6 +78,7 @@ def success_record_visible_window(
 #: opened chest, not the dispatch, is what the operator is waiting to hear.
 _EXPEDITION_SUCCESS_LABELS = {
     "brush": "刷黄",
+    "banditPrefetch": "闲时找山贼",
     "mine": "打矿",
     "raid": "掠夺",
     "lossless": "无损",

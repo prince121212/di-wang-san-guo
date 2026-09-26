@@ -16,7 +16,6 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.example.dwpmclone.ui.hosting.BackgroundHostingPermissionCoordinator
-import com.example.dwpmclone.ui.hosting.BackgroundHostingPermissionState
 import com.example.dwpmclone.data.local.LocalHostingPreferences
 import com.example.dwpmclone.data.local.TaskLogRepository
 import com.example.dwpmclone.service.AssistantForegroundService
@@ -86,6 +85,7 @@ class AssistantWebActivity : Activity() {
         webView.webChromeClient = WebChromeClient()
         webView.webViewClient = LocalAssetWebViewClient {
             if (fullyDrawnReported.compareAndSet(false, true)) reportFullyDrawn()
+            hostingPermissions.showOnboardingIfNeeded()
         }
         val content = FrameLayout(this).apply {
             setBackgroundColor(Color.WHITE)
@@ -153,12 +153,11 @@ class AssistantWebActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (
-            BackgroundHostingPermissionState.read(this).reliableHostingReady &&
             LocalHostingPreferences(this).isEnabled() &&
             !AssistantForegroundService.isExecutionOwnerActive()
         ) {
-            // Returning from a system permission screen is the explicit recovery boundary.
-            // If hosting had been fail-closed while permissions were missing, resume it now.
+            // Resume only existing user-enabled hosting when returning to foreground;
+            // notification/battery preferences are not a business startup gate.
             AssistantForegroundService.refresh(this)
         }
     }

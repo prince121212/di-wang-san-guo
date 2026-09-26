@@ -67,8 +67,37 @@ class MembershipClient private constructor(private val context: Context) {
             .put("member", saved.optJSONObject("member") ?: JSONObject())
             .put("paymentOrder", saved.optJSONObject("paymentOrder")?.optJSONObject("order") ?: JSONObject())
             .put("maxGameAccounts", 2).put("remainingMillis", (leaseDeadlineElapsed - SystemClock.elapsedRealtime()).coerceAtLeast(0))
-            .put("details", JSONObject(lastDetails.toString()))
+            .put("details", JSONObject(lastDetails.toString())).put("configTransfer", true)
     }
+
+    @Synchronized fun memberId(): String? = saved.optJSONObject("member")?.optString("id")
+        ?.takeIf { it.isNotBlank() && saved.optString("sessionToken").isNotBlank() }
+
+    /** Manual 换手机 export: the signed payload carries only the document hash, the document rides beside it. */
+    @Synchronized fun configBackupPut(password: String, backup: String): JSONObject = configBackupCall {
+        signed("config-backup-put", JSONObject().put("sessionToken", saved.getString("sessionToken"))
+            .put("password", password).put("backupSha256", sha256Hex(backup)), extra = JSONObject().put("backup", backup)).body
+    }
+
+    @Synchronized fun configBackupGet(password: String): JSONObject = configBackupCall {
+        signed("config-backup-get", JSONObject().put("sessionToken", saved.getString("sessionToken"))
+            .put("password", password), maxResponseChars = CONFIG_BACKUP_RESPONSE_CHARS).body
+    }
+
+    private fun configBackupCall(call: () -> JSONObject): JSONObject {
+        if (saved.optString("sessionToken").isBlank()) {
+            return JSONObject().put("ok", false).put("code", "MEMBER_LOGIN_REQUIRED").put("error", "请先登录会员账号")
+        }
+        return try { call() } catch (failure: MemberFailure) {
+            if (failure.code in TERMINAL_CODES) deny(failure.code, failure.message ?: "会员授权不可用", failure.details)
+            JSONObject().put("ok", false).put("code", failure.code).put("error", failure.message)
+        } catch (_: Exception) {
+            JSONObject().put("ok", false).put("code", "MEMBER_NETWORK_UNAVAILABLE").put("error", "会员服务连接失败，请稍后重试")
+        }
+    }
+
+    private fun sha256Hex(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it.toInt() and 255) }
 
     @Synchronized fun cloudDataToken(): String =
         if (check(false).optBoolean("allowed")) saved.optString("cloudToken").takeUnless { it == "null" }.orEmpty() else ""
@@ -104,6 +133,25 @@ class MembershipClient private constructor(private val context: Context) {
         }
         return try {
             when (action) {
+                "payment-acceptance-create" -> {
+                    require(BuildConfig.DEBUG) { "仅验收包支持测试入口" }
+                    require(saved.optString("sessionToken").isNotBlank()) { "请先登录独立测试会员账号" }
+                    val purchaseId = body.getString("purchaseId")
+                    require(UUID.fromString(purchaseId).toString() == purchaseId)
+                    val previous = saved.optJSONObject("paymentOrder")
+                    require(previous == null || previous.optString("purchaseId") == purchaseId ||
+                        previous.optJSONObject("order")?.optString("status") in setOf("PAID", "CLOSED", "REFUNDED")) { "请先核对原订单，不能覆盖待处理订单" }
+                    val pending = JSONObject().put("plan", "month").put("purchaseId", purchaseId).put("channel", "app")
+                    saved.put("paymentOrder", pending); persist()
+                    val result = signed("payment-create", JSONObject().put("sessionToken", saved.getString("sessionToken"))
+                        .put("plan", "month").put("purchaseId", purchaseId).put("channel", "app")).body
+                    val order = result.getJSONObject("order")
+                    pending.put("order", order); persist()
+                    require(order.optBoolean("acceptance") && order.optString("totalAmount") == "0.01" && order.optInt("days") == 0) {
+                        "服务端未返回一分钱验收单，不调起付款"
+                    }
+                    JSONObject().put("ok", true).put("order", order)
+                }
                 "payment-store-open" -> {
                     context.startActivity(Intent(context, com.example.dwpmclone.MembershipStoreActivity::class.java)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -214,7 +262,8 @@ class MembershipClient private constructor(private val context: Context) {
     }
 
     private data class SignedResult(val body: JSONObject, val requestId: String, val elapsed: Long)
-    private fun signed(action: String, data: JSONObject): SignedResult {
+    private fun signed(action: String, data: JSONObject, extra: JSONObject? = null,
+        maxResponseChars: Int = DEFAULT_RESPONSE_CHARS): SignedResult {
         if (serverBaseMillis == 0L) exchange("GET", "/v1/member/info", null)
         val started = SystemClock.elapsedRealtime()
         val nonce = UUID.randomUUID().toString()
@@ -228,11 +277,13 @@ class MembershipClient private constructor(private val context: Context) {
         val request = JSONObject().put("payload", payload)
             .put("publicKey", Base64.encodeToString(store.getCertificate(DEVICE_KEY).publicKey.encoded, Base64.NO_WRAP))
             .put("signature", Base64.encodeToString(signer.sign(), Base64.NO_WRAP))
-        val result = exchange("POST", path, request)
+        extra?.keys()?.forEach { key -> request.put(key, extra.get(key)) }
+        val result = exchange("POST", path, request, maxResponseChars)
         return SignedResult(result, nonce, SystemClock.elapsedRealtime() - started)
     }
 
-    private fun exchange(method: String, path: String, payload: JSONObject?): JSONObject {
+    private fun exchange(method: String, path: String, payload: JSONObject?,
+        maxResponseChars: Int = DEFAULT_RESPONSE_CHARS): JSONObject {
         val base = BuildConfig.CLOUD_SHARED_DATA_URL.trim().trimEnd('/')
         require(URL(base).protocol == "https") { "会员服务只允许HTTPS" }
         val connection = (URL(base + path).openConnection() as HttpURLConnection).apply {
@@ -248,7 +299,7 @@ class MembershipClient private constructor(private val context: Context) {
             val status = connection.responseCode
             val raw = (if (status in 200..299) connection.inputStream else connection.errorStream)
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()
-            require(raw.length <= 65536) { "会员响应过大" }
+            require(raw.length <= maxResponseChars) { "会员响应过大" }
             val value = JSONObject(raw)
             val serverTime = value.optLong("serverTimeMillis")
             if (serverTime > 0) { serverBaseMillis = serverTime; serverBaseElapsed = SystemClock.elapsedRealtime() }
@@ -315,6 +366,9 @@ class MembershipClient private constructor(private val context: Context) {
     private class MemberFailure(val code: String, message: String, val details: JSONObject) : RuntimeException(message)
     companion object {
         private const val DEVICE_KEY = "dwpm_member_device_rsa_v1"
+        private const val DEFAULT_RESPONSE_CHARS = 65_536
+        // A 512 KB export can double in size once JSON-escaped inside the response.
+        private const val CONFIG_BACKUP_RESPONSE_CHARS = 2 * 1024 * 1024
         private val TERMINAL_CODES = setOf("MEMBER_SESSION_REPLACED", "MEMBER_SESSION_REVOKED", "MEMBER_PASSWORD_CHANGED",
             "MEMBER_DISABLED", "MEMBER_EXPIRED", "MEMBER_SESSION_INVALID", "MEMBER_SESSION_EXPIRED")
         @Volatile private var instance: MembershipClient? = null

@@ -9,7 +9,7 @@ import org.junit.Test
 
 class BackgroundHostingContractTest {
     @Test
-    fun permissionFailureMessageNamesTheExactMissingPermissions() {
+    fun backgroundWarningNamesTheMissingSettingsWithoutBlockingStartup() {
         fun state(notification: Boolean, battery: Boolean) = BackgroundHostingPermissionState(
             notificationGranted = notification,
             batteryOptimizationExempt = battery,
@@ -22,22 +22,28 @@ class BackgroundHostingContractTest {
         )
 
         assertEquals(
-            "后台托管未启动：缺少通知权限；请在攻略-后台运行设置中完成授权后重试",
-            state(notification = false, battery = true).blockingIssueMessage(),
+            "后台运行提醒：未开启通知权限，仍可启动账号和任务；切到后台或锁屏后，系统可能暂停网络或停止应用。可在攻略-后台运行设置中按需开启。",
+            state(notification = false, battery = true).backgroundRiskMessage(),
         )
         assertEquals(
-            "后台托管未启动：缺少忽略电池优化；请在攻略-后台运行设置中完成授权后重试",
-            state(notification = true, battery = false).blockingIssueMessage(),
+            "后台运行提醒：未开启忽略电池优化，仍可启动账号和任务；切到后台或锁屏后，系统可能暂停网络或停止应用。可在攻略-后台运行设置中按需开启。",
+            state(notification = true, battery = false).backgroundRiskMessage(),
         )
         assertEquals(
-            "后台托管未启动：缺少通知权限、忽略电池优化；请在攻略-后台运行设置中完成授权后重试",
-            state(notification = false, battery = false).blockingIssueMessage(),
+            "后台运行提醒：未开启通知权限、忽略电池优化，仍可启动账号和任务；切到后台或锁屏后，系统可能暂停网络或停止应用。可在攻略-后台运行设置中按需开启。",
+            state(notification = false, battery = false).backgroundRiskMessage(),
         )
-        assertNull(state(notification = true, battery = true).blockingIssueMessage())
+        assertNull(state(notification = true, battery = true).backgroundRiskMessage())
+        val denied = state(notification = false, battery = false).toJson()
+        assertFalse(denied.getBoolean("startupBlockedByPermissions"))
+        assertEquals(0, denied.getJSONArray("blockingIssues").length())
+        assertEquals(2, denied.getJSONArray("warningIssues").length())
+        val items=denied.getJSONArray("items")
+        for(i in 0 until items.length()) assertFalse(items.getJSONObject(i).getBoolean("required"))
     }
 
     @Test
-    fun systemBackgroundRestrictionIsARequiredStandardPrerequisite() {
+    fun systemBackgroundRestrictionIsReportedAsARiskNotAnAppGate() {
         val state = BackgroundHostingPermissionState(
             notificationGranted = true,
             batteryOptimizationExempt = true,
@@ -51,8 +57,8 @@ class BackgroundHostingContractTest {
         )
         assertFalse(state.reliableHostingReady)
         assertEquals(
-            "后台托管未启动：缺少解除系统后台运行限制；请在攻略-后台运行设置中完成授权后重试",
-            state.blockingIssueMessage(),
+            "后台运行提醒：未开启解除系统后台运行限制，仍可启动账号和任务；切到后台或锁屏后，系统可能暂停网络或停止应用。可在攻略-后台运行设置中按需开启。",
+            state.backgroundRiskMessage(),
         )
         assertTrue(state.toJson().getJSONArray("items").toString().contains("background-restricted"))
     }
@@ -70,7 +76,7 @@ class BackgroundHostingContractTest {
             model = "test",
         )
         assertTrue(state.reliableHostingReady)
-        assertNull(state.blockingIssueMessage())
+        assertNull(state.backgroundRiskMessage())
         assertEquals(
             "STANDARD_READY_PUNCTUALITY_DEGRADED",
             state.reliabilityLevel,
@@ -121,7 +127,7 @@ class BackgroundHostingContractTest {
     }
 
     @Test
-    fun releaseBuildHasObservablePermissionGuideAndFailClosedPreflight() {
+    fun releaseBuildHasOptionalGuideWithoutPermissionStartupGates() {
         val manifest = source("src/main/AndroidManifest.xml")
         val coordinator = source(
             "src/main/java/com/example/dwpmclone/ui/hosting/BackgroundHostingPermissionCoordinator.kt"
@@ -146,7 +152,16 @@ class BackgroundHostingContractTest {
             coordinator.indexOf("ScenarioPowerSavingActivity") <
                 coordinator.indexOf("Settings.ACTION_WIFI_SETTINGS"),
         )
-        assertTrue(controller.contains("BACKGROUND_PERMISSION_REQUIRED"))
+        assertFalse(controller.contains("BACKGROUND_PERMISSION_REQUIRED"))
+        assertFalse(controller.contains("!permissions.reliableHostingReady"))
+        assertFalse(controller.contains("!backgroundPermissions.reliableHostingReady"))
+        val service = source("src/main/java/com/example/dwpmclone/service/AssistantForegroundService.kt")
+        assertFalse(service.contains("requiredBackgroundPermissionsReady"))
+        assertFalse(service.contains("required background permission missing"))
+        assertFalse(service.contains("required background permission revoked"))
+        assertTrue(service.contains("reportBackgroundRisk()"))
+        assertTrue(service.contains("startForeground(NOTIFICATION_ID"))
+        assertFalse(coordinator.contains("reliableHostingReady) open(\"guide\")"))
         assertTrue(controller.contains("/api/background/permissions"))
         assertTrue(frontend.contains("renderBackgroundPermissionGuide"))
         assertTrue(index.contains("id=\"backgroundSettingsGuide\""))

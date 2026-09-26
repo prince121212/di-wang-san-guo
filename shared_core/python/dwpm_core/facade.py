@@ -254,6 +254,7 @@ from .features.captives import (
 from .features.targets import (
     action_target_hex,
     brush_scan_coordinates,
+    resident_brush_scan_limit,
     dedupe_targets,
     mine_target_matches,
     normalize_brush_levels,
@@ -298,6 +299,7 @@ from .operations import (
     OperationExecutionContext,
     OperationDeferredError,
     OperationKnownFailureError,
+    OperationCancelledError,
     OperationUncertainError,
 )
 from .ports import PlatformPorts
@@ -2900,6 +2902,11 @@ class CoreFacade:
         }
         discovered = []
         scan_results: list[Dict[str, Any]] = []
+        if body.get("_idlePrefetch"):
+            # A speculative read must not hold the account lane for the normal
+            # 12-second timeout plus retries while returning generals wait.
+            transport_context.update(readTimeoutMillis=2000, transportMaxAttempts=1,
+                                     transportRetryBaseDelayMillis=0, transportRetryJitterMillis=0)
 
         def matches(target: Dict[str, Any]) -> bool:
             return (
@@ -12920,7 +12927,7 @@ class CoreFacade:
                 "compositionFilter": dict(
                     rule.get("compositionFilter") or {}
                 ),
-                "scanLimit": int(brush.get("scanLimit") or 80),
+                "scanLimit": resident_brush_scan_limit(brush.get("scanLimit")),
             },
             context,
         )
@@ -18161,6 +18168,94 @@ class CoreFacade:
                 result["serverMessage"] = error_message
             return result
 
+    def _idle_bandit_prefetch(self, execution: OperationExecutionContext,
+                              account_ref: str, context: Dict[str, Any],
+                              result: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill the same unfiltered pool only after all business/poll deadlines merge.
+
+        No second worker, no expedition, no treatment, no reservation. One
+        bounded read per idle tick; normal tasks and returning armies win first.
+        """
+        public = self._account_public_state(account_ref)
+        started, keys = self._resident_started_and_keys(public)
+        configs = self._public_json_object(public.get("residentAutomationConfigJson"))
+        common = configs.get("common") or {}
+        brush = common.get("brush") or {}
+        allowed = context.get("allowedFeatures")
+        if (not started or "brushYellow" not in keys or not common.get("autoStart")
+                or not any(r.get("enabled") is True for r in brush.get("rules") or [])
+                or int(public.get("level") or 0) < 30
+                or context.get("configuredExecutionAllowed", True) is False
+                or (isinstance(allowed, list) and "brush" not in allowed)
+                or result.get("requiresAttention")
+                or "brush" in result.get("isolatedAttentionFeatures", [])
+                or not all(self._brush_map_scope(self._accounts.get(account_ref) or {}))):
+            return result
+        # Cloud coordination must never be bypassed by a legacy-style scanner.
+        # The currently deployed local-map mode is the supported prefetch owner.
+        if self._cached_cloud_runtime_config(account_ref).get("cloudBrushMapEnabled") is True:
+            return result
+        now = int(self._ports.clock.now_millis())
+        state = self._public_json_object(public.get("residentAutomationStateJson"))
+        idle = dict(state.get("banditPrefetch") or {})
+        business_wake = result.get("nextWakeAtMillis")
+        # Leave enough time for the two-second read; never postpone a due poll.
+        if business_wake is not None and int(business_wake) - now < 3000:
+            return result
+        idle_wake = int(idle.get("nextWakeAtMillis") or now)
+        if result.get("feature") is not None or result.get("state") != "idle" or idle_wake > now:
+            wake = max(now + 3000, idle_wake)
+            return {**result, "nextWakeAtMillis": min(int(business_wake), wake)
+                    if business_wake is not None else wake}
+        execution.raise_if_cancelled()
+        body = self.brush_search_operation_payload({
+            "accountRef": account_ref, "startX": int(brush.get("startX") or 0),
+            "startY": int(brush.get("startY") or 0),
+            "scanLimit": resident_brush_scan_limit(brush.get("scanLimit")),
+            "targetKind": str(brush.get("targetKind") or "山贼"),
+        }, context)
+        coordinates = brush_scan_coordinates(body["startX"], body["startY"], body["scanLimit"])
+        fingerprint = f"{body['startX']},{body['startY']}|{body['scanLimit']}"
+        cursor = int(idle.get("cursor") or 0) if idle.get("fingerprint") == fingerprint else 0
+        index = self._local_map_store(account_ref, "bandit").next_stale_coordinate(
+            coordinates, cursor, now,
+            int(self._behavior_contract["mapSearch"]["scanCoordinateCacheTtlMillis"]))
+        idle.update(fingerprint=fingerprint, scanLimit=len(coordinates))
+        message = "闲时找山贼：搜索范围内地图仍新鲜，稍后复查"
+        delay, scanned = 30000, 0
+        if index is not None:
+            try:
+                found = self._run_brush_search_game_workflow(execution, {
+                    **body, "scanOffset": index, "scanBatchSize": 1,
+                    "stopOnFirstMatch": False, "_idlePrefetch": True,
+                }, context)
+                scanned = int(found.get("scannedCount") or 0)
+                idle.update(cursor=int(found["nextScanOffset"]), lastCoordinate=list(coordinates[index]),
+                            lastScannedAtMillis=int(self._ports.clock.now_millis()),
+                            totalScanned=int(idle.get("totalScanned") or 0) + scanned)
+                message = f"闲时找山贼：已更新区域{coordinates[index]}，发现{found.get('count', 0)}个目标，搜索范围{len(coordinates)}个扫描点"
+                delay = 3000
+            except OperationCancelledError:
+                raise
+            except Exception as error:
+                # Failed reads never advance the cursor or touch brush ledgers.
+                idle["cursor"] = index
+                message = f"闲时找山贼：本轮查询未完成，稍后重试（{type(error).__name__}）"
+                delay = 10000
+        idle.update(lastMessage=message, nextWakeAtMillis=int(self._ports.clock.now_millis()) + delay)
+        # Re-read: observing the map may have persisted other account facts.
+        state = self._public_json_object(self._account_public_state(account_ref).get("residentAutomationStateJson"))
+        state["banditPrefetch"] = idle
+        self._save_resident_automation_state(account_ref, state)
+        if scanned and (not idle.get("lastUserLogAtMillis") or now - int(idle["lastUserLogAtMillis"]) >= 60000):
+            idle["lastUserLogAtMillis"] = now
+            self._save_resident_automation_state(account_ref, state)
+            self._write_user_log(account_ref, message)
+        wake = idle["nextWakeAtMillis"]
+        return {**result, "feature": "banditPrefetch", "state": "prefetched" if scanned else "waiting",
+                "success": True, "message": message, "scannedCount": scanned,
+                "nextWakeAtMillis": min(int(business_wake), wake) if business_wake is not None else wake}
+
     def _run_automation_recovery_tick(
         self,
         execution: OperationExecutionContext,
@@ -19236,6 +19331,7 @@ class CoreFacade:
             result["isolatedAttentionFeatures"] = sorted(
                 isolated_attention_features
             )
+        result = self._idle_bandit_prefetch(execution, account_ref, context, result)
         return {
             "ok": True,
             "accountRef": str(account_ref),

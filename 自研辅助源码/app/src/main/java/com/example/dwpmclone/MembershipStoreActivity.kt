@@ -87,7 +87,7 @@ class MembershipStoreActivity : Activity() {
                 add(box, action("选择${plan.title}") { selection = plan; render() }, 10)
             }
             add(content, label("一次购买 · 不自动续费\n付款成功后开通或顺延会员；实际订单金额由服务端核定。", 12f, muted), 18)
-            add(content, label("在线收款开通中，当前可查看套餐及支付方式。", 12f, muted), 10)
+            add(content, label("选择套餐后确认支付方式，收款状态以确认页为准。", 12f, muted), 10)
         } else {
             val order = card(content)
             add(order, label("会员套餐", 13f, muted))

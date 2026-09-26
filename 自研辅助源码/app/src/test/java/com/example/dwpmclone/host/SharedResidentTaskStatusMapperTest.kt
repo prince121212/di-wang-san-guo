@@ -8,6 +8,12 @@ import org.junit.Test
 
 class SharedResidentTaskStatusMapperTest {
     @Test
+    fun idleScanDoesNotOverwriteBrushTaskStatus() {
+        assertEquals(TaskType.BANDIT_PREFETCH, SharedResidentTaskStatusMapper.typeFor("banditPrefetch"))
+        assertEquals(TaskType.SHUA_HUANG, SharedResidentTaskStatusMapper.typeFor("brush"))
+    }
+
+    @Test
     fun featureScopedBlockedStatesAreErrorsEvenWhenAccountAttentionIsFalse() {
         listOf("blocked", "defeat-paused", "clear-unconfirmed").forEach { state ->
             val result = result(feature = "dungeon", state = state)

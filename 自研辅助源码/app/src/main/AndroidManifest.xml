@@ -38,6 +38,7 @@
         android:usesCleartextTraffic="true"
         android:label="@string/app_name"
         android:theme="@style/AppTheme">
+        <activity android:name=".ui.hosting.HostingPermissionGuideActivity" android:exported="false" />
         <activity android:name=".MembershipStoreActivity" android:exported="false" />
         <activity
             android:name=".AlipayPaymentActivity"

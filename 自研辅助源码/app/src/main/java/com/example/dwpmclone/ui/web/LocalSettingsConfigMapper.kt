@@ -56,7 +56,7 @@ object LocalSettingsConfigMapper {
                 JSONObject()
                     .put("startX", brush.optInt("startX", 0))
                     .put("startY", brush.optInt("startY", 0))
-                    .put("scanLimit", brush.optInt("scanLimit", 80))
+                    .put("scanLimit", brush.optInt("scanLimit", 160).let { if (it == 80) 160 else it })
                     .put("targetKind", brush.optString("targetKind", "山贼"))
                     .put("rows", brush.copyArray("rows"))
                     .put("generalId", brush.optString("selectedFormationId"))

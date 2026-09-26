@@ -643,13 +643,13 @@ class CloudMapReplicaFacadeTests(unittest.TestCase):
         return requests
 
     def test_resident_real_reader_prioritizes_each_shard_then_covers_full_area(self):
-        """An 80-coordinate search must not silently shrink to the first nine.
+        """The upgraded 160-coordinate search must cover the full priority order.
 
         The resident cursor indexes a shard; the reader validates overrides
         against the original coordinate space. Exercise both, not a stub that
         blindly accepts _scanCoordinatesOverride.
         """
-        all_coordinates = brush_scan_coordinates(91, 26, 80)
+        all_coordinates = brush_scan_coordinates(91, 26, 160)
         for actor_count, actor_index in ((2, 0), (2, 1), (3, 0), (3, 1), (3, 2)):
             with self.subTest(actors=actor_count, index=actor_index):
                 cloud = FakeV2CloudPort(actor_count, actor_index)
@@ -701,11 +701,11 @@ class CloudMapReplicaFacadeTests(unittest.TestCase):
             first = facade._run_configured_brush_tick(
                 FakeExecution(), "303", config, state, {}
             )
-            # A saved local-space/old-shard cursor can fit the full 80-coordinate
-            # range while being past the end of this actor's 40-coordinate shard.
+            # A saved cursor can fit the full 160-coordinate range while being
+            # past the end of this actor's 80-coordinate shard.
             state["brush"]["scanCursorsByRule"][first["scanRuleKey"]][
                 "nextScanOffset"
-            ] = 61
+            ] = 121
             state["brush"]["scanCursorsByRule"][first["scanRuleKey"]].pop("scanOrderKey")
             requests.clear()
             result = facade._run_configured_brush_tick(

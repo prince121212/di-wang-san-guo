@@ -728,6 +728,12 @@ def mine_target_matches(
     return True
 
 
+def resident_brush_scan_limit(value: Any = None) -> int:
+    """Upgrade the former hidden 80-point default, preserving custom limits."""
+    limit = int(value or 160)
+    return max(1, min(160 if limit == 80 else limit, FULL_SCAN_LIMIT))
+
+
 def brush_scan_coordinates(
     center_x: int,
     center_y: int,

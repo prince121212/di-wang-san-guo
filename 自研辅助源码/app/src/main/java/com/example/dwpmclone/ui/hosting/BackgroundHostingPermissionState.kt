@@ -13,7 +13,7 @@ import com.example.dwpmclone.service.AssistantForegroundService
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Observable prerequisites for reliable user-started, screen-off hosting. */
+/** Observable background reliability hints, not an account/task startup gate. */
 data class BackgroundHostingPermissionState(
     val notificationGranted: Boolean,
     val batteryOptimizationExempt: Boolean,
@@ -33,7 +33,7 @@ data class BackgroundHostingPermissionState(
     val vendorFamily: String = "aosp",
 ) {
     /**
-     * Standard prerequisites required to start hosting.  Exact alarms are a
+     * Background reliability signals only; users may start without them. Exact alarms are a
      * punctuality enhancement, not a correctness prerequisite: the service has
      * a Handler path, an inexact allow-while-idle fallback and a durable
      * operation ledger when this special access is unavailable.
@@ -42,16 +42,16 @@ data class BackgroundHostingPermissionState(
         get() = notificationGranted && batteryOptimizationExempt &&
             foregroundServiceGranted && !backgroundRestricted
 
-    /** Standard Android prerequisites are known; OEM policy remains a separate risk. */
+    /** Diagnostic only: never use this level to refuse account startup. */
     val reliabilityLevel: String
         get() = when {
-            !reliableHostingReady -> "BLOCKED_STANDARD_PERMISSION"
+            !reliableHostingReady -> "BACKGROUND_RELIABILITY_DEGRADED"
             !exactAlarmGranted -> "STANDARD_READY_PUNCTUALITY_DEGRADED"
             vendorManualReviewRequired -> "STANDARD_READY_VENDOR_REVIEW"
             else -> "STANDARD_READY"
         }
 
-    fun blockingIssueMessage(prefix: String = "后台托管未启动"): String? {
+    fun backgroundRiskMessage(prefix: String = "后台运行提醒"): String? {
         val missing = buildList {
             if (!notificationGranted) add("通知权限")
             if (!batteryOptimizationExempt) add("忽略电池优化")
@@ -59,7 +59,7 @@ data class BackgroundHostingPermissionState(
             if (backgroundRestricted) add("解除系统后台运行限制")
         }
         if (missing.isEmpty()) return null
-        return "$prefix：缺少${missing.joinToString("、")}；请在攻略-后台运行设置中完成授权后重试"
+        return "$prefix：未开启${missing.joinToString("、")}，仍可启动账号和任务；切到后台或锁屏后，系统可能暂停网络或停止应用。可在攻略-后台运行设置中按需开启。"
     }
 
     fun toJson(): JSONObject = JSONObject()
@@ -72,6 +72,8 @@ data class BackgroundHostingPermissionState(
         .put("serviceActive", AssistantForegroundService.isExecutionOwnerActive())
         .put("reliableHostingReady", reliableHostingReady)
         .put("reliabilityLevel", reliabilityLevel)
+        .put("startupBlockedByPermissions", false)
+        .put("backgroundWarning", backgroundRiskMessage() ?: JSONObject.NULL)
         .put("manualReviewRequired", vendorManualReviewRequired)
         .put("vendorFamily", vendorFamily)
         .put("backgroundRestricted", backgroundRestricted)
@@ -83,7 +85,8 @@ data class BackgroundHostingPermissionState(
         // components are undocumented and get renamed between ROM releases, so
         // written steps are the guidance that cannot break.
         .put("vendorGuidance", VendorBackgroundGuidance.forManufacturer(manufacturer).toJson())
-        .put("blockingIssues", JSONArray().apply {
+        .put("blockingIssues", JSONArray()) // Compatibility: no user permission blocks startup.
+        .put("warningIssues", JSONArray().apply {
             if (!notificationGranted) put("notification")
             if (!batteryOptimizationExempt) put("battery-optimization")
             if (!foregroundServiceGranted) put("foreground-service")
@@ -93,18 +96,18 @@ data class BackgroundHostingPermissionState(
             put(item(
                 key = "notification",
                 title = "通知权限",
-                required = true,
+                required = false,
                 granted = notificationGranted,
                 action = "notification",
-                detail = "前台托管必须让用户持续看到运行状态和停止入口",
+                detail = "建议开启以便在通知栏查看运行状态和停止入口；未开启也可启动账号和任务",
             ))
             put(item(
                 key = "battery-optimization",
                 title = "忽略电池优化",
-                required = true,
+                required = false,
                 granted = batteryOptimizationExempt,
                 action = "battery-optimization",
-                detail = "保证息屏后 CPU 和游戏网络不被 Doze 长时间冻结",
+                detail = "建议开启以减少锁屏后 CPU 和网络被系统暂停的风险；未开启也可启动",
             ))
             put(item(
                 key = "exact-alarm",
@@ -125,10 +128,10 @@ data class BackgroundHostingPermissionState(
             put(item(
                 key = "background-restricted",
                 title = "系统后台运行限制",
-                required = true,
+                required = false,
                 granted = !backgroundRestricted,
                 action = "app-details",
-                detail = "Android 的系统级受限模式会阻止闹钟、网络和进程恢复；请将本应用设为不限制",
+                detail = "建议设为不限制；否则后台闹钟、网络或进程恢复可能受限，不作为账号启动门槛",
             ))
             if (vendorManualReviewRequired) {
                 put(item(

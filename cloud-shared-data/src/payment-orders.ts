@@ -1,9 +1,10 @@
 import type {Env} from "./types";
 import {RequestError} from "./validation";
-import {amount,cents,paymentConfig,paymentSdk,PAYMENT_PLANS,PaymentConfig,PaymentPlan,alipayTime,tradeCall,refundEvent,appPayEnabled} from "./alipay-payment";
+import {amount,cents,paymentConfig,paymentSdk,PAYMENT_PLANS,PaymentConfig,PaymentPlan,alipayTime,tradeCall,refundEvent,appPayEnabled,acceptanceOpen} from "./alipay-payment";
 import {equal,mac,sha} from "./member-crypto";
 
 export interface PaymentOrder {
+  acceptance?:boolean;
   channel?:"web"|"app"; // Missing on pre-APP orders means web; never migrate a live order.
   id:string;memberId:string;plan:PaymentPlan;days:number;totalCents:number;mode:"sandbox"|"production";
   appId:string;sellerId:string;createdAt:number;expiresAt:number;access:string;
@@ -27,7 +28,7 @@ function json(body:unknown,status=200){return Response.json(body,{status,headers
 function publicOrder(order:PaymentOrder) {
   return {id:order.id,plan:order.plan,days:order.days,totalAmount:amount(order.totalCents),mode:order.mode,
     channel:order.channel??"web",status:order.status,createdAt:order.createdAt,expiresAt:order.expiresAt,
-    fulfilled:Boolean(order.fulfilledAt),membershipApplied:order.mode==="production"&&Boolean(order.fulfilledAt)&&order.status==="PAID"};
+    acceptance:Boolean(order.acceptance),fulfilled:Boolean(order.fulfilledAt),membershipApplied:!order.acceptance&&order.mode==="production"&&Boolean(order.fulfilledAt)&&order.status==="PAID"};
 }
 function sameConfig(config:PaymentConfig,order:PaymentOrder) {
   if(config.appId!==order.appId || config.sellerId!==order.sellerId || config.mode!==order.mode)throw new RequestError("订单所属支付应用已变更，请联系管理员",409);
@@ -42,7 +43,7 @@ function matchTrade(config:PaymentConfig,order:PaymentOrder,result:Record<string
 }
 async function memberEntitlement(env:Env,order:PaymentOrder,action:"grant"|"refund") {
   // A sandbox transaction must NEVER change a real user's membership.
-  if(order.mode==="sandbox")return;
+  if(order.mode==="sandbox"||order.acceptance)return;
   const response=await env.RUNTIME_CONFIG.getByName("member-v1:"+order.memberId).fetch("https://member.internal/member/payment-entitlement",{
     method:"POST",body:JSON.stringify({orderId:order.id,tradeNo:order.tradeNo,plan:order.plan,action,mode:order.mode})});
   if(!response.ok)throw new RequestError("款项已确认，会员权益同步待重试",503,"PAYMENT_FULFILLMENT_PENDING");
@@ -59,35 +60,39 @@ export function resultPage(title:string,message:string):Response {
 export async function handlePaymentStorage(request:Request,env:Env,storage:DurableObjectStorage):Promise<Response> {
   const action=new URL(request.url).pathname.slice("/payment/".length);
   const input=await request.json<Record<string,any>>();
-  const config=paymentConfig(env);let order=await storage.get<PaymentOrder>("order");
+  const config=paymentConfig(env,"settlement");let order=await storage.get<PaymentOrder>("order");
   const save=()=>storage.put("order",order!);
   if(action==="create") {
     const channel=input.channel??"web";
+    const acceptance=acceptanceOpen(env)&&input.memberId===env.ALIPAY_ACCEPTANCE_MEMBER_ID&&input.plan==="month"&&channel==="app"
+      &&input.id===await orderId(config,env.ALIPAY_ACCEPTANCE_MEMBER_ID!,env.ALIPAY_ACCEPTANCE_PURCHASE_ID!);
+    if(!acceptance)paymentConfig(env);
     if(!["web","app"].includes(channel))throw new RequestError("支付渠道无效");
-    if(channel==="app"&&!appPayEnabled(env))throw new RequestError("APP支付尚未开放",503,"PAYMENT_APP_DISABLED");
+    if(channel==="app"&&!acceptance&&!appPayEnabled(env))throw new RequestError("APP支付尚未开放",503,"PAYMENT_APP_DISABLED");
     if(!validOrderId(input.id)||!Object.hasOwn(PAYMENT_PLANS,input.plan)||!/^[a-f0-9]{64}$/.test(input.memberId))throw new RequestError("订单参数无效");
     if(order) {
       sameConfig(config,order);
-      if(order.memberId!==input.memberId||order.plan!==input.plan||(order.channel??"web")!==channel)throw new RequestError("该请求编号已用于另一套餐或支付渠道",409);
+      if(order.memberId!==input.memberId||order.plan!==input.plan||(order.channel??"web")!==channel||Boolean(order.acceptance)!==acceptance)throw new RequestError("该请求编号已用于另一套餐或支付渠道",409);
     }else{
       const now=Date.now(),plan=input.plan as PaymentPlan;
-      order={id:input.id,memberId:input.memberId,plan,days:PAYMENT_PLANS[plan],totalCents:config.prices[plan],
-        channel,mode:config.mode,appId:config.appId,sellerId:config.sellerId,createdAt:now,expiresAt:now+30*60000,
+      order={id:input.id,memberId:input.memberId,plan,acceptance,days:acceptance?0:PAYMENT_PLANS[plan],totalCents:acceptance?1:config.prices[plan],
+        channel,mode:config.mode,appId:config.appId,sellerId:config.sellerId,createdAt:now,expiresAt:acceptance?Math.min(now+30*60000,Number(env.ALIPAY_ACCEPTANCE_UNTIL)):now+30*60000,
         access:await mac(env,"checkout-v1:"+input.id),status:"PENDING"};await save();
     }
     return json({ok:true,order:publicOrder(order),...((order.channel??"web")==="web"?{checkoutUrl:`${config.origin}/pay/start?order=${order.id}&access=${order.access}`}:{})});
   }
   if(!order)throw new RequestError("订单不存在",404,"PAYMENT_ORDER_NOT_FOUND");
   sameConfig(config,order);
+  if(!order.acceptance)paymentConfig(env);
   if(action==="app") {
     if(input.memberId!==order.memberId)throw new RequestError("无权支付该订单",403);
     if(order.channel!=="app")throw new RequestError("订单支付渠道不匹配",409);
-    if(!appPayEnabled(env))throw new RequestError("APP支付尚未开放",503,"PAYMENT_APP_DISABLED");
+    if(order.acceptance?!acceptanceOpen(env):!appPayEnabled(env))throw new RequestError("APP支付尚未开放或验收窗口已结束",503,"PAYMENT_APP_DISABLED");
     if(order.status!=="PENDING"||order.expiresAt<=Date.now())throw new RequestError("订单已结束或超时，请先查询原订单",409,"PAYMENT_ORDER_EXPIRED");
     const orderStr=paymentSdk(config).sdkExecute("alipay.trade.app.pay",{
       timestamp:alipayTime(),
       ...(config.origin.startsWith("https:")?{notifyUrl:`${config.origin}/v1/payments/alipay/notify`}:{}),
-      bizContent:{out_trade_no:order.id,total_amount:amount(order.totalCents),subject:`帝三资料库${labels[order.plan]}${order.mode==="sandbox"?"沙箱测试":""}`,
+      bizContent:{out_trade_no:order.id,total_amount:amount(order.totalCents),subject:order.acceptance?"帝三资料库支付验收（不开通会员）":`帝三资料库${labels[order.plan]}${order.mode==="sandbox"?"沙箱测试":""}`,
         product_code:"QUICK_MSECURITY_PAY",seller_id:config.sellerId,time_expire:alipayTime(order.expiresAt)}});
     return json({ok:true,order:publicOrder(order),orderStr,mode:config.mode});
   }

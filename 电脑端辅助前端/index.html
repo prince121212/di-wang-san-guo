@@ -239,7 +239,7 @@
                   <button id="closeBackgroundSettingsGuideBtn" class="guide-back-button" type="button" aria-label="返回攻略页">‹</button>
                   <div>
                     <h2>后台运行设置</h2>
-                    <p>保证息屏后任务、网络与自动重登持续运行</p>
+                    <p>改善后台运行稳定性，不影响未授权时启动账号</p>
                   </div>
                 </header>
                 <section class="guide-lead background-permission-lead">
@@ -248,21 +248,21 @@
                   <button id="refreshBackgroundPermissionsBtn" class="reference-primary-button" type="button">重新检测</button>
                 </section>
                 <section class="guide-section background-permission-explanation">
-                  <h3>为什么必须设置</h3>
-                  <p>前台服务只保证进程优先级，不会自动获得 Doze 网络豁免，也不能覆盖厂商的进程清理策略。辅助按业务截止时间短时唤醒，并用持久化状态在进程重启后恢复；厂商后台策略仍需用户明确允许。</p>
+                  <h3>为什么建议设置</h3>
+                  <p>不开启也可以启动账号和任务。前台服务不会自动获得 Doze 网络豁免，也不能覆盖厂商的进程清理策略；切到后台或锁屏后，网络或任务可能被系统暂停。以下设置可按需开启，不强制授权。</p>
                   <p>部分系统会按时间表关闭 WLAN（小米叫“睡眠模式”）。App 无法直接读取厂商开关状态，请在上方“省电模式 / 睡眠模式”一项中点击“查看设置”并手动确认已关闭。</p>
                 </section>
                 <section id="backgroundPermissionList" class="background-permission-list" aria-live="polite">
                   <div class="background-permission-loading">正在检测…</div>
                 </section>
                 <section class="guide-section guide-warning background-permission-steps">
-                  <h3>正式版用户设置顺序</h3>
+                  <h3>可选设置建议</h3>
                   <ol class="guide-check-list">
-                    <li>允许通知，确保托管通知和“停止托管”入口可见。</li>
-                    <li>允许忽略电池优化，这是息屏后连续请求游戏服的必要条件。</li>
+                    <li>建议允许通知，便于查看托管状态和“停止托管”入口。</li>
+                    <li>可允许忽略电池优化，减少息屏后网络和任务暂停的风险。</li>
                     <li>如需更准时的业务截止时间，可允许精确闹钟；未授权时仍可托管，但系统可能延迟唤醒，任务会依靠持久化状态恢复。</li>
                     <li>如果系统提供厂商后台限制/自启动开关，请将本应用设为允许后台运行；不同品牌名称可能不同。</li>
-                    <li>返回本页点击“重新检测”，必要权限通过后再开始执行任务。</li>
+                    <li>返回本页点击“重新检测”。未开启这些设置也可启动账号和任务；切到后台或锁屏后，系统可能暂停网络或停止应用。</li>
                   </ol>
                 </section>
               </article>

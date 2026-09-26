@@ -14,6 +14,11 @@
     <section id="memberSessionActions" class="member-card" hidden><div class="member-section-heading"><h3>本机授权</h3><span id="memberCheckHint"></span></div>
       <p class="member-copy">启动游戏账号时检查，运行期间每两小时复核。</p><button type="button" class="member-primary" id="memberRecheck">重新检查授权</button>
       <div class="member-account-actions"><button type="button" id="memberRelogin">重新登录此手机</button><button type="button" id="memberLogout">退出会员</button></div></section>
+    <section id="memberTransfer" class="member-card" hidden><h3>换手机：导出 / 导入配置</h3>
+      <p class="member-copy">导出会把本机的游戏账号、游戏密码和各功能设置保存到当前会员账号下；换手机后登录会员，点“导入配置”即可恢复。游戏密码用会员密码加密，服务器无法查看。</p>
+      <label>会员密码<input id="memberTransferPassword" type="password" maxlength="128" autocomplete="current-password" placeholder="导出和导入时都需要输入"></label>
+      <div class="member-transfer-actions"><button type="button" class="member-primary" id="memberConfigExport">导出配置</button><button type="button" id="memberConfigImport">导入配置</button></div>
+      <p id="memberTransferFeedback" class="member-copy" role="status" hidden></p></section>
     <form id="memberForm" class="member-card"><h3 id="memberFormTitle">登录会员账号</h3><div class="member-modes"><button type="button" data-mode="login">登录</button>
       <button type="button" data-mode="register">邮箱注册</button><button type="button" data-mode="reset-password">忘记密码</button></div>
       <label>邮箱地址<input id="memberEmailInput" type="email" required autocomplete="username" maxlength="254" placeholder="请输入注册邮箱"></label>
@@ -27,7 +32,7 @@
       <p id="memberPaymentFeedback" class="member-copy" role="status"></p></section>
     <section class="member-card member-support"><h3>开通与续期</h3><div class="member-plans"><span>月卡 <b>30天</b></span><span>季卡 <b>90天</b></span><span>年卡 <b>365天</b></span></div>
       <button id="memberStoreOpen" type="button" class="member-primary">查看会员套餐与支付宝付款</button>
-      <p class="member-copy">月卡 ¥9.90 · 季卡 ¥25.90 · 年卡 ¥49.90。正式收款开通前可查看套餐，暂不扣款；也可联系管理员开通。</p></section>
+      <p class="member-copy">月卡 ¥9.90 · 季卡 ¥25.90 · 年卡 ¥49.90。选择套餐后确认付款，不自动续费；也可联系管理员开通。</p></section>
     <p class="member-footer">游戏账号与配置保存在本机<br>退出会员不会删除你的游戏数据</p>`;
   // Keep the form inside Home so other pages retain their original layout.
   mount.append(panel);
@@ -58,6 +63,7 @@
     $("memberStatusText").textContent=view.hint;
     $("memberCheckHint").textContent=state.allowed?"已验证":view.label;
     $("memberSessionActions").hidden=!state.authenticated;
+    $("memberTransfer").hidden=!(state.authenticated&&state.configTransfer);
     if (!state.authenticated) $("memberForm").hidden=false;
     const notice=$("memberNotice");
     notice.hidden=!state.authenticated||state.allowed;
@@ -122,6 +128,44 @@
   };
   $("memberRelogin").onclick=()=>{if(busy)return;switchMode("login");$("memberEmailInput").value=window.DwpmMembershipState?.member?.email||"";$("memberPasswordInput").focus();};
   $("memberLogout").onclick=async()=>{if(busy||!window.confirm("退出会员会暂停自动任务，游戏账号和数据会保留。继续？"))return;busy=true;try{render(await call("logout",{}));switchMode("login");}catch(e){feedback(e.message);}finally{busy=false;}};
+  function transferFeedback(message) { $("memberTransferFeedback").textContent=message;$("memberTransferFeedback").hidden=!message; }
+  function transferPassword(purpose) {
+    const password=$("memberTransferPassword").value;
+    if(!password) transferFeedback(`请输入会员密码，用来${purpose}游戏密码。`);
+    return password;
+  }
+  async function transfer(button, pending, work) {
+    busy=true;button.disabled=true;transferFeedback(pending);
+    try{await work();}catch(e){transferFeedback(e.message);}finally{busy=false;button.disabled=false;}
+  }
+  $("memberConfigExport").onclick=async()=>{
+    if(busy)return;
+    const password=transferPassword("加密");if(!password)return;
+    if(!window.confirm("导出会覆盖云端上一次导出的配置。确定导出本机全部游戏账号、游戏密码和各功能设置吗？"))return;
+    await transfer($("memberConfigExport"),"正在加密并导出，请稍候…",async()=>{
+      const r=await call("config-export",{password});
+      $("memberTransferPassword").value="";
+      transferFeedback(`已导出 ${r.accountCount} 个游戏账号（${r.passwordCount} 个游戏密码、${r.configCount} 项设置），导出时间 ${fmt(r.backupInfo?.exportedAt)}。\n换手机后登录本会员账号，在这里点“导入配置”即可。`);
+    });
+  };
+  $("memberConfigImport").onclick=async()=>{
+    if(busy)return;
+    const password=transferPassword("解开导出时加密的");if(!password)return;
+    await transfer($("memberConfigImport"),"正在读取云端配置…",async()=>{
+      const preview=await call("config-import",{password,confirm:false});
+      const list=preview.accounts.map(a=>`· ${a.label}${!a.supported?"（本机暂不支持该平台，将跳过）":a.existing?"（本机已有：合并设置，保留本机密码）":"（新增，默认不启动）"}`).join("\n");
+      const locked=preview.passwordsReadable?"":"\n\n注意：这份配置是用旧的会员密码导出的，游戏密码无法解开。账号和设置照常导入，之后需要在助手页逐个点“修改”重新输入游戏密码。";
+      if(!window.confirm(`云端配置导出于 ${fmt(preview.exportedAt)}${preview.deviceName?"（"+preview.deviceName+"）":""}，包含：\n${list}${locked}\n\n同一功能的设置以云端为准。确定导入吗？`)){transferFeedback("已取消导入。");return;}
+      transferFeedback("正在导入…");
+      const r=await call("config-import",{password,confirm:true,allowWithoutPasswords:!preview.passwordsReadable});
+      $("memberTransferPassword").value="";
+      const lines=[`导入完成：新增 ${r.added.length} 个、合并 ${r.merged.length} 个游戏账号，恢复 ${r.configsRestored} 项设置、${r.passwordsRestored} 个游戏密码。`];
+      if(r.skipped.length)lines.push(`已跳过（本机暂不支持该平台）：${r.skipped.join("、")}。`);
+      if(r.passwordsMissing.length)lines.push(`这些账号还没有游戏密码，请在助手页点“修改”输入：${r.passwordsMissing.join("、")}。`);
+      lines.push("导入的账号默认不启动。确认旧手机不再运行这些账号后，再到助手页启动。");
+      transferFeedback(lines.join("\n"));
+    });
+  };
   async function loadPaymentCatalog() {
     try {
       const catalog=await call("payment-catalog");

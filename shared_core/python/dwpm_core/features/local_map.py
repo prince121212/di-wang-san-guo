@@ -65,6 +65,18 @@ class LocalMapStore:
                         rows[int(row["id"])] = row
             return list(rows.values())
 
+    def next_stale_coordinate(self, coordinates: list[tuple[int, int]], cursor: int,
+                              now: int, freshness: int) -> Optional[int]:
+        """A shared, unfiltered cell is fresh even if it contained no targets."""
+        with self._lock:
+            for step in range(len(coordinates)):
+                index = (cursor + step) % len(coordinates)
+                x, y = coordinates[index]
+                cell = self._cells.get(f"{x},{y}")
+                if cell is None or not 0 <= now - int(cell["observedAtMillis"]) < freshness:
+                    return index
+        return None
+
     def invalidate(self, target_id: int) -> None:
         with self._lock:
             cells = deepcopy(self._cells)

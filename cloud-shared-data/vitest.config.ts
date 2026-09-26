@@ -39,6 +39,7 @@ export default defineConfig({
           MEMBER_LEASE_PRIVATE_KEY: Buffer.from(memberTestKeys.privateKey).toString("base64"),
           MEMBER_LEASE_PUBLIC_KEY: Buffer.from(memberTestKeys.publicKey).toString("base64"),
           ALIPAY_ENABLED: "true", ALIPAY_MODE: "sandbox", ALIPAY_APP_ID: "2026000000000001",
+          ALIPAY_LIVE_APPROVED: "false", ALIPAY_APP_PAY_ENABLED: "false",
           ALIPAY_SELLER_ID: "2088000000000001", ALIPAY_ORIGIN: "https://worker.test",
           ALIPAY_PRIVATE_KEY: Buffer.from(paymentTestKeys.privateKey).toString("base64"),
           ALIPAY_PUBLIC_KEY: Buffer.from(memberTestKeys.publicKey).toString("base64"),

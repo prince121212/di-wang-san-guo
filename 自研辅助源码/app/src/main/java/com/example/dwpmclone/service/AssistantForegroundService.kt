@@ -408,22 +408,10 @@ class AssistantForegroundService : Service() {
         tickCount = 0
         cancelScheduledWakeup()
         startForeground(NOTIFICATION_ID, buildNotification(currentHostingNotificationText()))
-        val permissionState = BackgroundHostingPermissionState.read(this)
-        if (!permissionState.reliableHostingReady) {
-            logs.append(
-                permissionState.blockingIssueMessage()
-                    ?: "后台托管未启动：必要后台权限不完整；请在攻略-后台运行设置中完成授权后重试",
-                tag = "scheduler-health",
-            )
-            stopLocalHosting(
-                reason = "required background permission missing",
-                requestLogout = false,
-            )
-            stopSelf()
-            return
-        }
+        reportBackgroundRisk()
         // Publish the host execution lease only after Android has accepted the
-        // foreground notification and all standard prerequisites are present.
+        // foreground service. Notification visibility/battery exemption are advisory;
+        // startForeground still enforces Android's real service requirements.
         // Python may be warmed up earlier, but queued operations must not
         // start during that pre-foreground window.
         activateExecutionOwner()
@@ -683,8 +671,13 @@ class AssistantForegroundService : Service() {
         }
     }
 
-    private fun requiredBackgroundPermissionsReady(): Boolean {
-        return BackgroundHostingPermissionState.read(this).reliableHostingReady
+    private var lastBackgroundRisk: String? = null
+    private fun reportBackgroundRisk() {
+        val warning = BackgroundHostingPermissionState.read(this).backgroundRiskMessage()
+        if (warning != lastBackgroundRisk) {
+            lastBackgroundRisk = warning
+            if (warning != null) logs.append(warning, tag = "scheduler-health")
+        }
     }
 
     private fun registerNetworkMonitor() {
@@ -1093,25 +1086,7 @@ class AssistantForegroundService : Service() {
                     }
                     return@schedulerTick
                 }
-                if (!requiredBackgroundPermissionsReady()) {
-                    val permissionState = BackgroundHostingPermissionState.read(this)
-                    logs.append(
-                        permissionState.blockingIssueMessage(prefix = "后台托管已暂停")
-                            ?.plus("；不再发送游戏请求")
-                            ?: "后台托管已暂停：运行期间的必要权限被关闭；不再发送游戏请求",
-                        tag = "scheduler-health",
-                    )
-                    handler.post {
-                        if (running && !requiredBackgroundPermissionsReady()) {
-                            stopLocalHosting(
-                                reason = "required background permission revoked",
-                                requestLogout = false,
-                            )
-                            stopSelf()
-                        }
-                    }
-                    return@schedulerTick
-                }
+                reportBackgroundRisk()
                 if (waitingForFirstUnlock) {
                     waitingForFirstUnlock = false
                     forceSessionValidation = true

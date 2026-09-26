@@ -40,6 +40,7 @@ from .features.ministries import (
     unconfirmed_ministry_actions,
 )
 from .features.targets import (
+    resident_brush_scan_limit,
     MINE_BUSINESS_IDS,
     normalize_brush_levels,
     normalize_drop_keywords,
@@ -1557,7 +1558,7 @@ def normalize_automation_config(
         "brush": {
             "startX": _int_setting(brush.get("startX", 0), 0),
             "startY": _int_setting(brush.get("startY", 0), 0),
-            "scanLimit": _int_setting(brush.get("scanLimit", 80), 80, 1, 384),
+            "scanLimit": resident_brush_scan_limit(_int_setting(brush.get("scanLimit"), 160, 1, 384)),
             "targetKind": str(brush.get("targetKind") or "山贼"),
             "levels": top_levels,
             "level": top_levels[0],
@@ -1640,7 +1641,7 @@ def _settings_feature_configs(
             "cleanMail": bool(config.get("cleanMail", False)),
             "startX": _int_setting(brush.get("startX"), 0, 0, 186),
             "startY": _int_setting(brush.get("startY"), 0, 0, 66),
-            "scanLimit": _int_setting(brush.get("scanLimit"), 80, 1, 384),
+            "scanLimit": resident_brush_scan_limit(_int_setting(brush.get("scanLimit"), 160, 1, 384)),
             "targetKind": str(brush.get("targetKind") or "山贼"),
             "selectedFormationIds": selected_ids,
             "selectedFormationId": selected_ids[0] if selected_ids else "",

@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Official package only. Debug/membertest retain their existing icon. -->
+    <application
+        android:icon="@drawable/official_app_icon"
+        android:roundIcon="@drawable/official_app_icon" />
+</manifest>

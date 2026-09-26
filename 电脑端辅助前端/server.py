@@ -325,6 +325,7 @@ from dwpm_core.features.dungeon import (
     resolve_dungeon_stage_code as shared_resolve_dungeon_stage_code,
 )
 from dwpm_core.features.targets import (
+    resident_brush_scan_limit,
     KIND_MARKERS as SHARED_KIND_MARKERS,
     MINE_BUSINESS_IDS as SHARED_MINE_BUSINESS_IDS,
     RESOURCE_POINT_NAMES as SHARED_RESOURCE_POINT_NAMES,
@@ -27021,7 +27022,7 @@ def idle_bandit_scan_centers(sess: dict[str, Any]) -> tuple[list[tuple[int, int]
             max(0, min(int(location.get("y") or 0), 66)),
         ))
     centers = list(dict.fromkeys(centers)) or [(93, 33)]
-    scan_limit = max(1, min(int(brush.get("scanLimit") or 80), 384))
+    scan_limit = resident_brush_scan_limit(brush.get("scanLimit"))
     return centers, scan_limit
 
 
@@ -30566,7 +30567,7 @@ def normalize_auto_config(
         "brush": {
             "startX": int(brush.get("startX", 0)),
             "startY": int(brush.get("startY", 0)),
-            "scanLimit": max(1, min(int(brush.get("scanLimit", 80)), 384)),
+            "scanLimit": resident_brush_scan_limit(brush.get("scanLimit")),
             "targetKind": str(brush.get("targetKind") or "山贼"),
             "levels": top_brush_levels,
             "level": top_brush_levels[0],

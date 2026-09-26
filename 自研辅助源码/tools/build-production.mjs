@@ -17,7 +17,7 @@ if(!password){
   catch{console.error("无法读取既有 Android 发布签名凭据，请由所有者在本机配置。凭据不会输出。");process.exit(1);}
 }
 if(!password){console.error("Android 发布签名凭据为空，停止构建。");process.exit(1);}
-const result=spawnSync(resolve(root,"gradlew"),[":app:assembleRelease","--console=plain"],{
+const result=spawnSync(resolve(root,"gradlew"),[":app:assembleRelease","-Pkotlin.compiler.execution.strategy=in-process","--console=plain"],{
   cwd:root,stdio:"inherit",env:{...process.env,DWPM_RELEASE_KEYSTORE:keyPath,DWPM_RELEASE_STORE_PASSWORD:password}
 });
 password=undefined;

@@ -43,14 +43,16 @@ class AlipayPaymentActivity : Activity() {
             try {
                 val response = MembershipClient.get(this).nativePaymentOrder(orderId)
                 val sandbox = response.getString("mode") == "sandbox"
+                val acceptance = response.getJSONObject("order").optBoolean("acceptance")
                 val amount = response.getJSONObject("order").getString("totalAmount")
                 val orderStr = response.getString("orderStr")
                 require(orderStr.isNotBlank())
                 runOnUiThread {
                     if (!closed && !isFinishing) AlertDialog.Builder(this)
-                        .setTitle(if (sandbox) "支付宝沙箱测试" else "支付宝购买会员")
+                        .setTitle(if (acceptance) "¥0.01 真实支付验收" else if (sandbox) "支付宝沙箱测试" else "支付宝购买会员")
                         .setMessage("订单金额 ¥$amount。\n" + if (sandbox)
                             "需要独立的支付宝沙箱钱包和测试账号，普通支付宝不能支付。不会扣真实资金或增加真实会员时长。" else
+                            (if (acceptance) "这是真实资金测试，不是沙箱，不开通会员。\n" else "") +
                             "继续将调用支付宝官方SDK处理订单及支付所需设备、网络信息。付款需要你在支付宝确认；不自动续费。")
                         .setNegativeButton("暂不支付") { _, _ -> query(0) }
                         .setPositiveButton("继续支付宝付款") { _, _ -> pay(orderStr, sandbox) }
@@ -96,7 +98,8 @@ class AlipayPaymentActivity : Activity() {
                     val status = order.getString("status")
                     retry = status == "PENDING" || (status == "PAID" && !order.optBoolean("fulfilled"))
                     show(when (status) {
-                        "PAID" -> if (order.optString("mode") == "sandbox") "沙箱付款已确认，未增加真实会员时长。"
+                        "PAID" -> if (order.optBoolean("acceptance")) "¥0.01 真实付款已由服务器确认。验收单未增加会员时长。"
+                            else if (order.optString("mode") == "sandbox") "沙箱付款已确认，未增加真实会员时长。"
                             else if (order.optBoolean("membershipApplied")) "付款成功，会员已开通或顺延。请返回会员页。" else "到账已确认，会员权益同步中…"
                         "CLOSED" -> "原订单已关闭。返回会员页可以重新选择套餐。"
                         "REFUNDED" -> "该订单已退款。"

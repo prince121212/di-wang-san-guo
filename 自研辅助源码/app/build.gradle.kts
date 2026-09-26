@@ -127,8 +127,8 @@ android {
         applicationId = "com.example.dwpmclone"
         minSdk = 24
         targetSdk = 36
-        versionCode = 114
-        versionName = "V0.0.114"
+        versionCode = 119
+        versionName = "V0.0.119"
         resValue("string", "app_name", appName)
         buildConfigField("String", "MEMBER_LEASE_PUBLIC_KEY", buildConfigString(cloudSetting("DWPM_MEMBER_LEASE_PUBLIC_KEY")))
         buildConfigField("String", "APP_NAME", buildConfigString(appName))
@@ -173,8 +173,20 @@ android {
             resValue("string", "app_name", "帝三资料库·验收")
             matchingFallbacks += listOf("debug")
         }
+        create("internal") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".internal"
+            versionNameSuffix = "-internal"
+            resValue("string", "app_name", "帝三资料库·内部版")
+            buildConfigField("String", "APP_NAME", buildConfigString("帝三资料库·内部版"))
+            matchingFallbacks += listOf("debug")
+        }
     }
     sourceSets.getByName("membertest") {
+        java.srcDir("src/debug/java")
+        manifest.srcFile("src/debug/AndroidManifest.xml")
+    }
+    sourceSets.getByName("internal") {
         java.srcDir("src/debug/java")
         manifest.srcFile("src/debug/AndroidManifest.xml")
     }
