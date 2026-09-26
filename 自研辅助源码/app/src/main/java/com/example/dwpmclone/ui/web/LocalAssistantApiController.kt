@@ -1,5 +1,7 @@
 package com.example.dwpmclone.ui.web
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.os.Build
@@ -150,6 +152,8 @@ class LocalAssistantApiController(
         when (request.method to route) {
             "GET" to "/api/app/update" -> appUpdate(request)
             "POST" to "/api/app/update-open" -> appUpdateJson(request, AppUpdateChecker.get(appContext).openDownload())
+            "POST" to "/api/app/site-open" -> appUpdateJson(request, AppUpdateChecker.get(appContext).openSite())
+            "POST" to "/api/app/copy-group-number" -> copyGroupNumber(request)
             "GET" to "/api/health" -> sharedCoreHealth(request)
             "GET" to "/api/core/operations" -> sharedCoreOperations(request)
             "GET" to "/api/core/operations/status" -> sharedCoreOperationStatus(request)
@@ -709,6 +713,16 @@ class LocalAssistantApiController(
 
     private fun appUpdateJson(request: AssistantApiRequest, value: JSONObject): AssistantApiResponse =
         AssistantApiResponse(request.id, if (value.optBoolean("ok")) 200 else 400, value)
+
+    /** WebView clipboard support is unreliable; only a plain QQ group number may be copied. */
+    private fun copyGroupNumber(request: AssistantApiRequest): AssistantApiResponse {
+        val number = request.body?.optString("number").orEmpty()
+        if (!Regex("^[1-9][0-9]{4,11}$").matches(number)) return failure(request, 400, "群号格式无效")
+        val clipboard = appContext.getSystemService(ClipboardManager::class.java)
+            ?: return failure(request, 500, "无法访问剪贴板，请手动记下群号")
+        clipboard.setPrimaryClip(ClipData.newPlainText("QQ群号", number))
+        return AssistantApiResponse(request.id, 200, JSONObject().put("ok", true))
+    }
 
     private fun startAccount(request: AssistantApiRequest): AssistantApiResponse {
         val account = requireAccount(request.body)

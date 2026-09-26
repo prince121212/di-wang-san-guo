@@ -5,6 +5,7 @@
   const mount = document.getElementById("memberUpdateSlot");
   if (!mount) return;
   const AUTO_CHECK_MILLIS = 12 * 60 * 60_000, LAST_CHECK_KEY = "app-update:auto-checked-at";
+  const GROUP_NAME = "帝王三国攻略交流群", GROUP_NUMBER = "879644685";
   const card = document.createElement("section");
   card.id = "appUpdatePanel";
   card.className = "member-card";
@@ -14,19 +15,30 @@
       <button type="button" class="member-primary" id="appUpdateDownload">下载新版本</button></div>
     <button type="button" id="appUpdateCheck">检查更新</button>
     <p id="appUpdateFeedback" class="member-copy" role="status" hidden></p>`;
-  mount.append(card);
+  const community = document.createElement("section");
+  community.id = "appCommunityPanel";
+  community.className = "member-card";
+  community.innerHTML = `<h3>官网与交流群</h3>
+    <dl class="app-community"><div><dt>官网</dt><dd id="appOfficialSite">dwsg.292828.xyz</dd></div>
+      <div><dt>QQ群</dt><dd>${GROUP_NAME}<b id="appGroupNumber">${GROUP_NUMBER}</b></dd></div></dl>
+    <div class="app-community-actions"><button type="button" class="member-primary" id="appSiteOpen">打开官网</button><button type="button" id="appGroupCopy">复制群号</button></div>
+    <p id="appCommunityFeedback" class="member-copy" role="status" hidden></p>`;
+  mount.append(card, community);
   const $ = id => document.getElementById(id);
   let busy = false;
   const day = ms => new Date(ms).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
   function feedback(message) { $("appUpdateFeedback").textContent = message; $("appUpdateFeedback").hidden = !message; }
-  async function call(path, body) {
+  function communityFeedback(message) { $("appCommunityFeedback").textContent = message; $("appCommunityFeedback").hidden = !message; }
+  async function call(path, body, fallback = "暂时无法检查更新") {
     const r = await fetch("/api/app/" + path, { method: body === undefined ? "GET" : "POST",
       headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const data = await r.json();
-    if (!r.ok || data.ok === false) throw new Error(data.error || data.message || "暂时无法检查更新");
+    if (!r.ok || data.ok === false) throw new Error(data.error || data.message || fallback);
     return data;
   }
   function render(state) {
+    const site = String(state.officialSite || "").replace(/^https:\/\//, "").replace(/\/+$/, "");
+    if (site) $("appOfficialSite").textContent = site;
     $("appUpdateCurrent").textContent = `当前版本：${state.currentVersionName}` +
       (state.supported ? "" : "（测试或内部版本，不通过官网更新）");
     $("appUpdateCheck").hidden = !state.supported;
@@ -61,6 +73,18 @@
       await call("update-open", {});
       feedback("已在浏览器打开下载。下载完成后点开安装包覆盖安装即可，游戏账号和设置都会保留。");
     } catch (e) { feedback(e.message); } finally { busy = false; }
+  };
+  $("appSiteOpen").onclick = async () => {
+    try {
+      await call("site-open", {}, "暂时无法打开官网");
+      communityFeedback("已在浏览器打开官网。");
+    } catch (e) { communityFeedback(e.message); }
+  };
+  $("appGroupCopy").onclick = async () => {
+    try {
+      await call("copy-group-number", { number: GROUP_NUMBER }, "复制失败，请手动记下群号");
+      communityFeedback(`已复制群号 ${GROUP_NUMBER}。打开 QQ 搜索群号，即可申请加入“${GROUP_NAME}”。`);
+    } catch (e) { communityFeedback(e.message); }
   };
   // Show the version right away; ask the official site at most twice a day, silently.
   call("update").then(state => {

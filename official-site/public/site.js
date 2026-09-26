@@ -15,6 +15,24 @@
     });
   }
 
+  // navigator.clipboard is missing in some in-app browsers; fall back to a selected textarea.
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
+    const buffer = document.createElement("textarea");
+    buffer.className = "copy-buffer";
+    buffer.value = text;
+    buffer.setAttribute("readonly", "");
+    document.body.append(buffer);
+    buffer.select();
+    try { return document.execCommand("copy"); } catch { return false; } finally { buffer.remove(); }
+  }
+  $("groupCopy").addEventListener("click", async () => {
+    const number = $("groupCopy").dataset.number;
+    $("groupFeedback").textContent = await copy(number)
+      ? `已复制群号 ${number}，打开 QQ 搜索群号即可申请加入。`
+      : `复制失败，请长按群号 ${number} 手动复制。`;
+  });
+
   async function load(path) {
     const response = await fetch(path, { cache: "no-cache" });
     if (!response.ok) throw new Error(String(response.status));

@@ -45,12 +45,19 @@
 #membershipPanel .member-plans span { padding: 14px 10px; text-align: center; font-size: 27px; background: #f4f7fb; border: 1px solid #e6ecf3; border-radius: 14px; color: #65768b; }
 #membershipPanel .member-plans b { display: block; font-size: 31px; color: #314d6c; }
 #membershipPanel .member-support .member-copy { margin-bottom: 0; }
-#membershipPanel .member-transfer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+#membershipPanel .member-transfer-actions,#membershipPanel .app-community-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 #memberTransferFeedback { white-space: pre-wrap; margin-bottom: 0; }
 #appUpdateBadge { padding: 4px 16px; border-radius: 30px; background: #ffe3cd; color: #8a3c16; font-size: 24px; white-space: nowrap; }
 #appUpdateNotes { margin: 0 0 20px; padding-left: 36px; color: #465970; font-size: 27px; }
 #appUpdateCheck { width: 100%; margin-top: 16px; }
 #appUpdateFeedback { white-space: pre-wrap; margin-bottom: 0; }
+#appCommunityPanel .app-community { display: grid; gap: 16px; margin: 22px 0 26px; }
+#appCommunityPanel .app-community div { display: grid; grid-template-columns: 96px minmax(0,1fr); gap: 16px; align-items: baseline; }
+#appCommunityPanel dt { color: #7a8899; font-size: 27px; }
+#appCommunityPanel dd { margin: 0; font-size: 30px; }
+#appOfficialSite,#appGroupNumber { -webkit-user-select: all; user-select: all; }
+#appGroupNumber { display: block; margin-top: 4px; font-size: 40px; letter-spacing: 2px; color: #2a5077; }
+#appCommunityFeedback { white-space: pre-wrap; margin-bottom: 0; }
 body.mobile-local-mode .bottom-item.has-update span:last-child::after { content: " •"; color: #e0633a; }
 #membershipPanel .member-footer { text-align: center; font-size: 25px; line-height: 1.8; color: #8090a2; padding: 8px 12px; }
 body.mobile-local-mode .expire-label[data-tone="active"] { color: #b7efcf; }

@@ -436,6 +436,8 @@
     { "method": "POST", "path": "/api/member/config-import", "owner": "android-host", "note": "换手机导入：先预览再确认，导入的账号默认停止" },
     { "method": "GET", "path": "/api/app/update", "owner": "android-host", "note": "读取官网最新版本；只有 check=1 才联网，不访问游戏服务器" },
     { "method": "POST", "path": "/api/app/update-open", "owner": "android-host", "note": "用系统浏览器打开官网安装包下载地址" },
+    { "method": "POST", "path": "/api/app/site-open", "owner": "android-host", "note": "用系统浏览器打开官网首页" },
+    { "method": "POST", "path": "/api/app/copy-group-number", "owner": "android-host", "note": "把 QQ 群号（纯数字）写入系统剪贴板" },
     { "method": "POST", "path": "/api/background/permissions/open", "owner": "android-host", "note": "打开 Android 系统权限设置页；不访问游戏服务器" },
 
     { "method": "GET", "path": "/api/dashboard", "owner": "desktop-host", "note": "电脑多账号总控；Android 当前有多余实现，目标移除" },

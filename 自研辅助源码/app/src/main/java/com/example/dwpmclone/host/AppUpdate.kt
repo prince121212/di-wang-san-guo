@@ -1,5 +1,6 @@
 package com.example.dwpmclone.host
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -120,8 +121,21 @@ class AppUpdateChecker private constructor(private val context: Context) {
         val release = latest?.takeIf(::updateAvailable)
             ?: return JSONObject().put("ok", false).put("error", "请先检查更新")
         check(AppRelease.isOfficialDownload(release.downloadUrl, BuildConfig.OFFICIAL_SITE_URL))
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.downloadUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        return JSONObject().put("ok", true)
+        return browse(release.downloadUrl)
+    }
+
+    /** The official site's home page: downloads, release notes and the QQ group. */
+    @Synchronized fun openSite(): JSONObject {
+        val site = BuildConfig.OFFICIAL_SITE_URL.trim().trimEnd('/')
+        require(URL(site).protocol == "https") { "官网地址必须使用 HTTPS" }
+        return browse("$site/")
+    }
+
+    private fun browse(url: String): JSONObject = try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        JSONObject().put("ok", true)
+    } catch (_: ActivityNotFoundException) {
+        JSONObject().put("ok", false).put("error", "手机上没有可用的浏览器，请手动访问 $url")
     }
 
     private fun base(): JSONObject = JSONObject()
