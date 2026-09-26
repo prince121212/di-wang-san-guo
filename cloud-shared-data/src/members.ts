@@ -10,10 +10,10 @@ const CONFIG_BACKUP_ACTIONS = ["config-backup-put", "config-backup-get"];
 const SESSION_ACTIONS = ["renew", "logout", ...CONFIG_BACKUP_ACTIONS];
 const CONFIG_BACKUP_MAX_BYTES = 512 * 1024;
 const TRIAL_MILLIS = DAY;
-/** One free day per phone and per network: only the first account registered from either gets it. */
-interface TrialKey { kind: "phone" | "install" | "ip"; name: string }
+/** One free day per phone: only the first account registered on it gets it. */
+interface TrialKey { kind: "phone" | "install"; name: string }
 interface TrialOwner { memberId: string; email: string; kind: string; at: number }
-const TRIAL_KEY_LABELS: Record<string, string> = { phone: "同一台手机", install: "同一台手机", ip: "同一 IP 地址" };
+const TRIAL_KEY_LABELS: Record<string, string> = { phone: "同一台手机", install: "同一台手机" };
 /** Latest manual export only. The client seals game passwords with the member password; the
  * whole document is additionally encrypted at rest with a per-member key derived from the
  * Worker secret, so a storage dump alone reveals neither accounts nor settings. */
@@ -97,24 +97,14 @@ async function limit(env: Env, name: string, max: number, window: number): Promi
     method: "POST", body: JSON.stringify({ max, window }),
   })).ok;
 }
-/** IPv4 as is; IPv6 by its /64, which a phone keeps while its address suffix rotates. */
-export function trialNetwork(raw: string | null): string {
-  const ip = (raw || "").trim().toLowerCase();
-  const v4 = /^(?:::ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
-  if (v4) return v4[1].split(".").every(n => Number(n) <= 255) ? v4[1] : "";
-  const halves = ip.split("::");
-  const head = halves[0] ? halves[0].split(":") : [], tail = halves[1] ? halves[1].split(":") : [];
-  if (!ip.includes(":") || halves.length > 2 || (halves.length === 2 && head.length + tail.length > 7)) return "";
-  const groups = halves.length === 2 ? [...head, ...Array(8 - head.length - tail.length).fill("0"), ...tail] : head;
-  if (groups.length !== 8 || groups.some(g => !/^[0-9a-f]{1,4}$/.test(g))) return "";
-  return groups.slice(0, 4).map(g => g.replace(/^0+(?=.)/, "")).join(":") + "::/64";
-}
-/** Keyed hashes only: storage never holds a raw IP address or phone identifier. */
-async function trialKeys(env: Env, request: Request, installId: string, phone: unknown): Promise<TrialKey[]> {
+/**
+ * The phone's ANDROID_ID hash, plus this installation's device key for apps that predate it.
+ * Keyed hashes only. The network is deliberately left out: carrier NAT and shared Wi-Fi put
+ * genuine new users behind one IP.
+ */
+async function trialKeys(env: Env, installId: string, phone: unknown): Promise<TrialKey[]> {
   const values: Array<[TrialKey["kind"], string]> = [["install", installId]];
   if (typeof phone === "string" && /^[a-f0-9]{64}$/.test(phone)) values.push(["phone", phone]);
-  const network = trialNetwork(request.headers.get("cf-connecting-ip"));
-  if (network) values.push(["ip", network]);
   return Promise.all(values.map(async ([kind, value]) => ({ kind, name: await mac(env, `member-trial-v1\0${kind}\0${value}`) })));
 }
 /** Retry-safe: a key already held by this same account still counts as first. */
@@ -198,7 +188,7 @@ export async function handleMemberRequest(request: Request, env: Env): Promise<R
       data.email = emailValue(data.email);
       data.password = passwordValue(data.password);
       id = await memberId(data.email);
-      if (action === "register") trial = await trialKeys(env, request, proof.deviceId, data.deviceFingerprint);
+      if (action === "register") trial = await trialKeys(env, proof.deviceId, data.deviceFingerprint);
       delete data.deviceFingerprint;
     }
     return memberStub(env, id).fetch(`https://member.internal/member/${action}`, {

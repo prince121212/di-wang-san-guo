@@ -3,7 +3,6 @@ import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vite
 import worker from "../src/index";
 import type { Env } from "../src/types";
 import { b64, unb64, sha, LEASE_MILLIS, readSession, cloudToken, validCloudToken } from "../src/member-crypto";
-import { trialNetwork } from "../src/members";
 
 const E = env as unknown as Env;
 const encoder = new TextEncoder();
@@ -323,7 +322,6 @@ describe("manual config export and import", () => {
 
 const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
 const randomV4 = () => `10.${randomByte()}.${randomByte()}.${randomByte()}`;
-const randomV6Prefix = () => `2001:db8:${randomByte().toString(16)}${randomByte().toString(16)}:${randomByte().toString(16)}${randomByte().toString(16)}`;
 async function newUser(keys: CryptoKeyPair, network: string, fingerprint?: string) {
   email = crypto.randomUUID() + "@example.com"; ip = network;
   expect((await sendCode()).status).toBe(200);
@@ -363,21 +361,13 @@ describe("new-user trial", () => {
     expect((await adminAudit()).find(event => event.kind === "register")?.note).toContain(`同一台手机已由 ${first}`);
     expect((await login(deviceA)).body.code).toBe("MEMBER_EXPIRED");
   });
-  it("another email from the same IP gets nothing, even from a different phone", async () => {
+  it("a shared IP never costs another phone its trial", async () => {
     const network = randomV4();
     expect((await newUser(await newDevice(), network, await sha(crypto.randomUUID()))).trial).toBe("granted");
-    const first = email;
-    const second = await newUser(await newDevice(), network, await sha(crypto.randomUUID()));
-    expect(second.trial).toBe("used");
-    expect((await adminAudit()).find(event => event.kind === "register")?.note).toContain(`同一 IP 地址已由 ${first}`);
+    expect((await newUser(await newDevice(), network, await sha(crypto.randomUUID()))).trial).toBe("granted");
+    expect((await newUser(await newDevice(), `2001:db8:${randomByte()}::1`, await sha(crypto.randomUUID()))).trial).toBe("granted");
   });
-  it("IPv6 networks count by their /64 prefix", async () => {
-    const prefix = randomV6Prefix();
-    expect((await newUser(await newDevice(), `${prefix}::1`, await sha(crypto.randomUUID()))).trial).toBe("granted");
-    expect((await newUser(await newDevice(), `${prefix}:abcd:12:0:7`, await sha(crypto.randomUUID()))).trial).toBe("used");
-    expect((await newUser(await newDevice(), `${randomV6Prefix()}::1`, await sha(crypto.randomUUID()))).trial).toBe("granted");
-  });
-  it("older apps without phone information are still limited per installation and network", async () => {
+  it("older apps without phone information are still limited per installation", async () => {
     const install = await newDevice();
     expect((await newUser(install, randomV4())).trial).toBe("granted");
     expect((await newUser(install, randomV4())).trial).toBe("used");
@@ -385,7 +375,7 @@ describe("new-user trial", () => {
   it("a claim keeps its first owner and stays with that account on retries", async () => {
     const stub = env.RUNTIME_CONFIG.getByName("member-trial-v1:test-" + crypto.randomUUID());
     const claim = async (memberId: string) => (await (await stub.fetch("https://member.internal/member-trial", {
-      method: "POST", body: JSON.stringify({ memberId, email: memberId.slice(0, 6) + "@example.com", kind: "ip" }),
+      method: "POST", body: JSON.stringify({ memberId, email: memberId.slice(0, 6) + "@example.com", kind: "phone" }),
     })).json<any>()).owner.memberId;
     expect(await claim("a".repeat(64))).toBe("a".repeat(64));
     expect(await claim("b".repeat(64))).toBe("a".repeat(64));
@@ -417,14 +407,5 @@ describe("new-user trial", () => {
     expect(topped.body.member.plan).toBe("month");
     expect(topped.body.member.expiresAt).toBe(paid.body.member.expiresAt + 86400000);
     expect((await admin("grant", "trial-forever")).status).toBe(400);
-  });
-  it("normalizes the network used for the trial check", () => {
-    expect(trialNetwork("203.0.113.9")).toBe("203.0.113.9");
-    expect(trialNetwork("::ffff:203.0.113.9")).toBe("203.0.113.9");
-    expect(trialNetwork("2001:DB8:0012:0000:abcd::1")).toBe("2001:db8:12:0::/64");
-    expect(trialNetwork("2001:db8:12::")).toBe("2001:db8:12:0::/64");
-    for (const bad of ["", null, "unknown", crypto.randomUUID(), "300.1.1.1", "1:2:3:4:5:6:7:8::9", "2001:db8::1::2", "fe80::1%eth0"]) {
-      expect(trialNetwork(bad)).toBe("");
-    }
   });
 });
