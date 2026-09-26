@@ -72,3 +72,17 @@ test("querying another member while a mutation is in flight cannot switch its ta
   saving.resolve(response({ok:true})); await change;
   assert.equal(ui.element("memberSelectedEmail").textContent,"a@example.com");
 });
+
+test("the list names the one-day trial and the audit shows why a new account got none", async () => {
+  const ui = dashboard();
+  const trial = { ...member("new@example.com"), plan: "trial", expiresAt: Date.now() + 3600000, deviceName: "测试手机" };
+  ui.onFetch(r => response(r.body ? { ok: true, member: member(r.body.email), audit: [
+    { at: 1790000000000, kind: "register", deviceName: "测试手机", note: "未赠送体验：同一台手机已由 first@example.com 于 2026-09-26 21:05 注册" },
+  ] } : { ok: true, members: [trial], nextCursor: null }));
+  ui.ready(); await flush();
+  const row = ui.element("memberTableBody").children[0].children.map(cell => cell.textContent);
+  assert.equal(row[1], "体验（1天）");
+  assert.equal(row[3], "有效");
+  ui.search("second@example.com"); await flush();
+  assert.match(ui.element("memberAudit").children[0].textContent, /register · 测试手机 · 未赠送体验：同一台手机已由 first@example\.com/);
+});

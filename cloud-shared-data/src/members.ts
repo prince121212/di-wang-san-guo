@@ -9,6 +9,11 @@ const DAY = 86_400_000;
 const CONFIG_BACKUP_ACTIONS = ["config-backup-put", "config-backup-get"];
 const SESSION_ACTIONS = ["renew", "logout", ...CONFIG_BACKUP_ACTIONS];
 const CONFIG_BACKUP_MAX_BYTES = 512 * 1024;
+const TRIAL_MILLIS = DAY;
+/** One free day per phone and per network: only the first account registered from either gets it. */
+interface TrialKey { kind: "phone" | "install" | "ip"; name: string }
+interface TrialOwner { memberId: string; email: string; kind: string; at: number }
+const TRIAL_KEY_LABELS: Record<string, string> = { phone: "同一台手机", install: "同一台手机", ip: "同一 IP 地址" };
 /** Latest manual export only. The client seals game passwords with the member password; the
  * whole document is additionally encrypted at rest with a per-member key derived from the
  * Worker secret, so a storage dump alone reveals neither accounts nor settings. */
@@ -92,6 +97,45 @@ async function limit(env: Env, name: string, max: number, window: number): Promi
     method: "POST", body: JSON.stringify({ max, window }),
   })).ok;
 }
+/** IPv4 as is; IPv6 by its /64, which a phone keeps while its address suffix rotates. */
+export function trialNetwork(raw: string | null): string {
+  const ip = (raw || "").trim().toLowerCase();
+  const v4 = /^(?:::ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
+  if (v4) return v4[1].split(".").every(n => Number(n) <= 255) ? v4[1] : "";
+  const halves = ip.split("::");
+  const head = halves[0] ? halves[0].split(":") : [], tail = halves[1] ? halves[1].split(":") : [];
+  if (!ip.includes(":") || halves.length > 2 || (halves.length === 2 && head.length + tail.length > 7)) return "";
+  const groups = halves.length === 2 ? [...head, ...Array(8 - head.length - tail.length).fill("0"), ...tail] : head;
+  if (groups.length !== 8 || groups.some(g => !/^[0-9a-f]{1,4}$/.test(g))) return "";
+  return groups.slice(0, 4).map(g => g.replace(/^0+(?=.)/, "")).join(":") + "::/64";
+}
+/** Keyed hashes only: storage never holds a raw IP address or phone identifier. */
+async function trialKeys(env: Env, request: Request, installId: string, phone: unknown): Promise<TrialKey[]> {
+  const values: Array<[TrialKey["kind"], string]> = [["install", installId]];
+  if (typeof phone === "string" && /^[a-f0-9]{64}$/.test(phone)) values.push(["phone", phone]);
+  const network = trialNetwork(request.headers.get("cf-connecting-ip"));
+  if (network) values.push(["ip", network]);
+  return Promise.all(values.map(async ([kind, value]) => ({ kind, name: await mac(env, `member-trial-v1\0${kind}\0${value}`) })));
+}
+/** Retry-safe: a key already held by this same account still counts as first. */
+async function claimTrial(env: Env, memberId: string, email: string, keys: TrialKey[]) {
+  if (!Array.isArray(keys) || !keys.length) return { trial: "used", note: "未赠送体验：缺少设备信息" };
+  try {
+    const owners = await Promise.all(keys.map(async key => {
+      const reply = await env.RUNTIME_CONFIG.getByName("member-trial-v1:" + key.name).fetch("https://member.internal/member-trial", {
+        method: "POST", body: JSON.stringify({ memberId, email, kind: key.kind }),
+      });
+      if (!reply.ok) throw new Error("trial claim failed");
+      return (await reply.json<{ owner: TrialOwner }>()).owner;
+    }));
+    const earlier = owners.find(owner => owner.memberId !== memberId);
+    if (!earlier) return { trial: "granted", note: "新用户赠送1天体验" };
+    const at = new Date(earlier.at + 8 * 3_600_000).toISOString().slice(0, 16).replace("T", " ");
+    return { trial: "used", note: `未赠送体验：${TRIAL_KEY_LABELS[earlier.kind] || "同一设备"}已由 ${earlier.email} 于 ${at} 注册` };
+  } catch {
+    return { trial: "unavailable", note: "体验判定失败（服务繁忙），需要时请手动补发" };
+  }
+}
 async function indexMember(env: Env, member: Member) {
   // Projection only: authentication/entitlements never depend on this index.
   try {
@@ -136,6 +180,7 @@ export async function handleMemberRequest(request: Request, env: Env): Promise<R
     let claims: MemberSession | undefined;
     let id: string;
     let backup: Record<string, unknown> = {};
+    let trial: TrialKey[] = [];
     if (SESSION_ACTIONS.includes(action)) {
       claims = await readSession(env, data.sessionToken);
       if (claims.deviceId !== proof.deviceId) return error("MEMBER_DEVICE_INVALID", "登录凭证不属于本机，请重新登录", 401);
@@ -153,9 +198,11 @@ export async function handleMemberRequest(request: Request, env: Env): Promise<R
       data.email = emailValue(data.email);
       data.password = passwordValue(data.password);
       id = await memberId(data.email);
+      if (action === "register") trial = await trialKeys(env, request, proof.deviceId, data.deviceFingerprint);
+      delete data.deviceFingerprint;
     }
     return memberStub(env, id).fetch(`https://member.internal/member/${action}`, {
-      method: "POST", body: JSON.stringify({ data, claims, id, deviceId: proof.deviceId, ...backup }),
+      method: "POST", body: JSON.stringify({ data, claims, id, deviceId: proof.deviceId, trial, ...backup }),
     });
   } catch (e) {
     if (e instanceof RequestError) return error(e.code, e.message, e.status);
@@ -176,6 +223,19 @@ export async function handleMemberStorage(request: Request, env: Env, storage: D
     await storage.put("limit", value);
     await storage.setAlarm(value.until + 1000);
     return response({ ok: true });
+  }
+  if (path === "/member-trial") {
+    // First registration wins for good; these objects never schedule the cleanup alarm.
+    const claim = await request.json<TrialOwner>();
+    if (!/^[a-f0-9]{64}$/.test(claim.memberId) || typeof claim.email !== "string" || !Object.hasOwn(TRIAL_KEY_LABELS, claim.kind)) {
+      return error("TRIAL_INVALID", "体验领取参数无效", 400);
+    }
+    let owner = await storage.get<TrialOwner>("owner");
+    if (!owner) {
+      owner = { memberId: claim.memberId, email: claim.email.slice(0, 254), kind: claim.kind, at: now };
+      await storage.put("owner", owner);
+    }
+    return response({ ok: true, owner });
   }
   if (path === "/member-directory") {
     if (request.method === "POST") {
@@ -268,9 +328,10 @@ export async function handleMemberStorage(request: Request, env: Env, storage: D
     if (prior) return prior.fingerprint === fingerprint ? response({ ok: true, replayed: true, member: summary(m) })
       : error("IDEMPOTENCY_CONFLICT", "该操作编号已用于其他变更", 409);
     if (input.action === "grant") {
-      const days = PLANS[input.plan]; if (!days) throw new RequestError("会员套餐无效");
+      const days = input.plan === "trial" ? TRIAL_MILLIS / DAY : PLANS[input.plan]; if (!days) throw new RequestError("会员套餐无效");
+      // A re-issued trial day never relabels a running paid plan.
+      if (input.plan !== "trial" || !(m.expiresAt > now && Object.hasOwn(PLANS, m.plan))) m.plan = input.plan;
       m.expiresAt = Math.max(now, m.expiresAt) + days * DAY;
-      m.plan = input.plan;
     } else if (input.action === "disable") { m.disabled = true; m.sessionId = ""; m.sessionEndReason = "admin"; }
     else if (input.action === "enable") { m.disabled = false; }
     else if (input.action === "revoke") { m.sessionId = ""; m.sessionEndReason = "admin"; }
@@ -298,14 +359,24 @@ export async function handleMemberStorage(request: Request, env: Env, storage: D
       otp.attempts++; await save(); return error("CODE_INVALID", "验证码不正确", 400);
     }
     const password = await passwordHash(env, data.password);
-    if (action === "register") state.member = { id: input.id, email: data.email, createdAt: now, password,
-      authVersion: 1, disabled: false, plan: "", expiresAt: 0, sessionId: "", deviceId: "", deviceName: "",
-      loginAt: 0, lastCheckAt: 0, sessionEndReason: "" };
-    else { state.member!.password = password; state.member!.authVersion++; state.member!.sessionId = ""; }
+    if (action === "register") {
+      const { trial, note } = await claimTrial(env, input.id, data.email, input.trial);
+      const granted = trial === "granted";
+      state.member = { id: input.id, email: data.email, createdAt: now, password,
+        authVersion: 1, disabled: false, plan: granted ? "trial" : "", expiresAt: granted ? now + TRIAL_MILLIS : 0,
+        sessionId: "", deviceId: "", deviceName: "", loginAt: 0, lastCheckAt: 0, sessionEndReason: "" };
+      otp.used = true; otp.digest = ""; state.failures = 0; state.lockedUntil = 0;
+      audit(state, action, { deviceName: String(data.deviceName || "").replace(/[\x00-\x1f]/g, "").slice(0, 80), note });
+      await save(); await indexMember(env, state.member);
+      return response({ ok: true, member: summary(state.member), trial, message: granted
+        ? "注册成功，已赠送 1 天体验会员，请登录后使用"
+        : trial === "used" ? "注册成功，请登录。体验会员每人限领一次，本账号未获赠送，可在下方开通会员"
+          : "注册成功，请登录。体验会员暂时无法发放，请到 QQ 交流群联系管理员补发" });
+    }
+    state.member!.password = password; state.member!.authVersion++; state.member!.sessionId = "";
     otp.used = true; otp.digest = ""; state.failures = 0; state.lockedUntil = 0;
     audit(state, action); await save(); await indexMember(env, state.member!);
-    return response({ ok: true, member: summary(state.member!), message: action === "register"
-      ? "注册成功，请登录；会员由管理员开通" : "密码已重置，旧登录已失效，请重新登录" });
+    return response({ ok: true, member: summary(state.member!), message: "密码已重置，旧登录已失效，请重新登录" });
   }
   const m = state.member;
   if (action === "login") {
@@ -411,7 +482,7 @@ export async function handleMemberAdmin(request: Request, env: Env, actor: strin
   const input = await body(request);
   const email = emailValue(input.email);
   if (!/^[a-f0-9-]{36}$/i.test(String(input.requestId || "")) || !["grant","disable","enable","revoke"].includes(input.action)
-    || (input.action === "grant" && !PLANS[input.plan]) || typeof input.note !== "string" || input.note.length > 200
+    || (input.action === "grant" && !PLANS[input.plan] && input.plan !== "trial") || typeof input.note !== "string" || input.note.length > 200
     || Object.keys(input).some(key => !["email","requestId","action","plan","note"].includes(key))) throw new RequestError("会员管理参数无效");
   return memberStub(env, await memberId(email)).fetch("https://member.internal/member/admin-update", {
     method: "POST", body: JSON.stringify({ ...input, actor }),

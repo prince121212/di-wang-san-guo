@@ -2,7 +2,7 @@
 (() => {
   let rows = [], selected = null, saving = false, nextCursor = null, detailRequest = 0;
   const $ = id => document.getElementById(id);
-  const labels = {month:"月卡（30天）",quarter:"季卡（90天）",year:"年卡（365天）"};
+  const labels = {month:"月卡（30天）",quarter:"季卡（90天）",year:"年卡（365天）",trial:"体验（1天）"};
   const format = value => value ? new Date(value).toLocaleString("zh-CN",{hour12:false}) : "未开通";
   const text = (element,value) => { element.textContent = String(value ?? ""); return element; };
   const pendingKey = "dwpm.admin.member.pending.v1";

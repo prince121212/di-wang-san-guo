@@ -25,7 +25,7 @@
       <label>登录密码<input id="memberPasswordInput" type="password" required minlength="10" maxlength="128" autocomplete="current-password" placeholder="请输入至少10个字符的密码"></label>
       <div id="memberCodeFields" hidden><label>邮箱验证码<input id="memberCodeInput" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6位数字验证码"></label>
         <button type="button" id="memberSendCode">获取验证码</button></div>
-      <button id="memberSubmit" class="member-primary" type="submit">登录会员</button><p class="member-form-tip">会员账号用于授权，与游戏账号分开管理。</p></form>
+      <button id="memberSubmit" class="member-primary" type="submit">登录会员</button><p class="member-form-tip">新注册账号赠送 1 天体验会员<br>会员账号用于授权，与游戏账号分开管理。</p></form>
     <p id="memberFormFeedback" role="status" hidden></p>
     <section id="memberPayment" class="member-card" hidden><h3>支付宝开通</h3><p id="memberPaymentHint" class="member-copy"></p>
       <div id="memberPaymentPlans" class="member-plans"></div><button id="memberPaymentQuery" type="button">查询付款结果</button>
@@ -60,7 +60,7 @@
     $("memberPlanName").textContent=view.plan;
     $("memberStatusBadge").textContent=view.label;
     $("memberStatusBadge").dataset.tone=view.tone;
-    $("memberExpiryDate").textContent=view.hasExpiry?view.date:"尚未开通";
+    $("memberExpiryDate").textContent=view.expiry;
     $("memberStatusText").textContent=view.hint;
     $("memberCheckHint").textContent=state.allowed?"已验证":view.label;
     $("memberSessionActions").hidden=!state.authenticated;
@@ -119,9 +119,22 @@
       const result=await call(mode,{email,password,challengeId:challenge?.id,code:$("memberCodeInput").value.trim()});
       $("memberPasswordInput").value="";$("memberCodeInput").value="";
       if(mode==="login") {render(result);$("memberForm").hidden=true;feedback(result.allowed?"登录成功，可以启动游戏账号。":"登录成功，请联系管理员开通或续期，再点击重新检查授权。");}
+      else if(mode==="register"&&!window.DwpmMembershipState?.authenticated) await signInAfterRegister(result,email,password);
       else {switchMode("login");feedback(result.message||"操作成功，请登录");}
     } catch(e) {feedback(e.message);} finally {busy=false;$("memberSubmit").disabled=false;}
   };
+  // A new account signs in right away, so the new-user trial works without a second form.
+  async function signInAfterRegister(registered,email,password) {
+    let state;
+    try {state=await call("login",{email,password});}
+    catch {switchMode("login");$("memberEmailInput").value=email;feedback(registered.message||"注册成功，请登录");return;}
+    render(state);$("memberForm").hidden=true;
+    const view=window.DwpmMembershipPresentation.present(state);
+    feedback(registered.trial==="granted"&&state.allowed?`注册成功，已赠送 1 天体验会员，有效期至 ${view.dateTime}，现在就可以启动游戏账号。`
+      :registered.trial==="unavailable"?"注册成功，已登录。体验会员暂时无法发放，请到 QQ 交流群联系管理员补发。"
+      :registered.trial==="used"?"注册成功，已登录。体验会员每人限领一次，本账号未获赠送，可在下方开通会员。"
+      :state.allowed?"注册成功，已登录，可以启动游戏账号。":"注册成功，已登录。可在下方开通会员后使用。");
+  }
   $("memberRecheck").onclick=async()=>{
     if(busy)return;busy=true;$("memberRecheck").disabled=true;$("memberRecheck").textContent="正在验证…";
     try{const result=await call("check",{force:true});render(result);feedback(result.allowed?"授权已更新，可前往助手启动游戏账号。":result.message||"请根据提示处理会员授权。");}

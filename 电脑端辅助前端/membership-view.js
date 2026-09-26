@@ -9,9 +9,10 @@
     const hasExpiry=Number.isFinite(expires)&&expires>0;
     const date=hasExpiry?dates.format(expires):"尚未开通";
     const dateTime=hasExpiry?times.format(expires):"尚未开通";
+    const trial=member.plan==="trial";
     let label="正在检查",tone="pending",hint="正在读取本机会员授权，请稍候。";
     if(state?.allowed) {
-      label="会员有效";tone="active";hint="本机已获授权，可前往助手启动游戏账号。";
+      label=trial?"体验会员":"会员有效";tone="active";hint="本机已获授权，可前往助手启动游戏账号。";
     } else if(state && !state.authenticated) {
       label="会员未登录";tone="neutral";hint="登录会员后，即可查看权益与本机授权。";
     } else if(state) {
@@ -25,11 +26,13 @@
         MEMBER_SESSION_EXPIRED:["需重新登录","paused","本机登录已过期，请重新登录。"],
         MEMBER_NETWORK_UNAVAILABLE:["暂无法验证","pending","请检查网络后重试，这不代表会员已到期。"],
       };
+      if(trial&&hasExpiry) reasons.MEMBER_EXPIRED=["体验已结束","expired","1 天体验会员已结束，可在下方开通会员，再重新检查授权。"];
       [label,tone,hint]=reasons[state.code]||["待检查授权","pending","请联网检查本机授权，会员有效期与运行许可分别显示。"];
     }
-    return {label,tone,hint,date,dateTime,hasExpiry,
+    // A one-day trial needs the hour, not just the date.
+    return {label,tone,hint,date,dateTime,hasExpiry,expiry:hasExpiry?(trial?dateTime:date):"尚未开通",
       deadline:hasExpiry?"有效期至 "+date:"尚未开通会员",
-      plan:({month:"月卡会员",quarter:"季卡会员",year:"年卡会员"})[member.plan]||"会员服务"};
+      plan:({month:"月卡会员",quarter:"季卡会员",year:"年卡会员",trial:"体验会员"})[member.plan]||"会员服务"};
   }
   window.DwpmMembershipPresentation={present};
 })();

@@ -129,8 +129,8 @@ android {
         applicationId = "com.example.dwpmclone"
         minSdk = 24
         targetSdk = 36
-        versionCode = 121
-        versionName = "V0.0.121"
+        versionCode = 122
+        versionName = "V0.0.122"
         resValue("string", "app_name", appName)
         buildConfigField("String", "MEMBER_LEASE_PUBLIC_KEY", buildConfigString(cloudSetting("DWPM_MEMBER_LEASE_PUBLIC_KEY")))
         buildConfigField("String", "APP_NAME", buildConfigString(appName))

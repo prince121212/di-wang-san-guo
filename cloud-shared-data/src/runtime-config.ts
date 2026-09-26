@@ -29,7 +29,7 @@ export class RuntimeConfigStore extends DurableObject<Env> {
           error:e instanceof RequestError?e.message:"订单服务暂不可用" },{status:e instanceof RequestError?e.status:503}); }
       });
     }
-    if (path.startsWith("/member/") || path === "/member-directory" || path === "/member-limit") {
+    if (path.startsWith("/member/") || path === "/member-directory" || path === "/member-limit" || path === "/member-trial") {
       return this.ctx.blockConcurrencyWhile(() => handleMemberStorage(request, this.env, this.ctx.storage));
     }
     if (new URL(request.url).pathname.startsWith("/email-probe/")) {

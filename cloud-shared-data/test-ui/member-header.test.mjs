@@ -57,3 +57,15 @@ test("header rerenders and tab switches do not invent a different membership sta
   assert.equal(p.nodes.get(".expire-label").textContent,p.window.DwpmMembershipPresentation.present(active).label);
   delete p.window.DWPMNativeApi;p.refresh();assert.equal(p.nodes.get(".expire-label").textContent,"本地运行");
 });
+
+test("a running one-day trial and a finished one are named as a trial",()=>{
+  const p=page(),trial={...member,plan:"trial",expiresAt:Date.now()+3600000};
+  p.set({...active,member:trial});
+  assert.equal(p.nodes.get(".expire-label").textContent,"体验会员");
+  const view=p.window.DwpmMembershipPresentation.present({...active,member:trial});
+  assert.equal(view.plan,"体验会员");assert.match(view.expiry,/\d{2}:\d{2}/);
+  p.set({...active,allowed:false,code:"MEMBER_EXPIRED",member:{...trial,expiresAt:Date.now()-1000}});
+  assert.equal(p.nodes.get(".expire-label").textContent,"体验已结束");
+  assert.match(p.window.DwpmMembershipPresentation.present(p.window.DwpmMembershipState).hint,/在下方开通会员/);
+  assert.equal(p.window.DwpmMembershipPresentation.present(active).expiry.includes(":"),false);
+});

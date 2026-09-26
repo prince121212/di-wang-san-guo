@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
 import android.net.Uri
+import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -98,6 +99,16 @@ class MembershipClient private constructor(private val context: Context) {
 
     private fun sha256Hex(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it.toInt() and 255) }
+
+    private fun deviceName(): String = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+    /**
+     * New-user trial check: ANDROID_ID needs no permission, survives reinstalling and only
+     * changes on a factory reset. Only its hash leaves the phone.
+     */
+    private fun deviceFingerprint(): String? =
+        runCatching { Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) }.getOrNull()
+            ?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }?.let { sha256Hex("dwpm-trial-device-v1\u0000$it") }
 
     @Synchronized fun cloudDataToken(): String =
         if (check(false).optBoolean("allowed")) saved.optString("cloudToken").takeUnless { it == "null" }.orEmpty() else ""
@@ -217,7 +228,8 @@ class MembershipClient private constructor(private val context: Context) {
                     .put("requestId", body.optString("requestId").ifBlank { UUID.randomUUID().toString() }))
                 "register", "reset-password" -> signed(action, JSONObject()
                     .put("email", body.optString("email").trim().lowercase()).put("password", body.optString("password"))
-                    .put("challengeId", body.optString("challengeId")).put("code", body.optString("code"))).body.also {
+                    .put("challengeId", body.optString("challengeId")).put("code", body.optString("code"))
+                    .apply { if (action == "register") put("deviceName", deviceName()).putOpt("deviceFingerprint", deviceFingerprint()) }).body.also {
                         if (action == "reset-password") {
                             saved.remove("sessionToken"); leaseDeadlineElapsed = 0; code = "MEMBER_LOGIN_REQUIRED"
                             message = "密码已重置，请使用新密码登录"; persist()
@@ -226,7 +238,7 @@ class MembershipClient private constructor(private val context: Context) {
                 "login" -> {
                     leaseDeadlineElapsed = 0
                     val result = signed("login", JSONObject().put("email", body.optString("email").trim().lowercase())
-                        .put("password", body.optString("password")).put("deviceName", "${Build.MANUFACTURER} ${Build.MODEL}"))
+                        .put("password", body.optString("password")).put("deviceName", deviceName()))
                     val previousMember = saved.optJSONObject("member")?.optString("id")
                     accept(result)
                     if (previousMember != result.body.getJSONObject("member").getString("id")) { saved.remove("paymentOrder"); persist() }

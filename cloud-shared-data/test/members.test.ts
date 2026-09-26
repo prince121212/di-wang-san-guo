@@ -3,12 +3,15 @@ import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vite
 import worker from "../src/index";
 import type { Env } from "../src/types";
 import { b64, unb64, sha, LEASE_MILLIS, readSession, cloudToken, validCloudToken } from "../src/member-crypto";
+import { trialNetwork } from "../src/members";
 
 const E = env as unknown as Env;
 const encoder = new TextEncoder();
 let deviceA: CryptoKeyPair, deviceB: CryptoKeyPair;
 let email: string, adminCookie: string, mailCode: string, challengeId: string;
 let ip: string;
+const DEVICE_KEY = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: "SHA-256" };
+const newDevice = async () => await crypto.subtle.generateKey(DEVICE_KEY, true, ["sign","verify"]) as CryptoKeyPair;
 async function request(path: string, value?: unknown, headers = {}) {
   const response = await worker.fetch(new Request("https://worker.test" + path, {
     method: value === undefined ? "GET" : "POST",
@@ -51,14 +54,21 @@ async function memberState() {
   return runInDurableObject(env.RUNTIME_CONFIG.getByName("member-v1:" + id), async (_instance, state) => state.storage.get<any>("state"));
 }
 beforeAll(async () => {
-  const algorithm = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: "SHA-256" };
-  deviceA = await crypto.subtle.generateKey(algorithm, true, ["sign","verify"]) as CryptoKeyPair;
-  deviceB = await crypto.subtle.generateKey(algorithm, true, ["sign","verify"]) as CryptoKeyPair;
+  deviceA = await newDevice();
+  deviceB = await newDevice();
   const r = await worker.fetch(new Request("https://worker.test/admin/api/login", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "test-admin", password: "test-password" }),
   }), E);
   adminCookie = String(r.headers.get("set-cookie")).split(";",1)[0];
+  // Phone A has already registered once, so ordinary lifecycle tests start without the new-user trial.
+  const mail = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+    mailCode = /验证码是：(\d{6})/.exec(JSON.parse(String(init?.body)).text)![1];
+    return Response.json({ id: crypto.randomUUID() });
+  });
+  email = crypto.randomUUID() + "@example.com"; ip = crypto.randomUUID();
+  await register();
+  mail.mockRestore();
 });
 beforeEach(async () => {
   email = crypto.randomUUID() + "@example.com"; ip = crypto.randomUUID();
@@ -85,7 +95,7 @@ describe("member authority and account lifecycle", () => {
     const expired=await cloudToken(E,"a".repeat(64),"session-test",Date.now()-1);
     expect(await validCloudToken(E,expired)).toBe(false);
   });
-  it("registers using email proof, hashes passwords, consumes code, and grants no membership", async () => {
+  it("registers using email proof, hashes passwords, consumes code, and grants no membership to a phone already used", async () => {
     const member = await register();
     expect(member.expiresAt).toBe(0); expect(member.active).toBe(false);
     const state = await memberState();
@@ -308,5 +318,113 @@ describe("manual config export and import", () => {
     const a = (await login()).body;
     expect((await exportConfig(a.sessionToken, configBackup(), deviceB)).body.code).toBe("MEMBER_DEVICE_INVALID");
     expect((await importConfig(a.sessionToken, deviceB)).body.code).toBe("MEMBER_DEVICE_INVALID");
+  });
+});
+
+const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+const randomV4 = () => `10.${randomByte()}.${randomByte()}.${randomByte()}`;
+const randomV6Prefix = () => `2001:db8:${randomByte().toString(16)}${randomByte().toString(16)}:${randomByte().toString(16)}${randomByte().toString(16)}`;
+async function newUser(keys: CryptoKeyPair, network: string, fingerprint?: string) {
+  email = crypto.randomUUID() + "@example.com"; ip = network;
+  expect((await sendCode()).status).toBe(200);
+  const result = await signed("register", { email, password: "test-password-123", challengeId, code: mailCode,
+    deviceName: "测试手机", ...(fingerprint ? { deviceFingerprint: fingerprint } : {}) }, keys);
+  expect(result.status).toBe(200);
+  return result.body;
+}
+async function adminAudit() {
+  return (await request("/admin/api/members/query", { email }, { cookie: adminCookie, origin: "https://worker.test",
+    "x-admin-intent": "member-query" })).body.audit as Array<Record<string, any>>;
+}
+
+describe("new-user trial", () => {
+  it("the first account from a new phone and network gets exactly one day, usable at once", async () => {
+    const before = Date.now();
+    const joined = await newUser(await newDevice(), randomV4(), await sha(crypto.randomUUID()));
+    expect(joined.trial).toBe("granted");
+    expect(joined.message).toMatch(/已赠送 1 天体验会员/);
+    expect(joined.member.plan).toBe("trial");
+    expect(joined.member.expiresAt).toBeGreaterThanOrEqual(before + 86400000);
+    expect(joined.member.expiresAt).toBeLessThanOrEqual(Date.now() + 86400000);
+    const state = await memberState();
+    expect(JSON.stringify(state)).not.toMatch(/deviceFingerprint|10\.\d+\.\d+\.\d+/);
+    expect((await adminAudit()).find(event => event.kind === "register")).toMatchObject({ deviceName: "测试手机", note: "新用户赠送1天体验" });
+  });
+  it("another email on the same phone gets nothing, even after reinstalling on another network", async () => {
+    const phone = await sha(crypto.randomUUID());
+    expect((await newUser(await newDevice(), randomV4(), phone)).trial).toBe("granted");
+    const first = email;
+    const second = await newUser(await newDevice(), randomV4(), phone);
+    expect(second.trial).toBe("used");
+    expect(second.member.expiresAt).toBe(0);
+    expect(second.member.plan).toBe("");
+    expect(second.message).toMatch(/每人限领一次/);
+    expect(JSON.stringify(second)).not.toContain(first);
+    expect((await adminAudit()).find(event => event.kind === "register")?.note).toContain(`同一台手机已由 ${first}`);
+    expect((await login(deviceA)).body.code).toBe("MEMBER_EXPIRED");
+  });
+  it("another email from the same IP gets nothing, even from a different phone", async () => {
+    const network = randomV4();
+    expect((await newUser(await newDevice(), network, await sha(crypto.randomUUID()))).trial).toBe("granted");
+    const first = email;
+    const second = await newUser(await newDevice(), network, await sha(crypto.randomUUID()));
+    expect(second.trial).toBe("used");
+    expect((await adminAudit()).find(event => event.kind === "register")?.note).toContain(`同一 IP 地址已由 ${first}`);
+  });
+  it("IPv6 networks count by their /64 prefix", async () => {
+    const prefix = randomV6Prefix();
+    expect((await newUser(await newDevice(), `${prefix}::1`, await sha(crypto.randomUUID()))).trial).toBe("granted");
+    expect((await newUser(await newDevice(), `${prefix}:abcd:12:0:7`, await sha(crypto.randomUUID()))).trial).toBe("used");
+    expect((await newUser(await newDevice(), `${randomV6Prefix()}::1`, await sha(crypto.randomUUID()))).trial).toBe("granted");
+  });
+  it("older apps without phone information are still limited per installation and network", async () => {
+    const install = await newDevice();
+    expect((await newUser(install, randomV4())).trial).toBe("granted");
+    expect((await newUser(install, randomV4())).trial).toBe("used");
+  });
+  it("a claim keeps its first owner and stays with that account on retries", async () => {
+    const stub = env.RUNTIME_CONFIG.getByName("member-trial-v1:test-" + crypto.randomUUID());
+    const claim = async (memberId: string) => (await (await stub.fetch("https://member.internal/member-trial", {
+      method: "POST", body: JSON.stringify({ memberId, email: memberId.slice(0, 6) + "@example.com", kind: "ip" }),
+    })).json<any>()).owner.memberId;
+    expect(await claim("a".repeat(64))).toBe("a".repeat(64));
+    expect(await claim("b".repeat(64))).toBe("a".repeat(64));
+    expect(await claim("a".repeat(64))).toBe("a".repeat(64));
+  });
+  it("registration still succeeds when the trial check is unavailable, and says so", async () => {
+    email = crypto.randomUUID() + "@example.com"; ip = randomV4();
+    await sendCode();
+    const id = await sha("dwpm-member-v1:" + email);
+    const reply = await env.RUNTIME_CONFIG.getByName("member-v1:" + id).fetch("https://member.internal/member/register", {
+      method: "POST", body: JSON.stringify({ id, deviceId: "d".repeat(64), trial: [{ kind: "unknown-kind", name: "broken" }],
+        data: { email, password: "test-password-123", challengeId, code: mailCode, requestId: crypto.randomUUID() } }),
+    });
+    const body = await reply.json<any>();
+    expect(reply.status).toBe(200);
+    expect(body.trial).toBe("unavailable");
+    expect(body.member.expiresAt).toBe(0);
+    expect(body.message).toMatch(/联系管理员补发/);
+    expect((await adminAudit()).find(event => event.kind === "register")?.note).toMatch(/体验判定失败/);
+  });
+  it("administrators can re-issue one trial day without relabelling a paid plan", async () => {
+    await register();
+    const reissued = await admin("grant", "trial");
+    expect(reissued.status).toBe(200);
+    expect(reissued.body.member.plan).toBe("trial");
+    expect(reissued.body.member.expiresAt - Date.now()).toBeGreaterThan(86400000 - 60000);
+    const paid = await admin("grant", "month");
+    const topped = await admin("grant", "trial");
+    expect(topped.body.member.plan).toBe("month");
+    expect(topped.body.member.expiresAt).toBe(paid.body.member.expiresAt + 86400000);
+    expect((await admin("grant", "trial-forever")).status).toBe(400);
+  });
+  it("normalizes the network used for the trial check", () => {
+    expect(trialNetwork("203.0.113.9")).toBe("203.0.113.9");
+    expect(trialNetwork("::ffff:203.0.113.9")).toBe("203.0.113.9");
+    expect(trialNetwork("2001:DB8:0012:0000:abcd::1")).toBe("2001:db8:12:0::/64");
+    expect(trialNetwork("2001:db8:12::")).toBe("2001:db8:12:0::/64");
+    for (const bad of ["", null, "unknown", crypto.randomUUID(), "300.1.1.1", "1:2:3:4:5:6:7:8::9", "2001:db8::1::2", "fe80::1%eth0"]) {
+      expect(trialNetwork(bad)).toBe("");
+    }
   });
 });
